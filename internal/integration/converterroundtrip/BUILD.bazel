@@ -21,6 +21,7 @@ go_test(
     name = "converterroundtrip_test",
     srcs = glob(["*_test.go"]),
     data = [
+        "//tools/roundtrip:continuation_field_profile",
         "testdata/native-built-in-statuses.json",
         "testdata/real-store-import-policy-v2.md",
         "testdata/public-native-delta-small-0e4d5da4.tar.gz",
@@ -36,6 +37,7 @@ go_test(
     tags = ["local", "requires-network"],
     embed = [":converterroundtrip"],
     deps = [
+        "//internal/core/ontology",
         "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/pipeline",

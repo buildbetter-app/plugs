@@ -42,6 +42,8 @@ func DefaultTreePolicy() TreePolicy {
 	policy := TreePolicy{
 		ReferencePrefixes: []string{
 			"tools/roundtrip/testdata/fresh-native/recipe-profile.json",
+			"tools/roundtrip/testdata/fresh-native/continuation-fields.json",
+			"tools/roundtrip/testdata/fresh-native/beads-1a75f7.git-tree",
 			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl",
@@ -55,6 +57,8 @@ func DefaultTreePolicy() TreePolicy {
 			"spec/s1-b17-b20/reference/b18/record.py",
 		},
 		ReferenceSHA256: map[string]string{
+			"tools/roundtrip/testdata/fresh-native/continuation-fields.json":            "ff5514c3f022d2c1ea09843e0eec2c380e69a085e9e9265a52b07fbc0113893b",
+			"tools/roundtrip/testdata/fresh-native/beads-1a75f7.git-tree":               "566e102e8909114fb20043da8438264e90d664ac273ec12d4be2fc07dc484954",
 			"tools/roundtrip/testdata/fresh-native/recipe-profile.json":                 "5dded2584223f7043fdf9967c7741092c305d438e06385de7a0d2e7534d93392",
 			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree":               "c1d92931dfce093264a1ba155869b2bffbb9dd184e9778e2c75abeb081ab1bdb",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree":               "0a31c98fdd08dc93af919d3bb0f4c8470bb4a126d1c7388c49dff7a222889f55",
@@ -134,6 +138,8 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"tools/roundtrip/testdata/fresh-native/beads-1a75f7.tar.gz":                             "76ae171a1c7c1d2904a258807d94cbe15bba15bce24742dd5d5f5cbd01340925",
+			"tools/roundtrip/testdata/fresh-native/independent-row-replay.tar.gz":                   "b826c9e069e000007cc1f3a7c5c137a2d5113cb51276b84ceec433636076ff02",
 			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.tar.gz":                             "034e39dba83ce13eaa4af01feb753bf4f2fe360551f49de40094573d7dd330cd",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz":                             "89d43f0bc3e8f0ed58393d8982bbd5f290739c9af1228683c5338c08efa36fb6",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar":         "dc58689a485ec1c37a85afef956c05d07f328e51062bd4112e14db20e669abae",

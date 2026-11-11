@@ -1746,6 +1746,10 @@ func TestPolicyRejectsInvalidUTF8OutsideDeclaredBinary(t *testing.T) {
 func TestDefaultPolicyBindsOriginalPublicReadbackReferences(t *testing.T) {
 	for _, name := range []string{
 		"tools/roundtrip/testdata/fresh-native/recipe-profile.json",
+		"tools/roundtrip/testdata/fresh-native/continuation-fields.json",
+		"tools/roundtrip/testdata/fresh-native/beads-1a75f7.git-tree",
+		"tools/roundtrip/testdata/fresh-native/beads-1a75f7.tar.gz",
+		"tools/roundtrip/testdata/fresh-native/independent-row-replay.tar.gz",
 		"tools/roundtrip/testdata/fresh-native/beads-ef3f15.tar.gz",
 		"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree",
 		"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz",
@@ -1798,7 +1802,7 @@ func TestDefaultPolicyBindsOriginalPublicReadbackReferences(t *testing.T) {
 					// Identifier terms apply to Go. A copied JSON profile must
 					// scan normally, and still refuse a product term, rather
 					// than inventing an identifier ban for JSON documents.
-					if filepath.Base(name) == "recipe-profile.json" && filepath.Ext(adjacent) == ".json" {
+					if filepath.Ext(name) == ".json" && filepath.Ext(adjacent) == ".json" {
 						probe, err := json.Marshal(map[string]any{"reference": json.RawMessage(content), "scan_control": cfg.Terms[1].Matches[0]})
 						if err != nil {
 							t.Fatal(err)

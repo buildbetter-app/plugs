@@ -36,38 +36,75 @@ type freshResult struct {
 	NativeContinuation    string    `json:"native_continuation"`
 	PlugRestore           string    `json:"plug_restore"`
 	PlugContinuation      string    `json:"plug_continuation"`
+	CaptureSHA256         string    `json:"capture_sha256,omitempty"`
+	RequestSHA256         string    `json:"request_sha256,omitempty"`
+	ConsumerELFSHA256     string    `json:"consumer_elf_sha256,omitempty"`
 }
 
-// The shared row route must supply its mode/lifecycle seam before dispatch.
-// This manual entrypoint currently reports the named dependencies without
-// building a producer, starting a native recipe, or opening a target.
+func freshGuard(t *testing.T) {
+	t.Helper()
+	for _, path := range []string{"/tmp/plug-swarm/STOP", "/tmp/plug-swarm/PAUSE"} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("fresh public recording stopped/paused")
+		}
+	}
+}
+
+// This entry remains explicitly selected. Only Full cases use the composed
+// row route; the other nine retain their original mode and dependency WAIT.
 func TestFreshSameRunIDStyleATwelveFixtures(t *testing.T) {
+	freshGuard(t)
+	selected := os.Getenv("PLUG_ID_STYLE_A_FRESH_RUN")
+	if selected == "" {
+		t.Skip("explicit fresh public native recording opt-in required")
+	}
+	if selected != "1" {
+		t.Fatal("invalid fresh recording opt-in")
+	}
 	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	parent, run := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), os.Getenv("GITHUB_RUN_ID")
 	if !filepath.IsAbs(parent) || run == "" || os.Getenv("TEST_TARGET") != "//tools/roundtrip:fresh_same_run_native_test" {
 		t.Fatal("explicit fresh recording target and actual run binding required")
 	}
-	if _, err := os.Lstat("/tmp/plug-swarm/PAUSE"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("fresh public recording paused")
-	}
-	root, err := os.MkdirTemp(parent, "fresh-id-style-a-route-gap-")
+	root, err := os.MkdirTemp(parent, "fresh-id-style-a-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var results []freshResult
-	for _, item := range freshNativeCases() {
-		t.Run(item.Engine+"/"+item.Name, func(t *testing.T) {
-			result := freshResult{Case: item, Status: "GAP", Gaps: []string{"GLUE_INTERFACE_GAP"}, NativeContinuation: "NOT_RUN", PlugRestore: "NOT_RUN", PlugContinuation: "NOT_RUN"}
-			if item.Mode != "full" {
-				result.Gaps = append(result.Gaps, "PRODUCT_MODE_GAP")
-			}
-			results = append(results, result)
-			freshJSON(t, filepath.Join(root, item.Engine+"-"+item.Name+".json"), result)
-			t.Logf("FRESH_SAME_RUN_CASE %s", freshJSONBytes(t, result))
-			t.Errorf("fresh route dependencies unsupplied; no case dispatched: %v", result.Gaps)
-		})
+	buildRoot := filepath.Join(root, "native-build")
+	if err := os.Mkdir(buildRoot, 0700); err != nil {
+		t.Fatal(err)
 	}
+	producer := freshBuildProducer(t, buildRoot)
+	consumer := freshRetainConsumer(t, buildRoot)
+	var results []freshResult
+	builder := publicnative.SourceBuilder{T: t, Root: buildRoot, SourceDirectory: "testdata/fresh-native", Target: publicNativeProtocolExporterLabel(t)}
+	builder.BuildWithSource(freshNativeSource, func(source publicnative.SourceSession) {
+		for _, item := range freshNativeCases() {
+			t.Run(item.Engine+"/"+item.Name, func(t *testing.T) {
+				result := freshResult{Case: item, Status: "NOT_RUN", Gaps: []string{}, NativeContinuation: "NOT_RUN", PlugRestore: "NOT_RUN", PlugContinuation: "NOT_RUN"}
+				defer func() {
+					if t.Failed() {
+						result.Status = "FAILED"
+					}
+					results = append(results, result)
+					freshJSON(t, filepath.Join(root, item.Engine+"-"+item.Name+".json"), result)
+					t.Logf("FRESH_SAME_RUN_CASE %s", freshJSONBytes(t, result))
+				}()
+				if item.Mode != "full" {
+					result.Status = "WAIT"
+					result.Gaps = []string{"LANDED_MODE_LAYER_AND_MATCHING_GLUE_REQUIRED"}
+					t.Skip("retained original mode awaits landed receiver mode and matching shared glue")
+				}
+				freshFullCase(t, root, source, item, producer, consumer, &result)
+			})
+		}
+	})
 	freshJSON(t, filepath.Join(root, "twelve-case-inventory.json"), results)
+	credit := 0
+	for _, result := range results {
+		credit += result.EqualityCredit
+	}
+	freshJSON(t, filepath.Join(root, "equality-census.json"), map[string]any{"total": 12, "equal": credit, "mode_wait": 9, "run_id": run, "scope": "three Full only; Partial and Snapshot retain modes"})
 	if len(results) != 12 {
 		t.Fatalf("fresh native census incomplete: %d/12", len(results))
 	}
@@ -197,8 +234,14 @@ func freshCommand(t *testing.T, evidence, label, dir, binary string, args, envir
 	}
 	// Retain only the explicit public environment, not inherited CI secrets.
 	publicEnv := []string{}
+	nativeEnv := map[string]bool{}
+	for _, value := range freshContinuationEnvironment(t) {
+		nativeEnv[value] = true
+	}
 	for _, value := range environment {
-		if strings.HasPrefix(value, "PATH=") || strings.HasPrefix(value, "BEADS_") || strings.HasPrefix(value, "HOME=") || strings.HasPrefix(value, "XDG_") || strings.HasPrefix(value, "GIT_CONFIG_NOSYSTEM=") {
+		if nativeEnv[value] || strings.HasPrefix(value, "PATH=") || strings.HasPrefix(value, "BEADS_") || strings.HasPrefix(value, "HOME=") || strings.HasPrefix(value, "XDG_") || strings.HasPrefix(value, "GIT_CONFIG_NOSYSTEM=") {
+			publicEnv = append(publicEnv, value)
+		} else if strings.HasPrefix(value, "PLUG_PUBLIC_PROOF_") || strings.HasPrefix(value, "PLUG_ID_STYLE_A_") || strings.HasPrefix(value, "GIT_AUTHOR_") || strings.HasPrefix(value, "GIT_COMMITTER_") || strings.HasPrefix(value, "GITHUB_RUN_ID=") {
 			publicEnv = append(publicEnv, value)
 		}
 	}
