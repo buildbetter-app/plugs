@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 
@@ -34,12 +35,16 @@ func (d *durableAccess) WorkflowCheckpointLifetime() driver.CheckpointLifetime {
 // ReadWorkflowRuntimeCheckpoint detaches active state and both publication
 // expectations from one real graph/namespace snapshot. Source origin validation
 // remains owned by the admitted-source adapter.
-func (d *durableAccess) ReadWorkflowRuntimeCheckpoint(ctx context.Context) (json.RawMessage, pluginapi.Revision, driver.CoreSnapshotExpectation, driver.CheckpointExpectation, error) {
+func (d *durableAccess) ReadWorkflowRuntimeCheckpoint(ctx context.Context) (logical json.RawMessage, revision pluginapi.Revision, head driver.CoreSnapshotExpectation, expectation driver.CheckpointExpectation, err error) {
+	defer func() {
+		if err != nil {
+			logical, revision = nil, ""
+			head, expectation = driver.CoreSnapshotExpectation{}, driver.CheckpointExpectation{}
+		}
+	}()
 	if d.source != nil {
 		return d.ReadSourceRuntimeCheckpoint(ctx)
 	}
-	var head driver.CoreSnapshotExpectation
-	var expectation driver.CheckpointExpectation
 	if err := d.available(ctx); err != nil {
 		return nil, "", head, expectation, err
 	}
@@ -61,7 +66,7 @@ func (d *durableAccess) ReadWorkflowRuntimeCheckpoint(ctx context.Context) (json
 	if err != nil {
 		return nil, "", head, expectation, err
 	}
-	defer r.Close()
+	defer func() { err = errors.Join(err, r.Close()) }()
 	view := r.Snapshot()
 	if view.At == nil || view.Incarnation != meta.Incarnation || !view.Branch.IsZero() {
 		return nil, "", head, expectation, driver.ErrCheckpointConflict
