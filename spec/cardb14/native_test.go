@@ -40,6 +40,7 @@ type b14NativeIssue struct {
 	Timeout   int64    `json:"timeout"`
 	Waiters   []string `json:"waiters"`
 	Template  bool     `json:"is_template"`
+	Ephemeral bool     `json:"ephemeral"`
 }
 
 func b14JSON(t *testing.T, path string, value any) {
@@ -204,7 +205,8 @@ func (n *b14Native) create(id, typ string, fields map[string]any) b14NativeIssue
 		n.t.Fatal(err)
 	}
 	var issue b14NativeIssue
-	if json.Unmarshal(n.http("create-"+id, http.MethodPost, "/v0/beads/issues", raw, http.StatusOK), &issue) != nil || issue.ID != id || issue.Type != typ {
+	ephemeral, _ := fields["ephemeral"].(bool)
+	if json.Unmarshal(n.http("create-"+id, http.MethodPost, "/v0/beads/issues", raw, http.StatusOK), &issue) != nil || issue.ID != id || issue.Type != typ || issue.Ephemeral != ephemeral {
 		n.t.Fatal("native create did not return the stored identity/type")
 	}
 	return issue
@@ -279,12 +281,14 @@ func TestB14CanonicalNativeDefaultAndWaitsCounterparts(t *testing.T) {
 	mixed.mixedGatesAndWaits()
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			plug := b14Public(t, engine)
-			if !reflect.DeepEqual(plug, native) {
-				t.Fatalf("paired default/list/waiter/ready projections differ: Plug=%+v native=%+v", plug, native)
-			}
-			b14JSON(t, filepath.Join(root, "paired-"+engine+".json"), map[string]any{"native": native, "plug": plug, "oracle": "cases_test.go independent literals", "native_history": "current SQL readback and server reopen; Plug history separately asserted"})
-			b14MixedPublic(t, engine)
+			t.Run("ordinary", func(t *testing.T) {
+				plug := b14Public(t, engine)
+				if !reflect.DeepEqual(plug, native) {
+					t.Fatalf("paired default/list/waiter/ready projections differ: Plug=%+v native=%+v", plug, native)
+				}
+				b14JSON(t, filepath.Join(root, "paired-"+engine+".json"), map[string]any{"native": native, "plug": plug, "oracle": "cases_test.go independent literals", "native_history": "current SQL readback and server reopen; Plug history separately asserted"})
+			})
+			t.Run("mixed", func(t *testing.T) { b14MixedPublic(t, engine) })
 		})
 	}
 }
@@ -490,6 +494,25 @@ func (n *b14Native) mixedGatesAndWaits() {
 		return ids
 	}
 	checkList := func() {
+		for _, id := range []string{"b14-mixed-active", "b14-mixed-closed", "b14-mixed-low", "b14-mixed-notgate"} {
+			if !n.get(id).Ephemeral {
+				n.t.Fatal("native readback lost the actual ephemeral plane", id)
+			}
+		}
+		if n.get("b14-mixed-durable").Ephemeral {
+			n.t.Fatal("native durable gate was moved to the ephemeral plane")
+		}
+		rows := n.sql("mixed-physical-plane-membership", "SELECT 'durable' AS plane,id FROM issues WHERE id LIKE 'b14-mixed-%' AND issue_type='gate' UNION ALL SELECT 'ephemeral' AS plane,id FROM wisps WHERE id LIKE 'b14-mixed-%' AND issue_type='gate' ORDER BY id")
+		want := map[string]string{"b14-mixed-active": "ephemeral", "b14-mixed-closed": "ephemeral", "b14-mixed-durable": "durable", "b14-mixed-low": "ephemeral"}
+		if len(rows) != len(want) {
+			n.t.Fatal("native mixed physical gate row inventory differs", rows)
+		}
+		for _, row := range rows {
+			var id, plane string
+			if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["plane"], &plane) != nil || want[id] != plane {
+				n.t.Fatal("native mixed physical gate plane differs", row)
+			}
+		}
 		if got := list(false); !reflect.DeepEqual(got, []string{"b14-mixed-active", "b14-mixed-durable", "b14-mixed-low"}) {
 			n.t.Fatal("native mixed default order/membership differs", got)
 		}

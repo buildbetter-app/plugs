@@ -5,6 +5,7 @@ DEPS = [
     "//internal/core/pipeline",
     "//internal/integration/b07positive",
     "//internal/integration/b07positive/public",
+    "//internal/server/pluginhost",
     "//internal/storage/driver",
     "//plugins/workflow",
 ]

@@ -8,6 +8,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	proof "github.com/buildbetter-app/plugs/internal/integration/b07positive"
 	public "github.com/buildbetter-app/plugs/internal/integration/b07positive/public"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflow "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -22,7 +23,15 @@ func b14MixedPublic(t *testing.T, engine string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	persistence, ok := capability.(driver.PersistentCheckpointStore)
+	// The selected memory Store deliberately has no restart-persistence
+	// marker. Ask the production workflow-state adapter bound to that exact
+	// capability/lease for its actual Persistent() result, without installing
+	// another provider or writing a checkpoint.
+	state, err := pluginhost.NewWorkflowRuntimeState(capability, h.Runtime.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistence, ok := state.(interface{ Persistent() bool })
 	if !ok {
 		t.Fatal("selected workflow checkpoint has no explicit persistence marker")
 	}
@@ -195,21 +204,25 @@ func b14MixedPublic(t *testing.T, engine string) {
 		call("bead.close", map[string]any{"id": ref}, "")
 	}
 	check(4)
-	for _, plane := range [][]model.Ref{durableWaiters, workflowWaiters} {
-		for _, ref := range plane {
+	for _, plane := range []struct {
+		Refs                        []model.Ref
+		Status, Kind, Plane, Plugin string
+	}{
+		{Refs: durableWaiters, Status: "done"},
+		{Refs: workflowWaiters, Status: "closed", Kind: workflow.ItemKind, Plane: "ephemeral", Plugin: workflow.Alias},
+	} {
+		for _, ref := range plane.Refs {
 			call("bead.close", map[string]any{"id": ref}, "")
 			bead := get(ref)
-			want := "done"
-			if bead["kind"] == workflow.ItemKind {
-				want = "closed"
-			}
-			if bead["status"] != want {
+			kind, _ := bead["kind"].(string)
+			actualPlane, _ := bead["plane"].(string)
+			plugin, _ := bead["plugin"].(string)
+			if bead["status"] != plane.Status || kind != plane.Kind || actualPlane != plane.Plane || plugin != plane.Plugin || bead["type"] != "issue" || bead["id"] != ref.ID {
 				t.Fatal("admitted mixed waits-for close did not commit its exact plane status")
 			}
 		}
 	}
 	// Record the complete original checkpoint/SQL images as well as public
 	// request/responses. Memory has only this process-lifetime terminal image.
-	state := h.Capture()
-	proof.Save(t, h.Root, "b14-mixed-terminal.json", state)
+	proof.Save(t, h.Root, "b14-mixed-terminal.json", h.Capture())
 }
