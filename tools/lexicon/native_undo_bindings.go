@@ -2,10 +2,14 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
-	// One exact B16 native table literal; every other byte still scans.
+	// Three exact B16 native SQL literals; every other byte still scans.
 	"spec/cardb16/native_reference_test.go": {
 		{name: "labels", kind: "func", contextSHA256: "a17980f3183a89fde555fcdd62832eb73c6ac86aaa2ac76e43728368ab5c79c9", literals: map[int]string{
 			370: "2651723e5b0e7e98fb0a8d09ea1af6d358e7a54df1857e2111f158850c876356",
+		}},
+		{name: "TestB16CanonicalNativePublicLabels", kind: "func", contextSHA256: "c1cdd9a41ecc65d1c9f331a13ffaad71bf7340328de1b969a34bbbaa7de81741", literals: map[int]string{
+			3083: "fe007b32a755efce7035137332caa315deb0c1af4f11e7c6399ef4f0fa545ba4",
+			3221: "2648370bbc22de08c7e7dbdd1e7a78c76e85e8262a3bb5c8259ba8cc9e6544b2",
 		}},
 	},
 	// Canonical native refusal text at one exact B06 assertion site. The

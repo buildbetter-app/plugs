@@ -162,6 +162,29 @@ func (f *b16Host) query(query string, want []string) {
     var count struct{Count json.Number `json:"count"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition,"countOnly":true},false,""),&count)
     b16Equal(f.t,string(count.Count),fmt.Sprint(len(want)));b16Equal(f.t,f.meta(),before)
 }
+// Active membership uses the admitted structured ready filter. Ordinary view
+// counts remain a separate qualification; this does not invent active counts.
+func (f *b16Host) readyLabels(filter map[string]any, want []string) {
+    f.t.Helper(); before:=f.meta()
+    var result struct {Items []struct{ID string `json:"id"`} `json:"items"`; NextCursor any `json:"nextCursor"`}
+    b16Decode(f.t,f.call("bead.ready",map[string]any{"filter":filter,"limit":1000},false,""),&result)
+    got:=[]string{};for _,item:=range result.Items{got=append(got,item.ID)};sort.Strings(got)
+    expected:=append([]string{},want...);sort.Strings(expected);b16Equal(f.t,got,expected)
+    if result.NextCursor!=nil {f.t.Fatal("bounded ready label set unexpectedly paged")}
+    paged:=[]string{};seen:=map[string]bool{};var cursor any
+    for page:=0; ;page++ {
+        if page>len(want)+1 {f.t.Fatal("ready label continuation did not terminate")}
+        params:=map[string]any{"filter":filter,"limit":2};if cursor!=nil {params["cursor"]=cursor}
+        var next struct {Items []struct{ID string `json:"id"`} `json:"items"`; NextCursor any `json:"nextCursor"`}
+        b16Decode(f.t,f.call("bead.ready",params,false,""),&next)
+        if len(next.Items)>2 {f.t.Fatal("ready label page exceeds requested bound")}
+        for _,item:=range next.Items {if seen[item.ID] {f.t.Fatalf("repeated filtered ready item %q",item.ID)};seen[item.ID]=true;paged=append(paged,item.ID)}
+        cursor=next.NextCursor;if cursor==nil {break}
+        if _,ok:=cursor.(string);!ok {f.t.Fatal("ready label cursor is not a string")}
+    }
+    sort.Strings(paged);b16Equal(f.t,paged,expected);b16Equal(f.t,f.meta(),before)
+}
+
 func (f *b16Host) reopen(check func()) {
     f.t.Helper();if f.engine=="memory"{check();return};before:=f.meta();f.close();f.open();b16Equal(f.t,f.meta(),before);check();f.t.Logf("actual %s SQL close/reopen exact label readback",f.engine)
 }

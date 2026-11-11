@@ -116,13 +116,15 @@ func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
 	request := map[string]any{"template":"b16-labels", "project":b16Project, "mode":"ephemeral", "checklist":[]map[string]any{
 		{"label":"rename", "title":"active rename", "type":"issue", "fields":map[string]any{"marker":"preserved"}, "labels":[]string{"z","a","A","internal space","東京","é","a",""}},
 		{"label":"merge", "title":"active merge", "type":"issue", "labels":[]string{"old","new"}},
+		{"label":"destination", "title":"active destination", "type":"issue", "labels":[]string{"new"}},
+		{"label":"empty", "title":"active empty", "type":"issue", "labels":[]string{"",""}},
 	}}
 	var created struct { Items []struct { ID string `json:"id"` } `json:"items"` }
 	b16Decode(t,f.call("x.workflow.invoke",request,true,""),&created)
-	b16Equal(t,len(created.Items),2)
-	a,b := created.Items[0].ID,created.Items[1].ID
+	b16Equal(t,len(created.Items),4)
+	a,b,c,e := created.Items[0].ID,created.Items[1].ID,created.Items[2].ID,created.Items[3].ID
 	f.labels(a,b16Initial)
-	f.labels(b,[]string{"new","old"})
+	f.labels(b,[]string{"new","old"}); f.labels(c,[]string{"new"}); f.labels(e,[]string{})
 	_,original := f.get(a)
 	preservedFields := original["fields"]
 	b16Equal(t,preservedFields.(map[string]any)["marker"],"preserved")
@@ -154,6 +156,7 @@ func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
 		f.call("bead.update",map[string]any{"id":b16Ref(a),"fields":map[string]any{"title":"must not publish","labels":[]string{"lost",strings.Repeat("界",256)}}},true,"invalid_params")
 		_,refused:=f.get(a); b16Equal(t,refused,bounded); b16Equal(t,f.meta(),meta)
 		f.update(a,[]string{"Red","red"}); f.labels(a,[]string{"Red","red"})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"red"}},[]string{a});f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"Red"}},[]string{a})
 		var caseCommit model.Commit
 		b16Decode(t,f.call("tx.apply",map[string]any{"changeSet":map[string]any{"ops":[]any{map[string]any{"kind":"patch","target":b16Ref(a),"fields":map[string]any{"labels":[]string{"Red","blue"}}}}}},true,""),&caseCommit)
 		b16Equal(t,len(caseCommit.Results),1);b16Equal(t,caseCommit.Results[0].Ref.ID,a);f.labels(a,[]string{"Red","blue"})
@@ -163,6 +166,18 @@ func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
 
 	d1:=f.create("rename",[]string{"Old","old","new","side"})
 	d2:=f.create("merge",[]string{"old","new"})
+	d3:=f.create("destination",[]string{"new"});d4:=f.create("empty",[]string{})
+	t.Run("active_and_durable_all_any_exclude_case_membership",func(t *testing.T){
+		prior:=f.t;f.t=t;defer func(){f.t=prior}()
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"old"}},[]string{a,b,d1,d2})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"Old"}},[]string{a,d1})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"old","new"}},[]string{b,d1,d2})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labelsAny":[]string{"old","new"}},[]string{a,b,c,d1,d2,d3})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"old"},"excludeLabels":[]string{"side"}},[]string{b,d2})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"excludeLabels":[]string{"old","side","added",strings.Repeat("界",255)}},[]string{c,e,d3,d4})
+		f.readyLabels(map[string]any{"includeEphemeral":false,"labels":[]string{"old"}},[]string{d1,d2})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labelsAny":[]string{"unknown"}},[]string{})
+	})
 	selected:=[]string{a,b,d1,d2}
 	before:=map[string][]string{}
 	beforeBeads:=map[string]map[string]any{}
@@ -198,6 +213,11 @@ func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
 	check:=func() {
 		for name,id:=range names { f.labels(id,want[name]) }
 		_,value:=f.get(a); b16Equal(t,value["fields"],preservedFields)
+		f.labels(c,[]string{"new"});f.labels(e,[]string{});f.labels(d3,[]string{"new"});f.labels(d4,[]string{})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"old"}},[]string{})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"new"}},[]string{a,b,c,d1,d2,d3})
+		f.readyLabels(map[string]any{"includeEphemeral":true,"labels":[]string{"Old"}},[]string{a,d1})
+		f.readyLabels(map[string]any{"includeEphemeral":false,"labels":[]string{"new"}},[]string{d1,d2,d3})
 	}
 	check(); f.reopen(check)
 	final:=map[string][]string{}

@@ -39,8 +39,8 @@ func (n *b16Native) labels(label,id string,want []string) []string {
     physical:=n.sql(label+"-physical","SELECT label FROM "+table+" WHERE issue_id = '"+id+"' ORDER BY label")
     stored:=[]string{};for _,row:=range physical{value,ok:=row["label"].(string);if !ok{n.t.Fatal("native label SQL scalar type")};stored=append(stored,value)};b16Equal(n.t,stored,want);return got
 }
-func (n *b16Native) create(id,title string,labels []string,wisp bool) {
-    args:=[]string{"--json","create","--id",id,"--title",title,"--type","task"};if len(labels)>0{args=append(args,"--labels",strings.Join(labels,","))};if wisp{args=append(args,"--ephemeral")};n.command("create-"+id,false,args...)
+func (n *b16Native) create(id,title string,labels []string,ephemeral bool) {
+    args:=[]string{"--json","create","--id",id,"--title",title,"--type","task"};if len(labels)>0{args=append(args,"--labels",strings.Join(labels,","))};if ephemeral{args=append(args,"--ephemeral")};n.command("create-"+id,false,args...)
 }
 func (n *b16Native) query(label string,want []string,args ...string) {
     n.t.Helper();base:=[]string{"--json","list","--all","--limit","0"};base=append(base,args...);var rows []map[string]any;b16Decode(n.t,n.command("query-"+label,false,base...),&rows)
@@ -71,7 +71,7 @@ func TestB16CanonicalNativePublicLabels(t *testing.T) {
     n.command("init",false,"init","--server","--external","--server-host","127.0.0.1","--server-port",strconv.Itoa(server.Port),"--database","b16_labels","--prefix","b16","--skip-hooks","--skip-agents","--non-interactive","--quiet");server.RequireDatabaseDir(t,"b16_labels")
     // Preserve the actual SQL schema and collation rather than assuming Go
     // ordering proves the native SQL comparison behavior.
-    n.sql("native-label-schema","SHOW CREATE TABLE labels");n.sql("native-wisp-label-schema","SHOW CREATE TABLE wisp_labels");n.sql("native-label-collation","SHOW FULL COLUMNS FROM labels");n.sql("native-wisp-label-collation","SHOW FULL COLUMNS FROM wisp_labels")
+    n.sql("native-label-schema","SHOW CREATE TABLE labels");n.sql("native-ephemeral-label-schema","SHOW CREATE TABLE wisp_labels");n.sql("native-label-collation","SHOW FULL COLUMNS FROM labels");n.sql("native-ephemeral-label-collation","SHOW FULL COLUMNS FROM wisp_labels")
     n.create("b16-state","state",[]string{"z","a","A","internal space","東京","é","a",""},false)
     initial:=n.labels("initial","b16-state",b16Initial)
     n.command("add",false,"--json","label","add","b16-state","added,added,");n.labels("added","b16-state",[]string{"A","a","added","internal space","z","é","東京"})
@@ -103,15 +103,27 @@ func TestB16CanonicalNativePublicLabels(t *testing.T) {
     n.rename("active-red-case-rename","red","blue",1,0);n.labels("active-red-case-after","b16-w1",[]string{"Red","blue"})
     n.command("active-reset",false,"--json","update","b16-w1","--set-labels","Old,old,side")
     n.create("b16-w2","active merge",[]string{"old","new"},true)
-    n.labels("wisp-initial-one","b16-w1",[]string{"Old","old","side"});n.labels("wisp-initial-two","b16-w2",[]string{"new","old"})
+    n.labels("ephemeral-initial-one","b16-w1",[]string{"Old","old","side"});n.labels("ephemeral-initial-two","b16-w2",[]string{"new","old"})
     n.query("both-planes",[]string{"rename","merge","active rename","active merge"},"--include-ephemeral","--label","old")
+    n.create("b16-w3","active destination",[]string{"new"},true);n.create("b16-w4","active empty",nil,true)
+    n.query("mixed-case",[]string{"rename","active rename"},"--include-ephemeral","--label","Old")
+    n.query("mixed-all",[]string{"merge","rename","active merge"},"--include-ephemeral","--label","old,new")
+    n.query("mixed-any",[]string{"rename","merge","destination","active rename","active merge","active destination"},"--include-ephemeral","--label-any","old,new")
+    n.query("mixed-conjunction",[]string{"merge","active merge"},"--include-ephemeral","--label","old","--exclude-label","side")
+    n.query("mixed-exclude",[]string{"destination","empty","active destination","active empty"},"--include-ephemeral","--exclude-label","old,side,added,"+max)
+    n.query("mixed-durable-only",[]string{"rename","merge"},"--label","old")
+    n.query("mixed-unknown",[]string{},"--include-ephemeral","--label-any","unknown")
     mixedCounts:=n.rename("two-plane-rename","old","new",4,3)
     mixed:=b16MixedOutcome{Counts:mixedCounts,Final:map[string][]string{
-        "active rename":n.labels("wisp-renamed","b16-w1",[]string{"Old","new","side"}),
-        "active merge":n.labels("wisp-merged","b16-w2",[]string{"new"}),
+        "active rename":n.labels("ephemeral-renamed","b16-w1",[]string{"Old","new","side"}),
+        "active merge":n.labels("ephemeral-merged","b16-w2",[]string{"new"}),
         "rename":n.labels("durable-two-plane-one","b16-d1",[]string{"Old","new","side"}),
         "merge":n.labels("durable-two-plane-two","b16-d2",[]string{"new"}),
     }}
+    n.query("mixed-after-old",[]string{},"--include-ephemeral","--label","old")
+    n.query("mixed-after-new",[]string{"rename","merge","destination","active rename","active merge","active destination"},"--include-ephemeral","--label","new")
+    n.query("mixed-after-case",[]string{"rename","active rename"},"--include-ephemeral","--label","Old")
+    n.query("mixed-after-durable-only",[]string{"rename","merge","destination"},"--label","new")
     r.writeJSON(filepath.Join(root,"b16-native-mixed-outcome.json"),mixed)
     for _,engine:=range []string{"memory","sqlite","postgres"}{t.Run("paired-"+engine,func(t *testing.T){
         t.Run("durable",func(t *testing.T){got:=b16DurableVector(t,engine);b16Equal(t,got,outcome)})

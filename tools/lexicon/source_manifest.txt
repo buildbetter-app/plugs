@@ -449,6 +449,7 @@ internal/core/service/reads.go
 internal/core/service/ready_order.go
 internal/core/service/rollback_window_test.go
 internal/core/service/rpc_reads.go
+internal/core/service/selection_filters.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/source_workflow.go

@@ -43,6 +43,10 @@ the stale refusal wording in workflow-contract.md:57-65 and the former
 classification of the original 45ca memory leaf. Historical originals remain
 unchanged. Active ready label filters consume B04's separately owned additive
 Filter seam; ordinary view countOnly remains an ordinary-set proof.
+The filter leaf compares actual ready IDs for all/any/exclude conjunctions,
+case and selected planes before and after rename, then repeats each through
+two-item pages with no missing or repeated member. Native public list calls
+retain separately literal membership expectations for the same label sets.
 Receiver036 granted only the labels-only no-op Provider.Update hunk to B16.
 This child changes no receiver, history, producer, allocator or protected seam.
 
