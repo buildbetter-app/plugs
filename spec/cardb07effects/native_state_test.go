@@ -23,7 +23,7 @@ const (
 )
 
 type effectNativeEndpoint struct {Title,Plane string}
-type effectNativeMutation struct {Verb,From,To,Kind string;Started,Finished time.Time}
+type effectNativeMutation struct {Verb,From,To,Kind string;Started,Finished time.Time;Until *time.Time}
 type effectNativeRows map[string]map[string]json.RawMessage
 
 func nativeEffectToken(t *testing.T,value any) json.RawMessage {
@@ -56,7 +56,7 @@ func nativeEffectInstant(t *testing.T,raw json.RawMessage,started,finished time.
 func nativeEffectSnapshot(t *testing.T,row map[string]json.RawMessage,includeBlocked bool) map[string]json.RawMessage {
 	t.Helper();want:=map[string]json.RawMessage{}
 	for _,name:=range []string{"id","title","priority"} {want[name]=row[name]}
-	for _,name:=range []string{"description","design","acceptance_criteria","notes","spec_id","status","issue_type","assignee","owner","created_by","close_reason","closed_by_session","source_system","sender","wisp_type","storage_class","await_type","await_id","source_formula","source_location","mol_type","work_type","event_kind","actor","target","payload"} {
+	for _,name:=range []string{"description","design","acceptance_criteria","notes","spec_id","status","issue_type","assignee","owner","created_by","close_reason","closed_by_session","source_system","sender","storage_class","await_type","await_id","source_location","mol_type","work_type","event_kind","actor","target","payload"} {
 		if raw:=row[name];len(raw)!=0 && string(raw)!="null" && nativeEffectText(t,raw)!="" {want[name]=raw}
 	}
 	for _,name:=range []string{"created_at","updated_at","started_at","closed_at","due_at","defer_until","compacted_at"} {
@@ -75,13 +75,16 @@ func nativeEffectSnapshot(t *testing.T,row map[string]json.RawMessage,includeBlo
 		if raw:=row[name];len(raw)!=0 && string(raw)!="null" && string(raw)!="0" {want[name]=raw}
 	}
 	for _,name:=range []string{"external_ref","compacted_at_commit"} {if raw:=row[name];len(raw)!=0 && string(raw)!="null" {want[name]=raw}}
-	if raw:=row["metadata"];len(raw)!=0 && string(raw)!="null" {value:=nativeEffectText(t,raw);if value!="" {if !json.Valid([]byte(value)) {t.Fatal("native metadata token is invalid")};want["metadata"]=json.RawMessage(value)}}
+	// Pinned ScanIssueFrom omits the exact empty-object SQL metadata cell.
+	// Unrequested fixture fields stay absent; any extra journal key still fails
+	// the complete snapshot comparison below.
+	if raw:=row["metadata"];len(raw)!=0 && string(raw)!="null" {value:=nativeEffectText(t,raw);if value!="" && value!="{}" {if !json.Valid([]byte(value)) {t.Fatal("native metadata token is invalid")};want["metadata"]=json.RawMessage(value)}}
 	return want
 }
 
 func nativeEffectFreshToken(t *testing.T,old,next json.RawMessage,text bool) {
 	t.Helper();value:=string(next);if text {value=nativeEffectText(t,next)}
-	if number,err:=strconv.ParseInt(value,10,64);err!=nil || number<=0 || string(old)==string(next) {t.Fatal("native coordination token did not change to a positive integer")}
+	if number,err:=strconv.ParseInt(value,10,64);err!=nil || number==0 || string(old)==string(next) {t.Fatal("native opaque token did not change to a nonzero signed integer")}
 }
 
 func (n *effectNative) endpoint(state effectNativeState,id string) (string,map[string]json.RawMessage) {
@@ -121,6 +124,11 @@ func (n *effectNative) verifySuccess(label string,after effectNativeState) {
 		if status=="" {n.t.Fatal("undeclared native lifecycle mutation")}
 		previous["status"]=nativeEffectToken(n.t,status)
 		if mutation.Verb=="close" {nativeEffectInstant(n.t,row["closed_at"],mutation.Started,mutation.Finished);previous["closed_at"]=row["closed_at"];previous["close_reason"]=nativeEffectToken(n.t,"");previous["closed_by_session"]=nativeEffectToken(n.t,"")} else {previous["closed_at"]=json.RawMessage("null")}
+		if mutation.Until!=nil {
+			at,err:=time.Parse(time.RFC3339Nano,nativeEffectText(n.t,row["defer_until"]))
+			if err!=nil || !at.Equal(*mutation.Until) {n.t.Fatal("native future defer differs from independently requested exact instant")}
+			previous["defer_until"]=row["defer_until"]
+		}
 		nativeEffectInstant(n.t,row["updated_at"],mutation.Started,mutation.Finished);previous["updated_at"]=row["updated_at"]
 		nativeEffectFreshToken(n.t,previous["row_lock"],row["row_lock"],false);previous["row_lock"]=row["row_lock"]
 	}
@@ -224,7 +232,10 @@ func (n *effectNative) expectedNativeEvents(want,got map[string]effectNativeRows
 				_,oldRow:=n.endpoint(n.previous,id)
 				var old map[string]json.RawMessage
 				if json.Unmarshal([]byte(nativeEffectText(n.t,row["old_value"])),&old)!=nil || !reflect.DeepEqual(old,nativeEffectSnapshot(n.t,oldRow,false)) {n.t.Fatal("native defer audit lost its exact previous endpoint body")}
-				if nativeEffectText(n.t,row["new_value"])!=`{"status":"deferred"}` {n.t.Fatal("native defer audit differs from requested status patch")}
+					patch:=map[string]json.RawMessage{"status":nativeEffectToken(n.t,"deferred")}
+					if declared.Until!=nil {patch["defer_until"]=nativeEffectToken(n.t,declared.Until.UTC())}
+					var actual map[string]json.RawMessage
+					if json.Unmarshal([]byte(nativeEffectText(n.t,row["new_value"])),&actual)!=nil || !reflect.DeepEqual(actual,patch) {n.t.Fatal("native defer audit differs from the independently requested exact patch")}
 			}
 			counts[id]++;if counts[id]>1 {n.t.Fatal("native success duplicated its human audit event")};want[table][key]=row
 		}

@@ -269,6 +269,14 @@ no custom kind changes kernel readiness or guards. Conditional outcome semantics
 change per B02. Formulas/molecules that create these graphs become a workflow
 plugin (P48), not core behavior.
 
+Public parent-child writes to an explicit `external:` capability target are
+refused without state changes, matching Beads; bare cross-prefix references
+remain accepted as unresolved, and imported-edge reads are unchanged. Parent
+defer is a named difference: Plug's deferred category suppresses descendants
+without an `until`, compared with Beads's future-`until` suppression. Beads's
+indefinite defer leaves children ready and is recorded as a separate native
+control (orchestrator ruling 2026-11-11 18:46Z).
+
 ## B08 — close guards and lifecycle settlement
 
 **Behavior.** Closing is transactional and refuses templates, pinned beads,

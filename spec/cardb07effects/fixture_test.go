@@ -66,7 +66,7 @@ func effectRead(t *testing.T, h *publicproof.Host, ref model.Ref) effectView {
 
 func effectReady(t *testing.T, h *publicproof.Host, roles map[string]string) []string {
 	t.Helper()
-	r := h.Call("bead.ready", "ready", map[string]any{"includeEphemeral": true, "limit": 128}, "")
+	r := h.Call("bead.ready", "ready", map[string]any{"filter":map[string]any{"includeEphemeral":true}, "limit": 128}, "")
 	var page struct {
 		Items []struct{ ID string }
 		NextCursor string

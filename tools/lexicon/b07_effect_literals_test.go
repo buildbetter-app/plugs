@@ -14,7 +14,7 @@ func b07ActualEffectFile(t *testing.T) (string, Config, []goStringLiteral) {
 	if !filepath.IsAbs(root) { t.Fatal("remote source module root is required") }
 	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(b07EffectSource)))
 	if err != nil { t.Fatal(err) }
-	if protocolLiteralDigest(string(content)) != "7ca078127824fcec5fdf64212075946332ad71c23059313c3bbd56af2180d8c6" { t.Fatal("actual consumer differs from the immutable reviewed postimage") }
+	if protocolLiteralDigest(string(content)) != "878da4c31fa48c1f5be98ef9efaa0d46e456bf2230fac2ee50dcc6c9d3cf3d0c" { t.Fatal("actual consumer differs from the immutable reviewed postimage") }
 	literals := []goStringLiteral{}
 	for _, site := range b07EffectSites() {
 		for _, literal := range goStringLiterals(b07EffectSource, content) {
@@ -120,9 +120,18 @@ func TestB07EffectKeepsResidualsAndImportsVisible(t *testing.T) {
 					if strings.Contains(name,"comment") && len(b07EffectLiteralOffsets(b07EffectSource,[]byte(content))) != 6 {t.Fatal("comment altered the six original nodes")}
 					findings,err:=CheckFiles(map[string][]byte{b07EffectSource:[]byte(content)},Config{Terms:[]Term{{Class:class,Matches:[]string{literal.value}}}})
 					if err!=nil || hasFindingClass(findings,"invalid-go") {t.Fatalf("invalid residual control: %v %v",findings,err)}
-					found:=false
-					for _,finding:=range findings {if finding.Class==class && (finding.Line==strings.Count(source,"\n")+1 || class=="product-term" && (name=="copy" || name=="encoded")) {found=true}}
-					if !found {t.Fatal("residual node stopped scanning",class,name)}
+					wantLines:=[]int{strings.Count(source,"\n")+1}
+					if name=="copy" || name=="encoded" {
+						if len(b07EffectLiteralOffsets(b07EffectSource,[]byte(content)))!=0 {t.Fatal("copied decoded value retained any admission")}
+						// A duplicate revokes all six admissions. The shared
+						// scanner then uses its existing raw-string fallback:
+						// the original node is reported, with a second raw
+						// identifier finding only for an unescaped copy.
+						wantLines=[]int{literal.line}
+						if class=="identifier" && name=="copy" {wantLines=append(wantLines,strings.Count(source,"\n")+1)}
+					}
+					if len(findings)!=len(wantLines) {t.Fatalf("residual count differs from existing scanner policy: %s/%s got %v want lines %v",class,name,findings,wantLines)}
+					for i,finding:=range findings {if finding.Class!=class || finding.Line!=wantLines[i] || finding.Term!=literal.value {t.Fatalf("residual finding differs from existing scanner policy: got %v want lines %v",findings,wantLines)}}
 				})
 			}
 		}

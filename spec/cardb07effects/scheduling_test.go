@@ -111,6 +111,24 @@ func effectExternalPublic(t *testing.T, engine string) {
 				proof.Same(t,before,h.Capture())
 				metadata := &model.LinkMetadata{NativeExtensions:map[string]string{"beads.metadata":`" {\"external\":true} "`,"beads.thread_id":`"external thread"`}}
 				params := map[string]any{"from":source,"to":target,"targetKind":"external","kind":kind,"metadata":metadata}
+				if targetCase=="explicit-capability" && kind=="parent-child" {
+					// The capability restriction is a public write rule, shared by
+					// the named verb and generic changeset. It does not reinterpret
+					// imported external edges or bare differently-prefixed IDs.
+					before:=h.Capture()
+					change:=model.ChangeSet{Ops:[]model.Op{{Kind:model.OpLink,Link:&model.LinkOp{Kind:model.OpLink,From:source,To:target,TargetKind:model.LinkTargetExternal,LinkKind:kind,Metadata:metadata}}}}
+					for _,operation:=range []struct{method string;params map[string]any}{{"bead.link",params},{"tx.apply",map[string]any{"changeSet":change}}} {
+						h.Call(operation.method,"capability-parent-refused-"+operation.method,operation.params,"invalid_params")
+						proof.Same(t,before,h.Capture())
+						effectReopen(t,h)
+						proof.Same(t,before,h.Capture())
+						h.Call(operation.method,"capability-parent-refused-after-reopen-"+operation.method,operation.params,"invalid_params")
+						proof.Same(t,before,h.Capture())
+					}
+					effectAssertStep(t,h,roles,c,"capability-parent-refused",source,baseline,false)
+					proof.Save(t,h.Root,"external-contract.json",map[string]any{"targetCase":targetCase,"target":target,"kind":kind,"write":"invalid_params with no state change","native":"batch_error with no state change","ruling":"2026-11-11 18:46Z"})
+					return
+				}
 				effectCall(t,h,"bead.link","external-link",params,[]model.Ref{source},nil)
 				effectLink(t,h,source,target,kind,metadata)
 				image := h.Capture()

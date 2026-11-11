@@ -60,7 +60,14 @@ func (n *effectNative) command(label string, fail bool, args ...string) []byte {
 	r := &nativeRecorder{t:n.t,root:n.root}
 	r.writeJSON(stem+".request.json",map[string]any{"argv":cmd.Args,"directory":cmd.Dir,"environment":cmd.Env,"exit":code,"error":fmt.Sprint(err),"stdout_sha256":hashBytes(out.Bytes()),"stderr_sha256":hashBytes(stderr.Bytes())})
 	if ctx.Err() != nil || code < 0 || (!fail && code != 0) || (fail && code != 1) { n.t.Fatalf("native %s exit=%d error=%v stdout=%s stderr=%s",label,code,err,out.Bytes(),stderr.Bytes()) }
-	if !fail && len(requestArgs)>1 && (requestArgs[0]=="close" || requestArgs[0]=="reopen" || requestArgs[0]=="defer") {n.pending=append(n.pending,effectNativeMutation{Verb:requestArgs[0],From:requestArgs[1],Started:started,Finished:finished})}
+	if !fail && len(requestArgs)>1 && (requestArgs[0]=="close" || requestArgs[0]=="reopen" || requestArgs[0]=="defer") {
+		mutation:=effectNativeMutation{Verb:requestArgs[0],From:requestArgs[1],Started:started,Finished:finished}
+		for i,arg:=range requestArgs {if arg=="--until" {
+			if mutation.Verb!="defer" || i+1>=len(requestArgs) {n.t.Fatal("undeclared native until request")}
+			until,err:=time.Parse(time.RFC3339,requestArgs[i+1]);if err!=nil {n.t.Fatal(err)};mutation.Until=&until
+		}}
+		n.pending=append(n.pending,mutation)
+	}
 	return out.Bytes()
 }
 
@@ -321,7 +328,9 @@ func (n *effectNative) parentSequence(route string) []effectStep {
 	n.batch("unlink-parent-blocker","dep remove "+parent+" "+blocker+"\n")
 	steps=append(steps,n.step(c,"parent-unblocked-by-unlink",child,baseline,false))
 	if route=="durable" || route=="active-durable" {
-		n.command("defer-parent",false,"defer",parent,"--json")
+		// Plug's category defer matches native's future-until suppression.
+		// Native indefinite defer has a separate control below (18:46 ruling).
+		n.command("defer-parent",false,"defer",parent,"--until","2099-01-01T00:00:00Z","--json")
 		want=effectWithout(baseline,"child","parent")
 		steps=append(steps,n.step(c,"deferred-parent",child,want,false))
 	} else {
@@ -336,10 +345,29 @@ func (n *effectNative) parentSequence(route string) []effectStep {
 	return steps
 }
 
+func (n *effectNative) indefiniteParentControl(route string) {
+	const child="b07-401"
+	const parent="b07-402"
+	nodes:=[]map[string]any{{"key":"child","id":child,"title":"indefinite child"},{"key":"parent","id":parent,"title":"indefinite parent"}}
+	if route=="active-durable" {nodes[0]["storage_class"]="ephemeral"}
+	n.roles[child],n.roles[parent]="child","parent"
+	n.graph("indefinite-parent-endpoints",nodes)
+	baseline:=[]string{"child","parent"}
+	n.requireReady("indefinite-parent-created",baseline)
+	n.batch("indefinite-child-parent","dep add "+child+" "+parent+" parent-child\n")
+	n.requireReady("indefinite-open-parent",baseline)
+	n.command("indefinite-defer-parent",false,"defer",parent,"--json")
+	got:=n.requireReady("indefinite-deferred-parent",[]string{"child"})
+	_,row:=n.endpoint(n.previous,parent)
+	if string(row["defer_until"])!="null" {n.t.Fatal("native indefinite control gained a future until")}
+	(&nativeRecorder{t:n.t,root:n.root}).writeJSON(filepath.Join(n.root,"indefinite-parent-difference.json"),map[string]any{"route":route,"nativeReady":got,"nativeUntil":nil,"plugCategoryReady":[]string{},"difference":"Plug category defer suppresses descendants without until; native indefinite defer leaves children ready","ruling":"2026-11-11 18:46Z"})
+}
+
 type effectNativeExternal struct {
 	TargetCase,Kind,StoredArm string
 	ReadyAfterLink []string
 	GuardRefused bool
+	WriteRefused bool
 }
 
 func (n *effectNative) external(targetCase,kind string) effectNativeExternal {
@@ -356,6 +384,22 @@ func (n *effectNative) external(targetCase,kind string) effectNativeExternal {
 	if !reflect.DeepEqual(before,n.image("missing-local-after")) {n.t.Fatal("native missing-local refusal changed exact state")}
 	add:="dep add "+source+" "+target+" "+strconv.Quote(kind)+"\n"
 	remove:="dep remove "+source+" "+target+"\n"
+	if targetCase=="explicit-capability" && kind=="parent-child" {
+		file:=filepath.Join(n.root,"capability-parent-refused.txt")
+		if err:=os.WriteFile(file,[]byte(add),0600);err!=nil {n.t.Fatal(err)}
+		before:=n.image("capability-parent-before")
+		n.command("capability-parent-refused",true,"batch","--file",file,"--json")
+		stderr,err:=os.ReadFile(filepath.Join(n.root,fmt.Sprintf("%05d-capability-parent-refused.stderr",n.sequence)))
+		if err!=nil {n.t.Fatal(err)}
+		end:=bytes.Index(stderr,[]byte("\n}"));if end<0 {n.t.Fatal("native typed batch refusal missing")}
+		var refusal struct{Code string `json:"code"`;SchemaVersion int `json:"schema_version"`;Error string `json:"error"`}
+		if json.Unmarshal(stderr[:end+2],&refusal)!=nil || refusal.Code!="batch_error" || refusal.SchemaVersion!=1 || refusal.Error!=`line 1 (dep add b07-301 external:unconfigured:ticket "parent-child"): external capability dependencies cannot use parent-child edges` {n.t.Fatal("native capability-parent refusal differs from declared public error",string(stderr))}
+		if !reflect.DeepEqual(before,n.image("capability-parent-after")) {n.t.Fatal("native capability-parent refusal changed exact full state")}
+		n.requireReady("capability-parent-refused-ready",baseline)
+		result:=effectNativeExternal{TargetCase:targetCase,Kind:kind,ReadyAfterLink:baseline,WriteRefused:true}
+		(&nativeRecorder{t:n.t,root:n.root}).writeJSON(filepath.Join(n.root,"external-public-policy.json"),result)
+		return result
+	}
 	n.batch("external-link",add)
 	image:=n.image("external-linked")
 	edge:=n.edge(image,source,target)
@@ -378,7 +422,7 @@ func (n *effectNative) external(targetCase,kind string) effectNativeExternal {
 	n.command("external-source-close",false,"close",source,"--json")
 	n.requireReady("external-closed-ready",[]string{"unrelated"})
 	n.image("external-source-closed")
-	result:=effectNativeExternal{targetCase,kind,"depends_on_external",step.Ready,guarded}
+	result:=effectNativeExternal{TargetCase:targetCase,Kind:kind,StoredArm:"depends_on_external",ReadyAfterLink:step.Ready,GuardRefused:guarded}
 	(&nativeRecorder{t:n.t,root:n.root}).writeJSON(filepath.Join(n.root,"external-public-policy.json"),result)
 	return result
 }
@@ -415,6 +459,9 @@ func TestB07PinnedPublicContinuationCounterparts(t *testing.T) {
 					got:=newEffectNative(t,binary).parentSequence(route)
 					if prior,ok:=parentSteps[route];!ok {parentSteps[route]=got} else if !reflect.DeepEqual(prior,got) {t.Fatal("independent native scheduling twins differ")}
 				})
+			}
+			for _,route:=range []string{"durable","active-durable"} {
+				t.Run("parent-indefinite-control/"+route,func(t *testing.T) {newEffectNative(t,binary).indefiniteParentControl(route)})
 			}
 			var external []effectNativeExternal
 			for _,targetCase:=range []string{"explicit-capability","cross-prefix"} {
