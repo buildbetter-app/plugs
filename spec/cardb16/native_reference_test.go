@@ -46,9 +46,12 @@ func (n *b16Native) query(label string,want []string,args ...string) {
     n.t.Helper();base:=[]string{"--json","list","--all","--limit","0"};base=append(base,args...);var rows []map[string]any;b16Decode(n.t,n.command("query-"+label,false,base...),&rows)
     got:=[]string{};for _,row:=range rows{title,ok:=row["title"].(string);if !ok{n.t.Fatal("native query title")};got=append(got,title)};sort.Strings(got);expected:=append([]string{},want...);sort.Strings(expected);b16Equal(n.t,got,expected)
 }
-func (n *b16Native) rename(label,old,new string,renamed,merged int) {
+func (n *b16Native) rename(label,old,new string,renamed,merged int) b16Counts {
     n.t.Helper();var value map[string]any;b16Decode(n.t,n.command(label,false,"--json","label","rename",old,new),&value)
     b16Equal(n.t,value["status"],"renamed");b16Equal(n.t,value["old_label"],old);b16Equal(n.t,value["new_label"],new);b16Equal(n.t,value["renamed"],json.Number(strconv.Itoa(renamed)));b16Equal(n.t,value["merged"],json.Number(strconv.Itoa(merged)))
+    observedRenamed,err:=value["renamed"].(json.Number).Int64();if err!=nil{n.t.Fatal(err)}
+    observedMerged,err:=value["merged"].(json.Number).Int64();if err!=nil{n.t.Fatal(err)}
+    return b16Counts{Renamed:int(observedRenamed),Merged:int(observedMerged)}
 }
 
 func TestB16CanonicalNativePublicLabels(t *testing.T) {
@@ -80,16 +83,32 @@ func TestB16CanonicalNativePublicLabels(t *testing.T) {
     n.create("b16-d1","rename",[]string{"Old","old","side"},false);n.create("b16-d2","merge",[]string{"old","new"},false);n.create("b16-d3","destination",[]string{"new"},false);n.create("b16-empty","empty",nil,false)
     n.query("old",[]string{"rename","merge"},"--label","old");n.query("case",[]string{"rename"},"--label","Old");n.query("all",[]string{"merge"},"--label","old,new");n.query("any",[]string{"rename","merge","destination"},"--label-any","old,new");n.query("exclude",[]string{"destination","empty"},"--exclude-label","old,added,"+max)
     n.command("self-trim-refusal",true,"--json","label","rename","old"," old ");n.command("rename256-refusal",true,"--json","label","rename","old",strings.Repeat("界",256));n.labels("rename-refusal-readback","b16-d1",[]string{"Old","old","side"})
-    n.rename("durable-rename","old","new",2,1)
+    durableCounts:=n.rename("durable-rename","old","new",2,1)
     final:=map[string][]string{"rename":n.labels("renamed","b16-d1",[]string{"Old","new","side"}),"merge":n.labels("merged","b16-d2",[]string{"new"}),"destination":n.labels("destination","b16-d3",[]string{"new"}),"empty":n.labels("empty","b16-empty",[]string{})}
-    outcome:=b16Outcome{Initial:initial,Patched:patched,Renamed:2,Merged:1,Final:final};r.writeJSON(filepath.Join(root,"b16-native-durable-outcome.json"),outcome)
+    outcome:=b16Outcome{Initial:initial,Patched:patched,Renamed:durableCounts.Renamed,Merged:durableCounts.Merged,Final:final};r.writeJSON(filepath.Join(root,"b16-native-durable-outcome.json"),outcome)
     n.rename("absent-rename","absent","new",0,0)
     // Now exercise one actual native rename that sweeps both physical planes.
     n.command("readd-old-d1",false,"--json","label","add","b16-d1","old");n.command("readd-old-d2",false,"--json","label","add","b16-d2","old")
-    n.create("b16-w1","active rename",[]string{"old","side"},true);n.create("b16-w2","active merge",[]string{"old","new"},true)
+    n.create("b16-w1","active rename",[]string{"z","a","A","internal space","東京","é","a",""},true)
+    n.labels("active-sorted","b16-w1",b16Initial)
+    n.command("active-add",false,"--json","label","add","b16-w1","added,added,");n.labels("active-added","b16-w1",[]string{"A","a","added","internal space","z","é","東京"})
+    n.command("active-remove",false,"--json","label","remove","b16-w1","added");n.labels("active-removed","b16-w1",b16Initial)
+    for _,operation:=range []string{"add","remove"}{label:="a";if operation=="remove"{label="missing"};var results []map[string]any;b16Decode(t,n.command("active-"+operation+"-noop",false,"--json","label",operation,"b16-w1",label),&results);if len(results)!=1{t.Fatal("native active noop outcome cardinality")};b16Equal(t,results[0]["status"],"unchanged");n.labels("active-"+operation+"-noop-state","b16-w1",b16Initial)}
+    n.command("active-remove-wins",false,"--json","update","b16-w1","--set-labels","replace,both,,replace","--add-label","added,both,added,","--remove-label","both");n.labels("active-patched","b16-w1",b16FinalPatch)
+    n.command("active-empty",false,"--json","update","b16-w1","--set-labels","");n.labels("active-empty-state","b16-w1",[]string{})
+    n.command("active-bound255",false,"--json","label","add","b16-w1",max);n.labels("active-bound255-state","b16-w1",[]string{max})
+    n.command("active-bound256-refusal",true,"--json","label","add","b16-w1",strings.Repeat("界",256));n.labels("active-bound-refused-state","b16-w1",[]string{max})
+    n.command("active-reset",false,"--json","update","b16-w1","--set-labels","old,side")
+    n.create("b16-w2","active merge",[]string{"old","new"},true)
     n.labels("wisp-initial-one","b16-w1",[]string{"old","side"});n.labels("wisp-initial-two","b16-w2",[]string{"new","old"})
     n.query("both-planes",[]string{"rename","merge","active rename","active merge"},"--include-ephemeral","--label","old")
-    n.rename("two-plane-rename","old","new",4,3)
-    n.labels("wisp-renamed","b16-w1",[]string{"new","side"});n.labels("wisp-merged","b16-w2",[]string{"new"});n.labels("durable-two-plane-one","b16-d1",[]string{"Old","new","side"});n.labels("durable-two-plane-two","b16-d2",[]string{"new"})
-    for _,engine:=range []string{"memory","sqlite","postgres"}{t.Run("paired-"+engine,func(t *testing.T){got:=b16DurableVector(t,engine);b16Equal(t,got,outcome)})}
+    mixedCounts:=n.rename("two-plane-rename","old","new",4,3)
+    mixed:=b16MixedOutcome{Counts:mixedCounts,Final:map[string][]string{
+        "active rename":n.labels("wisp-renamed","b16-w1",[]string{"new","side"}),
+        "active merge":n.labels("wisp-merged","b16-w2",[]string{"new"}),
+        "rename":n.labels("durable-two-plane-one","b16-d1",[]string{"Old","new","side"}),
+        "merge":n.labels("durable-two-plane-two","b16-d2",[]string{"new"}),
+    }}
+    r.writeJSON(filepath.Join(root,"b16-native-mixed-outcome.json"),mixed)
+    for _,engine:=range []string{"memory","sqlite","postgres"}{t.Run("paired-"+engine,func(t *testing.T){got:=b16DurableVector(t,engine);b16Equal(t,got,outcome);gotMixed:=b16ActiveVector(t,engine);b16Equal(t,gotMixed,mixed)})}
 }

@@ -21,17 +21,30 @@ then addition then removal, exact all/any/exclude membership and counts,
 case-sensitive rename with merged rows included in renamed, self-after-trim
 and overlong refusal, absent-old no-op, and durable SQL reopen. Native argv
 vectors honor its public trimming rules; they do not claim parity for exact
-outer-space typed fields. Actual native label/wisp-label schema, collation,
+outer-space typed fields. Actual native label schema for both physical planes, collation,
 commands, stdout, stderr and physical label readback are retained.
 
-Native reference execution additionally sweeps both physical planes in one
-real rename. Plug's active tests require unchanged item revision for an equal
-set and the real public migration adapter plus tx.apply for a mixed scope.
-Memory's existing persistent-workflow capability refusal is recorded as such;
-it earns no positive two-plane credit. Current active provider no-op revision
-and mixed migration gaps are genuine required regression failures, not
-accepted alternate outcomes. Receiver036 owns the active bridge; this child
-changes no receiver, history, producer, allocator or protected source.
+Native reference execution additionally exercises active state and sweeps both
+physical planes in one real rename. Plug executes the selected mixed fold from
+actual active and durable projections through public typed patches in tx.apply.
+Renamed/merged totals are observed from successful results and exact changed
+readback; they are compared to independent literals and native output. This is
+an explicitly selected migration, not a global sweep. The existing durable-only
+planner still refuses active projections with invalid_params and no mutation.
+No Expect handling or transaction guarantee is changed.
+
+The labels-only workflow update correction preserves an equal item's revision,
+fields and lifecycle history while retaining its replay receipt. Active vectors
+execute sorted/bounded/duplicate/empty, idempotent add/remove and remove-wins
+folds on all three engines. The 17:14 binding adopts landed PR467: memory
+accepts mixed workflows with lifetime process and Persistent false; SQL engines
+advertise restart lifetime and undergo actual close/reopen. This supersedes
+the stale refusal wording in workflow-contract.md:57-65 and the former
+classification of the original 45ca memory leaf. Historical originals remain
+unchanged. Active ready label filters consume B04's separately owned additive
+Filter seam; ordinary view countOnly remains an ordinary-set proof.
+Receiver036 granted only the labels-only no-op Provider.Update hunk to B16.
+This child changes no receiver, history, producer, allocator or protected seam.
 
 The connected source-history control already passed on its historical child;
 its old README is stale. Its original overall focus/whole REDs remain literal.

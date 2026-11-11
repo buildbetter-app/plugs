@@ -42,6 +42,7 @@ type b16Host struct {
     lease driver.ActiveLease
     server *rpc.Server
     serial, next int
+    lastKey string
     frames []map[string]any
 }
 
@@ -75,11 +76,23 @@ func (f *b16Host) open() {
     ontology := service.NewOntology(nil)
     writer := pipeline.New(f.store, f.lease, pipeline.WithOntology(ontology), pipeline.WithIDGenerator(func()(string,error){ f.next++; return fmt.Sprintf("b16-%06d", f.next), nil }))
     options := []service.Option{service.WithOntology(ontology)}
-    if persistent, ok := f.store.(driver.PersistentCheckpointStore); ok && persistent.Persistent() {
-        provider, err := workflowplugin.New(pluginhost.NewDurableState(persistent, f.lease, "workflow", "default"))
-        if err != nil { f.t.Fatal(err) }
-        options = append(options, service.WithWorkflow(provider.WithIdentity("workflow", "default", f.meta().Incarnation)))
+    checkpoints, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
+    if err != nil { f.t.Fatal(err) }
+    state, err := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
+    if err != nil { f.t.Fatal(err) }
+    persistent, ok := state.(interface{ Persistent() bool })
+    if !ok { f.t.Fatal("workflow state lacks its actual persistence marker") }
+    if f.engine == "memory" {
+        b16Equal(f.t, checkpoints.WorkflowCheckpointLifetime(), driver.CheckpointLifetimeProcess)
+        b16Equal(f.t, persistent.Persistent(), false)
+        f.t.Log("actual memory workflow checkpoint lifetime=process Persistent=false; no restart claim")
+    } else {
+        b16Equal(f.t, checkpoints.WorkflowCheckpointLifetime(), driver.CheckpointLifetimeRestart)
+        b16Equal(f.t, persistent.Persistent(), true)
     }
+    provider, err := workflowplugin.New(state)
+    if err != nil { f.t.Fatal(err) }
+    options = append(options, service.WithWorkflow(provider.WithIdentity("workflow", "default", f.meta().Incarnation)))
     domain := service.New(f.store, f.lease, writer, options...)
     views, err := viewops.New(f.store, f.lease, viewops.Config{OntologyRevision:model.Natural64(1)})
     if err != nil { f.t.Fatal(err) }
@@ -110,9 +123,12 @@ func b16Equal(t *testing.T, got, want any) {
     t.Helper(); if !reflect.DeepEqual(got,want) {t.Fatalf("exact B16 value got=%#v want=%#v",got,want)}
 }
 func (f *b16Host) call(method string, params map[string]any, write bool, code string) json.RawMessage {
+    return f.request(method,params,write,code,"")
+}
+func (f *b16Host) request(method string, params map[string]any, write bool, code,key string) json.RawMessage {
     f.t.Helper(); f.serial++
     p:=map[string]any{}; for k,v:=range params {p[k]=v}
-    meta:=map[string]any{"project":b16Project,"agent":"b16-public"}; if write {meta["idempotencyKey"]=fmt.Sprintf("%032x",f.serial)};p["_meta"]=meta
+    meta:=map[string]any{"project":b16Project,"agent":"b16-public"}; if write {if key==""{key=fmt.Sprintf("%032x",f.serial)};meta["idempotencyKey"]=key;f.lastKey=key};p["_meta"]=meta
     request,err:=json.Marshal(map[string]any{"jsonrpc":"2.0","id":f.serial,"method":method,"params":p});if err!=nil {f.t.Fatal(err)}
     raw:=f.server.Dispatch(rpc.WithPrincipal(context.Background(),model.PrincipalRef{Kind:"user",ID:"b16-user"}),request)
     f.frames=append(f.frames,map[string]any{"request":json.RawMessage(request),"response":json.RawMessage(raw)})
@@ -133,13 +149,14 @@ func b16Strings(t *testing.T, value any) []string {
 }
 func (f *b16Host) labels(id string, want []string) {
     f.t.Helper();_,bead:=f.get(id); b16Equal(f.t,b16Strings(f.t,bead["labels"]),want)
-    fields,ok:=bead["fields"].(map[string]any);if !ok{f.t.Fatal("missing fields")};b16Equal(f.t,b16Strings(f.t,fields["labels"]),want)
+    fields,ok:=bead["fields"].(map[string]any);if !ok{f.t.Fatal("missing fields")}
+    if bead["plane"]!="ephemeral" {b16Equal(f.t,b16Strings(f.t,fields["labels"]),want)}
 }
 func (f *b16Host) update(id string, labels []string) model.Commit {
     f.t.Helper();var commit model.Commit;b16Decode(f.t,f.call("bead.update",map[string]any{"id":b16Ref(id),"fields":map[string]any{"labels":labels}},true,""),&commit);return commit
 }
 func (f *b16Host) query(query string, want []string) {
-    f.t.Helper();before:=f.meta();definition:=map[string]any{"filter":map[string]any{"query":query},"sort":[]string{"id"},"fields":[]string{"title"},"budgetTokens":1000}
+    f.t.Helper();before:=f.meta();definition:=map[string]any{"filter":map[string]any{"query":query},"sort":[]string{"id"},"fields":[]string{"fields.title"},"budgetTokens":1000}
     var result struct{Items []struct{ID string `json:"id"`} `json:"items"`;NextCursor any `json:"nextCursor"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition},false,""),&result)
     got:=[]string{};for _,item:=range result.Items{got=append(got,item.ID)};expected:=append([]string{},want...);sort.Strings(expected);b16Equal(f.t,got,expected);if result.NextCursor!=nil{f.t.Fatal("unexpected page continuation")}
     var count struct{Count json.Number `json:"count"`};b16Decode(f.t,f.call("view.run",map[string]any{"definition":definition,"countOnly":true},false,""),&count)

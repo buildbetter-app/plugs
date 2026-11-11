@@ -2,6 +2,8 @@ package cardb20
 
 import (
     "encoding/json"
+    "errors"
+    "sort"
     "path/filepath"
     "os"
     "strings"
@@ -64,7 +66,138 @@ func b16DurableVector(t *testing.T, engine string) b16Outcome {
     absent,err:=rpc.PlanLabelRenameFromResults(b16Project,"absent","new",current);if err!=nil{t.Fatal(err)};b16Equal(t,absent.Renamed,0);b16Equal(t,absent.Merged,0);b16Equal(t,len(absent.ChangeSet.Ops),0)
     actualFinal:=map[string][]string{};for name,target:=range map[string]string{"rename":a,"merge":b,"destination":c,"empty":empty}{_,value:=f.get(target);actualFinal[name]=b16Strings(t,value["labels"])}
     _,patched:=f.get(id)
-    outcome:=b16Outcome{Initial:actualInitial,Patched:b16Strings(t,patched["labels"]),Renamed:plan.Renamed,Merged:plan.Merged,Final:actualFinal}
+    observed:=b16ObservedRename(t,commit,map[string][]string{a:{"Old","old","side"},b:{"new","old"}},map[string][]string{a:actualFinal["rename"],b:actualFinal["merge"]})
+    b16Equal(t,observed,b16Counts{Renamed:2,Merged:1})
+    outcome:=b16Outcome{Initial:actualInitial,Patched:b16Strings(t,patched["labels"]),Renamed:observed.Renamed,Merged:observed.Merged,Final:actualFinal}
     if root:=os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR");root!=""{b16Write(t,filepath.Join(root,"b16-"+engine+"-durable-outcome.json"),outcome)}
     return outcome
+}
+
+// Counts come from successful results and changed committed rows. Literal
+// expected totals are asserted separately; a proposed plan earns no write count.
+type b16Counts struct {
+	Renamed int `json:"renamed"`
+	Merged int `json:"merged"`
+}
+
+type b16MixedOutcome struct {
+	Counts b16Counts `json:"counts"`
+	Final map[string][]string `json:"final"`
+}
+
+func b16Has(labels []string, label string) bool {
+	for _, candidate := range labels { if candidate == label { return true } }
+	return false
+}
+
+func b16ObservedRename(t *testing.T, commit model.Commit, before, after map[string][]string) b16Counts {
+	t.Helper()
+	seen := map[string]bool{}
+	counts := b16Counts{}
+	for _, result := range commit.Results {
+		id := result.Ref.ID
+		old, known := before[id]
+		if !known || seen[id] { t.Fatalf("unexpected committed rename result %q", id) }
+		seen[id] = true
+		next, present := after[id]
+		if !present || !b16Has(old,"old") || b16Has(next,"old") || !b16Has(next,"new") { t.Fatalf("rename result lacks exact old/new transition %q",id) }
+		counts.Renamed++
+		if b16Has(old,"new") { counts.Merged++ }
+	}
+	b16Equal(t,len(seen),len(before))
+	return counts
+}
+
+func b16ActiveVector(t *testing.T, engine string) b16MixedOutcome {
+	t.Helper()
+	f := b16NewHost(t,engine)
+	request := map[string]any{"template":"b16-labels", "project":b16Project, "mode":"ephemeral", "checklist":[]map[string]any{
+		{"label":"rename", "title":"active rename", "type":"issue", "fields":map[string]any{"marker":"preserved"}, "labels":[]string{"z","a","A","internal space","東京","é","a",""}},
+		{"label":"merge", "title":"active merge", "type":"issue", "labels":[]string{"old","new"}},
+	}}
+	var created struct { Items []struct { ID string `json:"id"` } `json:"items"` }
+	b16Decode(t,f.call("x.workflow.invoke",request,true,""),&created)
+	b16Equal(t,len(created.Items),2)
+	a,b := created.Items[0].ID,created.Items[1].ID
+	f.labels(a,b16Initial)
+	f.labels(b,[]string{"new","old"})
+	_,original := f.get(a)
+	preservedFields := original["fields"]
+	b16Equal(t,preservedFields.(map[string]any)["marker"],"preserved")
+
+	t.Run("sorted_bounded_duplicate_empty_and_idempotent",func(t *testing.T) {
+		prior:=f.t; f.t=t; defer func(){f.t=prior}()
+		_,before:=f.get(a)
+		proposal:=[]string{"z","a","A","internal space","東京","é","a",""}
+		first:=f.update(a,proposal); key:=f.lastKey
+		_,after:=f.get(a); b16Equal(t,after,before)
+		f.update(a,[]string{"A","a","added","internal space","z","é","東京"})
+		f.labels(a,[]string{"A","a","added","internal space","z","é","東京"})
+		_,added:=f.get(a); f.update(a,[]string{"added","A","a","added","internal space","z","é","東京",""}); _,equalAdd:=f.get(a); b16Equal(t,equalAdd,added)
+		f.update(a,b16Initial); _,removed:=f.get(a); f.update(a,b16Initial); _,equalRemove:=f.get(a); b16Equal(t,equalRemove,removed)
+		// Replaying the earlier equal-set result must retain intervening state.
+		f.update(a,[]string{"fresh","old","side"})
+		var replay model.Commit
+		b16Decode(t,f.request("bead.update",map[string]any{"id":b16Ref(a),"fields":map[string]any{"labels":proposal}},true,"",key),&replay)
+		b16Equal(t,replay,first); f.labels(a,[]string{"fresh","old","side"})
+		ops:=[]any{}
+		for _,labels:=range [][]string{{"replace","both","","replace"},{"replace","both","added","added",""},b16FinalPatch} {
+			ops=append(ops,map[string]any{"kind":"patch","target":b16Ref(a),"fields":map[string]any{"labels":labels}})
+		}
+		f.call("tx.apply",map[string]any{"changeSet":map[string]any{"ops":ops}},true,""); f.labels(a,b16FinalPatch)
+		f.update(a,[]string{"",""}); f.labels(a,[]string{})
+		_,empty:=f.get(a); f.update(a,[]string{}); _,equalEmpty:=f.get(a); b16Equal(t,equalEmpty,empty)
+		max:=strings.Repeat("界",255); f.update(a,[]string{max}); f.labels(a,[]string{max})
+		_,bounded:=f.get(a); meta:=f.meta()
+		f.call("bead.update",map[string]any{"id":b16Ref(a),"fields":map[string]any{"title":"must not publish","labels":[]string{"lost",strings.Repeat("界",256)}}},true,"invalid_params")
+		_,refused:=f.get(a); b16Equal(t,refused,bounded); b16Equal(t,f.meta(),meta)
+		f.update(a,[]string{"old","side"}); f.labels(a,[]string{"old","side"})
+		_,value:=f.get(a); b16Equal(t,value["fields"],preservedFields)
+	})
+
+	d1:=f.create("rename",[]string{"Old","old","new","side"})
+	d2:=f.create("merge",[]string{"old","new"})
+	selected:=[]string{a,b,d1,d2}
+	before:=map[string][]string{}
+	beforeBeads:=map[string]map[string]any{}
+	activeInputs:=[]json.RawMessage{}
+	for _,id:=range selected { raw,value:=f.get(id); before[id]=b16Strings(t,value["labels"]); beforeBeads[id]=value; if id==a || id==b { activeInputs=append(activeInputs,raw) } }
+	t.Run("durable_planner_refuses_active_projection",func(t *testing.T) {
+		meta:=f.meta()
+		plan,err:=rpc.PlanLabelRenameFromResults(b16Project,"old","new",activeInputs)
+		var typed *model.Error
+		if !errors.As(err,&typed) || typed.Data.Code!="invalid_params" { t.Fatalf("durable planner typed active refusal: %v",err) }
+		b16Equal(t,len(plan.ChangeSet.Ops),0); b16Equal(t,plan.Renamed,0); b16Equal(t,plan.Merged,0)
+		b16Equal(t,f.meta(),meta)
+		for _,id:=range selected { _,value:=f.get(id); b16Equal(t,value,beforeBeads[id]) }
+	})
+
+	// commands.md folds rename into an explicitly selected client migration.
+	// This uses actual active projections without changing the durable planner.
+	cs:=model.ChangeSet{}
+	for _,id:=range selected {
+		next:=[]string{}
+		for _,label:=range before[id] { if label!="old" { next=append(next,label) } }
+		if !b16Has(next,"new") { next=append(next,"new") }; sort.Strings(next)
+		cs.Ops=append(cs.Ops,model.Op{Kind:model.OpPatch,Patch:&model.PatchOp{Kind:model.OpPatch,Target:model.RefByID(id,model.Natural64(0)),Fields:map[string]any{"labels":next}}})
+	}
+	var commit model.Commit
+	b16Decode(t,f.call("tx.apply",map[string]any{"changeSet":cs},true,""),&commit)
+	after:=map[string][]string{}
+	for _,id:=range selected { _,value:=f.get(id); after[id]=b16Strings(t,value["labels"]) }
+	observed:=b16ObservedRename(t,commit,before,after)
+	b16Equal(t,observed,b16Counts{Renamed:4,Merged:3})
+	want:=map[string][]string{"active rename":{"new","side"},"active merge":{"new"},"rename":{"Old","new","side"},"merge":{"new"}}
+	names:=map[string]string{"active rename":a,"active merge":b,"rename":d1,"merge":d2}
+	check:=func() {
+		for name,id:=range names { f.labels(id,want[name]) }
+		_,value:=f.get(a); b16Equal(t,value["fields"],preservedFields)
+	}
+	check(); f.reopen(check)
+	final:=map[string][]string{}
+	for name,id:=range names { _,value:=f.get(id); final[name]=b16Strings(t,value["labels"]) }
+	outcome:=b16MixedOutcome{Counts:observed,Final:final}
+	if root:=os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); root!="" { b16Write(t,filepath.Join(root,"b16-"+engine+"-mixed-outcome.json"),outcome) }
+	t.Logf("successful selected public mixed rename readback renamed=%d merged=%d",observed.Renamed,observed.Merged)
+	return outcome
 }
