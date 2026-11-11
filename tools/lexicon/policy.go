@@ -54,7 +54,7 @@ func DefaultTreePolicy() TreePolicy {
 			"spec/s1-b17-b20/reference/b18/record.py",
 		},
 		ReferenceSHA256: map[string]string{
-			"tools/roundtrip/testdata/fresh-native/recipe-profile.json":                 "90d3a7e6a9783b0f47cb2bd4c472bc9ea4042d1a856036ea570e39fbe9d741e3",
+			"tools/roundtrip/testdata/fresh-native/recipe-profile.json":                 "5dded2584223f7043fdf9967c7741092c305d438e06385de7a0d2e7534d93392",
 			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree":               "c1d92931dfce093264a1ba155869b2bffbb9dd184e9778e2c75abeb081ab1bdb",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree":               "0a31c98fdd08dc93af919d3bb0f4c8470bb4a126d1c7388c49dff7a222889f55",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl": "3ddad50712c0f10cf59a5ea60c573c75e2ee2a3957d5a01bfa9d22e5410d8182",

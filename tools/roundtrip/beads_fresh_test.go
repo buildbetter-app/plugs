@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -12,38 +13,58 @@ func TestFreshRecipeProfileBindsBothSelectionsToLandedSource(t *testing.T) {
 	if err != nil || hash(data) != freshRecipeProfileSHA {
 		t.Fatal("exact native recipe profile missing")
 	}
-	var profile map[string]string
+	var profile map[string]json.RawMessage
 	if err := json.Unmarshal(data, &profile); err != nil {
 		t.Fatal(err)
 	}
+	var commit string
+	var arguments []string
+	if json.Unmarshal(profile["source_commit"], &commit) != nil || json.Unmarshal(profile["normal_ci_arguments"], &arguments) != nil || len(arguments) != 4 {
+		t.Fatal("pinned normal fixture invocation missing")
+	}
 	for _, selection := range []string{"complete", "partial"} {
-		target, err := freshRecipeTarget(data, profile["source_commit"], selection)
-		if err != nil || target != profile[selection+"_target"] {
-			t.Fatalf("landed recipe selection: %s %v", target, err)
+		var expectedTarget string
+		if err := json.Unmarshal(profile[selection+"_target"], &expectedTarget); err != nil {
+			t.Fatal(err)
+		}
+		target, args, err := freshRecipeInvocation(data, commit, selection)
+		if err != nil || target != expectedTarget || !reflect.DeepEqual(args, arguments) {
+			t.Fatalf("landed recipe invocation: %s %v %v", target, args, err)
 		}
 	}
-	if _, err := freshRecipeTarget(data, profile["source_commit"], "adjacent"); err == nil {
+	if _, _, err := freshRecipeInvocation(data, commit, "adjacent"); err == nil {
 		t.Fatal("unknown recipe selected")
 	}
-	if _, err := freshRecipeTarget(data, "0000000000000000000000000000000000000000", "complete"); err == nil {
+	if _, _, err := freshRecipeInvocation(data, "0000000000000000000000000000000000000000", "complete"); err == nil {
 		t.Fatal("wrong producer head selected")
 	}
-	for _, field := range []string{"schema", "source_commit", "complete_target", "partial_target"} {
+	for _, field := range []string{"schema", "source_commit", "complete_target", "partial_target", "normal_ci_arguments"} {
 		t.Run("missing-"+field, func(t *testing.T) {
-			copy := map[string]string{}
+			copy := map[string]json.RawMessage{}
 			for k, v := range profile {
 				copy[k] = v
 			}
 			delete(copy, field)
 			changed, _ := json.Marshal(copy)
-			if _, err := freshRecipeTarget(changed, profile["source_commit"], "complete"); err == nil {
+			if _, _, err := freshRecipeInvocation(changed, commit, "complete"); err == nil {
 				t.Fatal("incomplete immutable profile admitted")
 			}
 		})
 	}
-	profile["extra"] = "unreviewed"
+	for _, args := range [][]string{nil, arguments[:3], append(append([]string{}, arguments...), arguments[0])} {
+		copy := map[string]json.RawMessage{}
+		for k, v := range profile {
+			copy[k] = v
+		}
+		copy["normal_ci_arguments"], _ = json.Marshal(args)
+		changed, _ := json.Marshal(copy)
+		if _, _, err := freshRecipeInvocation(changed, commit, "complete"); err == nil {
+			t.Fatal("missing or additional fixture arguments admitted")
+		}
+	}
+	profile["extra"] = json.RawMessage(`"unreviewed"`)
 	changed, _ := json.Marshal(profile)
-	if _, err := freshRecipeTarget(changed, profile["source_commit"], "complete"); err == nil {
+	if _, _, err := freshRecipeInvocation(changed, commit, "complete"); err == nil {
 		t.Fatal("undeclared recipe profile field admitted")
 	}
 }
@@ -51,12 +72,14 @@ func TestFreshRecipeProfileBindsBothSelectionsToLandedSource(t *testing.T) {
 func TestFreshNativeCensusNamesAllTwelveIndependentCases(t *testing.T) {
 	cases := freshNativeCases()
 	seen := map[string]bool{}
+	modes := map[string]int{}
 	for _, item := range cases {
 		key := item.Engine + "/" + item.Name
 		if seen[key] || item.Recipe == "" || item.Target == "" || item.Marker == "" {
 			t.Fatal("duplicate or incomplete fresh recording identity")
 		}
 		seen[key] = true
+		modes[item.Mode]++
 	}
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		for _, name := range []string{"complete", "complete-snapshot", "partial", "partial-snapshot"} {
@@ -67,6 +90,9 @@ func TestFreshNativeCensusNamesAllTwelveIndependentCases(t *testing.T) {
 	}
 	if len(cases) != 12 {
 		t.Fatal("fresh case count changed")
+	}
+	if !reflect.DeepEqual(modes, map[string]int{"full": 3, "partial": 3, "snapshot": 6}) {
+		t.Fatalf("fresh modes changed: %v", modes)
 	}
 }
 

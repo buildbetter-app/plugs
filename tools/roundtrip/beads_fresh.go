@@ -13,25 +13,26 @@ import (
 
 type freshCase struct{ Engine, Name, Mode, Recipe, Target, Marker string }
 
-const freshRecipeProfileSHA = "90d3a7e6a9783b0f47cb2bd4c472bc9ea4042d1a856036ea570e39fbe9d741e3"
+const freshRecipeProfileSHA = "5dded2584223f7043fdf9967c7741092c305d438e06385de7a0d2e7534d93392"
 
-func freshRecipeTarget(data []byte, commit, selection string) (string, error) {
+func freshRecipeInvocation(data []byte, commit, selection string) (string, []string, error) {
 	var profile struct {
-		Schema         string `json:"schema"`
-		SourceCommit   string `json:"source_commit"`
-		CompleteTarget string `json:"complete_target"`
-		PartialTarget  string `json:"partial_target"`
+		Schema         string   `json:"schema"`
+		SourceCommit   string   `json:"source_commit"`
+		CompleteTarget string   `json:"complete_target"`
+		PartialTarget  string   `json:"partial_target"`
+		Arguments      []string `json:"normal_ci_arguments"`
 	}
-	if strictTypedJSON(data, &profile) != nil || profile.Schema != "plug-public-recipe-profile/1" || profile.SourceCommit != commit || len(commit) != 40 || profile.CompleteTarget == "" || profile.PartialTarget == "" || profile.CompleteTarget == profile.PartialTarget {
-		return "", fmt.Errorf("pinned native recipe source/profile mismatch")
+	if hash(data) != freshRecipeProfileSHA || strictTypedJSON(data, &profile) != nil || profile.Schema != "plug-public-recipe-profile/1" || profile.SourceCommit != commit || len(commit) != 40 || profile.CompleteTarget == "" || profile.PartialTarget == "" || profile.CompleteTarget == profile.PartialTarget || len(profile.Arguments) != 4 {
+		return "", nil, fmt.Errorf("pinned native recipe source/profile mismatch")
 	}
 	switch selection {
 	case "complete":
-		return profile.CompleteTarget, nil
+		return profile.CompleteTarget, profile.Arguments, nil
 	case "partial":
-		return profile.PartialTarget, nil
+		return profile.PartialTarget, profile.Arguments, nil
 	default:
-		return "", fmt.Errorf("unknown native recipe selection")
+		return "", nil, fmt.Errorf("unknown native recipe selection")
 	}
 }
 

@@ -50,9 +50,9 @@ go_test(
     deps = _DEPS,
 )
 
-# Each leaf runs its own unmodified landed recipe with retained-store handoff.
-# Historical runtime tests are linked for their existing reader/DB helpers,
-# but this target selects only the fresh recorder, never the historical run.
+# The fresh dispatcher reports missing shared row-route dependencies before
+# starting recipes. Historical helpers remain linked, with only this entry
+# selected and no historical recording execution.
 go_test(
     name = "fresh_same_run_native_test",
     size = "enormous",
