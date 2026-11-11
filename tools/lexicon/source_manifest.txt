@@ -596,6 +596,8 @@ internal/integration/b13memory/source_core_control_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
+internal/integration/b15comments/BUILD.bazel
+internal/integration/b15comments/public_test.go
 internal/integration/b16sourcehistory/BUILD.bazel
 internal/integration/b16sourcehistory/README.md
 internal/integration/b16sourcehistory/engine_test.go
