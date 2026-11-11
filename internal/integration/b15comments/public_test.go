@@ -520,3 +520,79 @@ func TestB15PublicEphemeralCommentClockAndNoDurableHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestB15PublicEphemeralFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newFixture(t, engine)
+			f.create()
+			anchor, history := f.document(), f.changes()
+			raw := f.success("x.workflow.invoke", map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "historical fractional comments", "type": "task"}}}, true)
+			var invoked workflow.InvokeResult
+			if err := json.Unmarshal(raw, &invoked); err != nil || len(invoked.Items) != 1 {
+				t.Fatalf("ephemeral invocation: %v %s", err, raw)
+			}
+			id := invoked.Items[0].ID
+			for _, body := range []string{"earlier fractional", "newest fractional"} {
+				f.success("bead.comment", map[string]any{"id": ref(id), "body": body}, true)
+			}
+			// Earlier releases allowed arbitrary wall-clock stamps. This authored
+			// legacy checkpoint is a product precision fixture, not native proof.
+			// Keep the actual public invocation, bodies and every other member.
+			checkpoints := f.store.(driver.CheckpointStore)
+			checkpoint, err := checkpoints.LoadCheckpoint(context.Background(), "plugin/workflow/default/durable")
+			if err != nil {
+				t.Fatal(err)
+			}
+			object := func(raw []byte) map[string]json.RawMessage {
+				var got map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &got); err != nil || got == nil {
+					t.Fatalf("legacy checkpoint object: %v", err)
+				}
+				return got
+			}
+			namespace := object(checkpoint.Payload)
+			values := object(namespace["values"])
+			entry := object(values["workflow/state"])
+			state := object(entry["value"])
+			items := object(state["items"])
+			item := object(items[id])
+			var comments []map[string]json.RawMessage
+			if err := json.Unmarshal(item["comments"], &comments); err != nil || len(comments) != 2 {
+				t.Fatalf("legacy checkpoint comments: %v", err)
+			}
+			comments[0]["time"] = marshal(t, f.clock.Now().Add(100*time.Millisecond))
+			comments[1]["time"] = marshal(t, f.clock.Now().Add(500*time.Millisecond))
+			item["comments"] = marshal(t, comments)
+			items[id] = marshal(t, item)
+			state["items"] = marshal(t, items)
+			entry["value"] = marshal(t, state)
+			values["workflow/state"] = marshal(t, entry)
+			namespace["values"] = marshal(t, values)
+			if _, err := checkpoints.SaveCheckpoint(context.Background(), f.lease, "plugin/workflow/default/durable", checkpoint.Generation, marshal(t, namespace)); err != nil {
+				t.Fatal(err)
+			}
+			f.success("bead.comment", map[string]any{"id": ref(id), "body": "after maximum fractional"}, true)
+			want := []pipeline.Comment{
+				{Body: "earlier fractional", Principal: actor, Time: f.clock.Now().Add(100 * time.Millisecond)},
+				{Body: "newest fractional", Principal: actor, Time: f.clock.Now().Add(500 * time.Millisecond)},
+				{Body: "after maximum fractional", Principal: actor, Time: f.clock.Now().Add(1500 * time.Millisecond)},
+			}
+			assert := func() {
+				raw := f.success("bead.get", map[string]any{"id": ref(id)}, false)
+				var got struct {
+					Comments []pipeline.Comment `json:"comments"`
+				}
+				if err := json.Unmarshal(raw, &got); err != nil || !reflect.DeepEqual(got.Comments, want) {
+					t.Errorf("fractional maximum plus one second: %v got=%+v want=%+v", err, got.Comments, want)
+				}
+				if !reflect.DeepEqual(anchor, f.document()) || !reflect.DeepEqual(history, f.changes()) {
+					t.Error("ephemeral fractional comment changed durable anchor/history")
+				}
+			}
+			assert()
+			f.reopen()
+			assert()
+		})
+	}
+}

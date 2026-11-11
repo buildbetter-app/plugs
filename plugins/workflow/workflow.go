@@ -2433,11 +2433,15 @@ func (p *Provider) Comment(ctx context.Context, by model.PrincipalRef, req model
 	if strings.TrimSpace(body) == "" {
 		return model.Commit{}, fail("invalid_params", "comment body is required")
 	}
-	commentTime := p.now().UTC()
+	var newest time.Time
 	for _, existing := range item.Comments {
-		if !existing.Time.Before(commentTime) {
-			commentTime = existing.Time.UTC().Add(time.Second)
+		if existing.Time.After(newest) {
+			newest = existing.Time
 		}
+	}
+	commentTime := p.now().UTC()
+	if len(item.Comments) != 0 && !newest.Before(commentTime) {
+		commentTime = newest.UTC().Add(time.Second)
 	}
 	item.Generation++
 	item.Comments = append(item.Comments, commentState{Body: body, Principal: by, Time: commentTime})
