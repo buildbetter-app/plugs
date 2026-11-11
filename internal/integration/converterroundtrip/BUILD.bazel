@@ -19,6 +19,7 @@ go_library(
 
 go_test(
     name = "converterroundtrip_test",
+    visibility = ["//tools/roundtrip:__pkg__"],
     srcs = glob(["*_test.go"]),
     data = [
         "//tools/roundtrip:continuation_field_profile",
