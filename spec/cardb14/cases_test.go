@@ -24,6 +24,8 @@ var b14Stages = []struct {
 	{"mixed-children", []bool{false, false, true, false, false}},
 	{"closed-children", []bool{true, true, true, false, false}},
 	{"closed-spawner", []bool{true, true, true, true, true}},
+	{"closed-spawner-mixed", []bool{false, false, true, false, true}},
+	{"closed-spawner-open", []bool{false, false, false, false, false}},
 }
 
 type b14Projection struct {

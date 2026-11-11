@@ -210,5 +210,11 @@ func b14Public(t *testing.T, engine string) b14Projection {
 	check(3)
 	transition("bead.close", spawner)
 	check(4)
+	// Reopening children of the closed spawner demonstrates that removing
+	// the also_blocks OR does not remove the independent child predicate.
+	transition("bead.reopen", first)
+	check(5)
+	transition("bead.reopen", second)
+	check(6)
 	return p
 }

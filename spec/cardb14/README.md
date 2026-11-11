@@ -15,6 +15,17 @@ admission. Plug history retains earlier waiter/predicate images and each SQL
 engine is physically closed/reopened without reseeding. Read requests and
 responses plus physical rows/versions are retained as test outputs.
 
+The default host also invokes actual ephemeral gate/workflow items on all
+three engines. A joined public batch replaces durable and workflow waiter
+lists and installs waits-for edges in both directions. Mixed listing merges
+both planes before applying limits. The child/spawner stages assert the
+independent all/any/also-blocks expectations, typed close refusals conserve
+the complete stored image, and admitted closes retain each plane's status.
+Memory asserts the selected capability's process lifetime and false
+persistence marker; only SQLite and PostgreSQL run physical reopen. The
+canonical native counterpart executes the same predicate stages with real
+durable issues and ephemeral wisps, retaining its distinct close lifecycle.
+
 The manual target builds the unchanged canonical 9d6 production CLI using the
 existing B20 archive/manifest builder. Native writes use public CLI and HTTP;
 SQL is read-only readback. Template gates come from actual formula cook. These

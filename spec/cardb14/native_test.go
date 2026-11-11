@@ -271,6 +271,12 @@ func TestB14CanonicalNativeDefaultAndWaitsCounterparts(t *testing.T) {
 	recorder := nativeRecorder{t: t, root: root, target: "//cmd/bd:bd"}
 	n := b14NewNative(t, recorder.buildCanonicalSource(pinnedSource), root)
 	native := n.defaultAndWaits()
+	mixedRoot := filepath.Join(root, "mixed")
+	if err := os.MkdirAll(mixedRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	mixed := b14NewNative(t, n.binary, mixedRoot)
+	mixed.mixedGatesAndWaits()
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			plug := b14Public(t, engine)
@@ -278,6 +284,7 @@ func TestB14CanonicalNativeDefaultAndWaitsCounterparts(t *testing.T) {
 				t.Fatalf("paired default/list/waiter/ready projections differ: Plug=%+v native=%+v", plug, native)
 			}
 			b14JSON(t, filepath.Join(root, "paired-"+engine+".json"), map[string]any{"native": native, "plug": plug, "oracle": "cases_test.go independent literals", "native_history": "current SQL readback and server reopen; Plug history separately asserted"})
+			b14MixedPublic(t, engine)
 		})
 	}
 }
@@ -445,6 +452,135 @@ func (n *b14Native) defaultAndWaits() b14Projection {
 	checkStage(3)
 	n.http("close-spawner", http.MethodPost, "/v0/beads/issues/b14-spawner:close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
 	checkStage(4)
+	n.http("reopen-first-under-closed-spawner", http.MethodPost, "/v0/beads/issues/b14-first-child:reopen", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+	checkStage(5)
+	n.http("reopen-second-under-closed-spawner", http.MethodPost, "/v0/beads/issues/b14-second-child:reopen", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+	checkStage(6)
 	b14JSON(n.t, filepath.Join(n.root, "native-independent-projection.json"), p)
 	return p
+}
+
+// The canonical counterpart uses native durable issues and ephemeral wisps.
+// It shares only the independently authored literals with the Plug scenario;
+// neither engine's answer is used to construct the other's expectations.
+func (n *b14Native) mixedGatesAndWaits() {
+	n.t.Helper()
+	n.create("b14-mixed-durable", "gate", map[string]any{"priority": 3, "await_type": "human"})
+	n.create("b14-mixed-active", "gate", map[string]any{"priority": 1, "await_type": "gh:run", "ephemeral": true})
+	n.create("b14-mixed-closed", "gate", map[string]any{"priority": 2, "ephemeral": true})
+	n.create("b14-mixed-low", "gate", map[string]any{"priority": 4, "ephemeral": true})
+	n.create("b14-mixed-notgate", "task", map[string]any{"priority": 0, "await_type": "human", "ephemeral": true})
+	n.http("mixed-close-gate", http.MethodPost, "/v0/beads/issues/b14-mixed-closed:close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+	list := func(all bool) []string {
+		args := []string{"gate", "list", "--limit", "0", "--json"}
+		if all {
+			args = append(args, "--all")
+		}
+		var gates []b14NativeIssue
+		if json.Unmarshal(n.command("mixed-gate-list", args...), &gates) != nil {
+			n.t.Fatal("invalid native mixed gate list")
+		}
+		ids := []string{}
+		for _, gate := range gates {
+			if gate.Type != "gate" {
+				n.t.Fatal("native mixed listing admitted a non-gate")
+			}
+			ids = append(ids, gate.ID)
+		}
+		return ids
+	}
+	checkList := func() {
+		if got := list(false); !reflect.DeepEqual(got, []string{"b14-mixed-active", "b14-mixed-durable", "b14-mixed-low"}) {
+			n.t.Fatal("native mixed default order/membership differs", got)
+		}
+		if got := list(true); !reflect.DeepEqual(got, []string{"b14-mixed-active", "b14-mixed-closed", "b14-mixed-durable", "b14-mixed-low"}) {
+			n.t.Fatal("native mixed all order/membership differs", got)
+		}
+		if got := n.command("mixed-limit-before-await", "gate", "check", "--dry-run", "--limit", "1", "--type", "human", "--json"); string(got) != "No open gates of type 'human' found.\n" {
+			n.t.Fatal("native mixed planes were not merged before the limit", string(got))
+		}
+	}
+	checkList()
+	for _, prefix := range []string{"durable", "active"} {
+		ephemeral := prefix == "active"
+		n.create("b14-mixed-"+prefix+"-spawner", "task", map[string]any{"ephemeral": ephemeral})
+		for _, predicate := range b14Predicates {
+			n.create("b14-mixed-"+prefix+"-"+predicate.Name, "task", map[string]any{"ephemeral": ephemeral})
+		}
+	}
+	for _, predicate := range b14Predicates {
+		metadata := map[string]any{}
+		if predicate.Gate != "" {
+			metadata["gate"] = predicate.Gate
+		}
+		if predicate.Also {
+			metadata["also_blocks"] = true
+		}
+		raw, err := json.Marshal(metadata)
+		if err != nil {
+			n.t.Fatal(err)
+		}
+		n.link("b14-mixed-durable-"+predicate.Name, "b14-mixed-active-spawner", string(raw))
+		n.link("b14-mixed-active-"+predicate.Name, "b14-mixed-durable-spawner", string(raw))
+	}
+	check := func(stage int) {
+		var rows []struct{ ID string }
+		if json.Unmarshal(n.command("mixed-ready-"+b14Stages[stage].Name, "ready", "--json", "--limit", "0", "--include-ephemeral"), &rows) != nil {
+			n.t.Fatal("invalid native mixed ready output")
+		}
+		ready := map[string]bool{}
+		for _, row := range rows {
+			ready[row.ID] = true
+		}
+		for _, prefix := range []string{"durable", "active"} {
+			got := []bool{}
+			for i, predicate := range b14Predicates {
+				id := "b14-mixed-" + prefix + "-" + predicate.Name
+				got = append(got, ready[id])
+				if !b14Stages[stage].Ready[i] {
+					before := n.get(id)
+					raw := n.http("mixed-close-refused", http.MethodPost, "/v0/beads/issues/"+id+":close", []byte(`{"actor":"b14-native"}`), http.StatusConflict)
+					var problem struct{ Code string }
+					if json.Unmarshal(raw, &problem) != nil || problem.Code != "not_closable" || !reflect.DeepEqual(before, n.get(id)) {
+						n.t.Fatal("native mixed close refusal lost its code or original value")
+					}
+				}
+			}
+			if !reflect.DeepEqual(got, b14Stages[stage].Ready) {
+				n.t.Fatalf("native mixed %s %s=%v want=%v", prefix, b14Stages[stage].Name, got, b14Stages[stage].Ready)
+			}
+		}
+	}
+	check(0)
+	for _, prefix := range []string{"durable", "active"} {
+		for _, child := range []string{"one", "two"} {
+			n.create("b14-mixed-"+prefix+"-child-"+child, "task", map[string]any{"ephemeral": prefix == "active", "parent_id": "b14-mixed-" + prefix + "-spawner"})
+		}
+	}
+	check(1)
+	for _, prefix := range []string{"durable", "active"} {
+		n.http("mixed-close-child-one", http.MethodPost, "/v0/beads/issues/b14-mixed-"+prefix+"-child-one:close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+	}
+	check(2)
+	n.stop()
+	n.serve()
+	checkList()
+	check(2)
+	for _, prefix := range []string{"durable", "active"} {
+		n.http("mixed-close-child-two", http.MethodPost, "/v0/beads/issues/b14-mixed-"+prefix+"-child-two:close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+	}
+	check(3)
+	for _, prefix := range []string{"durable", "active"} {
+		n.http("mixed-close-spawner", http.MethodPost, "/v0/beads/issues/b14-mixed-"+prefix+"-spawner:close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+	}
+	check(4)
+	for _, prefix := range []string{"durable", "active"} {
+		for _, predicate := range b14Predicates {
+			id := "b14-mixed-" + prefix + "-" + predicate.Name
+			n.http("mixed-close-admitted", http.MethodPost, "/v0/beads/issues/"+id+":close", []byte(`{"actor":"b14-native"}`), http.StatusOK)
+			if n.get(id).Status != "closed" {
+				n.t.Fatal("native mixed admitted close did not commit exact status")
+			}
+		}
+	}
 }

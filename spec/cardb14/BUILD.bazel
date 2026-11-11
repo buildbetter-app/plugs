@@ -3,12 +3,15 @@ load("@rules_go//go:def.bzl", "go_test")
 DEPS = [
     "//internal/core/model",
     "//internal/core/pipeline",
+    "//internal/integration/b07positive",
     "//internal/integration/b07positive/public",
+    "//internal/storage/driver",
+    "//plugins/workflow",
 ]
 
 go_test(
     name = "default_history_test",
-    srcs = ["cases_test.go", "ordinary_test.go", "public_test.go"],
+    srcs = ["cases_test.go", "mixed_test.go", "ordinary_test.go", "public_test.go"],
     deps = DEPS,
     size = "large",
     tags = ["local", "requires-network"],
@@ -18,6 +21,7 @@ go_test(
     name = "public_native_test",
     srcs = [
         "cases_test.go",
+        "mixed_test.go",
         "native_test.go",
         "public_test.go",
         "//spec/cardb20:native_build_support",
@@ -25,6 +29,7 @@ go_test(
     deps = DEPS + ["//internal/publicnative"],
     data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
     env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256"],
     size = "enormous",
     tags = ["local", "manual"],
     timeout = "eternal",

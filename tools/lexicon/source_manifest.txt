@@ -1650,6 +1650,7 @@ spec/cardb07positive/ordinary_test.go
 spec/cardb14/BUILD.bazel
 spec/cardb14/README.md
 spec/cardb14/cases_test.go
+spec/cardb14/mixed_test.go
 spec/cardb14/native_test.go
 spec/cardb14/ordinary_test.go
 spec/cardb14/public_test.go
