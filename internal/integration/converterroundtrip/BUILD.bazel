@@ -32,7 +32,7 @@ go_test(
         "//tools/native-receive",
     ],
     env = {"NATIVE_RECEIVE_BINARY": "$(rootpath //tools/native-receive)"},
-    shard_count = 4,
+    shard_count = 16,
     size = "large",
     tags = ["local", "requires-network"],
     embed = [":converterroundtrip"],
