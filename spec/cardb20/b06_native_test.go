@@ -468,6 +468,48 @@ func (r *b06NativeRecorder) missing(binary string, server *publicnative.Server) 
 	r.t.Log("B06_NATIVE mixed_plane=observed durable_missing=1 ephemeral_missing=1 full_members=3 partial=true plug_physical_missing=OPEN plug_mixed_plane=OPEN")
 }
 
+// A separate native workspace keeps these additional boundaries independent
+// from the historical raw durable comparison vectors.
+func (r *b06NativeRecorder) boundaries(binary string, server *publicnative.Server) {
+	w := r.workspace(binary, server, "b06_boundaries")
+	for _, id := range []string{"b06-parent", "b06-child", "b06-grandchild", "b06-wait-a", "b06-wait-b"} {
+		r.create(w, binary, id, false)
+	}
+	for _, e := range []b06Edge{{"b06-child", "b06-parent", "parent-child"}, {"b06-grandchild", "b06-child", "parent-child"}} {
+		r.edge(w, binary, e, false)
+	}
+	r.refuse(w, binary, b06Edge{"b06-parent", "b06-grandchild", "parent-child"}, "cycle")
+	for _, e := range []b06Edge{{"b06-grandchild", "b06-parent", "blocks"}, {"b06-parent", "b06-grandchild", "blocks"}} {
+		r.refuse(w, binary, e, "hierarchy")
+	}
+	// Diagnostic SQL creates a waits-for/blocks loop without asserting that an
+	// ordinary scheduler accepts it. The unmodified detector must exclude it.
+	for i, e := range []b06Edge{{"b06-wait-a", "b06-wait-b", "waits-for"}, {"b06-wait-b", "b06-wait-a", "blocks"}} {
+		query := fmt.Sprintf("INSERT INTO dependencies (id,issue_id,depends_on_issue_id,type,created_by) VALUES ('b06-wait-diagnostic-%d','%s','%s','%s','b06-public-diagnostic')", i, e.From, e.To, e.Kind)
+		r.command(w, "waits-diagnostic-"+strconv.Itoa(i), binary, []string{"sql", query, "--json"}, false)
+	}
+	r.requirePaths(r.cycles(w, binary, "waits-default", false), [][]string{})
+	r.requirePaths(r.cycles(w, binary, "waits-tracks", true), [][]string{})
+	r.parallel(w, binary)
+	for _, id := range []string{"b06-count-a", "b06-count-z"} {
+		r.create(w, binary, id, false)
+	}
+	for i, e := range []b06Edge{{"b06-count-a", "b06-count-z", "blocks"}, {"b06-count-z", "b06-count-a", "blocks"}} {
+		query := fmt.Sprintf("INSERT INTO dependencies (id,issue_id,depends_on_issue_id,type,created_by) VALUES ('b06-count-diagnostic-%d','%s','%s','%s','b06-public-diagnostic')", i, e.From, e.To, e.Kind)
+		r.command(w, "count-diagnostic-"+strconv.Itoa(i), binary, []string{"sql", query, "--json"}, false)
+	}
+	r.requirePaths(r.cycles(w, binary, "count-json-limit-one", false), [][]string{{"b06-count-a", "b06-count-z"}, {"b06-parallel-a", "b06-parallel-b"}})
+	before := r.image(w, binary, "count-text-before")
+	text := r.command(w, "count-text-limit-one", binary, []string{"dep", "cycles", "--limit", "1"}, false)
+	if !bytes.Contains(text, []byte("2")) || !bytes.Contains(text, []byte("b06-count-a")) || bytes.Contains(text, []byte("b06-parallel-a")) {
+		r.t.Fatalf("native count/truncation text: %s", text)
+	}
+	if !reflect.DeepEqual(before, r.image(w, binary, "count-text-after")) {
+		r.t.Fatal("native limited text read changed state")
+	}
+	r.t.Log("B06_NATIVE_BOUNDARIES hierarchy_cycle=refused ancestor_blocker=refused waits_for=excluded count=2 limit=1 raw_order=exact")
+}
+
 func TestB06CanonicalNativeCycles(t *testing.T) {
 	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if !filepath.IsAbs(root) {
@@ -518,6 +560,7 @@ func TestB06CanonicalNativeCycles(t *testing.T) {
 			server := publicnative.StartDolt(t, dir)
 			originals = append(originals, nr.core(binary, server))
 			nr.missing(binary, server)
+			nr.boundaries(binary, server)
 		})
 	}
 	if len(originals) != 2 || !reflect.DeepEqual(originals[0], originals[1]) {
