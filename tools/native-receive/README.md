@@ -13,6 +13,40 @@ It never migrates a source or changes the input archive.
 
 Build target: `//tools/native-receive:native-receive`.
 
+A native capture set uses its complete directory as input:
+
+```sh
+native-receive --driver sqlite --target /absolute/disposable/receiving.db \
+  --capture-set /absolute/capture-set --request /absolute/receiving-request.json \
+  --expected-binary-sha256 EXACT_REVIEWED_EXECUTABLE_SHA256
+```
+
+The directory contains `capture-set.json`, `head.tar` and the declared `parts`.
+Select exactly one input form. For capture sets, the existing trusted request's
+`archive_sha256` and source plan bind the exact `capture-set.json` bytes. Supply
+all source dispositions, admission and target lifetime explicitly. This route
+accepts an external request; its policy, bindings and profile options must be
+absent. The archive-only `prepare-request` constructor remains available for
+portable archives.
+
+The capture-set route calls the production directory reader and accounted
+Bind/Restore functions, verifies every mapped snapshot and complete final
+HEAD/current census, then closes and reopens persistent drivers, recovers the
+committed receipt and repeats byte readback. Memory reacquires the same store's
+lease. A fresh disposable destination is required; SQLite publishes its staged
+file only after all checks succeed.
+
+Successful capture receipts include `capture_set_verification` and
+`capture_set_measurements`. Measurements contain decoded accounting, peak
+retained-batch bytes, ownership after release, and process RSS/HWM in bytes.
+The decoded ceiling remains 2,147,483,648 bytes with no CLI override. On refusal,
+stderr includes a `plug-native-receiving-refusal/1` JSON object with the phase,
+available decoded usage, the complete typed decoded-limit refusal when present,
+and process memory. Missing process measurements carry an explicit error.
+Process RSS includes the CLI and storage engine and has a separate domain from
+controlled decoded accounting; these metrics do not establish full allocation
+coverage or permission to switch a live store.
+
 ```sh
 native-receive --driver sqlite --target /absolute/disposable/receiving.db \
   --archive /absolute/original.tar --request /absolute/receiving-request.json \
