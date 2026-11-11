@@ -1608,6 +1608,10 @@ spec/cardb19/testdata/recording-2/imported.json
 spec/cardb20/B06-CYCLES.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/b02_native_graph.md
+spec/cardb20/b02_native_graph_test.go
+spec/cardb20/b02_native_recording_test.go
+spec/cardb20/b02_public_graph_test.go
 spec/cardb20/b06_cases_test.go
 spec/cardb20/b06_native_test.go
 spec/cardb20/b06_plug_test.go
@@ -2009,6 +2013,8 @@ tools/hostcallers/source-manifest.json
 tools/hostcallers/topology.prepared.json
 tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
+tools/lexicon/b02_recording_literals.go
+tools/lexicon/b02_recording_literals_test.go
 tools/lexicon/b07_native_protocol_literals.go
 tools/lexicon/b07_native_protocol_literals_test.go
 tools/lexicon/b07_represented_literals.go
