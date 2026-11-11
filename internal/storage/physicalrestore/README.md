@@ -145,8 +145,15 @@ revision remains separate from these structural checks.
 Both `v1-content-bag` and `d3-physical` reconstruct. V1 does not require a typed
 witness and never infers primary keys. `PrepareNativeRowUndo` is a separate
 physical-write boundary: it retains the original immutable347 and complete
-workingf791 bindings, requires D3 typed current cells, exact original user-table
-census/SQL types/order/families and unchanged reserved/view-schema evidence.
+workingf791 bindings and a privately minted `ReadNativeRowSchema` witness. That
+reader authenticates the original database/HEAD/working root and complete typed
+binding before and after collecting native PRIMARY index metadata in an explicit
+read-only transaction. It includes ignored and reserved tables. Preparation
+compares the full D3 SQL-column/type/PRIMARY-order descriptor before projecting
+to writer columns; absent or differently bound witnesses refuse. It requires D3
+typed current cells, the original table census/families and unchanged reserved
+view-schema evidence. Valid re-encoded PRIMARY addition/removal/reorder controls
+exercise this boundary separately from codec corruption controls.
 Missing typed values, schema/DDL/view intent and unavailable secret references
 refuse before the normal `Undo` call. SQL NULL, JSON `null`, integer widths,
 float bits and binary cells retain explicit tags. No CLI input format changes.

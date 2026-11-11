@@ -157,35 +157,88 @@ func publicProofImages(t *testing.T, conn *sql.Conn) (physicalcapture.Image, phy
 	return immutable, working
 }
 
-// PK ordinals come from the actual native SQL catalog at the fixture's frozen
-// schema. Missing PRIMARY rows mean authenticated keylessness only after full
-// query completion, never a column-name heuristic. All fixture edits are DML.
-func publicProofPKs(t *testing.T, conn *sql.Conn) map[string]map[string]uint64 {
+// Each stored table's PRIMARY ordinals come from its native SHOW INDEX result,
+// including reserved tables omitted by information_schema. A completed empty
+// PRIMARY set authenticates keylessness; column names never infer a key.
+func publicProofPKs(t *testing.T, conn *sql.Conn, tables []physicalcapture.Table, prefix string) map[string]map[string]uint64 {
 	t.Helper()
-	rows, err := conn.QueryContext(context.Background(), `SELECT TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND CONSTRAINT_NAME='PRIMARY' ORDER BY TABLE_NAME,ORDINAL_POSITION`)
-	if err != nil {
-		t.Fatal(err)
-	}
 	out := map[string]map[string]uint64{}
-	for rows.Next() {
-		var table, column string
-		var ordinal uint64
-		if err := rows.Scan(&table, &column, &ordinal); err != nil {
+	witness := map[string]any{}
+	for _, table := range tables {
+		rows, err := conn.QueryContext(context.Background(), "SHOW INDEX FROM `"+strings.ReplaceAll(table.Name, "`", "``")+"`")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if out[table] == nil {
-			out[table] = map[string]uint64{}
+		columns, err := rows.Columns()
+		if err != nil {
+			t.Fatal(err)
 		}
-		if ordinal == 0 {
-			t.Fatal("invalid native SQL PRIMARY ordinal")
+		indexes := map[string]int{}
+		for i, c := range columns {
+			indexes[strings.ToLower(c)] = i
 		}
-		out[table][column] = ordinal - 1
+		for _, name := range []string{"key_name", "column_name", "seq_in_index"} {
+			if _, ok := indexes[name]; !ok {
+				t.Fatalf("native SHOW INDEX %s lacks %s", table.Name, name)
+			}
+		}
+		observed := []map[string]string{}
+		out[table.Name] = map[string]uint64{}
+		for rows.Next() {
+			values := make([]any, len(columns))
+			targets := make([]any, len(columns))
+			for i := range values {
+				targets[i] = &values[i]
+			}
+			if err := rows.Scan(targets...); err != nil {
+				t.Fatal(err)
+			}
+			fields := map[string]string{}
+			for i, c := range columns {
+				if b, ok := values[i].([]byte); ok {
+					fields[c] = string(b)
+				} else {
+					fields[c] = fmt.Sprint(values[i])
+				}
+			}
+			observed = append(observed, fields)
+			text := func(name string) string {
+				v := values[indexes[name]]
+				if b, ok := v.([]byte); ok {
+					return string(b)
+				}
+				return fmt.Sprint(v)
+			}
+			if text("key_name") != "PRIMARY" {
+				continue
+			}
+			ordinal, err := strconv.ParseUint(text("seq_in_index"), 10, 64)
+			if err != nil || ordinal == 0 {
+				t.Fatal("invalid native PRIMARY ordinal")
+			}
+			column := text("column_name")
+			if _, duplicate := out[table.Name][column]; duplicate {
+				t.Fatal("duplicate native PRIMARY column")
+			}
+			out[table.Name][column] = ordinal - 1
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		witness[table.Name] = map[string]any{"columns": columns, "all_native_index_rows": observed, "zero_based_primary_ordinals": out[table.Name]}
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"issues", "public_cells"} {
+		if ordinal, ok := out[name]["id"]; !ok || ordinal != 0 {
+			t.Fatalf("actual native PK witness missing for %s.id", name)
+		}
 	}
+	if len(out["public_keyless"]) != 0 {
+		t.Fatal("keyless public fixture unexpectedly has a PRIMARY")
+	}
+	saveEvidence(t, prefix+"-expected-native-index-witness.json", witness)
 	return out
 }
+
 func publicProofNormalized(t *testing.T, table physicalcapture.Table) dumpformat.NativeTable {
 	t.Helper()
 	out := dumpformat.NativeTable{Columns: []string{}, Rows: []dumpformat.Row{}}
@@ -312,13 +365,13 @@ func publicProofGroup(t *testing.T, table physicalcapture.Table, history, kind s
 	}
 	return nativeBinding(t, nativeProofIdentity, table.Name, history, kind, normalized, records, physical), records, expected
 }
-func publicProofReadback(t *testing.T, engine, kind string, immutable physicalcapture.Image, working physicalcapture.WorkingImage, pks map[string]map[string]uint64, prefix string) NativeRowReadback {
+func publicProofReadback(t *testing.T, engine, kind string, immutable physicalcapture.Image, working physicalcapture.WorkingImage, pks map[string]map[string]uint64, prefix string, currentPKs ...map[string]map[string]uint64) NativeRowReadback {
 	t.Helper()
 	census := []NativeTableBinding{}
 	records := []driver.Record{}
 	expected := [][]byte{}
-	add := func(table physicalcapture.Table, history string) {
-		b, r, e := publicProofGroup(t, table, history, kind, pks)
+	add := func(table physicalcapture.Table, history string, keys map[string]map[string]uint64) {
+		b, r, e := publicProofGroup(t, table, history, kind, keys)
 		census = append(census, b)
 		records = append(records, r...)
 		expected = append(expected, e)
@@ -326,7 +379,7 @@ func publicProofReadback(t *testing.T, engine, kind string, immutable physicalca
 	versioned := map[string]bool{}
 	for _, table := range immutable.Tables {
 		versioned[table.Name] = true
-		add(table, "retained-native-commit")
+		add(table, "retained-native-commit", pks)
 	}
 	for _, table := range working.Tables {
 		history := dumpformat.FamilyUnversioned
@@ -336,7 +389,11 @@ func publicProofReadback(t *testing.T, engine, kind string, immutable physicalca
 		if strings.HasPrefix(strings.ToLower(table.Name), "dolt_") {
 			history = dumpformat.NativeRowOpaqueCurrentHistory
 		}
-		add(table, history)
+		keys := pks
+		if len(currentPKs) != 0 {
+			keys = currentPKs[0]
+		}
+		add(table, history, keys)
 	}
 	// Expected old-table source envelopes are frozen before reconstruction.
 	for i, body := range expected {
@@ -354,12 +411,14 @@ func publicProofReadback(t *testing.T, engine, kind string, immutable physicalca
 	return r
 }
 
-func publicProofSource(t *testing.T) (string, SourceBinding, physicalcapture.Image, physicalcapture.WorkingImage, []physicalcapture.Image) {
+func publicProofSource(t *testing.T, prefix string) (string, SourceBinding, NativeRowSchema, physicalcapture.Image, physicalcapture.WorkingImage, []physicalcapture.Image) {
 	t.Helper()
 	_, conn, directory, release := restoreDB(t, true)
 	for _, ddl := range []string{
 		"CREATE TABLE public_cells (id BIGINT PRIMARY KEY, sql_null JSON, json_null JSON, opaque BLOB, unsigned_value BIGINT UNSIGNED, narrow_value TINYINT, f32 FLOAT, f64 DOUBLE)",
 		"CREATE TABLE public_keyless (value TEXT)",
+		"CREATE TABLE public_no_key_empty (value BIGINT)",
+		"CREATE TABLE public_composite (a BIGINT, b BIGINT, value TEXT, PRIMARY KEY (b,a))",
 		"CREATE TABLE public_empty (id INT PRIMARY KEY)",
 		"CREATE TABLE public_children (id INT PRIMARY KEY, parent_id BIGINT, CONSTRAINT public_fk FOREIGN KEY(parent_id) REFERENCES public_cells(id))",
 	} {
@@ -369,6 +428,7 @@ func publicProofSource(t *testing.T) (string, SourceBinding, physicalcapture.Ima
 	execSQL(t, conn, `INSERT INTO wisps(id,title,agent_state,timeout_ns,payload) VALUES ('public-current-row','original current row','working',9007199254740993,'{"null":null}')`)
 	execSQL(t, conn, "INSERT INTO public_cells VALUES(1,NULL,CAST('null' AS JSON),?,18446744073709551615,-12,1.5,2.25)", []byte{0, 255, 7})
 	execSQL(t, conn, "INSERT INTO public_children VALUES(1,1)")
+	execSQL(t, conn, "INSERT INTO public_composite VALUES(7,8,'composite')")
 	execSQL(t, conn, "INSERT INTO public_keyless VALUES('old'),('old'),(NULL)")
 	execSQL(t, conn, "INSERT INTO public_empty VALUES(1)")
 	execSQL(t, conn, "CALL DOLT_ADD('.')")
@@ -383,6 +443,26 @@ func publicProofSource(t *testing.T) (string, SourceBinding, physicalcapture.Ima
 	if err != nil {
 		t.Fatal(err)
 	}
+	schema, err := ReadNativeRowSchema(context.Background(), conn, binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Independent raw catalog observations authenticate the ORIGINAL fixture
+	// descriptors, separate from the production witness and desired records.
+	pks := publicProofPKs(t, conn, working.Tables, prefix+"-ORIGINAL")
+	for _, table := range working.Tables {
+		columns := schema.columns[table.Name]
+		if len(columns) != len(table.Columns) {
+			t.Fatal("original schema witness lacks complete table")
+		}
+		for i, col := range columns {
+			ordinal, hasPK := pks[table.Name][col.Name]
+			if col.Name != table.Columns[i].Name || col.SQLType != table.Columns[i].DatabaseTypeName || hasPK != (col.PrimaryKeyOrdinal != nil) || hasPK && ordinal != *col.PrimaryKeyOrdinal {
+				t.Fatalf("original descriptor differs from independent native catalog at %s.%s", table.Name, col.Name)
+			}
+		}
+	}
+	saveEvidence(t, prefix+"-ORIGINAL-schema-authority.json", map[string]any{"source_sha256": schema.sourceSHA256, "database": working.Database, "head": working.HeadCommitID, "working_root": working.WorkingRootHash, "complete_original_columns": schema.columns})
 	prior, err := physicalcapture.ReadCommit(context.Background(), conn, first)
 	if err != nil {
 		t.Fatal(err)
@@ -390,7 +470,7 @@ func publicProofSource(t *testing.T) (string, SourceBinding, physicalcapture.Ima
 	if err := release(); err != nil {
 		t.Fatal(err)
 	}
-	return directory, binding, immutable, working, []physicalcapture.Image{prior, immutable}
+	return directory, binding, schema, immutable, working, []physicalcapture.Image{prior, immutable}
 }
 
 func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
@@ -398,7 +478,7 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			prefix := "row-undo-" + mode
-			source, binding, sourceImmutable, sourceWorking, selected := publicProofSource(t)
+			source, binding, schema, sourceImmutable, sourceWorking, selected := publicProofSource(t, prefix)
 			originalFiles, err := InventoryPreservedStore(ctx, source)
 			if err != nil {
 				t.Fatal(err)
@@ -424,6 +504,10 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 			publicProofFile(t, prefix+"-source-immutable.json", publicProofBytes(t, publicProofManifest(t, sourceImmutable.Tables)))
 			publicProofFile(t, prefix+"-source-working.json", publicProofBytes(t, publicProofManifest(t, sourceWorking.Tables)))
 			saveEvidence(t, prefix+"-source-binding.json", binding)
+			saveEvidence(t, prefix+"-source-selected-native-images.json", selected)
+			for i, image := range selected {
+				publicProofFile(t, fmt.Sprintf("%s-EXPECTED-preserved-commit%d.json", prefix, i), publicProofBytes(t, publicProofManifest(t, image.Tables)))
+			}
 			// Independently authored native DML recipe. This is ordinary SQL on the
 			// EXPECTED preserved copy, before either old or row adapter/Undo executes.
 			expectedConn, closeExpected := undoOpen(t, targets["expected"])
@@ -447,7 +531,10 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 			execSQL(t, expectedConn, "CALL DOLT_ADD('.')")
 			execSQL(t, expectedConn, "CALL DOLT_COMMIT('--allow-empty','-Am','independent public expected state')")
 			expectedImmutable, expectedWorking := publicProofImages(t, expectedConn)
-			pks := publicProofPKs(t, expectedConn)
+			if _, err := ReadNativeRowSchema(ctx, expectedConn, binding); err == nil {
+				t.Fatal("schema witness accepted a non-original HEAD/root")
+			}
+			pks := publicProofPKs(t, expectedConn, expectedWorking.Tables, prefix)
 			expectedComplete := publicProofManifest(t, expectedWorking.Tables)
 			expectedUser := publicProofProjection(expectedComplete, false)
 			expectedCurrentBytes := publicProofBytes(t, expectedUser)
@@ -494,11 +581,12 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 			}
 			v1 := publicProofReadback(t, "memory", dumpformat.NativeRowV1ContentBag, sourceImmutable, expectedWorking, pks, prefix+"-v1-write-refusal")
 			report := []byte(" {\n  \"lost_post_switch_history\": [\"public fixture; actual Plug loss census not supplied\"],\n  \"core_kind_losses\": [], \"namespace_losses\": [], \"warnings\": []\n}\n")
-			if _, err := PrepareNativeRowUndo(binding, nativeProofIdentity, v1, report); err == nil {
+			publicProofFile(t, prefix+"-EXPECTED-original-loss-report.json", report)
+			if _, err := PrepareNativeRowUndo(binding, schema, nativeProofIdentity, v1, report); err == nil {
 				t.Fatal("untyped v1 was promoted to physical permission")
 			}
 			rows := publicProofReadback(t, "sqlite", dumpformat.NativeRowD3Physical, sourceImmutable, expectedWorking, pks, prefix+"-v2-current")
-			rowRequest, err := PrepareNativeRowUndo(binding, nativeProofIdentity, rows, report)
+			rowRequest, err := PrepareNativeRowUndo(binding, schema, nativeProofIdentity, rows, report)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -515,7 +603,8 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 				publicProofEqual(t, prefix+"-"+name+"-current-request.json", expectedCurrentBytes, actual)
 				saveEvidence(t, prefix+"-"+name+"-request.json", request)
 			}
-			publicProofPrepareRefusals(t, binding, rows, report)
+			publicProofPrepareRefusals(t, binding, schema, rows, report)
+			publicProofPrimaryKeyRefusals(t, binding, schema, sourceImmutable, expectedWorking, pks, report, prefix)
 			saveEvidence(t, prefix+"-writer-start.json", map[string]any{"expected_files_already_frozen": true, "expected_native_store_closed": true, "expected_inventory": expectedInventory.SHA256, "original_copies": copies, "selected_source_commits": []string{selected[0].CommitID, selected[1].CommitID}})
 			// Real consumer: the new row/meta readback has replaced Current and now
 			// reaches the unchanged normal Undo storage transaction, not a codec-only
@@ -592,7 +681,7 @@ func TestNativeRowUndoIndependentPublicNativeBytes(t *testing.T) {
 	}
 }
 
-func publicProofPrepareRefusals(t *testing.T, source SourceBinding, readback NativeRowReadback, report []byte) {
+func publicProofPrepareRefusals(t *testing.T, source SourceBinding, schema NativeRowSchema, readback NativeRowReadback, report []byte) {
 	t.Helper()
 	clone := func() NativeRowReadback {
 		r := NativeRowReadback{tables: append([]nativeRebuiltTable{}, readback.tables...)}
@@ -660,13 +749,67 @@ func publicProofPrepareRefusals(t *testing.T, source SourceBinding, readback Nat
 		t.Run(test.name, func(t *testing.T) {
 			r := clone()
 			test.change(&r)
-			_, err := PrepareNativeRowUndo(source, nativeProofIdentity, r, report)
+			_, err := PrepareNativeRowUndo(source, schema, nativeProofIdentity, r, report)
 			var failure *Error
 			if !errors.As(err, &failure) {
 				t.Fatalf("typed pre-SQL refusal missing: %v", err)
 			}
 			if test.name == "unavailable_secret" && (failure.Table != "public_cells" || failure.Column != "id" || failure.Row != 0) {
 				t.Fatalf("lost native field/row refusal: %+v", failure)
+			}
+		})
+	}
+}
+
+func publicProofPrimaryKeyRefusals(t *testing.T, source SourceBinding, schema NativeRowSchema, immutable physicalcapture.Image, working physicalcapture.WorkingImage, pks map[string]map[string]uint64, report []byte, prefix string) {
+	t.Helper()
+	tests := []struct {
+		name, table string
+		keys        map[string]uint64
+	}{
+		{"remove_versioned_primary", "public_cells", map[string]uint64{}},
+		{"remove_unversioned_primary", "wisps", map[string]uint64{}},
+		{"add_empty_keyless_primary", "public_no_key_empty", map[string]uint64{"value": 0}},
+		{"reorder_composite_primary", "public_composite", map[string]uint64{"a": 0, "b": 1}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			keys := make(map[string]map[string]uint64, len(pks))
+			for name, original := range pks {
+				keys[name] = original
+			}
+			keys[test.table] = test.keys
+			// Re-encode every Ref/meta/row/hash consistently and pass the actual
+			// codec and storage readback. Only the desired current schema changes;
+			// retained original commit descriptors keep their original witness.
+			readback := publicProofReadback(t, "memory", dumpformat.NativeRowD3Physical, immutable, working, pks, prefix+"-pk-"+test.name, keys)
+			_, err := PrepareNativeRowUndo(source, schema, nativeProofIdentity, readback, report)
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Kind != "native-row-schema" || failure.Table != test.table {
+				t.Fatalf("valid re-encoded desired PRIMARY change lacked typed pre-SQL refusal: %v", err)
+			}
+			t.Logf("NATIVE_UNDO_PK_REFUSAL case=%s table=%s codec_valid=true original_schema_bound=true before_SQL=true", test.name, test.table)
+		})
+	}
+	readback := publicProofReadback(t, "memory", dumpformat.NativeRowD3Physical, immutable, working, pks, prefix+"-schema-witness-controls")
+	for _, name := range []string{"absent", "wrong_source", "missing_unversioned_table"} {
+		t.Run("schema_authority_"+name, func(t *testing.T) {
+			wrong := NativeRowSchema{sourceSHA256: schema.sourceSHA256, columns: make(map[string][]dumpformat.NativeDeltaColumn, len(schema.columns))}
+			for table, cols := range schema.columns {
+				wrong.columns[table] = cols
+			}
+			switch name {
+			case "absent":
+				wrong = NativeRowSchema{}
+			case "wrong_source":
+				wrong.sourceSHA256 = strings.Repeat("0", 64)
+			case "missing_unversioned_table":
+				delete(wrong.columns, "wisps")
+			}
+			_, err := PrepareNativeRowUndo(source, wrong, nativeProofIdentity, readback, report)
+			var failure *Error
+			if !errors.As(err, &failure) || failure.Kind != "native-row-schema" {
+				t.Fatalf("missing/unbound original schema authority accepted: %v", err)
 			}
 		})
 	}

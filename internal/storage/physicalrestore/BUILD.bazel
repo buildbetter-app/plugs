@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "physicalrestore",
     tags = ["manual"],
-    srcs = ["binding.go", "copy.go", "manifest.go", "native_rows.go", "undo.go"],
+    srcs = ["binding.go", "copy.go", "manifest.go", "native_rows.go", "native_schema.go", "undo.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/physicalrestore",
     visibility = ["//:__subpackages__"],
     deps = [

@@ -200,13 +200,16 @@ func ReadNativeRowTables(ctx context.Context, reader driver.Reader, census []Nat
 // PrepareNativeRowUndo retains the writer's original two typed capture ports.
 // V1 reconstruction succeeds independently; absent typed v1 cells refuse here.
 // Reserved view/schema evidence is compared exactly and never sent for writes.
-// Desired DDL, table census or SQL column/type changes refuse before Undo runs.
-func PrepareNativeRowUndo(source SourceBinding, identity dumpformat.SourceIdentity, readback NativeRowReadback, report []byte) (UndoRequest, error) {
+// Desired DDL, table census, SQL columns/types and PRIMARY changes refuse before Undo runs.
+func PrepareNativeRowUndo(source SourceBinding, schema NativeRowSchema, identity dumpformat.SourceIdentity, readback NativeRowReadback, report []byte) (UndoRequest, error) {
 	if err := validateBinding(source); err != nil {
 		return UndoRequest{}, err
 	}
 	if source.Working == nil {
 		return UndoRequest{}, &Error{Kind: "source-completeness", Row: -1, Cause: errors.New("complete same-source typed working port required")}
+	}
+	if schema.sourceSHA256 != source.SHA256 || len(schema.columns) != len(source.Working.Image.Tables) {
+		return UndoRequest{}, nativeSchemaError("", "*", "complete independently observed original-root schema authority required")
 	}
 	versioned := map[string]bool{}
 	for _, table := range source.Image.Tables {
@@ -243,6 +246,9 @@ func PrepareNativeRowUndo(source SourceBinding, identity dumpformat.SourceIdenti
 		}
 		if group.meta.History != wantHistory {
 			return UndoRequest{}, nativeReadError(name, "current history class differs from original typed table family")
+		}
+		if originalColumns, present := schema.columns[name]; !present || !sameNativeColumns(originalColumns, group.meta.PhysicalColumns) {
+			return UndoRequest{}, nativeSchemaError(name, "*", "desired column/SQL type/PRIMARY descriptor differs from original exact-root schema")
 		}
 		table := Table{Name: name, Columns: make([]Column, len(group.meta.PhysicalColumns)), Rows: make([][]Cell, len(group.rows))}
 		for i, col := range group.meta.PhysicalColumns {
