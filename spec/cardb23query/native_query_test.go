@@ -431,4 +431,9 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 		})
 	}
 	n.save("native-plug-disposition.json", map[string]any{"native_source": pinnedSource, "native_ordered_sql": json.RawMessage(sql), "native_ordered_http_ids": got, "native_natural_cli_ids": ids, "plug_sort_contract": "surfaces.md: Existing title matching and sorting stay unchanged", "native_count_exclusion": "typed unknown_parameter", "native_status_or_count": 0, "native_source_history_claim": false, "official_admission": "UNSPENT"})
+	t.Run("native-exact-20000-and-20001-cap", func(t *testing.T) {
+		n.t = t
+		defer func() { n.t = r.t }()
+		n.exactCap()
+	})
 }
