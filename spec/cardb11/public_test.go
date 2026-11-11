@@ -339,7 +339,11 @@ func TestB11PublicNestedMetadataAndTypedEndpointConflict(t *testing.T) {
 			from, to, sibling := h.Create("nested source"), h.Create("nested target"), h.Create("nested sibling")
 			original := metadata(` {"outer":{"alpha":{"deep":[{"x":1.0,"y":"v"}],"nil":null},"beta":[true,{"z":2e+0}]},"array":[{"q":[1,2,3]}],"n":9007199254740993} `)
 			params := func(kind string, value *model.LinkMetadata) map[string]any {
-				return map[string]any{"from": from, "to": to, "kind": kind, "metadata": value}
+				params := map[string]any{"from": from, "to": to, "kind": kind}
+				if value != nil {
+					params["metadata"] = value
+				}
+				return params
 			}
 			first := h.Call("bead.link", "nested-initial", params("related", original), "")
 			publicEdge(t, h, from, to, "related", original)

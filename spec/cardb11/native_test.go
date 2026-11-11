@@ -57,7 +57,7 @@ func nativeDependencyID(issueID, target string) string {
 	digest := h.Sum(nil)
 	digest[6] = (digest[6] & 0x0f) | 0x50
 	digest[8] = (digest[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%s", digest[0:4], digest[4:6], digest[6:8], digest[8:10], hex.EncodeToString(digest[10:]))
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%s", digest[0:4], digest[4:6], digest[6:8], digest[8:10], hex.EncodeToString(digest[10:16]))
 }
 
 func b11JSON(t *testing.T, path string, value any) {
