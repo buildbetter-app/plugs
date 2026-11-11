@@ -79,8 +79,12 @@ func b24RecordTimerSource(t *testing.T, r *nativeRecorder, binary, exporter stri
 	})
 	// Use only the existing capture recipe, on the same quiescent public store.
 	// This is neither a new producer nor official/trusted bundle admission.
-	inventoryPath := filepath.Join(r.root, "timer-inventory.json")
-	archivePath := filepath.Join(r.root, "timer-native-dump.tar")
+	captureRoot := filepath.Join(r.root, "timer-capture")
+	if err := os.Mkdir(captureRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	inventoryPath := filepath.Join(captureRoot, "timer-inventory.json")
+	archivePath := filepath.Join(captureRoot, "timer-native-dump.tar")
 	n.conserved("timer-readonly-capture", func() {
 		capture := *n
 		capture.binary = exporter
@@ -167,7 +171,7 @@ func TestB24CanonicalNativeDueDeferImportDurable(t *testing.T) {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(checkout) {
 		t.Fatal("RunsOn checkout/output binding required")
 	}
-	r := &nativeRecorder{t: t, root: root, target: "//cmd/bd:bd"}
+	r := &nativeRecorder{t: t, root: root}
 	for _, key := range []string{"PLUG_B24_REQUEST_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"} {
 		if os.Getenv(key) == "" {
 			t.Fatalf("missing request/control %s", key)
@@ -181,6 +185,13 @@ func TestB24CanonicalNativeDueDeferImportDurable(t *testing.T) {
 	if err != nil || hashBytes(input) != "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2" {
 		t.Fatal("unchanged canonical input protocol differs")
 	}
+	var protocol struct {
+		ExporterLabel string `json:"exporter_label"`
+	}
+	if json.Unmarshal(input, &protocol) != nil || protocol.ExporterLabel == "" {
+		t.Fatal("existing canonical executable label missing")
+	}
+	r.target = protocol.ExporterLabel
 	r.writeJSON(filepath.Join(root, "timer-request-run-binding.json"), map[string]any{"candidate": head, "run": os.Getenv("GITHUB_RUN_ID"), "attempt": os.Getenv("GITHUB_RUN_ATTEMPT"), "workflow_sha": os.Getenv("GITHUB_SHA"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"), "native_source": pinnedSource, "capture_source": b24TimerCaptureSource, "shared_recipe_sha256": "0003df7485b16dc2ad3ace5533194f47b748ab15319e13698365ec562798c87b"})
 	binary := r.buildCanonicalSource(pinnedSource)
 	exporter := r.buildCanonicalSource(b24TimerCaptureSource)

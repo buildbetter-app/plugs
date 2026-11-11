@@ -78,6 +78,43 @@ func b24TimerSource(t *testing.T, data []byte, want b24TimerOracle) dumpformat.R
 	return dumpformat.Record{}
 }
 
+func b24TimerReopen(t *testing.T, f *fixture, application *testclock.Clock, id, phase string) {
+	t.Helper()
+	before := b24ReadSnapshot(t, f)
+	epoch := f.lease.Epoch()
+	b24ReopenClocks(t, f, application)
+	after := b24ReadSnapshot(t, f)
+	sameState(t, before.Logical, after.Logical)
+	if f.engine == "memory" {
+		if f.lease.Epoch() != epoch || !reflect.DeepEqual(before, after) {
+			t.Fatal("same-store memory readback changed state or lease")
+		}
+		return
+	}
+	// An explicit release/close/open reacquires this fixture's owned lease.
+	// That row must change; every content/history/receipt/derived row must not.
+	leaseTable := "active_lease"
+	if f.engine == "postgres" {
+		leaseTable = "lease"
+	}
+	if f.lease.Epoch() != epoch+1 || len(before.Physical[leaseTable]) != 1 || len(after.Physical[leaseTable]) != 1 || reflect.DeepEqual(before.Physical[leaseTable], after.Physical[leaseTable]) {
+		t.Fatal("SQL reopen did not acquire exactly the next owned lease epoch")
+	}
+	if len(before.Physical) != len(after.Physical) {
+		t.Fatal("SQL reopen changed physical table set")
+	}
+	for table, rows := range before.Physical {
+		if table != leaseTable && !reflect.DeepEqual(rows, after.Physical[table]) {
+			t.Fatalf("SQL reopen changed physical content table %s", table)
+		}
+	}
+	b24Retain(t, fmt.Sprintf("%s-%s-%s-reopen.json", id, f.engine, phase), map[string]any{
+		"before": before, "after": after, "owned_lease_table": leaseTable,
+		"prior_lease_epoch": epoch, "new_lease_epoch": f.lease.Epoch(),
+	})
+	t.Logf("B24_TIMER_SQL_REOPEN engine=%s phase=%s prior_epoch=%d new_epoch=%d conserved_tables=%d", f.engine, phase, epoch, f.lease.Epoch(), len(before.Physical)-1)
+}
+
 func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOracle) {
 	t.Helper()
 	source := b24TimerSource(t, data, want)
@@ -214,11 +251,7 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 	if !errors.As(err, &truncated) || truncated.Floor != model.Natural64(1) {
 		t.Fatalf("snapshot floor was hidden: %v", err)
 	}
-	before := b24ReadSnapshot(t, f)
-	b24ReopenClocks(t, f, application)
-	if !reflect.DeepEqual(before, b24ReadSnapshot(t, f)) {
-		t.Fatal("initial SQL reopen changed imported physical state")
-	}
+	b24TimerReopen(t, f, application, want.ID, "initial")
 	if _, err := converterroundtrip.RecoverImport(f.ctx, f.store, profile, check); err != nil {
 		t.Fatalf("reopened import receipt: %v", err)
 	}
@@ -264,7 +297,8 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 				"_meta": map[string]any{"project": want.Project},
 			}
 			ids, next := staleIDs(t, f.call("view.run", "imported-stale-"+boundary.name, query))
-			count := staleCount(t, f.call("view.count", "imported-stale-count-"+boundary.name, query))
+			query["countOnly"] = true
+			count := staleCount(t, f.call("view.run", "imported-stale-count-"+boundary.name, query))
 			wanted := []string{}
 			if boundary.name == "after" {
 				wanted = []string{want.ID}
@@ -290,20 +324,12 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 				}
 			}
 		})
-		before := b24ReadSnapshot(t, f)
-		b24ReopenClocks(t, f, application)
-		if !reflect.DeepEqual(before, b24ReadSnapshot(t, f)) {
-			t.Fatal("boundary SQL reopen changed imported state")
-		}
+		b24TimerReopen(t, f, application, want.ID, boundary.name)
 		read("imported-target-"+boundary.name+"-reopened", updated, "backlog", 1)
 	}
 	commit(t, f.call("bead.reopen", "imported-explicit-reopen", params(nil)))
 	read("imported-explicit-reopened", updated, "todo", 1)
-	before = b24ReadSnapshot(t, f)
-	b24ReopenClocks(t, f, application)
-	if !reflect.DeepEqual(before, b24ReadSnapshot(t, f)) {
-		t.Fatal("final SQL reopen changed timer provenance")
-	}
+	b24TimerReopen(t, f, application, want.ID, "final")
 	read("imported-final-durable", updated, "todo", 1)
 	conserve("imported-final-ready", func() {
 		got := f.call("bead.ready", "imported-final-ready", map[string]any{"limit": 100, "_meta": map[string]any{"project": want.Project}})
