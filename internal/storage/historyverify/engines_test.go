@@ -631,16 +631,26 @@ func verifyPublished(t *testing.T, e *engine, f fixture, r driver.OfflineHistory
 			t.Fatalf("final image %s: %+v %v", want.Ref.ID, got, err)
 		}
 	}
-	entries, err := reader.Changesets(ctx, nil, 10000)
+	var cursor *driver.Cursor
+	floor, _ := meta.HistoryFloor.Uint64()
+	if floor != 0 {
+		_, err := reader.Changesets(ctx, nil, 10000)
+		var truncated driver.ErrTruncated
+		if !errors.As(err, &truncated) || truncated.Floor != meta.HistoryFloor {
+			t.Fatalf("below-floor log cursor: %v", err)
+		}
+		cursor = &driver.Cursor{Incarnation: meta.Incarnation, Method: "changesets", Revision: meta.HistoryFloor}
+	}
+	entries, err := reader.Changesets(ctx, cursor, 10000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	head, _ := meta.Head.Uint64()
-	if uint64(len(entries)) != head {
-		t.Fatalf("complete log: %d want%d", len(entries), head)
+	if uint64(len(entries)) != head-floor {
+		t.Fatalf("complete retained log: %d want%d", len(entries), head-floor)
 	}
 	for i, entry := range entries {
-		if entry.Revision != model.Natural64(uint64(i+1)) || !entry.Time.Equal(r.When) || !reflect.DeepEqual(entry.Principal, r.Profile.Admission.Actor) || entry.Incarnation != meta.Incarnation || entry.Kind != model.ChangesetRestore {
+		if entry.Revision != model.Natural64(floor+uint64(i+1)) || !entry.Time.Equal(r.When) || !reflect.DeepEqual(entry.Principal, r.Profile.Admission.Actor) || entry.Incarnation != meta.Incarnation || entry.Kind != model.ChangesetRestore {
 			t.Fatalf("attribution/order: %+v", entry)
 		}
 	}
@@ -814,6 +824,15 @@ func TestStreamingEnginePartialBaselineFloorAndExactGaps(t *testing.T) {
 			t.Fatalf("partial metadata: %+v", c.Meta)
 		}
 		verifyPublished(t, e, f, r, c.Meta, h)
+		baselineReader, err := e.store.Read(context.Background(), driver.View{Incarnation: c.Meta.Incarnation, At: &c.Meta.HistoryFloor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		baselineRows, err := baselineReader.Get(context.Background(), []driver.Ref{aRecord.Ref})
+		_ = baselineReader.Close()
+		if err != nil || len(baselineRows) != 1 || !bytes.Equal(baselineRows[0].Body, aRecord.Body) || baselineRows[0].Revision != model.Natural64(1) {
+			t.Fatalf("exact proven baseline: %+v %v", baselineRows, err)
+		}
 		zero := model.Natural64(0)
 		_, err = e.store.Read(context.Background(), driver.View{Incarnation: c.Meta.Incarnation, At: &zero})
 		var truncated driver.ErrTruncated
