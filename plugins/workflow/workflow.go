@@ -2685,7 +2685,7 @@ func (p *Provider) GetWithResolver(ctx context.Context, by model.PrincipalRef, i
 	if err := p.authorized(item, by, meta); err != nil {
 		return ItemView{}, err
 	}
-	view := itemViewAt(item, p.now())
+	view := p.itemViewIn(value, item)
 	view.Blocked, err = itemBlockedWithResolver(ctx, value, item, by, meta, resolver)
 	return view, err
 }

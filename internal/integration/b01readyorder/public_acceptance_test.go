@@ -25,8 +25,8 @@ import (
 
 // This fixture creates every work item and relationship through public RPC.
 // Only the host ontology, clock and deterministic root-ID source are configured
-// directly. SQL workflow providers use the driver's real restart capability.
-// The frozen workflow contract requires memory hosts to omit that provider.
+// directly. The workflow provider uses the selected driver's actual lifetime;
+// memory remains process-local and SQL checkpoints survive actual close/open.
 type publicAcceptance struct {
 	*fixture
 	engine       string
@@ -95,7 +95,9 @@ func publicAcceptanceOntology(t *testing.T) *service.Ontology {
 	native.Name, native.Workflow = "Native work", "native-work"
 	d.Types["native-work"] = native
 	no := false
-	d.Types["infrastructure"] = ontology.Type{Name: "Hidden infrastructure", Workflow: "issue", ReadyEligible: &no}
+	infrastructure := d.Types["issue"]
+	infrastructure.Name, infrastructure.ReadyEligible = "Hidden infrastructure", &no
+	d.Types["infrastructure"] = infrastructure
 	snapshot, problems := ontology.Compile(d, nil, nil)
 	if len(problems) != 0 {
 		t.Fatalf("public B01 ontology: %+v", problems)
@@ -105,9 +107,6 @@ func publicAcceptanceOntology(t *testing.T) *service.Ontology {
 
 func newPublicAcceptance(t *testing.T, engine string, withWorkflow bool) *publicAcceptance {
 	t.Helper()
-	if engine == "memory" && withWorkflow {
-		t.Fatal("workflow-contract.md requires memory's public ephemeral refusal")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 	at := time.Date(2026, 11, 3, 12, 0, 0, 123456000, time.UTC)
@@ -177,6 +176,15 @@ func (p *publicAcceptance) bind(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		wantLifetime, wantPersistent := driver.CheckpointLifetimeRestart, true
+		if p.engine == "memory" {
+			wantLifetime, wantPersistent = driver.CheckpointLifetimeProcess, false
+		}
+		marker, ok := state.(interface{ Persistent() bool })
+		if !ok || marker.Persistent() != wantPersistent || checkpoints.WorkflowCheckpointLifetime() != wantLifetime {
+			t.Fatalf("workflow runtime changed selected-store lifetime: engine=%s lifetime=%s want=%s persistent=%v marker=%t", p.engine, checkpoints.WorkflowCheckpointLifetime(), wantLifetime, state, ok)
+		}
+		t.Logf("B01 workflow_lifetime engine=%s checkpoint_lifetime=%s persistent=%t", p.engine, wantLifetime, marker.Persistent())
 		provider, err := workflowplugin.New(state)
 		if err != nil {
 			t.Fatal(err)
@@ -444,7 +452,7 @@ func (p *publicAcceptance) workflowReadback(t *testing.T) {
 }
 
 func TestB01PositiveDurableAndEphemeralMembershipPrecedesEveryPage(t *testing.T) {
-	for _, engine := range []string{"sqlite_wal", "postgres"} {
+	for _, engine := range []string{"memory", "sqlite_wal", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			p := newPublicAcceptance(t, engine, true)
 			blocker := p.create(t, "mixed-blocker", "issue", "in_progress", 0, nil)
@@ -470,7 +478,7 @@ func TestB01PositiveDurableAndEphemeralMembershipPrecedesEveryPage(t *testing.T)
 }
 
 func TestB01MixedParentAndPriorityFiltersUseCompleteAncestryBeforePage(t *testing.T) {
-	for _, engine := range []string{"sqlite_wal", "postgres"} {
+	for _, engine := range []string{"memory", "sqlite_wal", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			p := newPublicAcceptance(t, engine, true)
 			root := p.create(t, "mixed-root", "issue", "", 4, nil)
@@ -488,7 +496,7 @@ func TestB01MixedParentAndPriorityFiltersUseCompleteAncestryBeforePage(t *testin
 			linkParams := map[string]any{"from": underWorkflow, "to": workflowParent, "kind": "parent-child", "_meta": map[string]any{"project": project, "idempotencyKey": fixtureKey("ordinary-under-workflow-parent")}}
 			link := p.call(t, "bead.link", linkParams)
 			var linked model.Commit
-			if link.Error != nil || json.Unmarshal(link.Result, &linked) != nil || !linked.Revision.IsZero() || len(linked.Results) != 1 || linked.Results[0].Ref != workflowParent || linked.Results[0].Revision.String() != "2" {
+			if link.Error != nil || json.Unmarshal(link.Result, &linked) != nil || !linked.Revision.IsZero() || len(linked.Results) != 1 || linked.Results[0].Ref != workflowParent || linked.Results[0].Revision.String() != "1" {
 				t.Fatalf("public mixed link lost its actual plugin commit: error=%+v result=%s", link.Error, link.Result)
 			}
 			// This public link writes an inbound provider relation, independently
@@ -517,22 +525,4 @@ func TestB01MixedParentAndPriorityFiltersUseCompleteAncestryBeforePage(t *testin
 			}
 		})
 	}
-}
-
-func TestB01MemoryEphemeralRefusalConservesOrdinaryReady(t *testing.T) {
-	// Frozen engdocs/plug-runtime/workflow-contract.md:59-65 requires a
-	// memory host to keep invocation registered but omit the ephemeral provider.
-	p := newPublicAcceptance(t, "memory", false)
-	parent := p.create(t, "memory-parent", "issue", "in_progress", 0, nil)
-	child := p.create(t, "memory-child", "issue", "", 2, &parent)
-	before, checkpoint, receipts := p.state(t), p.checkpoint(t), p.receipts(t)
-	key := "memory-refused-invoke"
-	response := p.call(t, "x.workflow.invoke", map[string]any{"template": "memory-refusal", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "unpublished", "title": "must remain absent", "type": "issue", "parent": parent, "fields": map[string]any{"priority": 0}}}, "_meta": map[string]any{"project": project, "idempotencyKey": fixtureKey(key)}})
-	if response.Error == nil || response.Error.Data.Code != "plugin_durable_state_unavailable" || len(response.Result) != 0 {
-		t.Fatalf("memory lost the exact public contract refusal: %+v", response)
-	}
-	if !reflect.DeepEqual(before, p.state(t)) || !reflect.DeepEqual(checkpoint, p.checkpoint(t)) || !reflect.DeepEqual(receipts, p.receipts(t)) || connectedReceipt(t, p.fixture, "x.workflow.invoke", "", key) != nil {
-		t.Fatal("refused memory invocation published source, rank, history, head, checkpoint, receipt or notification")
-	}
-	p.point(t, "memory-refusal-keeps-ordinary-parent-priority-pages", map[string]any{"parent": parent.ID, "priority": 2}, child.ID)
 }

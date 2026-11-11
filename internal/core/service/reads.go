@@ -504,7 +504,7 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		}
 		workflowBlocked[id] = blocked
 	}
-	parents, err := mixedReadyParentFilter(ctx, r, req.Filter, provider)
+	parents, err := mixedReadyParentFilter(ctx, r, req.Filter, provider, graph, includeEphemeral)
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}
@@ -520,16 +520,16 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}
-	if parents != nil {
+	if parents.ordinary != nil {
 		filtered := durable[:0]
 		for _, item := range durable {
-			if parents[item.ID] {
+			if parents.ordinary[item.ID] {
 				filtered = append(filtered, item)
 			}
 		}
 		durable = filtered
 	}
-	provider.Items, err = filterReadyWorkflowItems(provider.Items, req.Filter, parents)
+	provider.Items, err = filterReadyWorkflowItems(provider.Items, req.Filter, parents.workflow)
 	if err != nil {
 		return readyCombinedSnapshot{}, err
 	}

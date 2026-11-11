@@ -43,93 +43,137 @@ func (s *Service) parentFilter(ctx context.Context, r driver.Reader, filter *Fil
 	return selected, mapped(err)
 }
 
+// mixedReadyParents keeps the source planes separate until visible candidates
+// have been selected. A colliding durable row must not supply a workflow row's
+// parent, and excluding workflow output must retain durable ancestry.
+type mixedReadyParents struct {
+	ordinary map[string]bool
+	workflow map[string]bool
+}
+
 // mixedReadyParentFilter traverses the certified ordinary hierarchy index and
-// the complete typed parent facts from the already captured provider image.
-// Neither ready eligibility nor any other filter prunes intermediate parents.
-// Provider-only edges never become guessed ordinary rows or index entries.
-func mixedReadyParentFilter(ctx context.Context, r driver.Reader, filter *Filter, snapshot workflowplugin.ReadySnapshot) (map[string]bool, error) {
+// complete typed parent facts from the already captured provider image. Source
+// presence resolves identity; it never supplies ordinary parent membership.
+func mixedReadyParentFilter(ctx context.Context, r driver.Reader, filter *Filter, snapshot workflowplugin.ReadySnapshot, graph map[string]storedBead, includeEphemeral bool) (mixedReadyParents, error) {
 	if filter == nil || filter.Parent == "" {
-		return nil, nil
+		return mixedReadyParents{}, nil
 	}
 	root := model.RefByID(filter.Parent, model.Natural64(0))
 	validRef := func(ref model.Ref) bool {
-		return driver.ValidateHierarchyRef(ref) == nil || validateWorkflowRef(ref) == nil
+		if workflowRef(ref) {
+			return validateWorkflowRef(ref) == nil
+		}
+		return driver.ValidateHierarchyRef(ref) == nil
 	}
 	if !validRef(root) {
-		return nil, failure("invalid_params", "filter.parent requires a branch-zero bead or workflow item ID")
+		return mixedReadyParents{}, failure("invalid_params", "filter.parent requires a branch-zero bead or workflow item ID")
 	}
 	indexed, ok := r.(driver.HierarchyChildrenReader)
 	if !ok {
-		return nil, failure("unsupported", "parent filtering requires indexed hierarchy storage")
+		return mixedReadyParents{}, failure("unsupported", "parent filtering requires indexed hierarchy storage")
 	}
-	children := map[string][]model.Ref{}
-	add := func(id string, parent *model.Ref) error {
-		if parent == nil {
-			return nil
-		}
-		child := model.RefByID(id, model.Natural64(0))
-		if !validRef(child) || !validRef(*parent) {
-			return failure("internal_error", "invalid mixed parent-filter source")
-		}
-		children[parent.ID] = append(children[parent.ID], child)
-		return nil
+	type node struct {
+		id       string
+		workflow bool
 	}
+	// Root selection follows active-first identity. Durable-only output keeps
+	// a colliding ordinary root, while a workflow-only root still permits
+	// traversal to its ordinary descendants.
+	rootSource := func(id string) node {
+		_, active := snapshot.ActiveIDs[id]
+		_, durable := graph[id]
+		return node{id, active && (includeEphemeral || !durable)}
+	}
+	workflowParent := func(id string) node {
+		_, active := snapshot.ActiveIDs[id]
+		return node{id, active}
+	}
+	children := map[node][]node{}
 	for id, parent := range snapshot.WorkflowParents {
-		if err := add(id, parent); err != nil {
-			return nil, err
+		if parent == nil {
+			continue
 		}
+		if !validRef(model.RefByID(id, model.Natural64(0))) || !validRef(*parent) {
+			return mixedReadyParents{}, failure("internal_error", "invalid workflow parent-filter source")
+		}
+		key := workflowParent(parent.ID)
+		children[key] = append(children[key], node{id, true})
 	}
 	for id, fact := range snapshot.OrdinaryParents {
-		if err := add(id, fact.Parent); err != nil {
-			return nil, err
+		if fact.Parent == nil {
+			continue
 		}
+		if _, active := snapshot.ActiveIDs[id]; active && includeEphemeral {
+			continue
+		}
+		if !validRef(model.RefByID(id, model.Natural64(0))) || !validRef(*fact.Parent) {
+			return mixedReadyParents{}, failure("internal_error", "invalid ordinary mixed parent-filter source")
+		}
+		key := workflowParent(fact.Parent.ID)
+		children[key] = append(children[key], node{id, false})
 	}
-	selected := map[string]bool{}
-	seen := map[string]bool{root.ID: true}
-	pending := []model.Ref{root}
+	selected := mixedReadyParents{ordinary: map[string]bool{}, workflow: map[string]bool{}}
+	rootNode := rootSource(root.ID)
+	seen := map[node]bool{rootNode: true}
+	pending := []node{rootNode}
 	for len(pending) != 0 {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return mixedReadyParents{}, err
 		}
 		end := min(len(pending), driver.HierarchyMaxParents)
 		batch := pending[:end]
 		pending = pending[end:]
 		ordinary := make([]model.Ref, 0, len(batch))
-		next := []model.Ref{}
+		next := map[node]bool{}
 		for _, parent := range batch {
-			next = append(next, children[parent.ID]...)
-			if driver.ValidateHierarchyRef(parent) == nil {
-				ordinary = append(ordinary, parent)
+			for _, child := range children[parent] {
+				next[child] = true
+			}
+			if !parent.workflow {
+				ordinary = append(ordinary, model.RefByID(parent.id, model.Natural64(0)))
 			}
 		}
 		if len(ordinary) != 0 {
 			rows, more, err := indexed.HierarchyChildren(ctx, ordinary, driver.HierarchyMaxLimit)
 			if err != nil {
-				return nil, mapped(err)
+				return mixedReadyParents{}, mapped(err)
 			}
 			if more {
-				return nil, mapped(driver.ErrDescendantFilterLimit{Limit: driver.HierarchyMaxLimit})
+				return mixedReadyParents{}, mapped(driver.ErrDescendantFilterLimit{Limit: driver.HierarchyMaxLimit})
 			}
 			for _, row := range rows {
-				if row.Kind != "bead" || driver.ValidateHierarchyRef(row.Ref) != nil {
-					return nil, failure("unsupported", "invalid indexed parent-filter source")
+				if _, active := snapshot.ActiveIDs[row.Ref.ID]; active && includeEphemeral {
+					continue
 				}
-				next = append(next, row.Ref)
+				if fact := snapshot.OrdinaryParents[row.Ref.ID]; fact.Parent != nil {
+					// A typed workflow parent belongs to the checkpoint plane.
+					// A durable source edge cannot provide another path to it.
+					continue
+				}
+				if row.Kind != "bead" || driver.ValidateHierarchyRef(row.Ref) != nil {
+					return mixedReadyParents{}, failure("unsupported", "invalid indexed parent-filter source")
+				}
+				next[node{row.Ref.ID, false}] = true
 			}
 		}
-		for _, child := range next {
-			if seen[child.ID] {
-				return nil, failure("unsupported", "cyclic or duplicate mixed parent-filter source")
+		for child := range next {
+			if seen[child] {
+				return mixedReadyParents{}, failure("unsupported", "cyclic or duplicate mixed parent-filter source")
 			}
-			seen[child.ID], selected[child.ID] = true, true
-			if len(selected) > driver.SelectionOrdinaryCap {
-				return nil, mapped(driver.ErrDescendantFilterLimit{Limit: driver.SelectionOrdinaryCap})
+			seen[child] = true
+			if child.workflow {
+				selected.workflow[child.id] = true
+			} else {
+				selected.ordinary[child.id] = true
+			}
+			if len(seen)-1 > driver.SelectionOrdinaryCap {
+				return mixedReadyParents{}, mapped(driver.ErrDescendantFilterLimit{Limit: driver.SelectionOrdinaryCap})
 			}
 			pending = append(pending, child)
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return mixedReadyParents{}, err
 	}
 	return selected, nil
 }
