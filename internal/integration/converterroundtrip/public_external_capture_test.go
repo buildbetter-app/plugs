@@ -29,6 +29,7 @@ import (
 // this actual Bazel test ELF without opening or importing a capture set.
 func TestPublicNativeExternalHarnessBuild(t *testing.T) {
 	publicProofGuard(t)
+	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_EXPORT")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -333,6 +334,19 @@ type publicProofTable struct {
 	ConfigPolicy   map[string]string `json:"config_policy"`
 }
 
+// Only the standalone external roots are opt-in. Shared controls and the
+// callable import/continuation helper remain available to ordinary tests.
+func publicProofExternalRoot(t *testing.T, flag string) {
+	t.Helper()
+	switch value := os.Getenv(flag); value {
+	case "":
+		t.Skipf("explicit external public proof root requires %s=1", flag)
+	case "1":
+	default:
+		t.Fatalf("invalid external public proof opt-in %s=%q; require 1 or unset", flag, value)
+	}
+}
+
 func publicProofGuard(t *testing.T) {
 	t.Helper()
 	for _, p := range []string{"/tmp/plug-swarm/PAUSE", "/tmp/plug-swarm/STOP"} {
@@ -441,6 +455,8 @@ func publicProofLedger(t *testing.T, req publicProofRequest) []publicProofTable 
 }
 
 func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
+	publicProofGuard(t)
+	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_RUN")
 	runPublicNativeExternalCapture(t, nil)
 }
 
