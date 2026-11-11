@@ -26,7 +26,11 @@ workflow contract and 17:05Z ruling, and its typed refusal conserves state.
 Durable and mixed graphs both exercise blocker close, live-blocker reopen and
 reblocking, direct-target close, transitive readiness, exact readback and SQL
 reopen. Separate controls retain cross-plane children and a stored blocked flag
-with no live blocker. A different additional close reason remains an adopted
+with no live blocker. Binding 17:03Z B02 says the stored Plug `blocked` field
+"stays a claim/close guard": it receives a typed no-write refusal until the
+explicit field is cleared through the public interface. Native's stale
+`is_blocked` projection succeeds without a live direct blocker. The 17:05Z
+standing rule preserves this accepted difference. A different additional close reason remains an adopted
 Plug deviation and must preserve the first close instant. Same-key replay and
 empty-reason new-key close conserve graph/history/version state; the new key
 may add only its response receipt. The B21 owner retains identical-reason

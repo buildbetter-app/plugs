@@ -111,7 +111,11 @@ func TestB08PublicStaleBlockedFlagWithoutLiveBlocker(t *testing.T) {
 		t.Run(engine, func(t *testing.T) {
 			f := newB08Fixture(t, engine, filepath.Join(root, engine), false)
 			stale := f.create("stale-blocked", "b08-item", map[string]any{"blocked": true}, nil)
-			f.closeOnce("stale-blocked-no-live-blocker", stale, "stale flag is not a live blocker")
+			// Binding 17:03Z B02 keeps Plug's explicit blocked field as a
+			// claim/close guard. Native's stale projection remains separate.
+			f.conserved("stored-blocked-no-live-edge", "bead.close", map[string]any{"id": stale}, "ontology_guard_failed", "no_open_blockers")
+			f.call("clear-explicit-blocked", "bead.update", map[string]any{"id": stale, "fields": map[string]any{"blocked": false}}, "")
+			f.closeOnce("cleared-blocked-no-live-edge", stale, "explicit close guard cleared")
 			f.reopen("stale-blocked-terminal")
 		})
 	}
