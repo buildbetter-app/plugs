@@ -2,7 +2,6 @@ package converterroundtrip
 
 import (
  "context"
- "encoding/json"
  "errors"
  "fmt"
  "time"
@@ -20,6 +19,16 @@ import (
 func nativeReceivingStreamDigest(ctx context.Context,archive *dumpformat.Archive,profile driver.RestoreImportProfile,when time.Time) (_ string,err error) {
  stream,err:=historyverify.PrepareNativeArchive(ctx,archive,profile,when);if err!=nil {return "",err}
  defer func(){err=errors.Join(err,stream.Close())}();return stream.Digest(),nil
+}
+func nativeReceivingRequestHash(archive *dumpformat.Archive,profile driver.RestoreImportProfile) (string,error) {
+ owner,release:=archive.NativeDeltaAccountingScope();defer release()
+ n,err:=dumpformat.NativeDeltaJSONSize(profile);if err!=nil{return "",err}
+ raw:=uint64(0);if profile.SourcePlanes!=nil {raw=uint64(len(profile.SourcePlanes.CanonicalPlan))}
+ if n>(^uint64(0)-4096)/32 || raw>(^uint64(0)-n*32-4096)/64 {return "",historyverify.ErrCheckpoint{Reason:"receiving profile accounting overflow"}}
+ // RequestHash validates and decodes the canonical source plan as well as
+ // serializing the profile. Admit those transient candidates before the call.
+ if err=owner.ChargeNativeDeltaBytes("receiving_request_hash_workspace",n*32+raw*64+4096);err!=nil{return "",err}
+ return profile.RequestHash()
 }
 func nativeReceivingStage(tx driver.WriteTx,proof historyverify.Checkpoint) (driver.OfflineHistoryStreamStage,error) {
  for _,newStage:=range []func(driver.WriteTx,historyverify.Checkpoint)(driver.OfflineHistoryStreamStage,error){memory.NewOfflineHistoryStreamStage,sqlite.NewOfflineHistoryStreamStage,postgres.NewOfflineHistoryStreamStage} {
@@ -39,7 +48,7 @@ func restoreNativeReceivingStream(ctx context.Context,archive *dumpformat.Archiv
  defer func(){restoreErr=errors.Join(restoreErr,stream.Close())}()
  image,err:=plan.Snapshot();if err!=nil {return report,err}
  report.NativeFamilies,report.NativeSchemas,report.NativeHistories=image.NativeFamilies,image.NativeSchemas,image.NativeHistories
- report.IdempotencyKey=profile.IdempotencyKey;report.RequestHash,err=profile.RequestHash();if err!=nil {return report,err}
+ report.IdempotencyKey=profile.IdempotencyKey;report.RequestHash,err=nativeReceivingRequestHash(archive,profile);if err!=nil {return report,err}
  lease:=suppliedLease
  if lease==nil {
   var release func()error
@@ -50,6 +59,10 @@ func restoreNativeReceivingStream(ctx context.Context,archive *dumpformat.Archiv
  request:=driver.OfflineHistoryStreamRequest{Current:meta,Profile:profile,Header:stream.Header(),When:when,Lifetime:capability.WorkflowCheckpointLifetime(),Limits:historyverify.NativeArchiveLimits()}
  proof,err:=stream.Seal(ctx,request,plan);if err!=nil {return report,err}
  requests,err:=stream.LockRequests(ctx,plan,archive);if err!=nil {return report,err}
+ // The detached image owns the borrowed bodies. These separate publication
+ // arrays also retain record/change/result/lock-key slots and per-record paths.
+ // Admit them before acquiring a writer or allocating any publication arrays.
+ if err=archive.ChargeNativeDeltaBytes("receiving_publication_slots",uint64(len(image.Records)+2)*1024+uint64(len(requests))*256);err!=nil{return report,err}
  if err=archive.ChargeNativeDeltaBytes("receiving_result_revisions",uint64(len(image.Records))*32);err!=nil{return report,err}
  revisions:=make([]model.Revision,len(image.Records));for i,record:=range image.Records {revisions[i]=stream.RecordRevision(record.Ref)}
  tx,err:=target.Write(ctx,lease);if err!=nil {return report,err};defer func(){restoreErr=errors.Join(restoreErr,tx.Close())}()
@@ -60,7 +73,7 @@ func restoreNativeReceivingStream(ctx context.Context,archive *dumpformat.Archiv
  continuation,ok:=tx.(driver.AllocatorContinuation);if !ok {return report,driver.ErrUnsupported}
  if err=continuation.RestoreAllocators(ctx,image.Allocators);err!=nil {return report,err}
  binding,err:=prepareSourcePublication(ctx,capability,lease,tx,profile,restored,sourceLogical);if err!=nil {return report,err}
- body,err:=json.Marshal(binding);if err!=nil {return report,err}
+ body,err:=nativeprojection.MarshalNativePayload(archive,"receiving_source_publication",binding);if err!=nil {return report,err}
  image.Records=append(image.Records,driver.Record{Ref:model.RefByID(driver.SourcePlaneCommitRecordID,model.Natural64(0)),Kind:"instance_config",Body:body});report.SourcePlanes=&binding
  changes:=make([]model.ChangeRecord,0,len(image.Records)+1);results:=make([]model.OpResult,0,len(image.Records))
  for i,record:=range image.Records {
