@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "atomic.go",
         "batch_operations.go",
+        "cycle_snapshot.go",
 		"listing.go",
         "native.go",
         "ordinary_delete.go",
