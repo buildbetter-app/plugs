@@ -158,12 +158,12 @@ func (n *b28Native) hook(phase, event, title, description, status, priority stri
 			n.t.Fatalf("invalid native temporal snapshot/readback field=%s hook=%v current=%v", field, complete[field], rows[0][field])
 		}
 		if phase == "rich-create" {
-			// Pin9d6fff cmd/bd/create_timestamp_precision_embedded_test.go
-			// preserves the fractional write-carried create stamp, while show
-			// reads DATETIME(0). Its existing oracle allows one second of skew;
-			// keep both original strings and do not round either observation.
-			skew := stored.Sub(stamp)
-			if stored.Nanosecond() != 0 || skew > time.Second || skew < -time.Second {
+			// The pinned create timestamp contract preserves the fractional
+			// write-carried stamp. DATETIME(0) rounds its directly bound value
+			// to the nearest second, half-up. Derive only the expected stored
+			// value; both actual wire strings remain unchanged in the originals.
+			expected := stamp.Round(time.Second).UTC().Format(time.RFC3339)
+			if stored.Nanosecond() != 0 || current != expected {
 				n.t.Fatalf("native create DATETIME(0) relation differs field=%s hook=%s current=%s", field, text, current)
 			}
 		} else if current != text {
@@ -283,7 +283,7 @@ if test "$B28_HOOK_PHASE" = failing-hook; then exit 73; fi
 		t.Fatal("failing native script vetoed committed data")
 	}
 	n.r.writeJSON(filepath.Join(root, "semantic-projection.json"), observations)
-	n.r.writeJSON(filepath.Join(root, "dispositions.json"), map[string]any{"native_public_path": "canonical CLI guarded issue operations and HookFiringStore", "native_create_timestamp": "fractional write-carried hook stamp and whole-second DATETIME(0) public readback; existing pinned create_timestamp_precision_embedded_test.go oracle allows one-second skew, original strings retained", "native_delete": "no script hook", "native_successful_noop_update": "successful guarded Update emits update hook even when Changed=false", "plug_noop": "adopted write pipeline suppresses post delivery and graph revisions for unchanged writes", "comment": "update issue snapshot plus independently read comment row", "native_hook_error": "cannot veto committed mutation; script exit73", "plug_pre_mutation": "explicit adopted configured mutator changes title before validation/commit", "plug_comment_dependency": "typed operations and structured before/after document relations", "plug_post_error": "committed result.warnings plus deadletter and actual owner-supplied alert port; requires separate alert acceptance evidence", "idempotent_response_replay": "Plug-only stored response contract; no invented native idempotency equivalence", "official": "UNSPENT", "private": "HARD_DISABLED"})
+	n.r.writeJSON(filepath.Join(root, "dispositions.json"), map[string]any{"native_public_path": "canonical CLI guarded issue operations and HookFiringStore", "native_create_timestamp": "fractional write-carried hook stamp is directly bound to DATETIME(0), whose exact public readback is nearest second, half-up; original hook and readback strings retained", "native_delete": "no script hook", "native_successful_noop_update": "successful guarded Update emits update hook even when Changed=false", "plug_noop": "adopted write pipeline suppresses post delivery and graph revisions for unchanged writes", "comment": "update issue snapshot plus independently read comment row", "native_hook_error": "cannot veto committed mutation; script exit73", "plug_pre_mutation": "explicit adopted configured mutator changes title before validation/commit", "plug_comment_dependency": "typed operations and structured before/after document relations", "plug_post_error": "committed result.warnings plus deadletter and actual owner-supplied alert port; requires separate alert acceptance evidence", "idempotent_response_replay": "Plug-only stored response contract; no invented native idempotency equivalence", "official": "UNSPENT", "private": "HARD_DISABLED"})
 	return observations
 }
 
