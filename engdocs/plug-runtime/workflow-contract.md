@@ -56,12 +56,13 @@ including terminal fallback, and leaves colliding durable rows visible.
 
 Comments and claim state are durable in the plugin plane and survive process
 restart when the selected store is SQLite or PostgreSQL (or another
-composition-admitted persistent `CheckpointStore`). The process-local memory
-driver refuses new ephemeral invocations because it cannot make a process
-restart guarantee. A state provider without an explicit positive persistence
-marker is also refused. Memory hosts keep the registered invocation method and
-ordinary ready lists available for permanent calls, but do not install the
-ephemeral provider; an ephemeral call returns
+composition-admitted persistent `CheckpointStore`). The default memory host
+accepts ephemeral workflow invocation and mixed-plane writes with checkpoint
+lifetime `process` and `Persistent() == false`. Its operational state and replay
+receipts last only for that process; it makes no restart-survival guarantee.
+Restart survival and physical store reopen are promised and proven only on
+SQLite and PostgreSQL. A state provider with neither a valid checkpoint
+lifetime marker nor a positive persistence marker returns
 `plugin_durable_state_unavailable` before publishing workflow state. A stale
 generation or lease cannot overwrite a newer state.
 A denied read or mutation fails closed without disclosing the item body,
@@ -136,8 +137,9 @@ other-run workflow parents that referred to deleted items.
 
 ## Restart, expiry, and fencing
 
-The plugin state capability is backed by the selected driver's durable
-checkpoint store. Restart restores live runs and their generation. Every
+The plugin state capability uses the selected driver's declared checkpoint
+lifetime. SQLite and PostgreSQL restore live runs and their generation after
+restart; memory retains them only in the current process. Every
 mutation compares the namespace generation and item generation, and the host
 fences a lost storage lease. The provider does not apply an arbitrary active
 run TTL: unfinished checklists remain live until explicitly completed. Receipt
@@ -151,9 +153,11 @@ identity-only deletion audit in the same lease-fenced CAS. An idle store may
 retain expired identity-only receipts until its next workflow access; expiry
 does not depend on physical cleanup to stop replay. A cleanup conflict fails
 that access with `write_conflict` without publishing a partial map.
-Ordinary-write blocker guards read without GC or checkpoint publication. On a
-nonpersistent store they contribute no workflow facts and leave ordinary tools
-available; ephemeral invocation still returns its typed capability refusal.
+Ordinary-write blocker guards read without GC or checkpoint publication. A
+process-lifetime memory checkpoint supplies live workflow facts without claiming
+restart survival. A store with neither a valid checkpoint lifetime marker nor a
+positive persistence marker contributes no workflow facts and leaves ordinary
+tools available; ephemeral invocation returns its typed capability refusal.
 A workflow/global `write_conflict` from `bead.claimNext` is returned to the
 caller. A fresh call may publish a newly fenced terminal null for an empty queue;
 receipt replay returns that null without publishing again.

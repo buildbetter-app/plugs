@@ -1642,6 +1642,13 @@ spec/cardb07/mixed_test.go
 spec/cardb07/native_test.go
 spec/cardb07/opaque_test.go
 spec/cardb07/public_test.go
+spec/cardb07effects/BUILD.bazel
+spec/cardb07effects/README.md
+spec/cardb07effects/effects_test.go
+spec/cardb07effects/fixture_test.go
+spec/cardb07effects/native_test.go
+spec/cardb07effects/scheduling_test.go
+spec/cardb07effects/state_test.go
 spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go

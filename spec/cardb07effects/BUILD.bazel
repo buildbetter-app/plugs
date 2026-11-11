@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+DEPS = [
+    "//internal/core/model",
+    "//internal/core/pipeline",
+    "//internal/integration/b07positive",
+    "//internal/integration/b07positive/public",
+    "//internal/storage/driver",
+    "//plugins/workflow",
+]
+
+go_test(
+    name = "public_effects_test",
+    srcs = ["effects_test.go", "fixture_test.go", "state_test.go", "scheduling_test.go"],
+    deps = DEPS,
+    args = ["-test.v"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+go_test(
+    name = "native_effects_test",
+    srcs = ["fixture_test.go", "state_test.go", "scheduling_test.go", "native_test.go", "//spec/cardb20:native_build_support"],
+    deps = DEPS + ["//internal/publicnative"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v"],
+    size = "enormous",
+    tags = ["local", "manual", "requires-network"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
