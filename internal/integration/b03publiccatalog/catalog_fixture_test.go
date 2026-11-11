@@ -250,7 +250,7 @@ func (f *b03Public) bind(t *testing.T) {
 
 func (f *b03Public) call(t *testing.T, method string, params map[string]any, write bool, want string, into any) json.RawMessage {
 	t.Helper()
-	if write {
+	if _, supplied := params["_meta"]; write && !supplied {
 		f.sequence++
 		params["_meta"] = map[string]any{"project": "b03", "agent": "b03-public", "idempotencyKey": fmt.Sprintf("%032x", f.sequence)}
 	}
