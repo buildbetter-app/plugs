@@ -178,8 +178,16 @@ func b28RecordNative(t *testing.T, binary, root, name string) []b28NativeHook {
 		}
 	}
 	server := publicnative.StartDolt(t, root)
-	base := []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + filepath.Join(workspace, "home"), "TMPDIR=" + filepath.Join(workspace, "tmp"), "USER=b28-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B28 Public", "GIT_AUTHOR_EMAIL=b28@example.invalid", "GIT_COMMITTER_NAME=B28 Public", "GIT_COMMITTER_EMAIL=b28@example.invalid", "BEADS_ACTOR=b28-native", "BEADS_NO_DAEMON=1", "B28_HOOK_ROOT=" + root, "B28_HOOK_BINARY=" + binary}
-	n := &b28Native{t: t, r: &nativeRecorder{t: t, root: root}, dir: filepath.Join(workspace, "project"), binary: "/usr/bin/git", env: server.ChildEnv(base), log: filepath.Join(root, "hooks.log")}
+	base := []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + filepath.Join(workspace, "home"), "TMPDIR=" + filepath.Join(workspace, "tmp"), "USER=b28-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B28 Public", "GIT_AUTHOR_EMAIL=b28@example.invalid", "GIT_COMMITTER_NAME=B28 Public", "GIT_COMMITTER_EMAIL=b28@example.invalid", "BEADS_ACTOR=b28-native", "BEADS_NO_DAEMON=1"}
+	// ChildEnv deliberately keeps only the public native runtime variables.
+	// Add this disposable recording destination after that filtering step.
+	env := append(server.ChildEnv(base), "B28_HOOK_ROOT="+root, "B28_HOOK_BINARY="+binary)
+	for i, entry := range env {
+		if strings.HasPrefix(entry, "PATH=") {
+			env[i] = "PATH=/tmp/plug-swarm/bin/worker-safe:" + strings.TrimPrefix(entry, "PATH=")
+		}
+	}
+	n := &b28Native{t: t, r: &nativeRecorder{t: t, root: root}, dir: filepath.Join(workspace, "project"), binary: "/usr/bin/git", env: env, log: filepath.Join(root, "hooks.log")}
 	n.command("git-init", false, "-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template=")
 	n.binary = binary
 	var version struct{ Commit, Build string }
