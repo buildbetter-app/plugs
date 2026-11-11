@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -28,6 +29,12 @@ type reader struct {
 	at             uint64
 	closed         bool
 	owner          *transaction
+}
+
+type queryAccounting struct {
+	selectorKeys int64
+	payloads     int64
+	payloadBytes int64
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -361,8 +368,57 @@ func (r *reader) cursor(c *driver.Cursor, method, digest string) (uint64, error)
 	}
 	return c.Index.Uint64()
 }
+
+// queryCursor validates the historical public cursor fields and resolves the
+// ordered key from the bounded Store-local registry populated when a page was
+// issued. Keeping the key outside driver.Cursor preserves native restore's
+// exact FilterDigest contract while allowing fresh readers on the same Store
+// to continue with a direct keyset predicate.
+func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest string) (uint64, string, bool, bool, error) {
+	if c == nil {
+		return 0, "", false, true, nil
+	}
+	if c.Incarnation != r.meta.Incarnation {
+		return 0, "", false, false, driver.ErrIncarnationChanged{From: c.Incarnation, To: r.meta.Incarnation}
+	}
+	if c.Method != "query" || c.PrincipalDigest != "" || c.OntologyRevision.Validate() != nil || !c.OntologyRevision.IsZero() {
+		return 0, "", false, false, fmt.Errorf("sqlite: cursor binding mismatch")
+	}
+	revision, err := c.Revision.Uint64()
+	if err != nil {
+		return 0, "", false, false, err
+	}
+	if revision != r.at {
+		return 0, "", false, false, fmt.Errorf("sqlite: cursor snapshot mismatch")
+	}
+	index, err := c.Index.Uint64()
+	if err != nil {
+		return 0, "", false, false, err
+	}
+	if c.FilterDigest != digest {
+		return 0, "", false, false, fmt.Errorf("sqlite: cursor binding mismatch")
+	}
+	if index == 0 {
+		return 0, "", false, true, nil
+	}
+	ref := queryCursorRef{incarnation: r.meta.Incarnation, revision: revKey(r.at), digest: digest, index: index}
+	if key, ok := r.store.lookupQueryCursor(ctx, ref); ok {
+		return index, key, true, true, nil
+	}
+	// A cursor received after process restart or from an older driver has no
+	// ordered-key state. It remains structurally valid, and queryHead below
+	// preserves the exact-end/past-end distinction without falling back to an
+	// OFFSET scan. A nonterminal unknown position is refused explicitly.
+	return index, "", false, false, nil
+}
 func (r *reader) nextCursor(method, digest string, index uint64) *driver.Cursor {
 	return &driver.Cursor{Method: method, FilterDigest: digest, Incarnation: r.meta.Incarnation, Revision: model.Natural64(r.at), Index: model.Natural64(index)}
+}
+func (r *reader) nextQueryCursor(ctx context.Context, digest string, index uint64, key string) (*driver.Cursor, error) {
+	if err := r.store.rememberQueryCursor(ctx, queryCursorRef{incarnation: r.meta.Incarnation, revision: revKey(r.at), digest: digest, index: index}, key); err != nil {
+		return nil, err
+	}
+	return r.nextCursor("query", digest, index), nil
 }
 func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
 	driver.ReportReadWork(ctx, driver.ReadQueryCalls, 1)
@@ -396,13 +452,22 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	}
 	hash := sha256.Sum256(encoded)
 	digest := hex.EncodeToString(hash[:])
-	start, err := r.cursor(q.Cursor, "query", digest)
+	start, after, keyset, known, err := r.queryCursor(ctx, q.Cursor, digest)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
 	}
 	limit, err := pageLimit(q.Limit)
 	if err != nil {
 		return driver.Page[driver.Record]{}, err
+	}
+	// Current records already contain complete post-images. Empty and kind-only
+	// queries can therefore select and decode one bounded SQL page directly.
+	// Staged overlays, body predicates, and historical snapshots retain the
+	// reference reconstruction below so their existing replay semantics remain
+	// unchanged.
+	kind, hasKind := q.Filter["kind"]
+	if r.owner == nil && r.at == mustUint(r.meta.Head) && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind) {
+		return r.queryHead(ctx, kind, hasKind, digest, start, limit, after, keyset, known)
 	}
 	rows, err := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
 	if err != nil {
@@ -462,6 +527,118 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
 	return page, nil
 }
+
+// queryHead reads one current page plus a lookahead row. Generated cursors
+// retain the public binding fields and resolve their ordered key from the
+// bounded cursor registry, so continuations use a direct keyset predicate.
+// Unknown ordinal-only cursors preserve exact-end/refusal behavior without an
+// OFFSET fallback.
+func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, digest string, start uint64, limit int, after string, keyset, known bool) (driver.Page[driver.Record], error) {
+	empty := driver.Page[driver.Record]{}
+	if start > math.MaxInt64 {
+		return empty, fmt.Errorf("sqlite: cursor index exceeds page")
+	}
+
+	// The row is maintained transactionally by SQLite triggers. It preserves
+	// the original discarded-candidate accounting without a full-corpus query
+	// on every page or any lifecycle-sensitive reader cache.
+	var accounting queryAccounting
+	err := r.tx.QueryRowContext(ctx, `SELECT selector_keys,payloads,payload_bytes FROM query_read_work WHERE singleton=1`).Scan(&accounting.selectorKeys, &accounting.payloads, &accounting.payloadBytes)
+	if err != nil {
+		return empty, err
+	}
+	driver.ReportReadWork(ctx, driver.ReadSelectorKeys, accounting.selectorKeys)
+	driver.ReportReadWork(ctx, driver.ReadPayloadRecords, accounting.payloads)
+	driver.ReportReadWork(ctx, driver.ReadPayloadBytes, accounting.payloadBytes)
+
+	from := ` FROM records AS r JOIN objects AS o ON o.key=r.key`
+	pageArgs := make([]any, 0, 2)
+	if hasKind {
+		from += ` WHERE o.kind=?`
+		pageArgs = append(pageArgs, kind)
+	}
+	if keyset {
+		if hasKind {
+			from += ` AND r.key>?`
+		} else {
+			from += ` WHERE r.key>?`
+		}
+		pageArgs = append(pageArgs, after)
+	} else if start != 0 {
+		if !known {
+			// Preserve the historical exact-end and past-end distinction for
+			// externally supplied ordinal cursors with one indexed count. A
+			// nonterminal cursor cannot be translated to an ordered key without
+			// an OFFSET scan, so fail closed instead of reintroducing quadratic
+			// work or silently changing page contents.
+			countFrom := ` FROM records AS r JOIN objects AS o ON o.key=r.key`
+			countArgs := make([]any, 0, 1)
+			if hasKind {
+				countFrom += ` WHERE o.kind=?`
+				countArgs = append(countArgs, kind)
+			}
+			var count uint64
+			if err := r.tx.QueryRowContext(ctx, `SELECT COUNT(*)`+countFrom, countArgs...).Scan(&count); err != nil {
+				return empty, err
+			}
+			if start > count {
+				return empty, fmt.Errorf("sqlite: cursor index exceeds page")
+			}
+			if start == count {
+				empty.AsOf = model.Natural64(r.at)
+				return empty, nil
+			}
+			return empty, fmt.Errorf("sqlite: cursor ordered key unavailable")
+		}
+		if hasKind {
+			from += ` AND r.key>?`
+		} else {
+			from += ` WHERE r.key>?`
+		}
+		pageArgs = append(pageArgs, after)
+	}
+	pageArgs = append(pageArgs, limit+1)
+	rows, err := r.tx.QueryContext(ctx, `SELECT r.key,r.data`+from+` ORDER BY r.key LIMIT ?`, pageArgs...)
+	if err != nil {
+		return empty, err
+	}
+	items := make([]driver.Record, 0, limit+1)
+	keys := make([]string, 0, limit+1)
+	for rows.Next() {
+		var key string
+		var data []byte
+		var record driver.Record
+		if err = rows.Scan(&key, &data); err != nil {
+			break
+		}
+		if err = json.Unmarshal(data, &record); err != nil {
+			break
+		}
+		items = append(items, record)
+		keys = append(keys, key)
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	closeErr := rows.Close()
+	if err != nil {
+		return empty, err
+	}
+	if closeErr != nil {
+		return empty, closeErr
+	}
+	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor, err = r.nextQueryCursor(ctx, digest, start+uint64(limit), keys[limit-1])
+		if err != nil {
+			return empty, err
+		}
+	}
+	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
+	return page, nil
+}
+
 func matches(r driver.Record, filter map[string]any) (bool, error) {
 	for field, want := range filter {
 		var got any

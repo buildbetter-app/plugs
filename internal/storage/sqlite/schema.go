@@ -14,8 +14,74 @@ CREATE TABLE IF NOT EXISTS active_lease (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL,
  token TEXT NOT NULL, holder TEXT NOT NULL, expires INTEGER NOT NULL
 );
+-- Query read-work counters are maintained transactionally so a page does not
+-- need to scan the full objects/records corpus merely to preserve the
+-- historical discarded-candidate accounting contract.
+CREATE TABLE IF NOT EXISTS query_read_work (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+ selector_keys INTEGER NOT NULL,
+ payloads INTEGER NOT NULL,
+ payload_bytes INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS query_cursor_keys (
+ incarnation TEXT NOT NULL,
+ revision TEXT NOT NULL,
+ digest TEXT NOT NULL,
+ cursor_index TEXT NOT NULL,
+ key TEXT NOT NULL,
+ PRIMARY KEY(incarnation, revision, digest, cursor_index)
+);
 CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, kind TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS objects_kind_key ON objects(kind, key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
+CREATE TRIGGER IF NOT EXISTS query_read_work_objects_insert
+AFTER INSERT ON objects
+BEGIN
+ UPDATE query_read_work SET selector_keys=selector_keys+1 WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_read_work_records_insert
+AFTER INSERT ON records
+BEGIN
+ UPDATE query_read_work
+ SET payloads=payloads+1,
+     payload_bytes=payload_bytes+
+       CASE WHEN json_valid(NEW.data) AND json_extract(NEW.data, '$.Body') IS NOT NULL
+            THEN (length(json_extract(NEW.data, '$.Body'))/4)*3
+              - CASE WHEN substr(json_extract(NEW.data, '$.Body'), -1)='=' THEN 1 ELSE 0 END
+              - CASE WHEN substr(json_extract(NEW.data, '$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
+            ELSE 0 END
+ WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_read_work_records_update
+AFTER UPDATE OF data ON records
+BEGIN
+ UPDATE query_read_work
+ SET payload_bytes=payload_bytes
+       + CASE WHEN json_valid(NEW.data) AND json_extract(NEW.data, '$.Body') IS NOT NULL
+              THEN (length(json_extract(NEW.data, '$.Body'))/4)*3
+                - CASE WHEN substr(json_extract(NEW.data, '$.Body'), -1)='=' THEN 1 ELSE 0 END
+                - CASE WHEN substr(json_extract(NEW.data, '$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
+              ELSE 0 END
+       - CASE WHEN json_valid(OLD.data) AND json_extract(OLD.data, '$.Body') IS NOT NULL
+              THEN (length(json_extract(OLD.data, '$.Body'))/4)*3
+                - CASE WHEN substr(json_extract(OLD.data, '$.Body'), -1)='=' THEN 1 ELSE 0 END
+                - CASE WHEN substr(json_extract(OLD.data, '$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
+              ELSE 0 END
+ WHERE singleton=1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_read_work_records_delete
+AFTER DELETE ON records
+BEGIN
+ UPDATE query_read_work
+ SET payloads=payloads-1,
+     payload_bytes=payload_bytes-
+       CASE WHEN json_valid(OLD.data) AND json_extract(OLD.data, '$.Body') IS NOT NULL
+            THEN (length(json_extract(OLD.data, '$.Body'))/4)*3
+              - CASE WHEN substr(json_extract(OLD.data, '$.Body'), -1)='=' THEN 1 ELSE 0 END
+              - CASE WHEN substr(json_extract(OLD.data, '$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
+            ELSE 0 END
+ WHERE singleton=1;
+END;
 CREATE TABLE IF NOT EXISTS versions (
  key TEXT NOT NULL, rev TEXT NOT NULL, base INTEGER NOT NULL, data BLOB NOT NULL,
  PRIMARY KEY(key, rev)

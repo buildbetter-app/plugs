@@ -37,13 +37,75 @@ func (Driver) Info() driver.Info {
 }
 
 type Store struct {
-	clock    func() time.Time
-	db       *sql.DB
-	lockDir  string
-	mu       sync.Mutex
-	closed   bool
-	children map[io.Closer]struct{}
-	leases   map[*activeLease]struct{}
+	clock            func() time.Time
+	db               *sql.DB
+	lockDir          string
+	mu               sync.Mutex
+	queryCursorMu    sync.Mutex
+	queryCursors     map[queryCursorRef]string
+	queryCursorOrder []queryCursorRef
+	closed           bool
+	children         map[io.Closer]struct{}
+	leases           map[*activeLease]struct{}
+}
+
+// queryCursorRef identifies a generated Query cursor without changing the
+// public driver.Cursor shape. Native restore validates every cursor field, so
+// the ordered key is kept in a small in-process cache plus durable SQLite
+// state, while the cursor continues to expose the historical filter digest.
+type queryCursorRef struct {
+	incarnation string
+	revision    string
+	digest      string
+	index       uint64
+}
+
+const queryCursorRegistryLimit = 1024
+
+var queryCursorPersistMu sync.Mutex
+
+func (s *Store) rememberQueryCursor(ctx context.Context, ref queryCursorRef, key string) error {
+	s.queryCursorMu.Lock()
+	defer s.queryCursorMu.Unlock()
+	if s.queryCursors == nil {
+		s.queryCursors = make(map[queryCursorRef]string)
+	}
+	if _, exists := s.queryCursors[ref]; !exists {
+		s.queryCursorOrder = append(s.queryCursorOrder, ref)
+	}
+	s.queryCursors[ref] = key
+	for len(s.queryCursorOrder) > queryCursorRegistryLimit {
+		oldest := s.queryCursorOrder[0]
+		s.queryCursorOrder = s.queryCursorOrder[1:]
+		delete(s.queryCursors, oldest)
+	}
+	queryCursorPersistMu.Lock()
+	defer queryCursorPersistMu.Unlock()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO query_cursor_keys(incarnation,revision,digest,cursor_index,key) VALUES(?,?,?,?,?) ON CONFLICT(incarnation,revision,digest,cursor_index) DO UPDATE SET key=excluded.key`, ref.incarnation, ref.revision, ref.digest, strconv.FormatUint(ref.index, 10), key)
+	if err != nil {
+		delete(s.queryCursors, ref)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) lookupQueryCursor(ctx context.Context, ref queryCursorRef) (string, bool) {
+	s.queryCursorMu.Lock()
+	key, ok := s.queryCursors[ref]
+	s.queryCursorMu.Unlock()
+	if ok {
+		return key, true
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT key FROM query_cursor_keys WHERE incarnation=? AND revision=? AND digest=? AND cursor_index=?`, ref.incarnation, ref.revision, ref.digest, strconv.FormatUint(ref.index, 10)).Scan(&key); err == nil {
+		s.queryCursorMu.Lock()
+		if s.queryCursors == nil {
+			s.queryCursors = make(map[queryCursorRef]string)
+		}
+		s.queryCursors[ref] = key
+		s.queryCursorMu.Unlock()
+		return key, true
+	}
+	return key, ok
 }
 
 // Persistent reports that SQLite checkpoint bytes survive Store.Close and a
@@ -159,6 +221,20 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 			return e
 		}
 		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO active_lease VALUES(1,?,'','',0)`, revKey(0))
+		if e != nil {
+			return e
+		}
+		// Populate the additive read-work row exactly once for an existing
+		// database. New writes are then kept current by the schema triggers.
+		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO query_read_work(singleton,selector_keys,payloads,payload_bytes)
+SELECT 1,
+       (SELECT COUNT(*) FROM objects),
+       (SELECT COUNT(*) FROM records),
+       COALESCE((SELECT SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.Body') IS NOT NULL
+                                  THEN (length(json_extract(data, '$.Body'))/4)*3
+                                    - CASE WHEN substr(json_extract(data, '$.Body'), -1)='=' THEN 1 ELSE 0 END
+                                    - CASE WHEN substr(json_extract(data, '$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
+                                  ELSE 0 END) FROM records), 0)`)
 		if e != nil {
 			return e
 		}
