@@ -158,6 +158,11 @@ type Filter struct {
 	Query            string
 	Resources        []string
 	Types            []string
+	Labels           []string
+	LabelsAny        []string
+	ExcludeLabels    []string
+	Unassigned       bool
+	ExcludeTypes     []string
 	Events           []string
 	ViewID           string
 	IncludeEphemeral *bool

@@ -177,6 +177,9 @@ func matchesFilter(row storedBead, project string, filter *Filter) bool {
 	if filter == nil {
 		return true
 	}
+	if !matchesSelectionFields(row.doc.Type, row.doc.Labels, row.doc.Lease != nil, filter) {
+		return false
+	}
 	if filter.Priority != nil {
 		p, err := priority(row.doc)
 		if err != nil || p != *filter.Priority {
@@ -743,6 +746,7 @@ func (s *Service) readyCombined(ctx context.Context, by model.PrincipalRef, req 
 		return BeadPage{}, failure("internal_error", "invalid workflow ready snapshot")
 	}
 	items := snapshot.Items
+	items = filterSelectionWorkflowItems(items, req.Filter)
 	if req.Filter != nil && len(req.Filter.Resources) != 0 {
 		filtered := make([]workflowplugin.ItemView, 0, len(items))
 		for _, item := range items {
@@ -820,6 +824,7 @@ func (s *Service) readyCombinedPage(ctx context.Context, by model.PrincipalRef, 
 		}
 	}
 	workflowItems := snapshot.Items
+	workflowItems = filterSelectionWorkflowItems(workflowItems, req.Filter)
 	if req.Filter != nil && len(req.Filter.Resources) != 0 {
 		filtered := make([]workflowplugin.ItemView, 0, len(workflowItems))
 		for _, item := range workflowItems {

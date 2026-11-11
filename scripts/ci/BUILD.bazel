@@ -1,4 +1,15 @@
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+# Run the existing contract reconciler through the remote Bazel toolchain.
+sh_binary(
+    name = "reconcile_openrpc",
+    srcs = ["reconcile-openrpc.py"],
+    data = [
+        "//:engdocs/design/plug/contracts/openrpc.json",
+        "//internal/api/wire:reconcile_openrpc_inputs",
+    ],
+)
 
 filegroup(
     name = "public_reference_validation",

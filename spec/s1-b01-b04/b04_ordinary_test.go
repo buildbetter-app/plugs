@@ -79,3 +79,19 @@ func TestB04OrdinaryPublicWalkBeyondOneThousand(t *testing.T) {
 		})
 	}
 }
+
+func TestB04OrdinaryAdditiveSelectionAcrossStores(t *testing.T) {
+	h:=newPostgresHarness(t)
+	for _,backend:=range []string{"memory","sqlite","postgres"} {t.Run(backend,func(t *testing.T){
+		for _,v:=range ordinaryB04SelectionCases() {t.Run(v.Name,func(t *testing.T){
+			dsn:="";if backend=="postgres" {dsn=h.dsn(t)}
+			ids:=[]string{ordinarySelectionID(v.Name,"root")};for _,row:=range v.Rows {ids=append(ids,ordinarySelectionID(v.Name,row.Role))}
+			o:=newOrdinaryB04(t,backend,dsn,ids);filter:=o.selectionFixture(v);o.reopen("selection-before")
+			want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
+			if got:=o.readyIDs("selection-front",filter);!reflect.DeepEqual(got,want) {t.Fatalf("public selector membership=%v want=%v",got,want)}
+			if v.Name=="unassigned" {o.selectionListingControl(filter,want)}
+			for i,id:=range want {o.win(fmt.Sprintf("selection-win-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":filter})}
+			o.empty("selection-drained",map[string]any{"filter":filter});o.reopen("selection-after")
+		})}
+	})}
+}

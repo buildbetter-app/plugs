@@ -32,6 +32,8 @@ type ordinaryB04 struct {
 	seq int
 	receipts map[string]*driver.IdempotencyRecord
 	methods map[string]string
+	principals map[string]model.PrincipalRef
+	authority *ordinaryB04Authority
 }
 
 type ordinaryB04State struct {
@@ -39,6 +41,37 @@ type ordinaryB04State struct {
 	Rows []driver.Record
 	History []model.Changeset
 	Versions map[string][]driver.Version
+}
+
+// Fixed ordinary vectors are authored from the native public selector
+// contract. They are independent of the selection implementation.
+type ordinaryB04SelectionRow struct { Role string; Priority int; Kind string; Labels []string; Owned bool }
+type ordinaryB04SelectionCase struct { Name string; Rows []ordinaryB04SelectionRow; Native []string; Public map[string]any; Ready []string }
+
+func ordinaryB04SelectionCases() []ordinaryB04SelectionCase {
+	return []ordinaryB04SelectionCase{
+		{Name:"all-normalized",Rows:[]ordinaryB04SelectionRow{{"a",0,"task",[]string{"ordinary"},false},{"b",2,"task",[]string{"ordinary","public"},false},{"c",1,"task",[]string{"public"},false}},Native:[]string{"--label"," ordinary ,public,ordinary,, "},Public:map[string]any{"labels":[]string{" ordinary ","public","ordinary",""," "}},Ready:[]string{"b"}},
+		{Name:"any-normalized",Rows:[]ordinaryB04SelectionRow{{"a",2,"task",[]string{"red"},false},{"b",1,"task",[]string{"blue"},false},{"c",0,"task",[]string{"outside"},false}},Native:[]string{"--label-any"," red ,blue,red,, "},Public:map[string]any{"labelsAny":[]string{" red ","blue","red",""," "}},Ready:[]string{"b","a"}},
+		{Name:"exclude-label",Rows:[]ordinaryB04SelectionRow{{"a",0,"task",[]string{"skip"},false},{"b",1,"task",[]string{"keep"},false}},Native:[]string{"--exclude-label"," skip ,skip,, "},Public:map[string]any{"excludeLabels":[]string{" skip ","skip",""," "}},Ready:[]string{"b"}},
+		{Name:"conjunction",Rows:[]ordinaryB04SelectionRow{{"a",0,"task",[]string{"ordinary","red","skip"},false},{"b",2,"task",[]string{"ordinary","blue"},false},{"c",1,"task",[]string{"red"},false},{"d",1,"task",[]string{"ordinary","green"},false}},Native:[]string{"--label","ordinary","--label-any","red,blue","--exclude-label","skip"},Public:map[string]any{"labels":[]string{"ordinary"},"labelsAny":[]string{"red","blue"},"excludeLabels":[]string{"skip"}},Ready:[]string{"b"}},
+		{Name:"empty-normalized",Rows:[]ordinaryB04SelectionRow{{"a",0,"task",nil,false},{"b",1,"task",[]string{"anything"},false}},Native:[]string{"--label"," , ","--label-any"," , ","--exclude-label"," , "},Public:map[string]any{"labels":[]string{""," "},"labelsAny":[]string{" ",""},"excludeLabels":[]string{""," "}},Ready:[]string{"a","b"}},
+		{Name:"case-sensitive",Rows:[]ordinaryB04SelectionRow{{"a",0,"task",[]string{"public"},false},{"b",1,"task",[]string{"Public"},false}},Native:[]string{"--label","Public"},Public:map[string]any{"labels":[]string{"Public"}},Ready:[]string{"b"}},
+		{Name:"exclude-type",Rows:[]ordinaryB04SelectionRow{{"a",0,"bug",nil,false},{"b",1,"task",nil,false}},Native:[]string{"--exclude-type","bug"},Public:map[string]any{"excludeTypes":[]string{"bug"}},Ready:[]string{"b"}},
+		{Name:"explicit-type-precedence",Rows:[]ordinaryB04SelectionRow{{"a",1,"task",nil,false},{"b",0,"bug",nil,false}},Native:[]string{"--type","task","--exclude-type","task"},Public:map[string]any{"types":[]string{"issue"},"excludeTypes":[]string{"issue"}},Ready:[]string{"a"}},
+		{Name:"unassigned",Rows:[]ordinaryB04SelectionRow{{"a",0,"task",nil,true},{"b",1,"task",nil,false}},Native:[]string{"--unassigned"},Public:map[string]any{"unassigned":true},Ready:[]string{"b"}},
+	}
+}
+
+func ordinarySelectionID(name,role string) string { return "b04-select-"+name+"-"+role }
+
+func (o *ordinaryB04) selectionFixture(v ordinaryB04SelectionCase) map[string]any {
+	root:=ordinarySelectionID(v.Name,"root")
+	ops:=[]model.Op{createOp("root",project,map[string]any{"title":root,"priority":4},"")}
+	for _,row:=range v.Rows {fields:=map[string]any{"title":ordinarySelectionID(v.Name,row.Role),"priority":row.Priority};if row.Labels!=nil {fields["labels"]=row.Labels};op:=createOp(row.Role,project,fields,root);if row.Kind=="bug" {op.Create.Type="bug"};ops=append(ops,op)}
+	o.seed("selection-create",ops...)
+	for _,row:=range v.Rows {if row.Owned {id:=ordinarySelectionID(v.Name,row.Role);o.win("selection-owned-"+row.Role,"bead.claim",id,"todo",map[string]any{"id":ref(id)})}}
+	filter:=map[string]any{"parent":root};for k,value:=range v.Public {filter[k]=value}
+	return filter
 }
 
 func newOrdinaryB04(t *testing.T, backend, dsn string, ids []string, configure ...func(*ontology.Document)) *ordinaryB04 {
@@ -55,7 +88,7 @@ func newOrdinaryB04(t *testing.T, backend, dsn string, ids []string, configure .
 	f := newFixture(t, backend, dsn, compileOntology(t, doc, nil), ids)
 	output := filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), "ordinary-"+filepath.Base(t.Name()))
 	if err := os.MkdirAll(output, 0700); err != nil { t.Fatal(err) }
-	o := &ordinaryB04{f: f, output: output, receipts:map[string]*driver.IdempotencyRecord{}, methods:map[string]string{}}
+	o := &ordinaryB04{f: f, output: output, receipts:map[string]*driver.IdempotencyRecord{}, methods:map[string]string{}, principals:map[string]model.PrincipalRef{}}
 	o.install()
 	t.Cleanup(func() { o.server.Close() })
 	return o
@@ -65,10 +98,13 @@ func (o *ordinaryB04) install() {
 	t := o.f.t
 	registry, err := rpc.NewRegistry()
 	if err != nil { t.Fatal(err) }
-	if err := rpc.BindService(registry, o.f.svc); err != nil { t.Fatal(err) }
+	bound := rpc.Service(o.f.svc)
+	authConfig := authn.Config{}
+	if o.authority != nil { bound, authConfig = o.authority.bind(o) }
+	if err := rpc.BindService(registry, bound); err != nil { t.Fatal(err) }
 	s, err := rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: o.f.metaSnapshot().Incarnation, CursorKey: []byte("ordinary-b04-independent-cursor-key-32")})
 	if err != nil { t.Fatal(err) }
-	a, err := authn.New(authn.Config{})
+	a, err := authn.New(authConfig)
 	if err != nil { t.Fatal(err) }
 	h, err := httpjson.New(s, a, httpjson.Config{})
 	if err != nil { t.Fatal(err) }
@@ -91,7 +127,11 @@ func (o *ordinaryB04) call(label, method, agent string, params map[string]any) j
 	p["_meta"] = map[string]any{"project": project, "agent": agent, "idempotencyKey": o.f.key(label, method, agent)}
 	request, err := json.Marshal(map[string]any{"jsonrpc":"2.0", "id": o.seq, "method":method, "params":p})
 	if err != nil { t.Fatal(err) }
-	response, err := o.server.Client().Post(o.server.URL+httpjson.Path, "application/json", bytes.NewReader(request))
+	httpRequest, err := http.NewRequest(http.MethodPost, o.server.URL+httpjson.Path, bytes.NewReader(request))
+	if err != nil { t.Fatal(err) }
+	httpRequest.Header.Set("Content-Type", "application/json")
+	if o.authority != nil { token:=o.authority.writeKey; if method=="bead.ready" || method=="bead.get" { token=o.authority.readKey }; httpRequest.Header.Set("Authorization", "Bearer "+token) }
+	response, err := o.server.Client().Do(httpRequest)
 	if err != nil { t.Fatal(err) }
 	raw, readErr := io.ReadAll(response.Body)
 	closeErr := response.Body.Close()
@@ -108,7 +148,7 @@ func (o *ordinaryB04) commit(label, method string, params map[string]any) model.
 	if err := json.Unmarshal(raw, &e); err != nil || e.Error != nil || len(e.Result.Results) == 0 { o.f.t.Fatalf("commit %s: %s (%v)", label, raw, err) }
 	entry:=o.receipt(label,method,owner)
 	if entry==nil || entry.ResponsePending || !reflect.DeepEqual(entry.Commit,e.Result) { o.f.t.Fatalf("public commit differs from durable response: %s",raw) }
-	o.receipts[label]=entry;o.methods[label]=method
+	o.receipts[label]=entry;o.methods[label]=method;o.principals[label]=o.principal()
 	return e.Result
 }
 
@@ -144,7 +184,7 @@ func (o *ordinaryB04) state(label string) ordinaryB04State {
 func (o *ordinaryB04) receipt(label,method,agent string) *driver.IdempotencyRecord {
 	t,f:=o.f.t,o.f;t.Helper()
 	r,err:=f.store.Read(f.ctx,driver.View{Incarnation:f.metaSnapshot().Incarnation});if err!=nil {t.Fatal(err)};defer r.Close()
-	principal,err:=driver.PrincipalKey(model.PrincipalRef{Kind:"anonymous",ID:"anonymous"});if err!=nil {t.Fatal(err)}
+	principal,err:=driver.PrincipalKey(o.receiptPrincipal(label));if err!=nil {t.Fatal(err)}
 	entry,err:=r.IdempotencyByKey(f.ctx,principal,agent,method,f.key(label,method,agent));if err!=nil {t.Fatal(err)}
 	return entry
 }
@@ -158,6 +198,7 @@ func (o *ordinaryB04) sameHolder(label,id string) {
 	c:=o.commit(label,"bead.claim",map[string]any{"id":ref(id)})
 	if c.Revision!=before.Meta.Head || len(c.Results)!=1 || c.Results[0].Ref!=row.Ref || c.Results[0].Revision!=row.Revision || !bytes.Equal(c.Results[0].Record,row.Body) || c.LeaseExpiresAt==nil || !c.LeaseExpiresAt.Equal(doc.Lease.ExpiresAt) || c.LeaseTtlMs==nil || *c.LeaseTtlMs!=doc.Lease.TtlMs {t.Fatalf("fresh-key no-op returned incorrect row/revision/lease: %+v",c)}
 	o.equalState(label+"-after",before)
+	o.checkReceipts()
 }
 
 func (o *ordinaryB04) publicReadback(label,id string) {
@@ -196,7 +237,7 @@ func (o *ordinaryB04) empty(label string, params map[string]any) {
 	if !found {t.Fatal("terminal empty changeset absent")}
 	entry:=o.receipt(label,"bead.claimNext",owner)
 	if entry==nil || entry.ResponsePending || entry.Commit.Revision!=after.Meta.Head || len(entry.Commit.Results)!=0 || len(entry.Changeset.Changes)!=0 {t.Fatal("terminal empty result lacks its exact persisted receipt")}
-	o.receipts[label]=entry;o.methods[label]="bead.claimNext"
+	o.receipts[label]=entry;o.methods[label]="bead.claimNext";o.principals[label]=o.principal()
 	o.retain(label+"-receipt",entry)
 }
 
@@ -242,7 +283,7 @@ func (o *ordinaryB04) win(label, method, id, sourceStatus string, params map[str
 	doc, err := pipeline.DecodeDocument(actual.Body)
 	if err != nil { t.Fatal(err) }
 	expires := f.clock.Now().Add(300*time.Second)
-	if doc.Fields["status"] != "in_progress" || doc.StartedAt == nil || !doc.StartedAt.Equal(f.clock.Now()) || doc.Lease == nil || doc.Lease.Agent != owner || !reflect.DeepEqual(doc.Lease.Principal,model.PrincipalRef{Kind:"anonymous", ID:"anonymous"}) || !doc.Lease.ExpiresAt.Equal(expires) || doc.Lease.TtlMs != model.Natural64(300000) || c.LeaseExpiresAt == nil || !c.LeaseExpiresAt.Equal(expires) || c.LeaseTtlMs == nil || *c.LeaseTtlMs != model.Natural64(300000) { t.Fatalf("exact winning status/start/ownership/default lease: %+v", doc) }
+	if doc.Fields["status"] != "in_progress" || doc.StartedAt == nil || !doc.StartedAt.Equal(f.clock.Now()) || doc.Lease == nil || doc.Lease.Agent != owner || !reflect.DeepEqual(doc.Lease.Principal,o.principal()) || !doc.Lease.ExpiresAt.Equal(expires) || doc.Lease.TtlMs != model.Natural64(300000) || c.LeaseExpiresAt == nil || !c.LeaseExpiresAt.Equal(expires) || c.LeaseTtlMs == nil || *c.LeaseTtlMs != model.Natural64(300000) { t.Fatalf("exact winning status/start/ownership/default lease: %+v", doc) }
 	// Independent expected postimage: preserve every original field, link,
 	// label, comment and timestamp, changing only the named claim fields.
 	want := old
@@ -250,15 +291,15 @@ func (o *ordinaryB04) win(label, method, id, sourceStatus string, params map[str
 	for k,v := range old.Fields { want.Fields[k]=v }
 	want.Fields["status"] = "in_progress"
 	started := f.clock.Now(); want.StartedAt = &started
-	want.Lease = &pipeline.ClaimLease{Principal:model.PrincipalRef{Kind:"anonymous", ID:"anonymous"}, Agent:owner, Epoch:model.Natural64(f.lease.Epoch()), ExpiresAt:expires, TtlMs:model.Natural64(300000)}
+	want.Lease = &pipeline.ClaimLease{Principal:o.principal(), Agent:owner, Epoch:model.Natural64(f.lease.Epoch()), ExpiresAt:expires, TtlMs:model.Natural64(300000)}
 	if !reflect.DeepEqual(doc, want) { t.Fatalf("hydrated row differs from independent expected postimage: got=%+v want=%+v", doc,want) }
 	found:=false
-	for _,cs:=range after.History {if cs.Revision==c.Revision {found=true;if len(cs.Changes)!=1 || cs.Changes[0].Ref!=ref(id) || cs.Changes[0].Op!=model.OpPatch || cs.Changes[0].FromRevision!=oldRecord.Revision || cs.IdempotencyKey!=f.key(label,method,owner) || !cs.Time.Equal(f.clock.Now()) || !reflect.DeepEqual(cs.Principal,model.PrincipalRef{Kind:"anonymous",ID:"anonymous"}) {t.Fatalf("winning history attribution: %+v",cs)}}}
+	for _,cs:=range after.History {if cs.Revision==c.Revision {found=true;if len(cs.Changes)!=1 || cs.Changes[0].Ref!=ref(id) || cs.Changes[0].Op!=model.OpPatch || cs.Changes[0].FromRevision!=oldRecord.Revision || cs.IdempotencyKey!=f.key(label,method,owner) || !cs.Time.Equal(f.clock.Now()) || !reflect.DeepEqual(cs.Principal,o.principal()) {t.Fatalf("winning history attribution: %+v",cs)}}}
 	if !found {t.Fatal("winning claim missing attributable changeset")}
 	priorHistory:=[]model.Changeset{};for _,cs:=range after.History {if cs.Revision!=c.Revision {priorHistory=append(priorHistory,cs)}}
 	if !reflect.DeepEqual(priorHistory,before.History) {t.Fatal("claim changed previous changesets")}
 	priorVersions:=[]driver.Version{};count:=0
-	for _,v:=range after.Versions[id] {if v.Revision!=c.Revision {priorVersions=append(priorVersions,v);continue};count++;if v.Ref!=ref(id) || v.Deleted || !v.CreatedAt.Equal(f.clock.Now()) || !reflect.DeepEqual(v.Principal,model.PrincipalRef{Kind:"anonymous",ID:"anonymous"}) {t.Fatal("winning version attribution differs")};body:=v.Body;if !v.Base {var ops []struct{Op,Path string;Value json.RawMessage};if err:=json.Unmarshal(v.Patch,&ops);err!=nil || len(ops)!=1 || ops[0].Op!="replace" || ops[0].Path!="" {t.Fatalf("invalid forward history patch: %s",v.Patch)};body=ops[0].Value};if !bytes.Equal(body,actual.Body) {t.Fatal("winning version does not reconstruct exact committed row")}}
+	for _,v:=range after.Versions[id] {if v.Revision!=c.Revision {priorVersions=append(priorVersions,v);continue};count++;if v.Ref!=ref(id) || v.Deleted || !v.CreatedAt.Equal(f.clock.Now()) || !reflect.DeepEqual(v.Principal,o.principal()) {t.Fatal("winning version attribution differs")};body:=v.Body;if !v.Base {var ops []struct{Op,Path string;Value json.RawMessage};if err:=json.Unmarshal(v.Patch,&ops);err!=nil || len(ops)!=1 || ops[0].Op!="replace" || ops[0].Path!="" {t.Fatalf("invalid forward history patch: %s",v.Patch)};body=ops[0].Value};if !bytes.Equal(body,actual.Body) {t.Fatal("winning version does not reconstruct exact committed row")}}
 	if count!=1 || !reflect.DeepEqual(priorVersions,before.Versions[id]) {t.Fatal("claim must preserve previous versions and append exactly one")}
 	entry:=o.receipt(label,method,owner)
 	if entry==nil || entry.ResponsePending || !reflect.DeepEqual(entry.Commit,c) {t.Fatal("winning public response differs from durable receipt")}
@@ -286,5 +327,36 @@ func (o *ordinaryB04) refusal(label, method, agent, code string, retryable bool,
 	for _,entry:=range catalog.ErrorCatalog() { if entry.Code==code {found=true;if entry.JSONRPC!=e.Error.Code || entry.Retryable!=e.Error.Data.Retryable {t.Fatalf("public error differs from catalog: %s",raw)} } }
 	if !found {t.Fatalf("unknown expected catalog error %s",code)}
 	o.equalState(label+"-after",before)
+	o.checkReceipts()
 	if o.receipt(label,method,agent)!=nil {t.Fatal("refusal persisted a success receipt")}
+}
+
+func (o *ordinaryB04) principal() model.PrincipalRef {
+	if o.authority != nil { return o.authority.writer }
+	return model.PrincipalRef{Kind:"anonymous",ID:"anonymous"}
+}
+
+func (o *ordinaryB04) receiptPrincipal(label string) model.PrincipalRef {
+	if p,ok:=o.principals[label];ok {return p}
+	return o.principal()
+}
+
+func (o *ordinaryB04) checkReceipts() {
+	o.f.t.Helper()
+	for label,want:=range o.receipts {if got:=o.receipt(label,o.methods[label],owner);!reflect.DeepEqual(got,want) {o.f.t.Fatalf("unrelated retained receipt changed: %s",label)}}
+}
+
+func (o *ordinaryB04) selectionListingControl(filter map[string]any, want []string) {
+	t:=o.f.t;t.Helper()
+	base:=map[string]any{};for k,v:=range filter {if k!="unassigned" {base[k]=v}}
+	all:=[]string{ordinarySelectionID("unassigned","a"),ordinarySelectionID("unassigned","b")}
+	for i,expected:=range [][]string{all,all,want} {
+		q:=map[string]any{};for k,v:=range base {q[k]=v};if i>0 {q["unassigned"]=i==2}
+		before:=o.state(fmt.Sprintf("unassigned-list-%d-before",i))
+		value:=result(t,o.call(fmt.Sprintf("unassigned-snapshot-list-%d",i),"history.query",owner,map[string]any{"asOf":map[string]any{"revision":o.f.metaSnapshot().Head},"filter":q,"limit":1000}))
+		items,ok:=value["items"].([]any);if !ok {t.Fatalf("snapshot listing has no items: %+v",value)}
+		got:=map[string]bool{};for _,item:=range items {row,ok:=item.(map[string]any);if !ok {t.Fatal("snapshot item is not an object")};id,ok:=row["id"].(string);if !ok || got[id] {t.Fatal("invalid/duplicate snapshot ID")};got[id]=true}
+		if len(got)!=len(expected) {t.Fatalf("unassigned omitted/false/true case%d membership=%v expected=%v",i,got,expected)};for _,id:=range expected {if !got[id] {t.Fatalf("listing omitted %s",id)}}
+		o.equalState(fmt.Sprintf("unassigned-list-%d-after",i),before);o.checkReceipts()
+	}
 }

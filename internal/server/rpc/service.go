@@ -120,6 +120,11 @@ type filter struct {
 	Query            string   `json:"query,omitempty"`
 	Resources        []string `json:"resources,omitempty"`
 	Types            []string `json:"types,omitempty"`
+	Labels           []string `json:"labels,omitempty"`
+	LabelsAny        []string `json:"labelsAny,omitempty"`
+	ExcludeLabels    []string `json:"excludeLabels,omitempty"`
+	Unassigned       bool     `json:"unassigned,omitempty"`
+	ExcludeTypes     []string `json:"excludeTypes,omitempty"`
 	Events           []string `json:"events,omitempty"`
 	ViewID           string   `json:"viewId,omitempty"`
 	IncludeEphemeral *bool    `json:"includeEphemeral,omitempty"`
@@ -135,7 +140,7 @@ func (p *filter) domain() *service.Filter {
 	if p == nil {
 		return nil
 	}
-	return &service.Filter{Parent: p.Parent, Priority: p.Priority, Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
+	return &service.Filter{Parent: p.Parent, Priority: p.Priority, Query: p.Query, Resources: p.Resources, Types: p.Types, Labels:p.Labels, LabelsAny:p.LabelsAny, ExcludeLabels:p.ExcludeLabels, Unassigned:p.Unassigned, ExcludeTypes:p.ExcludeTypes, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
 }
 
 func (p serviceParams) refID() (model.Ref, error) {
