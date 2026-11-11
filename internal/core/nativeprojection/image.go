@@ -11,7 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
-	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/recordimage"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -30,7 +30,7 @@ const ImportedOntologySourceID = "ontology/beads-import"
 // import document, with no authorization/plugin provider, cuts, templates or leases.
 // Every table participates in the digest, including empty tables. Its rows
 // are rebuilt from live documents, never copied from a source's cached flags.
-func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document, archives ...*dumpformat.Archive) error {
+func rebuildDerived(plan *restorePlan, docs map[string]recordimage.Document, archives ...*dumpformat.Archive) error {
 	var archive *dumpformat.Archive
 	if len(archives) != 0 {
 		archive = archives[0]
@@ -115,7 +115,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document, archiv
 			if err := archive.ChargeNativeDeltaBytes("derived_ancestor_values", depthBytes); err != nil {
 				return err
 			}
-			row, err := pipeline.AncestorRow(id, current, depth)
+			row, err := recordimage.AncestorRow(id, current, depth)
 			if err != nil {
 				return err
 			}
@@ -188,7 +188,7 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document, archiv
 		if len(violations) != 0 {
 			return fmt.Errorf("invalid restore priority for %s", id)
 		}
-		links := append([]pipeline.Link{}, doc.Links...)
+		links := append([]recordimage.Link{}, doc.Links...)
 		sort.Slice(links, func(i, j int) bool {
 			if links[i].Kind != links[j].Kind {
 				return links[i].Kind < links[j].Kind
@@ -251,8 +251,8 @@ func rebuildDerived(plan *restorePlan, docs map[string]pipeline.Document, archiv
 // Use the same waits predicate as the live ontology: absent metadata keeps
 // the terminal-spawner fallback; explicit metadata gates on direct children.
 // No other dependency kind, including tracks and local opaque kinds, enters it.
-func importedWaitsForSatisfied(link pipeline.Link, spawner pipeline.Document, docs map[string]pipeline.Document, snapshot ontology.Snapshot) bool {
-	terminal := func(doc pipeline.Document) bool {
+func importedWaitsForSatisfied(link recordimage.Link, spawner recordimage.Document, docs map[string]recordimage.Document, snapshot ontology.Snapshot) bool {
+	terminal := func(doc recordimage.Document) bool {
 		return snapshot.Effective(doc.Project).SatisfiesBlocks(StringValue(doc.Fields["status"]))
 	}
 	if !link.Metadata.HasPredicate() && terminal(spawner) {

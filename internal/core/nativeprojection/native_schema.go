@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
-	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/recordimage"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -39,7 +39,7 @@ type NativeSchemaReport struct {
 	OpaqueMetadataFields int                            `json:"opaque_metadata_fields,omitempty"`
 }
 
-func NativeSchemaAccounting(archive *dumpformat.Archive, profile driver.RestoreImportProfile, docs map[string]pipeline.Document, allocators []driver.OfflineAllocator) ([]NativeSchemaReport, error) {
+func NativeSchemaAccounting(archive *dumpformat.Archive, profile driver.RestoreImportProfile, docs map[string]recordimage.Document, allocators []driver.OfflineAllocator) ([]NativeSchemaReport, error) {
 	if archive.Manifest().MainVersion == 72 {
 		// Preserve the original v72 receipt encoding and recovery contract.
 		return nil, nil

@@ -6,47 +6,21 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/recordimage"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Document is the stored bead body. Fields are ontology data; Metadata is
 // separate plugin data. Parent, lease, comments, links and attachments are core owned.
-type Document struct {
-	ID      string     `json:"id"`
-	Type    string     `json:"type"`
-	Project string     `json:"project,omitempty"`
-	Parent  *model.Ref `json:"parent,omitempty"`
-	// Imported hierarchy has one parent edge, without a duplicate generic link.
-	ParentMetadata *model.LinkMetadata        `json:"parentMetadata,omitempty"`
-	Fields         map[string]any             `json:"fields"`
-	Metadata       map[string]json.RawMessage `json:"metadata,omitempty"`
-	Labels         []string                   `json:"labels,omitempty"`
-	Comments       []Comment                  `json:"comments,omitempty"`
-	Links          []Link                     `json:"links,omitempty"`
-	Attachments    []model.Attachment         `json:"attachments,omitempty"`
-	Lease          *ClaimLease                `json:"lease,omitempty"`
-	// Core timestamps are outside ontology fields and cannot be patched by a
-	// request or subscriber. Missing values preserve legacy unknown instants.
-	CreatedAt *time.Time `json:"createdAt,omitempty"`
-	StartedAt *time.Time `json:"startedAt,omitempty"`
-	ClosedAt  *time.Time `json:"closedAt,omitempty"`
-}
+type Document = recordimage.Document
 
 // MemoryDocument is the canonical body for a core memory record. Memories
 // share the Writer and driver record envelope with beads, but do not enter the
 // bead ontology or graph. Keeping their body separate prevents memory fields
 // from being mistaken for bead ontology data.
-type MemoryDocument struct {
-	ID       string         `json:"id"`
-	Key      string         `json:"key"`
-	Content  string         `json:"content"`
-	Metadata map[string]any `json:"metadata,omitempty"`
-	Overlay  *MemoryOverlay `json:"sourceOverlay,omitempty"`
-}
+type MemoryDocument = recordimage.MemoryDocument
 
 func DecodeMemoryDocument(body []byte) (MemoryDocument, error) {
 	var d MemoryDocument
@@ -193,29 +167,11 @@ func importedIneligibleMemory(record driver.Record, raw map[string]any) bool {
 	return raw["classification"] == "public" && !text
 }
 
-type Comment struct {
-	Body         string             `json:"body"`
-	Principal    model.PrincipalRef `json:"principal"`
-	Time         time.Time          `json:"time"`
-	Origin       string             `json:"origin,omitempty"`
-	SourceAuthor string             `json:"sourceAuthor,omitempty"`
-	SourceTime   *time.Time         `json:"sourceTime,omitempty"`
-}
+type Comment = recordimage.Comment
 
-type Link struct {
-	TargetKind model.LinkTargetKind `json:"targetKind,omitempty"`
-	To         model.Ref            `json:"to"`
-	Kind       string               `json:"kind"`
-	Metadata   *model.LinkMetadata  `json:"metadata,omitempty"`
-}
+type Link = recordimage.Link
 
-type ClaimLease struct {
-	Principal model.PrincipalRef `json:"principal"`
-	Agent     string             `json:"agent,omitempty"`
-	ExpiresAt time.Time          `json:"expiresAt"`
-	TtlMs     model.Natural      `json:"ttlMs"`
-	Epoch     model.Natural      `json:"epoch"`
-}
+type ClaimLease = recordimage.ClaimLease
 
 // DecodeDocument preserves JSON numbers and resolves hierarchy in memory without
 // rewriting the stored body.
@@ -229,7 +185,7 @@ func DecodeDocument(body []byte) (Document, error) {
 	if d.ID == "" || d.Type == "" || d.Fields == nil {
 		return d, fmt.Errorf("invalid bead document")
 	}
-	if err := d.validateLifecycleTimes(); err != nil {
+	if err := d.ValidateLifecycleTimes(); err != nil {
 		return d, err
 	}
 	if err := validateLifecycleTimeMembers(body); err != nil {
@@ -272,50 +228,9 @@ func validateParent(parent *model.Ref) error {
 // NewImportedComment accepts only the binding of a previously admitted host
 // restore. It does not authenticate a caller or accept ordinary RPC input.
 func NewImportedComment(profile driver.RestoreImportProfile, body, sourceAuthor string, sourceTime, restoreTime time.Time) (Comment, error) {
-	bound, err := profile.Detached()
-	if err != nil {
-		return Comment{}, err
-	}
-	author, err := NormalizeSourceAuthor(sourceAuthor)
-	if err != nil {
-		return Comment{}, err
-	}
-	if sourceTime.IsZero() || restoreTime.IsZero() {
-		return Comment{}, fmt.Errorf("imported comment requires source and restore times")
-	}
-	return Comment{Body: body, Principal: bound.Admission.Actor, Time: restoreTime, Origin: "import", SourceAuthor: author, SourceTime: &sourceTime}, nil
+	return recordimage.NewImportedComment(profile, body, sourceAuthor, sourceTime, restoreTime)
 }
 
 func NormalizeSourceAuthor(author string) (string, error) {
-	if !utf8.ValidString(author) {
-		return "", fmt.Errorf("source author must be valid Unicode")
-	}
-	author = strings.TrimSpace(author)
-	if utf8.RuneCountInString(author) > 256 {
-		return "", fmt.Errorf("source author exceeds 256 Unicode scalars")
-	}
-	for _, r := range author {
-		if unicode.IsControl(r) || unicode.In(r, unicode.Cf) {
-			return "", fmt.Errorf("source author contains a control or format character")
-		}
-	}
-	return author, nil
-}
-
-func (c Comment) Validate() error {
-	if c.Origin == "" {
-		if c.SourceAuthor != "" || c.SourceTime != nil {
-			return fmt.Errorf("legacy comment cannot carry import provenance")
-		}
-		return nil
-	}
-	author, err := NormalizeSourceAuthor(c.SourceAuthor)
-	if err != nil {
-		return err
-	}
-	if c.Origin != "import" || c.SourceTime == nil || c.SourceTime.IsZero() || c.Time.IsZero() || author != c.SourceAuthor {
-		return fmt.Errorf("invalid imported comment provenance")
-	}
-	_, err = json.Marshal(c.Principal)
-	return err
+	return recordimage.NormalizeSourceAuthor(author)
 }

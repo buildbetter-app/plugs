@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/recordimage"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
-	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
-	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/core/pipeline"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 var ErrRestoreUnavailable = errors.New("trusted offline restore seam unavailable")
@@ -163,7 +163,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 		beads = durable
 	}
-	docs := map[string]pipeline.Document{}
+	docs := map[string]recordimage.Document{}
 	if len(beads) > 20000 {
 		return restorePlan{}, fmt.Errorf("restore graph exceeds local service limit")
 	}
@@ -298,7 +298,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if len(labels) != 0 {
 			fields["labels"] = append([]string(nil), labels...)
 		}
-		doc := pipeline.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
+		doc := recordimage.Document{Labels: labels, ID: source.ID, Type: targetType, Project: source.Project, Fields: fields, Metadata: metadata}
 		// The admitted source row is the creation authority. Its exact value
 		// remains in reserved source metadata above; absence stays unknown.
 		// Restore time, version time and incomplete history cannot fill it in.
@@ -331,7 +331,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 			if err != nil {
 				return restorePlan{}, fmt.Errorf("comment %s timestamp: %w", source.ID, err)
 			}
-			comment, err := pipeline.NewImportedComment(*profile, StringValue(source.Body["text"]), author, sourceTime, restoreTime)
+			comment, err := recordimage.NewImportedComment(*profile, StringValue(source.Body["text"]), author, sourceTime, restoreTime)
 			if err != nil {
 				return restorePlan{}, fmt.Errorf("comment %s: %w", source.ID, err)
 			}
@@ -480,7 +480,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 						return restorePlan{}, fmt.Errorf("imported memory %s has an empty public key", source.ID)
 					}
 					ref := model.RefByID(SourcePlaneMirrorID(source, entities != nil), model.Natural64(0))
-					body := pipeline.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
+					body := recordimage.MemoryDocument{ID: ref.ID, Key: key, Content: value, Metadata: map[string]any{
 						"plug.restore.source_id": source.ID, "plug.restore.source_table": source.Source.Table,
 						"plug.restore.source": CloneRow(source.Source.Fields), "plug.restore.archive_sha256": archive.SHA256(),
 					}}
@@ -706,18 +706,18 @@ func SourceCreationTime(source dumpformat.Record) (*time.Time, error) {
 }
 
 // ImportedSourceLink preserves the typed endpoint before any local lookup.
-func ImportedSourceLink(body map[string]any, kind string, targetKind model.LinkTargetKind) (pipeline.Link, error) {
+func ImportedSourceLink(body map[string]any, kind string, targetKind model.LinkTargetKind) (recordimage.Link, error) {
 	return ImportedVersionedSourceLink(dumpformat.Record{Body: body}, kind, targetKind, 1)
 }
 
-func ImportedVersionedSourceLink(source dumpformat.Record, kind string, targetKind model.LinkTargetKind, edgeVersion int) (pipeline.Link, error) {
-	link := pipeline.Link{To: model.RefByID(StringValue(source.Body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
+func ImportedVersionedSourceLink(source dumpformat.Record, kind string, targetKind model.LinkTargetKind, edgeVersion int) (recordimage.Link, error) {
+	link := recordimage.Link{To: model.RefByID(StringValue(source.Body["to"]), model.Natural64(0)), Kind: kind, TargetKind: targetKind}
 	if err := model.ValidateLinkTarget(targetKind, link.To); err != nil {
-		return pipeline.Link{}, err
+		return recordimage.Link{}, err
 	}
 	metadata, err := dumpformat.SourceLinkMetadata(edgeVersion, source, kind)
 	if err != nil {
-		return pipeline.Link{}, err
+		return recordimage.Link{}, err
 	}
 	link.Metadata = metadata
 	return link, nil
