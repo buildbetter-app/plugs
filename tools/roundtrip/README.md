@@ -54,6 +54,21 @@ new target's actual config/external census; missing schema, source families or
 policies refuse through the exporter. No native-head export adapter is added.
 Embedded `bd sql` is unsupported at this pin and is not used as a fallback.
 
+A distinct disposable public fixture uses `--beads-capture-public` together
+with `--beads-capture-binary`, `--beads-capture-sha256` and
+`--beads-capture-build-run`. It preserves the admitted importer above and uses
+the separately declared capture-only source
+`446dbbdaf978385099aeb8625e08016889fffccf`, tree
+`64f0d22c8622c2a20da2bfe8c3ad49458fd12b06`. This component verifies its own
+version and captures the actual fresh imported target with `--readonly export
+--format beads-inventory/1 --plug-capture-public --output
+beads-generated-inventory.json`, then raw-exports that same target. Both
+executable identities, hashes, build receipts and command streams remain
+separate. This fixture does not supply the admitted importer's missing capture
+capability or native admission. It cannot be combined with a supplied
+`--beads-inventory`. The default without either option keeps the original
+inventory-required WAIT boundary.
+
 Independent readback compares raw stored issue fields, metadata, labels,
 timestamps, dependency envelopes, comments and memories against the submitted
 JSONL. It also checks every original opaque source column separately. Keeping
@@ -66,7 +81,9 @@ history; `reverse-report.json` retains the exact loss reasons.
 Standard output uses bounded field names, counters, digests and fixed codes.
 Output directories are 0700 and evidence files are 0600. Subprocess command
 arguments, exit codes, stdout/stderr and hashes are retained in the new output
-directory. The raw readback tar contains actual stored fields; a converter
+directory. A rejected raw archive also retains the actual decoder refusal in
+`beads-readback-validation-error.txt`; it receives no validated readback digest
+or native comparison credit. The raw readback tar contains actual stored fields; a converter
 projection, original archive or command construction never substitutes for it.
 Only public disposable data is authorized for this lane. No executable artifact
 is bundled here, and tests never substitute a successful Beads factory. Without
@@ -79,7 +96,11 @@ It checks `PLUG_PUBLIC_BEADS_BINARY`, `PLUG_PUBLIC_BEADS_SHA256`,
 `PLUG_PUBLIC_BEADS_BUILD_RUN` and `PLUG_PUBLIC_BEADS_MANIFEST` against the
 manifest's source pin, canonical exporter target, build identity, executable
 size/mode and digest. The production path then verifies the copied bytes and
-reported runtime commit before any init/import. No artifact is built by tests.
+reported runtime commit before any init/import. The importer is never built by
+tests. The distinct capture fixture reuses the single canonical B09 public
+source builder and its unchanged declared archive/complete manifest. Its actual
+build, validations, executable, toolchain and source provenance are retained
+under the current test's output directory.
 
 After the trusted preparation workflow has landed, select the runtime target
 explicitly through `remote-bazel` and provide exactly one
@@ -94,9 +115,18 @@ fixtures in full/partial/snapshot modes across memory, SQLite and disposable
 PostgreSQL, with the normal claim/release and live-edit workload. It uses
 explicit `--all` export for the partial fixture's three ephemeral beads; the
 complete fixture uses default export. The default-omission controls stay separate.
-It requires
-three actual successful Beads subprocesses for each admitted case and retains
-their raw output in the test log. Its current assertion ends at real reimport
-with inventory-required WAIT. It does not certify independent native readback
-or full roundtrip fidelity; those require a truthful census of the actual new
-Beads target and the supported exporter's raw archive.
+It requires six actual successful subprocesses for each case: importer version,
+init and import, then separate capture version, fresh-target public inventory
+capture and raw readback export. Every command records its executable digest,
+working directory and isolated environment. Each case invokes the independent
+raw capture verifier and requires the
+existing native field comparison to pass. Original live-workload, provenance,
+history and import-count assertions remain. Raw streams, both inventory files,
+all captured sidecars, the raw archive and submitted live JSONL are retained in
+the test outputs, including on failure. Physical directory observations bind
+the inventory store ID and raw archive to the actual imported embedded target;
+the configuration policy census must cover every raw stored key. The capture's
+literal filesystem atomicity limitation remains unchanged. An additional real missing-inventory
+control retains the three-command reimport-PASS/readback-WAIT boundary. These
+public fixtures provide no strict two-source history, private-store or official
+native-admission qualification.

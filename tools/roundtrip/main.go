@@ -27,36 +27,41 @@ import (
 )
 
 type outcome struct {
-	Status                string                  `json:"status"`
-	Stage                 string                  `json:"stage"`
-	Reason                string                  `json:"reason,omitempty"`
-	HistoryMode           string                  `json:"history_mode"`
-	ArchiveSHA256         string                  `json:"archive_sha256,omitempty"`
-	Counts                map[string]int          `json:"counts,omitempty"`
-	RestoredHead          string                  `json:"restored_head,omitempty"`
-	HistoryFloor          string                  `json:"history_floor,omitempty"`
-	ReverseSHA256         string                  `json:"reverse_sha256,omitempty"`
-	BaselineSHA256        string                  `json:"baseline_sha256,omitempty"`
-	ReverseBytes          int                     `json:"reverse_bytes,omitempty"`
-	HistoryLossItems      int                     `json:"history_loss_items,omitempty"`
-	BeadsReimport         string                  `json:"beads_reimport"`
-	BeadsReadback         string                  `json:"beads_readback"`
-	BeadsBinarySHA256     string                  `json:"beads_binary_sha256,omitempty"`
-	BeadsBuildRun         string                  `json:"beads_build_run,omitempty"`
-	BeadsCommit           string                  `json:"beads_commit,omitempty"`
-	BeadsTree             string                  `json:"beads_tree,omitempty"`
-	BeadsReadbackSHA256   string                  `json:"beads_readback_sha256,omitempty"`
-	Engine                string                  `json:"engine"`
-	RestoredIncarnation   string                  `json:"restored_incarnation,omitempty"`
-	ReverseIncarnation    string                  `json:"reverse_incarnation,omitempty"`
-	ReverseAt             string                  `json:"reverse_at,omitempty"`
-	SourceHistoryComplete bool                    `json:"source_history_complete"`
-	SourceHistoryFirst    uint64                  `json:"source_history_first,omitempty"`
-	SourceHistoryHead     uint64                  `json:"source_history_head,omitempty"`
-	SourceHistoryGaps     []dumpformat.HistoryGap `json:"source_history_gaps,omitempty"`
-	SourceFieldLosses     []string                `json:"source_field_losses,omitempty"`
-	Claims                int                     `json:"claims"`
-	Writes                int                     `json:"writes"`
+	Status                   string                  `json:"status"`
+	Stage                    string                  `json:"stage"`
+	Reason                   string                  `json:"reason,omitempty"`
+	HistoryMode              string                  `json:"history_mode"`
+	ArchiveSHA256            string                  `json:"archive_sha256,omitempty"`
+	Counts                   map[string]int          `json:"counts,omitempty"`
+	RestoredHead             string                  `json:"restored_head,omitempty"`
+	HistoryFloor             string                  `json:"history_floor,omitempty"`
+	ReverseSHA256            string                  `json:"reverse_sha256,omitempty"`
+	BaselineSHA256           string                  `json:"baseline_sha256,omitempty"`
+	ReverseBytes             int                     `json:"reverse_bytes,omitempty"`
+	HistoryLossItems         int                     `json:"history_loss_items,omitempty"`
+	BeadsReimport            string                  `json:"beads_reimport"`
+	BeadsReadback            string                  `json:"beads_readback"`
+	BeadsBinarySHA256        string                  `json:"beads_binary_sha256,omitempty"`
+	BeadsBuildRun            string                  `json:"beads_build_run,omitempty"`
+	BeadsCommit              string                  `json:"beads_commit,omitempty"`
+	BeadsTree                string                  `json:"beads_tree,omitempty"`
+	BeadsCaptureCommit       string                  `json:"beads_capture_commit,omitempty"`
+	BeadsCaptureTree         string                  `json:"beads_capture_tree,omitempty"`
+	BeadsCaptureBinarySHA256 string                  `json:"beads_capture_binary_sha256,omitempty"`
+	BeadsCaptureBuildRun     string                  `json:"beads_capture_build_run,omitempty"`
+	BeadsReadbackSHA256      string                  `json:"beads_readback_sha256,omitempty"`
+	BeadsRefusalSHA256       string                  `json:"beads_refusal_sha256,omitempty"`
+	Engine                   string                  `json:"engine"`
+	RestoredIncarnation      string                  `json:"restored_incarnation,omitempty"`
+	ReverseIncarnation       string                  `json:"reverse_incarnation,omitempty"`
+	ReverseAt                string                  `json:"reverse_at,omitempty"`
+	SourceHistoryComplete    bool                    `json:"source_history_complete"`
+	SourceHistoryFirst       uint64                  `json:"source_history_first,omitempty"`
+	SourceHistoryHead        uint64                  `json:"source_history_head,omitempty"`
+	SourceHistoryGaps        []dumpformat.HistoryGap `json:"source_history_gaps,omitempty"`
+	SourceFieldLosses        []string                `json:"source_field_losses,omitempty"`
+	Claims                   int                     `json:"claims"`
+	Writes                   int                     `json:"writes"`
 }
 
 func main() {
@@ -81,10 +86,22 @@ func run(args []string) outcome {
 	flags.StringVar(&beads.SHA256, "beads-sha256", "", "Independently verified Beads executable SHA256")
 	flags.StringVar(&beads.BuildRun, "beads-build-run", "", "Independently verified RunsOn build receipt ID")
 	flags.StringVar(&beads.Inventory, "beads-inventory", "", "Actual disposable Beads target inventory for supported raw export")
+	flags.BoolVar(&beads.CapturePublicInventory, "beads-capture-public", false, "Capture the fresh public target inventory with the separately verified capture fixture")
+	flags.StringVar(&beads.CaptureBinary, "beads-capture-binary", "", "Separate declared public capture fixture executable")
+	flags.StringVar(&beads.CaptureSHA256, "beads-capture-sha256", "", "Verified public capture fixture executable SHA256")
+	flags.StringVar(&beads.CaptureBuildRun, "beads-capture-build-run", "", "Actual public capture fixture RunsOn build ID")
 	exercise := flags.Bool("exercise", true, "Exercise claim/release and an idempotent live edit")
 	all := flags.Bool("all", false, "Include Ephemeral=true source rows for the explicit all-planes export")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || *input == "" || *output == "" {
 		result.Reason = "invalid_arguments"
+		return result
+	}
+	if beads.CapturePublicInventory && beads.Inventory != "" {
+		result.Reason = "conflicting_beads_inventory_options"
+		return result
+	}
+	if beads.CapturePublicInventory && (beads.CaptureBinary == "" || beads.CaptureSHA256 == "" || beads.CaptureBuildRun == "") || !beads.CapturePublicInventory && (beads.CaptureBinary != "" || beads.CaptureSHA256 != "" || beads.CaptureBuildRun != "") {
+		result.Reason = "explicit_public_capture_artifact_required"
 		return result
 	}
 	historyMode, err := driver.ParseRestoreHistoryMode(*mode)

@@ -108,6 +108,9 @@ func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, stat
 			return fmt.Errorf("unsupported source plane dependency kind/plane")
 		}
 		if _, err := SourceEdgeMetadata(m.EdgeVersion(), id, kind, fields["metadata"]); err != nil {
+			if identity, ok := err.(*EdgeMetadataIdentityError); ok {
+				identity.SourceTable = table
+			}
 			return fmt.Errorf("source plane dependency metadata: %w", err)
 		}
 		body := Row{"from": from, "to": target, "target_kind": arm, "type": kind, "metadata": fields["metadata"], "thread_id": fields["thread_id"]}

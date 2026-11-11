@@ -26,6 +26,20 @@ type EdgeMetadataProjection struct {
 	Envelope  bool
 }
 
+// EdgeMetadataIdentityError retains the rejected identities for private
+// diagnostics. Error deliberately contains no source values. This error never
+// authorizes a projection or an accepted archive.
+type EdgeMetadataIdentityError struct {
+	SourceTable     string
+	EdgeID          string
+	EnvelopeID      any
+	EnvelopePresent bool
+}
+
+func (*EdgeMetadataIdentityError) Error() string {
+	return "edge metadata envelope identity mismatch"
+}
+
 // InspectSourceEdgeMetadata applies the same validation used by the reader
 // and planner. It never changes the input or reinterprets unknown nested text.
 func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (EdgeMetadataProjection, error) {
@@ -57,9 +71,10 @@ func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (Edg
 			reserved = reserved || key == "_plug_edge_id" || key == "_plug_metadata"
 		}
 		if reserved {
+			rawID, present := object["_plug_edge_id"]
 			id, ok := object["_plug_edge_id"].(string)
 			if !ok || id == "" || id != edgeID {
-				return EdgeMetadataProjection{}, fmt.Errorf("edge metadata envelope identity mismatch")
+				return EdgeMetadataProjection{}, &EdgeMetadataIdentityError{EdgeID: edgeID, EnvelopeID: cloneValue(rawID), EnvelopePresent: present}
 			}
 			for key := range object {
 				if key != "_plug_edge_id" && key != "_plug_metadata" {

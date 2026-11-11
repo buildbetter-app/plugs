@@ -1,0 +1,40 @@
+{
+  "files": {
+    "memory-complete-beads-raw-readback.tar": {
+      "original": "/tmp/plug-swarm/reports/id-style-a-public-readback-20261110/focus-8f19f328-raw/tools/roundtrip/public_beads_runtime_test/test.outputs/public-reimport-readbacks/memory-complete/beads-raw-readback.tar",
+      "sha256": "dc58689a485ec1c37a85afef956c05d07f328e51062bd4112e14db20e669abae",
+      "size": 151552
+    },
+    "memory-complete-outcome.json": {
+      "original": "/tmp/plug-swarm/reports/id-style-a-public-readback-20261110/focus-8f19f328-raw/tools/roundtrip/public_beads_runtime_test/test.outputs/public-reimport-readbacks/memory-complete/outcome.json",
+      "sha256": "373f88f6c0ff41b13c4b253ddeb942c3123dd688ec65f7ea4bea35de7a015fb8",
+      "size": 1603
+    },
+    "memory-complete-reverse-live.jsonl": {
+      "original": "/tmp/plug-swarm/reports/id-style-a-public-readback-20261110/focus-8f19f328-raw/tools/roundtrip/public_beads_runtime_test/test.outputs/public-reimport-readbacks/memory-complete/reverse-live.jsonl",
+      "sha256": "3ddad50712c0f10cf59a5ea60c573c75e2ee2a3957d5a01bfa9d22e5410d8182",
+      "size": 1038
+    },
+    "memory-partial-beads-raw-readback.tar": {
+      "original": "/tmp/plug-swarm/reports/id-style-a-public-readback-20261110/focus-8f19f328-raw/tools/roundtrip/public_beads_runtime_test/test.outputs/public-reimport-readbacks/memory-partial/beads-raw-readback.tar",
+      "sha256": "cb51c880fe8cbc69a562799a4eabf1993f18ce6eb4ecda9dea035fdd6299b91c",
+      "size": 158208
+    },
+    "memory-partial-outcome.json": {
+      "original": "/tmp/plug-swarm/reports/id-style-a-public-readback-20261110/focus-8f19f328-raw/tools/roundtrip/public_beads_runtime_test/test.outputs/public-reimport-readbacks/memory-partial/outcome.json",
+      "sha256": "b80f4dfd51776b59b021309604100b8c91a6da3c3de9fc5f1c3410da53066b9a",
+      "size": 1552
+    },
+    "memory-partial-reverse-live.jsonl": {
+      "original": "/tmp/plug-swarm/reports/id-style-a-public-readback-20261110/focus-8f19f328-raw/tools/roundtrip/public_beads_runtime_test/test.outputs/public-reimport-readbacks/memory-partial/reverse-live.jsonl",
+      "sha256": "2b455dd7d71f77443adee5ea422daecd0ca8ef17594b2af7f1e398860eedfbc1",
+      "size": 3439
+    }
+  },
+  "head": "8f19f328a85572ab58df5541ffbef7dea57d4837",
+  "original_run": "42797608302",
+  "parent": "17078ffc32acc3204fad92119ea16799ed962779",
+  "schema": "plug-original-public-readback-controls/1",
+  "scope": "Byte-exact saved public outputs; offline parser/refusal regression controls only. Neither a fresh native run nor native equality proof. Original source fixtures, pins and native comparator remain authoritative.",
+  "tree": "98b5d85f5066168bead24d27ed70d559c33344ca"
+}

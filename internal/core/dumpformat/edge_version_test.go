@@ -3,11 +3,40 @@ package dumpformat
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestEdgeMetadataIdentityRefusalIsTypedAndRetainsExactRejectedValue(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		present bool
+		value   any
+	}{
+		{"mismatched", true, "edge-fixture"},
+		{"missing", false, nil},
+		{"null", true, nil},
+		{"number", true, json.Number("9007199254740993")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			envelope := map[string]any{"_plug_metadata": map[string]any{}}
+			if test.present {
+				envelope["_plug_edge_id"] = test.value
+			}
+			projection, err := InspectSourceEdgeMetadata(EdgeVersionLocalOpaque, "physical-id", "blocks", envelope)
+			var refusal *EdgeMetadataIdentityError
+			if !errors.As(err, &refusal) || err.Error() != "edge metadata envelope identity mismatch" || refusal.EdgeID != "physical-id" || refusal.EnvelopePresent != test.present || !reflect.DeepEqual(refusal.EnvelopeID, test.value) || projection.Value != nil || projection.Envelope || projection.Predicate != nil {
+				t.Fatalf("identity mismatch was admitted or lost its exact value: %+v %v", projection, err)
+			}
+		})
+	}
+	if got, err := InspectSourceEdgeMetadata(EdgeVersionLocalOpaque, "physical-id", "blocks", map[string]any{"_plug_edge_id": "physical-id"}); err != nil || !got.Envelope {
+		t.Fatalf("matching envelope was refused: %+v %v", got, err)
+	}
+}
 
 // These are detached contract controls, not accepted native producer output.
 func edgeVersionFixture(t *testing.T, f *mergeFixture, version int) []byte {
