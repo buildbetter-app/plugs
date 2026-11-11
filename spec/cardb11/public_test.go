@@ -328,3 +328,53 @@ func TestB11PublicCrossPlaneEndpointIdentity(t *testing.T) {
 		})
 	}
 }
+
+// Nested metadata is compared by the native JCS value while the original
+// token remains the committed value.  A same-endpoint retype is a typed
+// conflict until the caller explicitly unlinks the existing relation.
+func TestB11PublicNestedMetadataAndTypedEndpointConflict(t *testing.T) {
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			h := public.NewHost(t, engine)
+			from, to, sibling := h.Create("nested source"), h.Create("nested target"), h.Create("nested sibling")
+			original := metadata(` {"outer":{"alpha":{"deep":[{"x":1.0,"y":"v"}],"nil":null},"beta":[true,{"z":2e+0}]},"array":[{"q":[1,2,3]}],"n":9007199254740993} `)
+			params := func(kind string, value *model.LinkMetadata) map[string]any {
+				return map[string]any{"from": from, "to": to, "kind": kind, "metadata": value}
+			}
+			first := h.Call("bead.link", "nested-initial", params("related", original), "")
+			publicEdge(t, h, from, to, "related", original)
+
+			before := h.Capture()
+			conflict := h.Call("bead.link", "nested-retype", params("blocks", nil), "ontology_guard_failed")
+			if conflict.Error == nil || conflict.Error.Data.Code != "ontology_guard_failed" {
+				t.Fatal("same-endpoint different-type link was not typed-refused")
+			}
+			proof.Same(t, before, h.Capture())
+
+			equivalent := metadata(` { "n":9007199254740992.0, "array":[{"q":[1.0,2e0,3.00]}], "outer":{"beta":[true,{"z":2}],"alpha":{"nil":null,"deep":[{"y":"v","x":1}]}} } `)
+			before = h.Capture()
+			equal := h.Call("bead.link", "nested-semantic-equal", params("related", equivalent), "")
+			onlyNoopReceipt(t, h, before, "nested-semantic-equal", equal)
+			publicEdge(t, h, from, to, "related", original)
+
+			changed := metadata(`{"n":9007199254740994,"array":[{"q":[1,2,3]}],"outer":{"alpha":{"deep":[{"x":1.0,"y":"v"}],"nil":null},"beta":[true,{"z":3}]}}`)
+			before = h.Capture()
+			h.Call("bead.link", "nested-value-change", params("related", changed), "")
+			after := h.Capture()
+			if len(after.Changes) != len(before.Changes)+1 || len(after.Versions[from.ID]) != len(before.Versions[from.ID])+1 || !reflect.DeepEqual(before.Row(t, sibling.ID), after.Row(t, sibling.ID)) {
+				t.Fatal("nested metadata value change did not conserve unrelated endpoint state")
+			}
+			publicEdge(t, h, from, to, "related", changed)
+
+			before = h.Capture()
+			h.Reopen()
+			proof.Same(t, before, h.Capture())
+			publicEdge(t, h, from, to, "related", changed)
+			replay := h.Call("bead.link", "nested-initial", params("related", original), "")
+			if !replay.Meta.Replayed || !bytes.Equal(replay.Result, first.Result) {
+				t.Fatal("nested endpoint identity did not replay the original response")
+			}
+			proof.Same(t, before, h.Capture())
+		})
+	}
+}
