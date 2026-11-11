@@ -53,7 +53,7 @@ func assertDetachedReceivingPlan(t *testing.T, archive *dumpformat.Archive, prof
 	if err != nil { t.Fatal(err) }
 	view, err := buildPlanWithProfile(archive, &profile, when)
 	if err != nil { t.Fatal(err) }
-	if len(first.Records) != len(view.records) || first.DerivedDigest != view.derivedDigest || !reflect.DeepEqual(first.Derived, view.derived) || !reflect.DeepEqual(first.Blobs, view.blobs) || !reflect.DeepEqual(first.Allocators, view.allocators) || !reflect.DeepEqual(first.Sentinels, view.sentinels) || !reflect.DeepEqual(first.NativeFamilies, view.nativeFamilies) || !reflect.DeepEqual(first.NativeSchemas, view.nativeSchemas) || !reflect.DeepEqual(first.NativeHistories, view.nativeHistories) {
+	if len(first.Records) != len(view.records) || first.DerivedDigest != view.derivedDigest || !reflect.DeepEqual(first.Derived, view.derived) || !reflect.DeepEqual(first.Blobs, view.blobs) || !reflect.DeepEqual(first.Allocators, view.allocators) || !reflect.DeepEqual(first.Sentinels, view.sentinels) || !reflect.DeepEqual(first.NativeFamilies, view.nativeFamilies) || !reflect.DeepEqual(first.NativeSchemas, view.nativeSchemas) || !reflect.DeepEqual(first.NativeHistories, view.nativeHistories) || !reflect.DeepEqual(first.NativeDeltaHistory, view.nativeDeltaHistory) {
 		t.Fatal("receiver publication view changed actual planner output")
 	}
 	for i, record := range first.Records {
@@ -96,8 +96,14 @@ func assertDetachedReceivingPlan(t *testing.T, archive *dumpformat.Archive, prof
 	for i := range first.NativeHistories {
 		if c := first.NativeHistories[i].Coverage; c != nil && len(c.Boundaries) > 0 { c.Boundaries[0].Reason = "changed" }
 	}
+	if first.NativeDeltaHistory != nil {
+		first.NativeDeltaHistory.HeadCommitID = "changed"
+		if first.NativeDeltaHistory.OmittedPrefix != nil { first.NativeDeltaHistory.OmittedPrefix.Reason = "changed" }
+	}
 	profile.Admission.Actor.ID = "changed"
 	bound.Admission.Actor.ID = "changed"
+	if profile.NativeDeltaHistory != nil { profile.NativeDeltaHistory.FirstSequence = 999 }
+	if bound.NativeDeltaHistory != nil { bound.NativeDeltaHistory.FirstSequence = 999 }
 	if profile.SourcePlanes != nil && len(profile.SourcePlanes.CanonicalPlan) > 0 { profile.SourcePlanes.CanonicalPlan[0] ^= 1 }
 	if bound.SourcePlanes != nil && len(bound.SourcePlanes.CanonicalPlan) > 0 { bound.SourcePlanes.CanonicalPlan[0] ^= 1 }
 	second, err := plan.Snapshot()

@@ -19,11 +19,20 @@ type nativeFamilyEvidence = nativeprojection.NativeFamilyEvidence
 type NativeHistoryReport = nativeprojection.NativeHistoryReport
 
 func lowerNativeTableHistory(archive *dumpformat.Archive, profile driver.RestoreImportProfile, contexts ...context.Context) (driver.OfflineHistory, error) {
-	if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
+	if profile.SourcePlanes == nil {
 		return driver.OfflineHistory{}, driver.ErrUnsupported
 	}
 	if _, delta := archive.NativeDeltaRoot(); delta {
+		if profile.HistoryMode == driver.RestoreHistoryModePartial && profile.NativeDeltaHistory != nil {
+			return lowerNativeDeltaPartialHistory(nativeOperationContext(contexts), archive, profile)
+		}
+		if profile.HistoryMode != driver.RestoreHistoryModeFull {
+			return driver.OfflineHistory{}, driver.ErrUnsupported
+		}
 		return lowerNativeDeltaRowHistory(nativeOperationContext(contexts), archive, profile)
+	}
+	if profile.HistoryMode != driver.RestoreHistoryModeFull {
+		return driver.OfflineHistory{}, driver.ErrUnsupported
 	}
 	if !archive.HasNativeSourceHistories() {
 		return driver.OfflineHistory{}, driver.ErrUnsupported
@@ -83,44 +92,61 @@ func lowerNativeTableHistory(archive *dumpformat.Archive, profile driver.Restore
 // Recovery recomputes accounting from the authenticated original envelope and
 // the admitted restore clock. Neither a stored report nor a caller's new clock
 // can change which source leases were eligible in the committed import.
-func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) ([]NativeFamilyReport, []NativeSchemaReport, []NativeHistoryReport, error) {
-	if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
-		return nil, nil, nil, nil
+func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) ([]NativeFamilyReport, []NativeSchemaReport, []NativeHistoryReport, *driver.NativeDeltaHistoryEvidence, error) {
+	if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull && profile.NativeDeltaHistory == nil {
+		return nil, nil, nil, nil, nil
 	}
 	raw, err := reader.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
 	if err != nil || hashBytes(raw) != profile.ArchiveDigest {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrConflict
 	}
 	archive, err := readRetainedImportArchive(ctx, reader, raw, evidence)
 	if err != nil {
-		return nil, nil, nil, nativeDeltaRecoveryError(err)
+		return nil, nil, nil, nil, nativeDeltaRecoveryError(err)
 	}
 	defer archive.ReleaseNativeDecoded()
 	return recoverNativeFamiliesArchive(ctx, reader, profile, receipt, archive, nil)
 }
 
-func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *restorePlan) ([]NativeFamilyReport, []NativeSchemaReport, []NativeHistoryReport, error) {
+func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *restorePlan) ([]NativeFamilyReport, []NativeSchemaReport, []NativeHistoryReport, *driver.NativeDeltaHistoryEvidence, error) {
 	archive, releaseArchive := archive.NativeDeltaAccountingScope()
 	defer releaseArchive()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
 	if !archive.HasNativeSourceHistories() {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrConflict
 	}
 	if prepared == nil {
 		plan, planErr := buildPlanWithProfile(archive, &profile, when, ctx)
 		if planErr != nil {
-			return nil, nil, nil, nativeDeltaRecoveryError(planErr)
+			return nil, nil, nil, nil, nativeDeltaRecoveryError(planErr)
 		}
 		prepared = &plan
 	}
 	reports, schemas, histories := prepared.nativeFamilies, prepared.nativeSchemas, prepared.nativeHistories
-	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: histories})
+	policy := prepared.nativeDeltaHistory
+	if profile.NativeDeltaHistory != nil && profile.HistoryMode == driver.RestoreHistoryModeSnapshot {
+		markers, markerErr := reader.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+		want, encodeErr := json.Marshal(nativeSnapshotHistoryEvidence(policy))
+		if markerErr != nil || encodeErr != nil || len(markers) != 1 || markers[0].Kind != "beads-archive" || !bytes.Equal(markers[0].Body, want) {
+			return nil, nil, nil, nil, driver.ErrConflict
+		}
+		var original json.RawMessage
+		for _, result := range receipt.Commit.Results {
+			if result.Ref.ID == driver.OfflineHistoryEvidenceID {
+				original = result.Record
+			}
+		}
+		if !bytes.Equal(original, want) {
+			return nil, nil, nil, nil, driver.ErrConflict
+		}
+	}
+	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: histories, NativeDeltaHistory: policy})
 	if err != nil {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrConflict
 	}
 	var committed json.RawMessage
 	for _, result := range receipt.Commit.Results {
@@ -130,7 +156,7 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 	}
 	rows, err := reader.Get(ctx, []model.Ref{model.RefByID(NativeFamilyReportID, model.Natural64(0))})
 	if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, want) || !bytes.Equal(committed, want) {
-		return nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrConflict
 	}
-	return reports, schemas, histories, nil
+	return reports, schemas, histories, policy, nil
 }

@@ -28,15 +28,17 @@ import (
 )
 
 type request struct {
-	Format         string                        `json:"format"`
-	PolicySHA256   string                        `json:"policy_sha256,omitempty"`
-	OriginalInputs *joinedBinding                `json:"original_inputs,omitempty"`
-	ArchiveSHA256  string                        `json:"archive_sha256"`
-	SourceStoreID  string                        `json:"source_store_id"`
-	Projects       []string                      `json:"projects"`
-	Admission      driver.RestoreImportAdmission `json:"admission"`
-	IdempotencyKey string                        `json:"idempotency_key"`
-	SourcePlan     driver.SourcePlanePlanV1      `json:"source_plan"`
+	Format               string                        `json:"format"`
+	PolicySHA256         string                        `json:"policy_sha256,omitempty"`
+	OriginalInputs       *joinedBinding                `json:"original_inputs,omitempty"`
+	ArchiveSHA256        string                        `json:"archive_sha256"`
+	SourceStoreID        string                        `json:"source_store_id"`
+	Projects             []string                      `json:"projects"`
+	Admission            driver.RestoreImportAdmission `json:"admission"`
+	IdempotencyKey       string                        `json:"idempotency_key"`
+	SourcePlan           driver.SourcePlanePlanV1      `json:"source_plan"`
+	RestoreMode          string                        `json:"restore_mode,omitempty"`
+	RestoreFirstSequence json.RawMessage               `json:"restore_first_sequence,omitempty"`
 }
 
 type verification struct {
@@ -163,6 +165,9 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	var input request
 	if err := decode(requestBytes, &input); err != nil {
 		return zero, err
+	}
+	if input.RestoreMode != "" && input.RestoreMode != "full" || len(input.RestoreFirstSequence) != 0 {
+		return zero, driver.ErrRestoreHistoryRefused{Mode: driver.RestoreHistoryMode(input.RestoreMode), Reason: driver.RestoreHistoryReasonNotYetSupported}
 	}
 	bindingBytes, profileBytes, err := auxiliaryInputs(*bindingPath, *profilePath)
 	if err != nil {

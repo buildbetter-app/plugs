@@ -79,16 +79,17 @@ type NativeHistoryBoundary struct {
 // verifier, not an operator flag. Baseline is a complete converted state just
 // before First; it is required for a partial suffix and is never synthesized.
 type OfflineHistory struct {
-	Source           string                  `json:"source"`
-	Verified         bool                    `json:"verified"`
-	Complete         bool                    `json:"complete"`
-	First            uint64                  `json:"first"`
-	Head             uint64                  `json:"head"`
-	BaselineVerified bool                    `json:"baselineVerified"`
-	Baseline         []Record                `json:"baseline,omitempty"`
-	Gaps             []SourceHistoryGap      `json:"gaps"`
-	Batches          []SourceHistoryBatch    `json:"batches"`
-	NativeBoundaries []NativeHistoryBoundary `json:"nativeBoundaries,omitempty"`
+	Source             string                      `json:"source"`
+	Verified           bool                        `json:"verified"`
+	Complete           bool                        `json:"complete"`
+	First              uint64                      `json:"first"`
+	Head               uint64                      `json:"head"`
+	BaselineVerified   bool                        `json:"baselineVerified"`
+	Baseline           []Record                    `json:"baseline,omitempty"`
+	Gaps               []SourceHistoryGap          `json:"gaps"`
+	Batches            []SourceHistoryBatch        `json:"batches"`
+	NativeBoundaries   []NativeHistoryBoundary     `json:"nativeBoundaries,omitempty"`
+	NativeDeltaHistory *NativeDeltaHistoryEvidence `json:"nativeDeltaHistory,omitempty"`
 }
 
 type SourceImportRevision struct {
@@ -101,15 +102,16 @@ type SourceImportRevision struct {
 	CommitIDs      []string       `json:"commitIds,omitempty"`
 }
 type HistoryImportEvidence struct {
-	Source           string                  `json:"source"`
-	Mode             RestoreHistoryMode      `json:"mode"`
-	Complete         bool                    `json:"complete"`
-	First            uint64                  `json:"first"`
-	Head             uint64                  `json:"head"`
-	Floor            model.Revision          `json:"floor"`
-	Gaps             []SourceHistoryGap      `json:"gaps"`
-	Mapping          []SourceImportRevision  `json:"mapping"`
-	NativeBoundaries []NativeHistoryBoundary `json:"nativeBoundaries,omitempty"`
+	Source             string                      `json:"source"`
+	Mode               RestoreHistoryMode          `json:"mode"`
+	Complete           bool                        `json:"complete"`
+	First              uint64                      `json:"first"`
+	Head               uint64                      `json:"head"`
+	Floor              model.Revision              `json:"floor"`
+	Gaps               []SourceHistoryGap          `json:"gaps"`
+	Mapping            []SourceImportRevision      `json:"mapping"`
+	NativeBoundaries   []NativeHistoryBoundary     `json:"nativeBoundaries,omitempty"`
+	NativeDeltaHistory *NativeDeltaHistoryEvidence `json:"nativeDeltaHistory,omitempty"`
 }
 
 // OfflineHistoryPlan is detached validation output. Drivers build it again
@@ -178,7 +180,7 @@ func BuildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 // complete source plan in the admission hash; the core-only API still refuses
 // source namespaces. Target lifetime is checked again by transaction preparation.
 func BuildSourcePlaneHistory(current Meta, profile RestoreImportProfile, input OfflineHistory, when time.Time, tail []Record) (OfflineHistoryPlan, error) {
-	if profile.SourcePlanes == nil || profile.HistoryMode != RestoreHistoryModeFull {
+	if profile.SourcePlanes == nil || profile.HistoryMode != RestoreHistoryModeFull && !(profile.HistoryMode == RestoreHistoryModePartial && profile.NativeDeltaHistory != nil) {
 		return OfflineHistoryPlan{}, sourcePlaneError("joint history requires full policy and a complete source plan")
 	}
 	return buildOfflineHistory(current, profile, input, when, tail, true)
@@ -200,7 +202,15 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 		return OfflineHistoryPlan{}, ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: RestoreHistoryAvailableUnverified, Reason: reason}
 	}
 	nativeTables := input.Source == NativeTableHistorySource
-	if nativeTables && (!joint || p.HistoryMode != RestoreHistoryModeFull) {
+	selectedNative := nativeTables && joint && p.HistoryMode == RestoreHistoryModePartial && p.NativeDeltaHistory != nil
+	if nativeTables && (!joint || p.HistoryMode != RestoreHistoryModeFull && !selectedNative) {
+		return refuse(RestoreHistoryReasonUnmappable)
+	}
+	if selectedNative {
+		if input.NativeDeltaHistory == nil || input.NativeDeltaHistory.Validate(p) != nil || input.First != p.NativeDeltaHistory.FirstSequence || input.Head != input.NativeDeltaHistory.HeadSequence {
+			return refuse(RestoreHistoryReasonUnmappable)
+		}
+	} else if input.NativeDeltaHistory != nil || p.NativeDeltaHistory != nil {
 		return refuse(RestoreHistoryReasonUnmappable)
 	}
 	if p.HistoryMode == RestoreHistoryModeSnapshot {
@@ -230,10 +240,23 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	partial := h.First > 1
 	boundedNative := len(h.NativeBoundaries) != 0
 	if boundedNative {
-		if !nativeTables || !joint || p.HistoryMode != RestoreHistoryModeFull || h.Complete || partial || h.BaselineVerified || len(h.Gaps) != 0 || len(h.Baseline) != 0 {
+		if !nativeTables || !joint || h.Complete || !selectedNative && (p.HistoryMode != RestoreHistoryModeFull || partial || h.BaselineVerified || len(h.Gaps) != 0 || len(h.Baseline) != 0) {
 			return refuse(RestoreHistoryReasonNonContiguous)
 		}
 		if !validNativeHistoryBoundaries(h) {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+	}
+	if selectedNative {
+		e := h.NativeDeltaHistory
+		if e.UnavailablePrefixSHA256 != "" {
+			if len(h.NativeBoundaries) != 1 || h.NativeBoundaries[0].BoundarySHA256 != e.UnavailablePrefixSHA256 || h.NativeBoundaries[0].SourceStoreID != e.SourceStoreID || h.NativeBoundaries[0].Project != e.Project {
+				return refuse(RestoreHistoryReasonNonContiguous)
+			}
+		} else if boundedNative {
+			return refuse(RestoreHistoryReasonNonContiguous)
+		}
+		if partial && (len(h.Gaps) != 1 || e.OmittedPrefix == nil || h.Gaps[0] != *e.OmittedPrefix) {
 			return refuse(RestoreHistoryReasonNonContiguous)
 		}
 	}
@@ -265,6 +288,7 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 	meta.HistoryFloor = model.Natural64(0)
 	plan := OfflineHistoryPlan{Meta: meta, Evidence: HistoryImportEvidence{Source: h.Source, Mode: p.HistoryMode, Complete: h.Complete, First: h.First, Head: h.Head, Gaps: append([]SourceHistoryGap{}, h.Gaps...), Mapping: []SourceImportRevision{}}}
 	plan.Evidence.NativeBoundaries = append([]NativeHistoryBoundary(nil), h.NativeBoundaries...)
+	plan.Evidence.NativeDeltaHistory = h.NativeDeltaHistory
 	state := map[string]Record{}
 	counts := map[string]int{}
 	last := map[string]model.Revision{}
@@ -389,6 +413,12 @@ func buildOfflineHistory(current Meta, profile RestoreImportProfile, input Offli
 			return refuse(RestoreHistoryReasonNonContiguous)
 		}
 		origin := scope{b.SourceStoreID, b.Project}
+		if selectedNative {
+			e := h.NativeDeltaHistory
+			if b.SourceStoreID != e.SourceStoreID || b.Project != e.Project || len(b.CommitIDs) != 1 || i == 0 && b.CommitIDs[0] != e.FirstCommitID || i == len(h.Batches)-1 && b.CommitIDs[0] != e.HeadCommitID {
+				return refuse(RestoreHistoryReasonUnmappable)
+			}
+		}
 		if nativeTables && (b.SourceStoreID == "" || b.Project == "" || b.SourceSequence == 0 || len(b.CommitIDs) != 1 || len(b.EventIDs) != 0) {
 			return refuse(RestoreHistoryReasonUnmappable)
 		}
@@ -525,7 +555,8 @@ func PrepareOfflineHistoryBinding(current Meta, p RestoreImportProfile, h Offlin
 }
 
 // PrepareSourcePlaneHistoryBinding verifies the real empty target and provider
-// lifetime before binding full replay. No partial or snapshot fallback exists.
+// lifetime before binding verified replay. Native delta partial mode requires
+// its explicit policy and proven baseline; no mode fallback exists.
 func PrepareSourcePlaneHistoryBinding(current Meta, p RestoreImportProfile, h OfflineHistory, when time.Time, lifetime CheckpointLifetime) (*PreparedOfflineHistory, error) {
 	bound, err := PrepareSourcePlaneHistoryProfile(p, current, lifetime)
 	if err != nil {
