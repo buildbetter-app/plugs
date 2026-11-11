@@ -1,0 +1,56 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+COMMON = ["controls_test.go", "public_fixture_test.go", "parent_test.go"]
+DEPS = [
+    "//internal/core/model",
+    "//internal/core/ontology",
+    "//internal/core/pipeline",
+    "//internal/core/service",
+    "//internal/server/rpc",
+    "//internal/server/transport/inprocess",
+    "//internal/storage/driver",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "//internal/testclock",
+]
+
+go_test(
+    name = "canonical_public_test",
+    srcs = COMMON + ["public_test.go"],
+    args = ["-test.v"],
+    deps = DEPS,
+    tags = ["local", "requires-network"],
+    size = "large",
+    timeout = "long",
+)
+
+# Actual backend snapshots exercise the accepted indexed-parent bounds.
+go_test(
+    name = "parent_bounds_test",
+    srcs = COMMON + ["bounds_test.go"],
+    args = ["-test.v"],
+    deps = DEPS + ["//internal/storage/conformance"],
+    tags = ["local", "requires-network"],
+    size = "large",
+    timeout = "long",
+)
+
+# Explicit operational reference, using the owner's unchanged source support.
+go_test(
+    name = "record_native_test",
+    srcs = COMMON + ["native_test.go", "//spec/cardb20:native_build_support"],
+    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    args = ["-test.v"],
+    deps = DEPS + ["//internal/publicnative"],
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
