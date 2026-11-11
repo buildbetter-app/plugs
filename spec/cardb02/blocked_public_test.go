@@ -55,7 +55,7 @@ type blockedPage struct {
 }
 
 func sameRef(a, b model.Ref) bool {
-	return a.ID == b.ID && a.Branch == b.Branch && a.Key == b.Key
+	return a.IsID() == b.IsID() && a.ID == b.ID && a.Branch == b.Branch && a.Key == b.Key
 }
 
 func (f *blockedFixture) call(method string, params map[string]any) public.Reply {

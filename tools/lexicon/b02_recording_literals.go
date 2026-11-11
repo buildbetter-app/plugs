@@ -68,9 +68,9 @@ func b02DeltaRecordingLiteralOffsets(path string, content []byte) map[int]bool {
 			function: "b02DeltaWriterSource",
 			context:  "c23cec578afb0ebff28140bbf065b4c75008b33b774c67f4ca534c88dceb9105",
 			sites: []b02RecordingSite{
-				{0, "26b967b81945b1f29e51ee6b66abd6fcaf05f7c245f3fa96efee020b6669dd38"},
-				{0, "aa2de5dd0ae80783cec8fd6a7349dad46190fc48074f6f0fd34095e9ad5c0df2"},
-				{0, "26b967b81945b1f29e51ee6b66abd6fcaf05f7c245f3fa96efee020b6669dd38"},
+				{117, "26b967b81945b1f29e51ee6b66abd6fcaf05f7c245f3fa96efee020b6669dd38"},
+				{179, "aa2de5dd0ae80783cec8fd6a7349dad46190fc48074f6f0fd34095e9ad5c0df2"},
+				{1255, "26b967b81945b1f29e51ee6b66abd6fcaf05f7c245f3fa96efee020b6669dd38"},
 			},
 		},
 	}
