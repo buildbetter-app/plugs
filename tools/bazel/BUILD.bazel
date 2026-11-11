@@ -1,0 +1,8 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+exports_files(["dolt.bzl"])
+sh_test(
+    name = "dolt_version_test",
+    srcs = ["dolt_version_test.sh"],
+    data = ["dolt.bzl", "@dolt_native_linux_amd64//:dolt"],
+    env = {"BEADS_TEST_DOLT_BINARY": "$(rlocationpath @dolt_native_linux_amd64//:dolt)"},
+)

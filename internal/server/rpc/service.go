@@ -115,6 +115,8 @@ type asOf struct {
 	Incarnation string         `json:"incarnation,omitempty"`
 }
 type filter struct {
+	Parent           string   `json:"parent,omitempty"`
+	Priority         *int     `json:"priority,omitempty"`
 	Query            string   `json:"query,omitempty"`
 	Resources        []string `json:"resources,omitempty"`
 	Types            []string `json:"types,omitempty"`
@@ -133,7 +135,7 @@ func (p *filter) domain() *service.Filter {
 	if p == nil {
 		return nil
 	}
-	return &service.Filter{Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
+	return &service.Filter{Parent: p.Parent, Priority: p.Priority, Query: p.Query, Resources: p.Resources, Types: p.Types, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
 }
 
 func (p serviceParams) refID() (model.Ref, error) {

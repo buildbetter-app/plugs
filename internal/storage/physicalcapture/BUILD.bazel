@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# manual: GMS compiles through gms_pure_go test/binary transitions, including nogo.
+go_library(
+    name = "physicalcapture",
+    tags = ["manual"],
+    srcs = ["capture.go", "working.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/storage/physicalcapture",
+    visibility = ["//:__subpackages__"],
+    deps = ["@com_github_dolthub_driver_v2//:driver"],
+)
+
+
+go_test(
+    name = "working_root_test",
+    size = "large",
+    srcs = ["working_test.go"],
+    gotags = ["gms_pure_go"],
+    deps = [
+        ":physicalcapture",
+        "//internal/testutil/nativeschema",
+        "@com_github_dolthub_driver_v2//:driver",
+    ],
+)

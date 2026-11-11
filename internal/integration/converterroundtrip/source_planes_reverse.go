@@ -53,7 +53,7 @@ func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, me
 	if err != nil {
 		return LiveReverse{}, err
 	}
-	if err := projectJointReverseDump(ctx, bound, plan, &dump, live, initial, current, options); err != nil {
+	if err := projectJointReverseDump(ctx, r, bound, plan, &dump, live, initial, current, options); err != nil {
 		return LiveReverse{}, err
 	}
 	converted, err := reverseconverter.ConvertWithOptions(dump, options)
@@ -70,7 +70,7 @@ func reverseSourceRecord(row reverseconverter.Record) dumpformat.Record {
 
 // Immutable mirrors remain evidence, never a source of mutable active bodies.
 // Unrepresentable relation/comment/claim changes refuse with no partial output.
-func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProfile, plan driver.SourcePlanePlanV1, dump *reverseconverter.Dump, live map[string]driver.Record, initial, current workflowplugin.SourceReverseImage, options reverseconverter.Options) error {
+func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound driver.RestoreImportProfile, plan driver.SourcePlanePlanV1, dump *reverseconverter.Dump, live map[string]driver.Record, initial, current workflowplugin.SourceReverseImage, options reverseconverter.Options) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -205,6 +205,9 @@ func projectJointReverseDump(ctx context.Context, bound driver.RestoreImportProf
 				return ReverseRefusal{"changed_source_mirror"}
 			}
 		}
+	}
+	if err := projectEffectiveMemories(ctx, reader, dump, live, true); err != nil {
+		return err
 	}
 	if len(live) != 0 {
 		return ReverseRefusal{"unmapped_live_record"}

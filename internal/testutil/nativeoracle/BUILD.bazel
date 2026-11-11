@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+# manual: compile the native reference through each tagged test transition.
+go_library(
+    name = "nativeoracle",
+    testonly = True,
+    tags = ["manual"],
+    srcs = ["oracle.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/testutil/nativeoracle",
+    visibility = ["//visibility:public"],
+    deps = ["//internal/storage/physicalcapture"],
+)
+
+go_test(
+    name = "physical_root_control_test",
+    size = "large",
+    srcs = ["physical_root_control_test.go"],
+    gotags = ["gms_pure_go"],
+    embed = [":nativeoracle"],
+    data = ["@dolt_native_linux_amd64//:dolt"],
+    env = {"BEADS_TEST_DOLT_BINARY": "$(rlocationpath @dolt_native_linux_amd64//:dolt)"},
+    deps = ["//internal/testutil/nativedolt", "@com_github_dolthub_driver_v2//:driver"],
+)
