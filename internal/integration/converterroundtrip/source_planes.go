@@ -48,6 +48,9 @@ func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile
 			return driver.RestoreImportProfile{}, fmt.Errorf("%w: invalid bound restore time", driver.ErrUnsupported)
 		}
 	}
+	if profile.NativeDeltaHistory != nil {
+		profile.HistoryTime = when.UTC().Format(time.RFC3339Nano)
+	}
 	if len(plan.Providers) != 1 {
 		return driver.RestoreImportProfile{}, driver.ErrUnsupported
 	}
@@ -130,10 +133,22 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	}
 	switch profile.HistoryMode {
 	case driver.RestoreHistoryModeSnapshot:
-		if profile.HistoryDigest != "" || profile.HistoryTime != "" || archive.HasNativeSourceHistories() {
+		if archive.HasNativeDelta() && profile.NativeDeltaHistory != nil {
+			if profile.HistoryDigest != "" || profile.HistoryTime == "" {
+				return empty, driver.ErrUnsupported
+			}
+			if _, err := nativeDeltaHistoryEvidence(archive, profile); err != nil {
+				return empty, err
+			}
+		} else if profile.HistoryDigest != "" || profile.HistoryTime != "" || archive.HasNativeSourceHistories() {
 			return empty, driver.ErrUnsupported
 		}
-	case driver.RestoreHistoryModeFull:
+	case driver.RestoreHistoryModeFull, driver.RestoreHistoryModePartial:
+		if profile.HistoryMode == driver.RestoreHistoryModePartial {
+			if _, err := nativeDeltaHistoryEvidence(archive, profile); err != nil {
+				return empty, err
+			}
+		}
 		if err := validateArchiveHistoryPolicy(profile.HistoryMode, archive); err != nil {
 			return empty, err
 		}

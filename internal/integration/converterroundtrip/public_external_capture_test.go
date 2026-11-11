@@ -24,9 +24,9 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// External public-proof glue only. Production, original tests and fixtures are
-// exact 9a1b878438d625f451d35da7570eb1e845f386d5 bytes. The build root exports
-// this actual Bazel test ELF without opening or importing a capture set.
+// External public-proof glue adopted from reviewed b3c6fe72. Consumer callbacks
+// compile into this actual converterroundtrip test ELF. The export receipt pins
+// its composed product parent without opening or importing a capture set.
 func TestPublicNativeExternalHarnessBuild(t *testing.T) {
 	publicProofGuard(t)
 	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_EXPORT")
@@ -54,22 +54,23 @@ func TestPublicNativeExternalHarnessBuild(t *testing.T) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("public_external_harness_elf_sha256=%s bytes=%d production_head=9a1b878438d625f451d35da7570eb1e845f386d5", hex.EncodeToString(h.Sum(nil)), n)
+	t.Logf("public_external_harness_elf_sha256=%s bytes=%d production_head=be2f70b562c94e197da42d366928d624599a3dd6", hex.EncodeToString(h.Sum(nil)), n)
 }
 
 type publicProofRequest struct {
-	Format        string                    `json:"format"`
-	Capture       string                    `json:"capture"`
-	CaptureSHA256 string                    `json:"capture_sha256"`
-	Source        dumpformat.SourceIdentity `json:"source_identity"`
-	ProducerHead  string                    `json:"producer_head"`
-	Oracle        string                    `json:"oracle"`
-	LedgerSHA256  string                    `json:"ledger_sha256"`
-	StatesSHA256  string                    `json:"states_sha256"`
-	RestoreTime   string                    `json:"restore_time"`
-	RestoreMode   string                    `json:"restore_mode,omitempty"`
-	JournalTable  string                    `json:"journal_table"`
-	Commits       int                       `json:"commits"`
+	Format               string                    `json:"format"`
+	Capture              string                    `json:"capture"`
+	CaptureSHA256        string                    `json:"capture_sha256"`
+	Source               dumpformat.SourceIdentity `json:"source_identity"`
+	ProducerHead         string                    `json:"producer_head"`
+	Oracle               string                    `json:"oracle"`
+	LedgerSHA256         string                    `json:"ledger_sha256"`
+	StatesSHA256         string                    `json:"states_sha256"`
+	RestoreTime          string                    `json:"restore_time"`
+	RestoreMode          string                    `json:"restore_mode,omitempty"`
+	RestoreFirstSequence json.RawMessage           `json:"restore_first_sequence,omitempty"`
+	JournalTable         string                    `json:"journal_table"`
+	Commits              int                       `json:"commits"`
 }
 
 // The request wire keeps /1 compatibility: absence is the original Full
@@ -84,12 +85,53 @@ func (r publicProofRequest) historyMode() (driver.RestoreHistoryMode, error) {
 	}
 }
 
-// Check the existing source-history policy before binding can take a
-// lower-level unsupported branch (notably native Snapshot on production9a).
-// This preserves the requested mode's typed refusal without changing receiver
-// policy. A later receiver layer must supply its own genuine mode support.
+// A raw field distinguishes absence from supplied zero/null for Full/Snapshot.
+// A Partial floor is a source ordinal, never a target revision or local floor.
+func (r publicProofRequest) historySelection() (driver.RestoreHistoryMode, *driver.NativeDeltaHistoryPolicy, error) {
+	mode, err := r.historyMode()
+	if err != nil {
+		return "", nil, err
+	}
+	if mode != driver.RestoreHistoryModePartial && len(r.RestoreFirstSequence) != 0 {
+		return mode, nil, driver.ErrRestoreHistoryRefused{Mode: mode, Reason: driver.RestoreHistoryReasonUnmappable}
+	}
+	if mode == driver.RestoreHistoryModeFull {
+		return mode, nil, nil
+	}
+	var first uint64
+	if mode == driver.RestoreHistoryModePartial && (len(r.RestoreFirstSequence) == 0 || json.Unmarshal(r.RestoreFirstSequence, &first) != nil || first == 0) {
+		return mode, nil, driver.ErrRestoreHistoryRefused{Mode: mode, Reason: driver.RestoreHistoryReasonUnmappable}
+	}
+	policy := &driver.NativeDeltaHistoryPolicy{Format: driver.NativeDeltaHistoryPolicyFormat, FirstSequence: first}
+	return mode, policy, policy.Validate(mode)
+}
+
+func publicProofCaptureSelection(archive *dumpformat.Archive, mode driver.RestoreHistoryMode, policy *driver.NativeDeltaHistoryPolicy) error {
+	if mode == driver.RestoreHistoryModePartial {
+		if policy == nil || policy.Validate(mode) != nil {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
+		}
+		if _, ok := archive.NativeDeltaHistoryPoint(policy.FirstSequence); !ok {
+			return driver.ErrRestoreHistoryRefused{Mode: mode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonNonContiguous}
+		}
+	}
+	return nil
+}
+
+// Keep typed policy refusal before lower-level binding and require the
+// explicit operator opt-in supplied by the actual native mode receiver layer.
 func publicProofBindCapture(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
 	if err := validateArchiveHistoryPolicy(profile.HistoryMode, archive); err != nil {
+		return driver.RestoreImportProfile{}, err
+	}
+	if profile.NativeDeltaHistory != nil {
+		if err := profile.NativeDeltaHistory.Validate(profile.HistoryMode); err != nil {
+			return driver.RestoreImportProfile{}, err
+		}
+	} else if profile.HistoryMode != driver.RestoreHistoryModeFull {
+		return driver.RestoreImportProfile{}, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
+	}
+	if err := publicProofCaptureSelection(archive, profile.HistoryMode, profile.NativeDeltaHistory); err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
 	return BindNativeCaptureSetImport(ctx, archive, profile, plan)
@@ -203,7 +245,12 @@ type publicProofState struct {
 	PhysicalRootSHA256 string `json:"physical_root_sha256"`
 }
 
-func publicProofStates(t *testing.T, req publicProofRequest, ledger []publicProofTable) map[uint64]publicProofState {
+type publicProofStateLedger struct {
+	Commits       map[uint64]publicProofState
+	Head, Current publicProofState
+}
+
+func publicProofStates(t *testing.T, req publicProofRequest, ledger []publicProofTable) publicProofStateLedger {
 	t.Helper()
 	path := filepath.Join(req.Oracle, "states.ndjson")
 	if len(req.StatesSHA256) != 64 || publicProofHashFile(t, path) != req.StatesSHA256 {
@@ -272,7 +319,7 @@ func publicProofStates(t *testing.T, req publicProofRequest, ledger []publicProo
 	if states["head-checkpoint/0"].CommitID != mapping[uint64(req.Commits)].CommitID || states["current/0"].CommitID != mapping[uint64(req.Commits)].CommitID {
 		t.Fatal("HEAD/current source identity differs")
 	}
-	return mapping
+	return publicProofStateLedger{Commits: mapping, Head: states["head-checkpoint/0"], Current: states["current/0"]}
 }
 
 // Host intent is explicit per observed tuple. It preserves the existing
@@ -565,7 +612,7 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	if req.Format != "public-native-capture-proof/1" || len(req.CaptureSHA256) != 64 || req.Commits < 1 || req.Source.StoreID == "" || req.Source.Project == "" || req.JournalTable == "" {
 		t.Fatal("public request identity missing")
 	}
-	mode, err := req.historyMode()
+	mode, selection, err := req.historySelection()
 	publicProofError(t, "restore-mode", err)
 	when, err := time.Parse(time.RFC3339Nano, req.RestoreTime)
 	if err != nil {
@@ -586,6 +633,7 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	if archive.SHA256() != req.CaptureSHA256 || archive.Manifest().StoreID != req.Source.StoreID || len(archive.Manifest().Projects) != 1 || archive.Manifest().Projects[0].Prefix != req.Source.Project {
 		t.Fatal("genuine capture identity differs")
 	}
+	publicProofError(t, "source-floor", publicProofCaptureSelection(archive, mode, selection))
 	baseline, ok := archive.NativeDecodedUsage()
 	if !ok || baseline.LimitBytes != 2147483648 || baseline.LimitOrigin != "default" {
 		t.Fatal("default decoded budget differs")
@@ -607,7 +655,7 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 		return nativeHistoryPlanFromArchive(t, work, store, lease)
 	}()
 	plan = publicProofHostIntent(t, archive, plan)
-	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: when.Format(time.RFC3339Nano)}
+	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: when.UTC().Format(time.RFC3339Nano), NativeDeltaHistory: selection}
 	publicProofJSON(t, filepath.Join(output, "host-plan.json"), plan)
 	profile, err = publicProofBindCapture(op, archive, profile, plan)
 	publicProofError(t, "bind", err)
@@ -619,13 +667,16 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	publicProofJSON(t, filepath.Join(output, "committed-report.json"), report)
 	publicProofError(t, "release-before-reopen", release())
 	store, lease = reopen()
-	_, recovered, found, err := RecoverBoundSourceImport(ctx, store)
+	recoveredProfile, recovered, found, err := RecoverBoundSourceImport(ctx, store)
 	if recovered.Archive != nil {
 		defer recovered.Archive.ReleaseNativeDecoded()
 	}
 	publicProofError(t, "recover", err)
 	if !found || !reflect.DeepEqual(recovered.Receipt, report.Receipt) || !reflect.DeepEqual(recovered.NativeFamilies, report.NativeFamilies) || !reflect.DeepEqual(recovered.NativeSchemas, report.NativeSchemas) || !reflect.DeepEqual(recovered.NativeHistories, report.NativeHistories) || !reflect.DeepEqual(recovered.SourcePlanes, report.SourcePlanes) {
 		t.Fatal("reopened receipt or source reports differ")
+	}
+	if recoveredProfile.HistoryMode != profile.HistoryMode || recoveredProfile.HistoryTime != profile.HistoryTime || !reflect.DeepEqual(recoveredProfile.NativeDeltaHistory, profile.NativeDeltaHistory) || !reflect.DeepEqual(recovered.NativeDeltaHistory, report.NativeDeltaHistory) {
+		t.Fatal("reopened selected mode, source floor or provenance differs")
 	}
 	publicProofError(t, "reopened-production-readback", VerifyNativeCaptureSetReadback(ctx, store, archive, recovered))
 	publicProofIndependentReadback(t, ctx, store, recovered, req, ledger, output, "reopened")
@@ -658,6 +709,9 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	success := map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "restore_mode": mode, "continuation_completed": continuation != nil, "full_accounting_or_switch_credit": false}
 	if assertion != nil {
 		success["post_continuation_reopen_asserted"] = true
+	}
+	if selection != nil {
+		success["native_delta_history"] = recovered.NativeDeltaHistory
 	}
 	publicProofJSON(t, filepath.Join(output, "SUCCESS.json"), success)
 }
@@ -715,13 +769,13 @@ func TestPublicNativeExternalRestoreModes(t *testing.T) {
 			profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: nativeFixtureTime.Format(time.RFC3339Nano)}
 			bound, err := publicProofBindCapture(ctx, archive, profile, plan)
 			if mode == driver.RestoreHistoryModeFull {
-				if err != nil || bound.HistoryMode != mode {
+				if err != nil || bound.HistoryMode != mode || bound.NativeDeltaHistory != nil {
 					t.Fatal("original full binding changed", err)
 				}
 			} else {
 				var refused driver.ErrRestoreHistoryRefused
 				code, details, ok := driver.ErrorMapping(err)
-				if !errors.As(err, &refused) || refused.Mode != mode || refused.Reason != driver.RestoreHistoryReasonNotYetSupported || !errors.Is(err, driver.ErrUnsupported) || !ok || code != "restore_violation" || details["mode"] != string(mode) || details["reason"] != "not-yet-supported" {
+				if !errors.As(err, &refused) || refused.Mode != mode || refused.Reason != driver.RestoreHistoryReasonUnmappable || !errors.Is(err, driver.ErrUnsupported) || !ok || code != "restore_violation" || details["mode"] != string(mode) || details["reason"] != "unmappable" {
 					t.Fatal("native mode refusal lost exact type/code/details", err, code, details)
 				}
 			}
@@ -730,6 +784,183 @@ func TestPublicNativeExternalRestoreModes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPublicNativeExternalHistorySelection(t *testing.T) {
+	for _, tc := range []struct {
+		name, raw string
+		mode      driver.RestoreHistoryMode
+		first     uint64
+	}{
+		{"absent", `{}`, driver.RestoreHistoryModeFull, 0},
+		{"empty", `{"restore_mode":""}`, driver.RestoreHistoryModeFull, 0},
+		{"full", `{"restore_mode":"full"}`, driver.RestoreHistoryModeFull, 0},
+		{"snapshot", `{"restore_mode":"snapshot"}`, driver.RestoreHistoryModeSnapshot, 0},
+		{"partial-first", `{"restore_mode":"partial","restore_first_sequence":1}`, driver.RestoreHistoryModePartial, 1},
+		{"partial-second", `{"restore_mode":"partial","restore_first_sequence":2}`, driver.RestoreHistoryModePartial, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req publicProofRequest
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatal(err)
+			}
+			mode, policy, err := req.historySelection()
+			if err != nil || mode != tc.mode {
+				t.Fatal("selected mode lost or substituted", mode, err)
+			}
+			if mode == driver.RestoreHistoryModeFull {
+				if policy != nil {
+					t.Fatal("Full acquired a policy field")
+				}
+			} else if policy == nil || policy.Format != driver.NativeDeltaHistoryPolicyFormat || policy.FirstSequence != tc.first {
+				t.Fatal("explicit operator source selection differs", policy)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, raw string }{
+		{"missing", `{"restore_mode":"partial"}`},
+		{"zero", `{"restore_mode":"partial","restore_first_sequence":0}`},
+		{"null", `{"restore_mode":"partial","restore_first_sequence":null}`},
+		{"negative", `{"restore_mode":"partial","restore_first_sequence":-1}`},
+		{"fractional", `{"restore_mode":"partial","restore_first_sequence":2.5}`},
+		{"exponent", `{"restore_mode":"partial","restore_first_sequence":2e0}`},
+		{"text", `{"restore_mode":"partial","restore_first_sequence":"2"}`},
+		{"boolean", `{"restore_mode":"partial","restore_first_sequence":true}`},
+		{"overflow", `{"restore_mode":"partial","restore_first_sequence":18446744073709551616}`},
+		{"default-zero", `{"restore_first_sequence":0}`},
+		{"full-zero", `{"restore_mode":"full","restore_first_sequence":0}`},
+		{"full-null", `{"restore_mode":"full","restore_first_sequence":null}`},
+		{"full-positive", `{"restore_mode":"full","restore_first_sequence":2}`},
+		{"snapshot-zero", `{"restore_mode":"snapshot","restore_first_sequence":0}`},
+		{"snapshot-null", `{"restore_mode":"snapshot","restore_first_sequence":null}`},
+		{"snapshot-positive", `{"restore_mode":"snapshot","restore_first_sequence":2}`},
+	} {
+		t.Run("refused-"+tc.name, func(t *testing.T) {
+			var req publicProofRequest
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatal(err)
+			}
+			mode, policy, err := req.historySelection()
+			var refusal driver.ErrRestoreHistoryRefused
+			code, details, ok := driver.ErrorMapping(err)
+			if policy != nil || !errors.As(err, &refusal) || refusal.Mode != mode || refusal.Reason != driver.RestoreHistoryReasonUnmappable || !ok || code != "restore_violation" || details["mode"] != string(mode) || details["reason"] != "unmappable" {
+				t.Fatal("floor refusal lost exact mode/type/code/reason", policy, err, code, details)
+			}
+		})
+	}
+}
+
+func TestPublicNativeExternalSelectedModeBinding(t *testing.T) {
+	archive := publicNativeDeltaArchive(t)
+	defer archive.ReleaseNativeDecoded()
+	ctx := archive.WithNativeDeltaAccounting(context.Background())
+	store, lease, _ := openIdentityTarget(t, "memory")
+	plan := publicProofHostIntent(t, archive, nativeHistoryPlanFromArchive(t, archive, store, lease))
+	before := reverseState(t, store)
+	hashes := map[string]bool{}
+	for _, tc := range []struct{ name, raw string }{
+		{"snapshot", `{"restore_mode":"snapshot"}`},
+		{"partial-first", `{"restore_mode":"partial","restore_first_sequence":1}`},
+		{"partial-second", `{"restore_mode":"partial","restore_first_sequence":2}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req publicProofRequest
+			if err := json.Unmarshal([]byte(tc.raw), &req); err != nil {
+				t.Fatal(err)
+			}
+			mode, policy, err := req.historySelection()
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: nativeFixtureTime.In(time.FixedZone("source-clock", 2*60*60)).Format(time.RFC3339Nano), NativeDeltaHistory: policy}
+			bound, err := publicProofBindCapture(ctx, archive, profile, plan)
+			if err != nil || bound.HistoryMode != mode || !reflect.DeepEqual(bound.NativeDeltaHistory, policy) || bound.ArchiveDigest != archive.SHA256() || bound.HistoryTime != nativeFixtureTime.UTC().Format(time.RFC3339Nano) || (bound.HistoryDigest == "") != (mode == driver.RestoreHistoryModeSnapshot) {
+				t.Fatal("bound selected mode/floor/capture/clock differs", err)
+			}
+			hash, err := bound.RequestHash()
+			if err != nil || hash == "" || hashes[hash] {
+				t.Fatal("operator selection not independently hash bound", err)
+			}
+			hashes[hash] = true
+			if !reflect.DeepEqual(before, reverseState(t, store)) {
+				t.Fatal("selected binding mutated the target")
+			}
+		})
+	}
+	// Synthetic reports exercise the actual readback oracle with literal local
+	// floors. Authenticated fixture points supply scalar source provenance only;
+	// these controls do not import an archive or create independent fresh proof.
+	work, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	metadata, err := work.NativeSourceHistoryMetadata()
+	if err != nil || len(metadata) != 1 || len(metadata[0].Projects) != 1 || metadata[0].ImageCount < 2 {
+		t.Fatal("oracle control needs its authenticated source scope", err)
+	}
+	scope := metadata[0]
+	states := publicProofStateLedger{Commits: map[uint64]publicProofState{}}
+	for seq := uint64(1); seq <= uint64(scope.ImageCount); seq++ {
+		point, ok := archive.NativeDeltaHistoryPoint(seq)
+		if !ok {
+			t.Fatal("oracle control lost an authenticated source point", seq)
+		}
+		states.Commits[seq] = publicProofState{Kind: "commit", Sequence: seq, CommitID: point.CommitID, PhysicalRootSHA256: point.RootSHA256}
+	}
+	headRoot, currentRoot, ok := archive.NativeDeltaCheckpointRoots()
+	if !ok {
+		t.Fatal("oracle control lost authenticated checkpoint roots")
+	}
+	states.Head = publicProofState{Kind: "head-checkpoint", CommitID: states.Commits[uint64(scope.ImageCount)].CommitID, PhysicalRootSHA256: headRoot}
+	states.Current = publicProofState{Kind: "current", CommitID: states.Head.CommitID, PhysicalRootSHA256: currentRoot}
+	for _, tc := range []struct {
+		name         string
+		first, floor uint64
+	}{
+		{"oracle-partial-first", 1, 0},
+		{"oracle-partial-with-predecessor", 2, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := publicProofRequest{CaptureSHA256: archive.SHA256(), Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Commits: scope.ImageCount, RestoreMode: "partial", RestoreFirstSequence: json.RawMessage(fmt.Sprint(tc.first))}
+			mode, policy, err := req.historySelection()
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := states.Commits[tc.first]
+			provenance := &driver.NativeDeltaHistoryEvidence{Format: driver.NativeDeltaHistoryEvidenceFormat, Mode: mode, ArchiveSHA256: req.CaptureSHA256, SourceStoreID: req.Source.StoreID, Project: req.Source.Project, FirstSequence: tc.first, FirstCommitID: first.CommitID, FirstRootSHA256: first.PhysicalRootSHA256, HeadSequence: uint64(req.Commits), HeadCommitID: states.Head.CommitID, HeadRootSHA256: headRoot, CurrentRootSHA256: currentRoot}
+			evidence := driver.HistoryImportEvidence{Source: driver.NativeTableHistorySource, Mode: mode, Complete: scope.Complete && tc.first == 1, First: tc.first, Head: uint64(req.Commits), Floor: model.Natural64(tc.floor), Gaps: []driver.SourceHistoryGap{}, NativeDeltaHistory: provenance}
+			if tc.first > 1 {
+				baseline := states.Commits[tc.first-1]
+				provenance.BaselineSequence, provenance.BaselineCommitID, provenance.BaselineRootSHA256 = tc.first-1, baseline.CommitID, baseline.PhysicalRootSHA256
+				provenance.OmittedPrefix = &driver.SourceHistoryGap{First: 1, Last: tc.first - 1, Reason: "operator-selected-floor"}
+				evidence.Gaps = []driver.SourceHistoryGap{*provenance.OmittedPrefix}
+			}
+			if scope.HistoryCoverage != nil {
+				provenance.UnavailablePrefixSHA256 = dumpformat.NativeHistoryCoverageSHA256(*scope.HistoryCoverage)
+				evidence.NativeBoundaries = []driver.NativeHistoryBoundary{{SourceStoreID: req.Source.StoreID, Project: req.Source.Project, VerifiedCommitCount: uint64(req.Commits) - tc.first + 1, BoundarySHA256: provenance.UnavailablePrefixSHA256}}
+			}
+			report := Report{Archive: archive, NativeDeltaHistory: provenance}
+			got := publicProofSelectedSnapshots(t, report, req, states, evidence, policy, mode)
+			want := []uint64{0}
+			for seq := uint64(1); seq <= uint64(req.Commits); seq++ {
+				want = append(want, seq)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatal("oracle lost selected suffix or unmapped predecessor", got, want)
+			}
+		})
+	}
+	t.Run("beyond-authenticated-head", func(t *testing.T) {
+		proof, ok := archive.NativeDeltaVerification()
+		if !ok {
+			t.Fatal("authenticated source proof missing")
+		}
+		policy := &driver.NativeDeltaHistoryPolicy{Format: driver.NativeDeltaHistoryPolicyFormat, FirstSequence: proof.Totals.Commits + 1}
+		err := publicProofCaptureSelection(archive, driver.RestoreHistoryModePartial, policy)
+		var refusal driver.ErrRestoreHistoryRefused
+		code, details, ok := driver.ErrorMapping(err)
+		if !errors.As(err, &refusal) || refusal.Mode != driver.RestoreHistoryModePartial || refusal.Reason != driver.RestoreHistoryReasonNonContiguous || !ok || code != "restore_violation" || details["reason"] != "non-contiguous" || !reflect.DeepEqual(before, reverseState(t, store)) {
+			t.Fatal("source ordinal above actual authenticated head was not typed-refused", err, code, details)
+		}
+	})
 }
 
 func TestPublicNativeExternalContinuationLifecycle(t *testing.T) {
@@ -976,19 +1207,53 @@ func TestPublicNativeExternalPostContinuationReopen(t *testing.T) {
 // from a separately bound disk-backed semantic replay of the original capture.
 func publicProofIndependentReadback(t *testing.T, ctx context.Context, store driver.Store, report Report, req publicProofRequest, ledger []publicProofTable, output, phase string) {
 	t.Helper()
+	mode, selection, err := req.historySelection()
+	publicProofError(t, "readback-selection", err)
+	states := publicProofStates(t, req, ledger)
 	at := report.Restored.Head
 	r, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
 	publicProofError(t, "mapping-read", err)
-	items, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+	items, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0)), model.RefByID(importBindingRecordID, model.Natural64(0))})
 	publicProofError(t, "mapping-get", err)
 	publicProofError(t, "mapping-close", r.Close())
 	var evidence driver.HistoryImportEvidence
-	if len(items) != 1 || json.Unmarshal(items[0].Body, &evidence) != nil || evidence.Source != driver.NativeTableHistorySource || len(evidence.Mapping) != req.Commits {
-		t.Fatal("complete source mapping differs")
+	var binding importBindingEvidence
+	seenEvidence := map[string]bool{}
+	for _, item := range items {
+		if seenEvidence[item.Ref.ID] {
+			t.Fatal("duplicate stored history/binding evidence")
+		}
+		seenEvidence[item.Ref.ID] = true
+		switch item.Ref.ID {
+		case driver.OfflineHistoryEvidenceID:
+			publicProofError(t, "history-evidence-decode", json.Unmarshal(item.Body, &evidence))
+		case importBindingRecordID:
+			publicProofError(t, "binding-evidence-decode", json.Unmarshal(item.Body, &binding))
+		default:
+			t.Fatal("unexpected stored history/binding evidence")
+		}
+	}
+	when, err := time.Parse(time.RFC3339Nano, req.RestoreTime)
+	publicProofError(t, "readback-restore-time", err)
+	hash, err := binding.Profile.RequestHash()
+	publicProofError(t, "stored-profile-hash", err)
+	if len(items) != 2 || evidence.Source != driver.NativeTableHistorySource || evidence.Mode != mode || binding.Profile.HistoryMode != mode || !reflect.DeepEqual(binding.Profile.NativeDeltaHistory, selection) || binding.Profile.ArchiveDigest != req.CaptureSHA256 || string(binding.Profile.SourceStoreID) != req.Source.StoreID || binding.Profile.HistoryTime != when.UTC().Format(time.RFC3339Nano) || hash != binding.RequestHash || hash != report.RequestHash {
+		t.Fatal("stored selected mode/floor/capture/clock binding differs")
+	}
+	snapshots := publicProofSelectedSnapshots(t, report, req, states, evidence, selection, mode)
+	first, expectedMappings := uint64(1), req.Commits
+	if mode == driver.RestoreHistoryModeSnapshot {
+		expectedMappings = 0
+	} else if selection != nil {
+		first = selection.FirstSequence
+		expectedMappings = req.Commits - int(first) + 1
+	}
+	if len(evidence.Mapping) != expectedMappings {
+		t.Fatal("selected source mapping census differs")
 	}
 	mapping := map[uint64]driver.SourceImportRevision{}
 	for _, m := range evidence.Mapping {
-		if m.SourceStoreID != req.Source.StoreID || m.Project != req.Source.Project || m.SourceSequence == 0 || mapping[m.SourceSequence].SourceSequence != 0 {
+		if m.SourceStoreID != req.Source.StoreID || m.Project != req.Source.Project || m.SourceSequence < first || m.SourceSequence > uint64(req.Commits) || mapping[m.SourceSequence].SourceSequence != 0 {
 			t.Fatal("source mapping repetition or identity differs")
 		}
 		mapping[m.SourceSequence] = m
@@ -1001,21 +1266,26 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 		}
 		byState[n] = append(byState[n], entry)
 	}
-	stateMapping := publicProofStates(t, req, ledger)
 	dir := filepath.Join(output, phase)
 	if err := os.Mkdir(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for seq := uint64(0); seq <= uint64(req.Commits); seq++ {
+	for _, seq := range snapshots {
 		publicProofGuard(t)
 		entries := byState[seq]
 		at := report.Restored.Head
 		if seq != 0 {
-			m, ok := mapping[seq]
-			if !ok || len(m.EventIDs) != 0 || len(m.CommitIDs) != 1 || m.CommitIDs[0] != stateMapping[seq].CommitID {
-				t.Fatal("exact original commit mapping differs")
+			if mode == driver.RestoreHistoryModePartial && first > 1 && seq == first-1 {
+				// The authenticated predecessor is a local baseline, never a
+				// claimed source mapping in the selected suffix.
+				at = evidence.Floor
+			} else {
+				m, ok := mapping[seq]
+				if !ok || len(m.EventIDs) != 0 || len(m.CommitIDs) != 1 || m.CommitIDs[0] != states.Commits[seq].CommitID {
+					t.Fatal("exact original commit mapping differs")
+				}
+				at = m.Revision
 			}
-			at = m.Revision
 		}
 		reader, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation, At: &at})
 		publicProofError(t, "snapshot-read", err)
@@ -1095,6 +1365,81 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 		if len(groups) != 0 {
 			t.Fatal("complete snapshot has extra native row/meta groups", seq, len(groups))
 		}
-		publicProofJSON(t, filepath.Join(dir, fmt.Sprintf("snapshot-%020d.json", seq)), map[string]any{"sequence": seq, "expected_tables": len(entries), "actual_groups_after_complete_check": len(groups), "complete_unfiltered_query": true, "empty_source_commit": seq != 0 && stateMapping[seq].TableCount == 0})
+		receipt := map[string]any{"sequence": seq, "expected_tables": len(entries), "actual_groups_after_complete_check": len(groups), "complete_unfiltered_query": true, "empty_source_commit": seq != 0 && states.Commits[seq].TableCount == 0}
+		if selection != nil {
+			receipt["restore_mode"] = mode
+			receipt["authenticated_baseline_without_mapping"] = seq != 0 && mode == driver.RestoreHistoryModePartial && first > 1 && seq == first-1
+		}
+		publicProofJSON(t, filepath.Join(dir, fmt.Sprintf("snapshot-%020d.json", seq)), receipt)
 	}
+}
+
+// The independent state ledger, not the receiver's evidence builder, supplies
+// selected commit IDs and roots. Source coverage remains a separate digest;
+// an operator-selected known interval never invents pre-capture ordinals.
+func publicProofSelectedSnapshots(t *testing.T, report Report, req publicProofRequest, states publicProofStateLedger, evidence driver.HistoryImportEvidence, selection *driver.NativeDeltaHistoryPolicy, mode driver.RestoreHistoryMode) []uint64 {
+	t.Helper()
+	first := uint64(1)
+	snapshots := []uint64{0}
+	if selection == nil {
+		if mode != driver.RestoreHistoryModeFull || evidence.NativeDeltaHistory != nil || report.NativeDeltaHistory != nil {
+			t.Fatal("Full acquired selected-mode provenance")
+		}
+	} else {
+		want := &driver.NativeDeltaHistoryEvidence{Format: driver.NativeDeltaHistoryEvidenceFormat, Mode: mode, ArchiveSHA256: req.CaptureSHA256, SourceStoreID: req.Source.StoreID, Project: req.Source.Project, HeadSequence: uint64(req.Commits), HeadCommitID: states.Head.CommitID, HeadRootSHA256: states.Head.PhysicalRootSHA256, CurrentRootSHA256: states.Current.PhysicalRootSHA256}
+		if report.Archive == nil {
+			t.Fatal("selected provenance lost authenticated source archive")
+		}
+		work, release := report.Archive.NativeDeltaAccountingScope()
+		defer release()
+		metadata, err := work.NativeSourceHistoryMetadata()
+		if err != nil || len(metadata) != 1 || metadata[0].StoreID != req.Source.StoreID || len(metadata[0].Projects) != 1 || metadata[0].Projects[0] != req.Source.Project || metadata[0].ImageCount != req.Commits {
+			t.Fatal("selected provenance source identity differs", err)
+		}
+		if metadata[0].HistoryCoverage != nil {
+			want.UnavailablePrefixSHA256 = dumpformat.NativeHistoryCoverageSHA256(*metadata[0].HistoryCoverage)
+		}
+		if mode == driver.RestoreHistoryModePartial {
+			first = selection.FirstSequence
+			state, ok := states.Commits[first]
+			if !ok || first == 0 || first > uint64(req.Commits) {
+				t.Fatal("chosen source ordinal outside independent states")
+			}
+			want.FirstSequence, want.FirstCommitID, want.FirstRootSHA256 = first, state.CommitID, state.PhysicalRootSHA256
+			gaps := []driver.SourceHistoryGap{}
+			floor := model.Natural64(0)
+			if first > 1 {
+				floor = model.Natural64(1)
+				baseline := states.Commits[first-1]
+				want.BaselineSequence, want.BaselineCommitID, want.BaselineRootSHA256 = first-1, baseline.CommitID, baseline.PhysicalRootSHA256
+				want.OmittedPrefix = &driver.SourceHistoryGap{First: 1, Last: first - 1, Reason: "operator-selected-floor"}
+				gaps = append(gaps, *want.OmittedPrefix)
+				snapshots = append(snapshots, first-1)
+			}
+			boundaries := []driver.NativeHistoryBoundary(nil)
+			if want.UnavailablePrefixSHA256 != "" {
+				boundaries = []driver.NativeHistoryBoundary{{SourceStoreID: req.Source.StoreID, Project: req.Source.Project, VerifiedCommitCount: uint64(req.Commits) - first + 1, BoundarySHA256: want.UnavailablePrefixSHA256}}
+			}
+			if evidence.First != first || evidence.Head != uint64(req.Commits) || evidence.Floor != floor || evidence.Complete != (metadata[0].Complete && first == 1) || !reflect.DeepEqual(evidence.Gaps, gaps) || !reflect.DeepEqual(evidence.NativeBoundaries, boundaries) {
+				t.Fatal("selected suffix/baseline and independent prefix descriptors differ")
+			}
+		} else if mode == driver.RestoreHistoryModeSnapshot {
+			expected := driver.HistoryImportEvidence{Source: driver.NativeTableHistorySource, Mode: mode, Complete: false, Floor: model.Natural64(1), Gaps: []driver.SourceHistoryGap{}, Mapping: []driver.SourceImportRevision{}, NativeDeltaHistory: want}
+			if !reflect.DeepEqual(evidence, expected) {
+				t.Fatal("snapshot claims source mappings or fabricated history")
+			}
+		} else {
+			t.Fatal("selected provenance has an unsupported mode")
+		}
+		if !reflect.DeepEqual(evidence.NativeDeltaHistory, want) || !reflect.DeepEqual(report.NativeDeltaHistory, want) {
+			t.Fatal("selected source IDs/roots/floor/gap provenance differs")
+		}
+		if mode == driver.RestoreHistoryModeSnapshot {
+			return snapshots
+		}
+	}
+	for seq := first; seq <= uint64(req.Commits); seq++ {
+		snapshots = append(snapshots, seq)
+	}
+	return snapshots
 }

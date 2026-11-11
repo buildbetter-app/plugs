@@ -144,6 +144,9 @@ func prepareStreamBinding(r OfflineHistoryStreamRequest, h OfflineHistoryStreamH
 	if err != nil {
 		return OfflineHistoryStreamBinding{}, err
 	}
+	if p.NativeDeltaHistory != nil {
+		return OfflineHistoryStreamBinding{}, streamError("native delta mode provenance requires the capture-set importer")
+	}
 	if h.Version != OfflineHistoryStreamVersion || !h.Verified || !streamText(h.Source) || h.First == 0 || h.Head < h.First || p.HistoryMode == RestoreHistoryModeSnapshot || p.HistoryDigest == "" || r.When.IsZero() || p.HistoryTime != r.When.UTC().Format(time.RFC3339Nano) {
 		return OfflineHistoryStreamBinding{}, streamError("invalid verified range/profile/time")
 	}
