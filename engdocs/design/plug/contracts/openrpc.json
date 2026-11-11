@@ -7135,7 +7135,7 @@
           },
           "excludeTypes": {
             "type": "array",
-            "description": "Exclude these canonical types when types is empty; explicit types take precedence, matching native ready.",
+            "description": "Exclude these canonical types. Ready/claimNext give explicit types precedence; ordinary listing intersects types and exclusions, matching the respective native surfaces.",
             "items": {"type": "string"}
           },
           "events": {

@@ -19,16 +19,16 @@ func selectionLabels(values []string) []string {
 	return labels
 }
 
-func matchesSelectionFields(typ string, labels []string, assigned bool, filter *Filter) bool {
+func matchesSelectionFields(typ string, labels []string, assigned bool, filter *Filter, ready bool) bool {
 	if filter == nil {
 		return true
 	}
 	if filter.Unassigned && assigned {
 		return false
 	}
-	// An explicit type selection takes precedence over exclusions, matching
-	// the native ReadyRequest contract. With no type selection, exclude types.
-	if len(filter.Types) == 0 && slices.Contains(filter.ExcludeTypes, typ) {
+	// Ready gives explicit types precedence over exclusions. Ordinary
+	// listing composes type selection and exclusion, matching its native surface.
+	if (!ready || len(filter.Types) == 0) && slices.Contains(filter.ExcludeTypes, typ) {
 		return false
 	}
 	for _, label := range selectionLabels(filter.Labels) {
@@ -60,7 +60,7 @@ func filterSelectionWorkflowItems(items []workflowplugin.ItemView, filter *Filte
 	}
 	selected := make([]workflowplugin.ItemView, 0, len(items))
 	for _, item := range items {
-		if matchesSelectionFields(item.Type, item.Labels, item.Claim != nil, filter) {
+		if matchesSelectionFields(item.Type, item.Labels, item.Claim != nil, filter, true) {
 			selected = append(selected, item)
 		}
 	}

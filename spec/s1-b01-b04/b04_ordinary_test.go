@@ -89,7 +89,7 @@ func TestB04OrdinaryAdditiveSelectionAcrossStores(t *testing.T) {
 			o:=newOrdinaryB04(t,backend,dsn,ids);filter:=o.selectionFixture(v);o.reopen("selection-before")
 			want:=[]string{};for _,role:=range v.Ready {want=append(want,ordinarySelectionID(v.Name,role))}
 			if got:=o.readyIDs("selection-front",filter);!reflect.DeepEqual(got,want) {t.Fatalf("public selector membership=%v want=%v",got,want)}
-			o.selectionListingControl(filter,want)
+			listed:=[]string{};for _,role:=range v.Listed {listed=append(listed,ordinarySelectionID(v.Name,role))};o.selectionListingControl(filter,listed)
 			for i,id:=range want {o.win(fmt.Sprintf("selection-win-%d",i),"bead.claimNext",id,"todo",map[string]any{"filter":filter})}
 			o.empty("selection-drained",map[string]any{"filter":filter});o.reopen("selection-after")
 		})}
