@@ -10,7 +10,7 @@ var undoLiteralBindings = map[string][]undoLiteralBinding{
 		}},
 	},
 	"spec/cardb20/b06_mixed_native_test.go": {
-		{name: "b06RecordMixedNative", kind: "func", contextSHA256: "2a3825e8f3731b46550ed6c07b425d79dd8dd532d5eb39eb0b1b3b0e826f1e90", literals: map[int]string{
+		{name: "b06RecordMixedNative", kind: "func", contextSHA256: "cd53a8b288256af2e1f9d02bb88dddaf899833fe18ebb7d92f6ad58536d307cf", literals: map[int]string{
 			1601: "c8224c35f46d047833aed11fe2df067f13520c73945064daaf165395b9120153",
 		}},
 	},

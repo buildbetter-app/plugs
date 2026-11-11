@@ -12,6 +12,34 @@ import (
 	"github.com/buildbetter-app/plugs/internal/publicnative"
 )
 
+func b06MixedRelaxParallel(r *b06NativeRecorder, w b06NativeWorkspace, binary, target string) {
+	schema := r.rows(w, binary, "mixed-parallel-original-schema", "SHOW CREATE TABLE dependencies")
+	rows := r.rows(w, binary, "mixed-parallel-original-indexes", "SELECT index_name AS name, column_name AS field FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = 'dependencies' AND non_unique = 0 ORDER BY index_name, seq_in_index")
+	columns := map[string][]string{}
+	for _, row := range rows {
+		name, okName := row["name"].(string)
+		field, okField := row["field"].(string)
+		if !okName || !okField || strings.ContainsAny(name, "`\x00") {
+			r.t.Fatalf("invalid actual native index metadata %+v", row)
+		}
+		columns[name] = append(columns[name], field)
+	}
+	var selected string
+	for name, fields := range columns {
+		if reflect.DeepEqual(fields, []string{"issue_id", target}) {
+			if selected != "" {
+				r.t.Fatal("ambiguous native typed endpoint uniqueness")
+			}
+			selected = name
+		}
+	}
+	if selected == "" {
+		r.t.Fatal("actual native mixed endpoint unique index missing")
+	}
+	r.writeJSON(filepath.Join(r.root, "mixed-parallel-diagnostic-origin.json"), map[string]any{"original_schema": schema, "original_indexes": rows, "selected_index": selected, "target_column": target, "ordinary_admission": false})
+	r.command(w, "mixed-parallel-drop-index", binary, []string{"sql", "ALTER TABLE dependencies DROP INDEX `" + selected + "`", "--json"}, false)
+}
+
 // This independent native oracle names its original source IDs and raw report
 // order explicitly. Plug's public workflow allocation returns different typed
 // addresses; the final comparison binds roles by the invocation labels, never
@@ -56,7 +84,7 @@ func b06RecordMixedNative(r *b06NativeRecorder, binary string, server *publicnat
 	if target == "" {
 		r.t.Fatal("missing actual native ephemeral-target column")
 	}
-	r.command(w, "mixed-parallel-drop-index", binary, []string{"sql", "ALTER TABLE dependencies DROP INDEX uk_dep_issue_target", "--json"}, false)
+	b06MixedRelaxParallel(r, w, binary, target)
 	for i, kind := range []string{"blocks", "tracks"} {
 		query := fmt.Sprintf("INSERT INTO dependencies (id,issue_id,%s,type,created_by) VALUES ('b06-mixed-diagnostic-%d','b06-x-a','%s','%s','b06-public-diagnostic')", target, i, ids[0], kind)
 		r.command(w, fmt.Sprintf("mixed-parallel-insert-%d", i), binary, []string{"sql", query, "--json"}, false)
@@ -104,6 +132,14 @@ func TestB06MixedPlaneCanonicalNative(t *testing.T) {
 		t.Fatal("missing existing native executable label")
 	}
 	r.target = input.ExporterLabel
+	// Execute the public engine controls independently of native diagnostic
+	// preparation; the native comparison below still requires both originals.
+	plugResults := map[string][][]string{}
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run("paired_"+engine, func(t *testing.T) {
+			plugResults[engine] = b06RunMixedPlug(t, engine)
+		})
+	}
 	binary := r.buildCanonicalSource(pinnedSource)
 	var twins [][][]string
 	for _, twin := range []string{"a", "b"} {
@@ -122,8 +158,8 @@ func TestB06MixedPlaneCanonicalNative(t *testing.T) {
 	// Each engine still checks exact returned workflow addresses and raw order.
 	// Role correspondence is explicit; source IDs remain in native originals.
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
-		t.Run("paired_"+engine, func(t *testing.T) {
-			plug := b06RunMixedPlug(t, engine)
+		t.Run("compare_"+engine, func(t *testing.T) {
+			plug := plugResults[engine]
 			if len(plug) != 2 || len(plug[0]) != 3 || len(plug[1]) != 2 || plug[0][0] != twins[0][0][0] || plug[0][2] != twins[0][0][2] || plug[1][0] != twins[0][1][0] {
 				t.Fatal("native/Plug mixed role order or durable IDs changed")
 			}
