@@ -50,8 +50,17 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 	default:t.Fatal("undeclared publication operation",method)
 	}
 	sort.Strings(paths)
-	wantChange:=model.ChangeRecord{Ref:previous.Ref,Op:operation,FromRevision:previous.Revision,ChangedPaths:paths}
-	if len(last.Changes)!=1 || !reflect.DeepEqual(last.Changes[0],wantChange) {t.Fatalf("exact operation/history differs: got %+v want %+v",last.Changes,wantChange)}
+	requested,ok:=params["id"].(model.Ref)
+	if method=="bead.link" || method=="bead.unlink" {requested,ok=params["from"].(model.Ref)}
+	if !ok {t.Fatal("independent requested log reference unavailable")}
+	wantChange:=model.ChangeRecord{Ref:requested,Op:operation,FromRevision:previous.Revision,ChangedPaths:paths}
+	if len(last.Changes)!=1 {t.Fatal("history has extra/missing requested operations")}
+	gotChange:=last.Changes[0]
+	// Inferred create refs and explicitly decoded public refs can carry
+	// different private tags. Bind their complete public arm/ID/branch bytes.
+	if !bytes.Equal(effectToken(t,gotChange.Ref),effectToken(t,requested)) {t.Fatal("history differs from the independently requested public reference")}
+	gotChange.Ref=requested
+	if !reflect.DeepEqual(gotChange,wantChange) {t.Fatalf("exact operation/history differs: got %+v want %+v",last.Changes,wantChange)}
 	if len(result.SetBy)!=len(keys) {t.Fatal("result setBy has extra/missing field provenance")}
 	for _,key:=range keys { if result.SetBy[key]=="" {t.Fatal("result missing exact field provenance",key)} }
 	if value,ok:=result.SetBy["fields.status"];ok && value!="request" {t.Fatal("status provenance differs from the requested lifecycle slot")}
