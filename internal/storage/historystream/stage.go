@@ -85,9 +85,10 @@ func New(ctx context.Context, binding driver.OfflineHistoryStreamBinding, proof 
 		return nil, err
 	}
 	s.db.SetMaxOpenConns(4)
-	// The scratch index is disposable. Its journal is not publication durability;
-	// the real engine's transaction is the only publication boundary.
-	_, err = s.db.ExecContext(ctx, `PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024; PRAGMA temp_store=FILE;
+	// The scratch index is disposable. WAL permits the indexed replay cursor
+	// and bounded entry inserts to overlap without competing rollback locks.
+	// Its journal is not publication durability: only the real engine commits.
+	_, err = s.db.ExecContext(ctx, `PRAGMA journal_mode=WAL; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024; PRAGMA temp_store=FILE;
 CREATE TABLE objects(key TEXT PRIMARY KEY, ref BLOB NOT NULL, kind TEXT NOT NULL, rev TEXT NOT NULL, count TEXT NOT NULL, present INTEGER NOT NULL, off INTEGER NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL);
 CREATE TABLE rows(n INTEGER PRIMARY KEY, key TEXT NOT NULL, ref BLOB NOT NULL, kind TEXT NOT NULL, rev TEXT NOT NULL, deleted INTEGER NOT NULL, count TEXT NOT NULL, off INTEGER NOT NULL, size INTEGER NOT NULL, hash TEXT NOT NULL, op TEXT NOT NULL, previous TEXT NOT NULL, UNIQUE(key,rev));
 CREATE INDEX row_revision ON rows(rev,n);
