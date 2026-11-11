@@ -76,3 +76,81 @@ members are retained at the final restore revision; they never fill historical
 business preimages. The adapter maps each checked source commit image to an
 explicit import-order revision. This proves commit-image history, not every
 individual SQL edit between commits or verified source-principal attribution.
+
+## Streaming core contract
+
+`driver.PrepareOfflineHistoryStream` is an additive trusted-host port. It pulls
+bounded typed frames directly into private staging. It does not call
+`BuildOfflineHistory`, marshal an aggregate `OfflineHistory`, or collect all
+versions, images or source-to-revision mappings. The existing aggregate APIs and
+their limits remain in effect for their callers.
+
+The fixed header declares the verified source, range and coverage policy. A
+partial suffix begins with individually streamed exact prefix gaps, then one
+proven baseline commit. Native boundaries precede their own source's commit
+block, sorted by source store/project; each boundary's exact verified commit
+count must match that block. Native source sequences begin at one for the
+verified images, without inventing unknown earlier commits. Import sequences
+remain globally contiguous. A full stream has floor zero; a partial stream has
+baseline revision/floor one. One final restore revision follows the imported
+units and creates the evidence and any independently rebuilt current records.
+
+Each commit declares counts, followed by separate commit-ID, parent-ID and
+event-ID frames, in that category order. Parent order, including the first
+parent, remains exact. Table frames follow in bytewise order of table name and
+encoded record lock key. Each table declares its converted identity and optional
+before/after images, then receives offset-contiguous before chunks followed by
+after chunks and an explicit table end. Nil images express converted absence;
+physical table presence, schema, row multiplicity and hashes are distinct typed
+metadata. Empty source commits retain their explicit provenance and boundary.
+Missing preimages never come from a later image or the current head.
+
+`MaxChunkBytes` bounds decoded bytes in one pull. `MaxFrameBytes` also bounds
+the canonical JSON size of every frame, including provenance, gaps and native
+boundaries. Producers enforce these bounds before allocating or decoding a
+frame. The core rejects oversized frames and invalid original UTF-8 metadata
+before detaching it; opaque image chunks may split at any byte. It hashes exact
+converted image bytes independently. Converted commit hashes cover the domain
+`plug-offline-history-commit/1` plus LF, then canonical commit, ID and table
+frames, each followed by LF. Physical source table/schema/root commitments keep
+their own source-format preimages; they are never inferred from converted
+hashes or portable record counts.
+
+The admitted profile's history digest covers `plug-offline-history-stream/1`
+plus LF, header JSON plus LF, then every frame JSON plus LF except the final
+`end` frame. Canonical JSON here means Go `encoding/json` output of the declared
+typed structs with their exact field order and omission rules. The end frame
+must report the actual commit/table/decoded-byte totals. It must be followed by
+one clean zero-frame `io.EOF`, with no frame/error pair or trailing data. Source
+ownership transfers at entry, including rejected requests. The core calls
+`Close` exactly once and requires cleanup success before releasing its opaque,
+single-use publication handle. Errors, cancellation or cleanup failure abort
+private staging and release no handle. The caller must commit or close a
+successful handle; copies share the same consumed state.
+
+The adapter's `Publish` requires a separate opaque publication proof. Its
+`Claim` getter validates the exact prepared binding and can succeed once during
+that single callback. Retained/copied proofs expire as soon as the callback
+returns, including on failure. Constructed informational completion metadata
+cannot authorize publication after a terminal or cleanup error.
+
+Staging adapters must validate exact JSON, replay preimages, source proofs,
+duplicate provenance, final-image equality and all atomic participants with
+bounded pages or spooling. Independently verified HEAD/current checkpoints bind
+to the profile's archive digest, and rebuilt final-image equality binds to its
+derived digest. Source authors/times remain provenance. The publication handle
+binds the detached admitted profile, actual restore time, new incarnation,
+head/floor and original keyed final receipt. The adapter rechecks actual target
+lifetime, lease, complete locks and stage/receipt correspondence before atomic
+publication of versions, changesets, current head, gaps/boundaries/mappings,
+source-plane participants and receipt. An indeterminate publication retains the
+original receipt key for recovery; abort discards only unpublished resources.
+Cleanup failure remains diagnostic and cannot classify an indeterminate commit
+as a cancellation or fencing rejection.
+
+Core statistics report actual converted image bytes and peak observed
+frame/chunk sizes. They do not report allocations or process RSS; receiving
+integration must measure its own logical categories and actual RSS separately.
+This first port has remote core-contract behavior tests, but no engine or
+receiver implements it yet. Receiving integration, measured real-history proof
+and the required-before-switch follow-up remain separate work.
