@@ -12,7 +12,7 @@ func TestB14GateNativeCatalogDirectiveBoundary(t *testing.T) {
 	for _, test := range []struct {
 		name, source, target string
 		native, mapping      bool
-		want                bool
+		want                 bool
 	}{
 		{"native-implicit-gate", "gate", "gate", true, false, true},
 		{"native-explicit-issue", "gate", "issue", true, true, true},
@@ -43,7 +43,7 @@ func TestB14GateNativeCatalogDirectiveBoundary(t *testing.T) {
 					err = validateRecord(row, fixture.manifest.Projects, map[string]int{})
 				}
 				if err == nil {
-					err = validateIssueOntology(directives, []Record{row}, head)
+					err = validateIssueOntology(directives, fixture.manifest.Projects, []Record{row}, head)
 				}
 				if (err == nil) != test.want {
 					t.Fatalf("head=%v accepted=%v want=%v: %v", head, err == nil, test.want, err)
