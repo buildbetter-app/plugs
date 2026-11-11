@@ -31,18 +31,28 @@ func TestAllCoversTheRepositoryRoot(t *testing.T) {
 }
 
 func TestNativeCaptureDriverEngineAllowance(t *testing.T) {
-	got := analyzertest.RunInRepo(t, depguard.Analyzer, "third_party/dolt-driver", map[string]string{
-		"capture.go": "package embedded\n\nimport _ \"github.com/dolthub/dolt/go/libraries/doltcore/doltdb\"\n",
-	})
-	analyzertest.Equal(t, got, nil)
+	for _, imp := range append([]string{
+		"github.com/dolthub/dolt/go/libraries/doltcore/doltdb",
+	}, nativeCapturePhysicalReadImports()...) {
+		t.Run(imp, func(t *testing.T) {
+			got := analyzertest.RunInRepo(t, depguard.Analyzer, "third_party/dolt-driver", map[string]string{
+				"capture.go": "package embedded\n\nimport _ \"" + imp + "\"\n",
+			})
+			analyzertest.Equal(t, got, nil)
+		})
+	}
 }
 
 func TestNativeCaptureDriverRefusesUnlistedEngineImports(t *testing.T) {
-	for _, imp := range []string{
+	imports := []string{
 		"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/unlisted",
 		"github.com/dolthub/dolt/go/libraries/doltcore/doltdblookalike",
 		"github.com/dolthub/dolt/go/libraries/doltcore/unlisted",
-	} {
+	}
+	for _, imp := range nativeCapturePhysicalReadImports() {
+		imports = append(imports, imp+"/unlisted", imp+"lookalike")
+	}
+	for _, imp := range imports {
 		t.Run(imp, func(t *testing.T) {
 			got := analyzertest.RunInRepo(t, depguard.Analyzer, "third_party/dolt-driver", map[string]string{
 				"capture.go": "package embedded\n\nimport _ \"" + imp + "\"\n",
@@ -71,11 +81,11 @@ func TestNativeCaptureAllowanceDoesNotReachOtherPackages(t *testing.T) {
 		"prefix/internal/storage/physicalcapture",
 	} {
 		t.Run(dir, func(t *testing.T) {
-			for _, imp := range []string{
+			for _, imp := range append([]string{
 				"github.com/dolthub/dolt/go/libraries/doltcore/doltdb",
 				"github.com/dolthub/driver/v2",
 				"github.com/dolthub/go-mysql-server/sql",
-			} {
+			}, nativeCapturePhysicalReadImports()...) {
 				got := analyzertest.RunInRepo(t, depguard.Analyzer, dir, map[string]string{
 					"capture.go": "package outsider\n\nimport _ \"" + imp + "\"\n",
 				})
@@ -84,6 +94,24 @@ func TestNativeCaptureAllowanceDoesNotReachOtherPackages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// These exact imports support the capture driver's read-only physical schema,
+// chunk-presence and retained-history probes. The allowance must not admit
+// lookalike imports, subpackages or any other importing package.
+func nativeCapturePhysicalReadImports() []string {
+	return []string{
+		"github.com/dolthub/dolt/go/gen/fb/serial",
+		"github.com/dolthub/dolt/go/libraries/doltcore/doltdb/durable",
+		"github.com/dolthub/dolt/go/libraries/doltcore/schema",
+		"github.com/dolthub/dolt/go/libraries/doltcore/sqle/index",
+		"github.com/dolthub/dolt/go/store/chunks",
+		"github.com/dolthub/dolt/go/store/datas",
+		"github.com/dolthub/dolt/go/store/hash",
+		"github.com/dolthub/dolt/go/store/prolly/tree",
+		"github.com/dolthub/dolt/go/store/types",
+		"github.com/dolthub/dolt/go/store/val",
 	}
 }
 
