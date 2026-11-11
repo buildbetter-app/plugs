@@ -369,9 +369,10 @@ func (r *reader) cursor(c *driver.Cursor, method, digest string) (uint64, error)
 }
 
 // queryHeadCursor validates the stateless current-head cursor. Index carries
-// the dense indexed lexical rank of the last returned live record, so a fresh
-// reader can resume directly without a cursor table, map, or read-side write.
-func (r *reader) queryHeadCursor(ctx context.Context, c *driver.Cursor, digest string) (uint64, error) {
+// the dense indexed lexical rank of the last returned live record (global or
+// within the requested kind), so a fresh reader can resume directly without a
+// cursor table, map, or read-side write.
+func (r *reader) queryHeadCursor(ctx context.Context, c *driver.Cursor, digest string, kind any, hasKind bool) (uint64, error) {
 	if c == nil {
 		return 0, nil
 	}
@@ -398,8 +399,14 @@ func (r *reader) queryHeadCursor(ctx context.Context, c *driver.Cursor, digest s
 	if index == 0 {
 		return 0, fmt.Errorf("sqlite: cursor binding mismatch")
 	}
+	existsArgs := []any{index}
+	existsWhere := "o.query_order=?"
+	if hasKind {
+		existsWhere = "o.kind=? AND o.query_kind_order=?"
+		existsArgs = []any{kind, index}
+	}
 	var exists bool
-	if err := r.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM objects AS o JOIN records AS r ON r.key=o.key WHERE o.query_order=?)`, index).Scan(&exists); err != nil {
+	if err := r.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM objects AS o JOIN records AS r ON r.key=o.key WHERE `+existsWhere+`)`, existsArgs...).Scan(&exists); err != nil {
 		return 0, err
 	}
 	if !exists {
@@ -458,7 +465,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	// unchanged.
 	kind, hasKind := q.Filter["kind"]
 	if r.owner == nil && r.at == mustUint(r.meta.Head) && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind) {
-		start, err := r.queryHeadCursor(ctx, q.Cursor, digest)
+		start, err := r.queryHeadCursor(ctx, q.Cursor, digest, kind, hasKind)
 		if err != nil {
 			return driver.Page[driver.Record]{}, err
 		}
@@ -547,18 +554,20 @@ func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, digest s
 	driver.ReportReadWork(ctx, driver.ReadPayloadBytes, accounting.payloadBytes)
 
 	from := ` FROM objects AS o JOIN records AS r ON o.key=r.key`
+	rankColumn := "o.query_order"
 	pageArgs := make([]any, 0, 3)
 	if hasKind {
-		// The covering (kind,query_order) index supplies the requested order
+		// The covering (kind,query_kind_order) index supplies the requested order
 		// without a temporary sort for kind-filtered pages.
-		from += ` WHERE o.kind=? AND o.query_order>?`
+		rankColumn = "o.query_kind_order"
+		from += ` WHERE o.kind=? AND o.query_kind_order>?`
 		pageArgs = append(pageArgs, kind)
 	} else {
 		from += ` WHERE o.query_order>?`
 	}
 	pageArgs = append(pageArgs, start)
 	pageArgs = append(pageArgs, limit+1)
-	rows, err := r.tx.QueryContext(ctx, `SELECT o.query_order,r.data`+from+` ORDER BY o.query_order LIMIT ?`, pageArgs...)
+	rows, err := r.tx.QueryContext(ctx, `SELECT `+rankColumn+`,r.data`+from+` ORDER BY `+rankColumn+` LIMIT ?`, pageArgs...)
 	if err != nil {
 		return empty, err
 	}

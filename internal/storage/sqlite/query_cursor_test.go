@@ -420,7 +420,7 @@ func TestQueryHeadPagingStatementBoundAcrossCorpusSizes(t *testing.T) {
 							}
 							keyset := false
 							for _, statement := range statements {
-								if strings.Contains(statement, "o.query_order>?") && strings.Contains(statement, "ORDER BY o.query_order LIMIT ?") {
+								if strings.Contains(statement, "o.query_order>?") && strings.Contains(statement, "ORDER BY o.query_order LIMIT ?") || strings.Contains(statement, "o.query_kind_order>?") && strings.Contains(statement, "ORDER BY o.query_kind_order LIMIT ?") {
 									keyset = true
 								}
 								if strings.Contains(statement, "OFFSET") {

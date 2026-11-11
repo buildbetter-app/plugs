@@ -146,12 +146,20 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 					return e
 				}
 				if hasObjects {
-					var hasOrderColumn bool
+					var hasOrderColumn, hasKindOrderColumn bool
 					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_order')`).Scan(&hasOrderColumn); e != nil {
 						return e
 					}
 					if !hasOrderColumn {
 						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_kind_order')`).Scan(&hasKindOrderColumn); e != nil {
+						return e
+					}
+					if !hasKindOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_kind_order INTEGER NOT NULL DEFAULT 0`); e != nil {
 							return e
 						}
 					}
@@ -168,6 +176,9 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 					return e
 				}
 				if _, e := c.ExecContext(ctx, `DROP INDEX IF EXISTS objects_kind_query_order`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `DROP INDEX IF EXISTS objects_kind_query_order_key`); e != nil {
 					return e
 				}
 				if _, e := c.ExecContext(ctx, `UPDATE meta SET schema_version=3 WHERE singleton=1`); e != nil {
@@ -259,11 +270,14 @@ func rebuildQueryOrder(ctx context.Context, q interface {
 }) error {
 	_, err := q.ExecContext(ctx, `
 WITH ranked AS (
- SELECT o.key AS key, ROW_NUMBER() OVER (ORDER BY o.key) AS query_order
+ SELECT o.key AS key,
+        ROW_NUMBER() OVER (ORDER BY o.key) AS query_order,
+        ROW_NUMBER() OVER (PARTITION BY o.kind ORDER BY o.key) AS query_kind_order
  FROM objects AS o JOIN records AS r ON r.key=o.key
 )
 UPDATE objects
-SET query_order=COALESCE((SELECT ranked.query_order FROM ranked WHERE ranked.key=objects.key), 0)`)
+SET query_order=COALESCE((SELECT ranked.query_order FROM ranked WHERE ranked.key=objects.key), 0),
+    query_kind_order=COALESCE((SELECT ranked.query_kind_order FROM ranked WHERE ranked.key=objects.key), 0)`)
 	return err
 }
 func branchZero(b model.Branch) error {

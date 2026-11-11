@@ -29,10 +29,11 @@ CREATE TABLE IF NOT EXISTS objects (
  -- Dense lexical rank of live records. Query cursors carry this indexed sort
  -- value, so the read path remains stateless and native restore keeps its
  -- existing monotonically advancing numeric cursor contract.
- query_order INTEGER NOT NULL DEFAULT 0
+ query_order INTEGER NOT NULL DEFAULT 0,
+ query_kind_order INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS objects_query_order_key ON objects(query_order, key);
-CREATE INDEX IF NOT EXISTS objects_kind_query_order_key ON objects(kind, query_order, key);
+CREATE INDEX IF NOT EXISTS objects_kind_query_order_key ON objects(kind, query_kind_order, key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
 CREATE TRIGGER IF NOT EXISTS query_read_work_objects_insert
 AFTER INSERT ON objects
