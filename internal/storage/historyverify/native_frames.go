@@ -57,6 +57,7 @@ func newNativeFrames(ctx context.Context,s *NativeArchiveStream) (*nativeFrames,
    if err:=s.archive.ChargeNativeDeltaJSON("verifier_ordered_parents",c.Parents);err!=nil {return err}
    b.graph=append(b.graph,nativeGraph{c.ID,append([]string(nil),c.Parents...)})
   }
+  if err:=s.archive.ChargeNativeDeltaBytes("verifier_current_census",uint64(len(scope.Current))*512);err!=nil{return err}
   var err error;b.classes,b.counts,err=nativeprojection.NativeCurrentClasses(scope);return err
  })
  if err!=nil {return nil,err};if scopes!=1 || s.header.Head==0 || uint64(len(b.graph))!=s.header.Head {return nil,ErrCheckpoint{"native commit census differs"}}

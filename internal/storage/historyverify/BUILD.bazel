@@ -10,11 +10,13 @@ go_library(
 
 go_test(
     name = "historyverify_test",
-    srcs = ["export_test.go", "engines_test.go", "planner_dependency_test.go"],
+    srcs = ["export_test.go", "engines_test.go", "planner_dependency_test.go", "native_test.go"],
+    data = ["//internal/integration/converterroundtrip:testdata/public-native-delta-small-0e4d5da4.tar.gz"],
     embed = [":historyverify"],
     size = "large",
     tags = ["exclusive", "local", "requires-network"],
     deps = [
+        "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/nativeprojection",
         "//internal/storage/driver",
