@@ -1289,6 +1289,8 @@ internal/storage/memory/transaction.go
 internal/storage/memory/transaction_reader.go
 internal/storage/physicalcapture/BUILD.bazel
 internal/storage/physicalcapture/capture.go
+internal/storage/physicalcapture/root_schema.go
+internal/storage/physicalcapture/root_schema_test.go
 internal/storage/physicalcapture/working.go
 internal/storage/physicalcapture/working_test.go
 internal/storage/physicalrestore/BUILD.bazel
@@ -1942,6 +1944,8 @@ third_party/dolt-driver/parse_dsn.go
 third_party/dolt-driver/physical_commit.go
 third_party/dolt-driver/physical_commit_test.go
 third_party/dolt-driver/physical_restore.go
+third_party/dolt-driver/physical_root_schema.go
+third_party/dolt-driver/physical_root_schema_test.go
 third_party/dolt-driver/physical_undo.go
 third_party/dolt-driver/physical_working.go
 third_party/dolt-driver/query_splitter.go

@@ -69,8 +69,11 @@ func TestRootSchemaPublicNativeCensusAndLegacyReadback(t *testing.T) {
 	}
 	exec("CREATE DATABASE public_schema_adapter")
 	exec("USE public_schema_adapter")
-	version, err := nativeschema.MigrateUp(ctx, conn)
-	if err != nil || version != nativeschema.LatestVersion() {
+	if _, err := nativeschema.MigrateUp(ctx, conn); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := conn.QueryRowContext(ctx, "SELECT COALESCE(MAX(version),0) FROM schema_migrations").Scan(&version); err != nil || version != nativeschema.LatestVersion() {
 		t.Fatalf("actual public native migrations incomplete: version=%d error=%v", version, err)
 	}
 	exec("CREATE TABLE public_keyorder(a BIGINT,b BIGINT,payload TEXT,PRIMARY KEY(b,a))")
