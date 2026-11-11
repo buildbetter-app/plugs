@@ -80,7 +80,11 @@ func (s *state) fork() *state {
 // Store satisfies driver.Store, ResponseFinalizer and CheckpointStore. No
 // committed map, slice or record body is ever mutated after publication.
 type Store struct {
-	mu           sync.Mutex
+	mu sync.Mutex
+	// leaseMu is independent from the committed data mutex. Lease heartbeats
+	// must remain serviceable while a transaction prepares a large publication.
+	// Code which needs both locks always takes mu first, then leaseMu.
+	leaseMu      sync.Mutex
 	state        *state
 	locks        map[string]*heldLock
 	transactions map[*transaction]bool
@@ -91,6 +95,9 @@ type Store struct {
 	checkpoints  map[string]driver.Checkpoint
 	closed       bool
 	now          func() time.Time
+	// beforeCommitHook is a deterministic test seam for pausing publication
+	// preparation. It is nil for normal callers and is invoked without mu.
+	beforeCommitHook func()
 }
 
 // SupportsRestore advertises the only restore mode this store can publish
@@ -200,10 +207,13 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 	}
 	s.expireLease()
 	role := "standby"
-	if s.active != nil {
+	s.leaseMu.Lock()
+	active, epoch := s.active != nil, s.epoch
+	s.leaseMu.Unlock()
+	if active {
 		role = "active"
 	}
-	return driver.StoreHealth{Driver: "memory", Role: role, LeaseEpoch: s.epoch, Head: s.state.meta.Head, Incarnation: s.state.meta.Incarnation, AuthorizationChain: []string{}}, nil
+	return driver.StoreHealth{Driver: "memory", Role: role, LeaseEpoch: epoch, Head: s.state.meta.Head, Incarnation: s.state.meta.Incarnation, AuthorizationChain: []string{}}, nil
 }
 
 func (s *Store) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -236,9 +246,7 @@ func (s *Store) Close() error {
 	defer s.mu.Unlock()
 	if !s.closed {
 		s.closed = true
-		if s.active != nil {
-			s.endLease()
-		}
+		s.endLease()
 		for tx := range s.transactions {
 			tx.finish()
 		}

@@ -20,38 +20,63 @@ type heldLock struct {
 	readers map[*transaction]bool
 }
 type transaction struct {
-	store                   *Store
-	lease                   driver.ActiveLease
-	base                    *state
-	snapshotAt              model.Revision
-	incarnation             string
-	restore                 *driver.Meta
-	offlineHistory          *driver.PreparedOfflineHistory
-	stream                  *historyStreamStage
-	nativeRestore           *driver.NativeRestoreProfile
-	nativeAllocators        bool
-	importRestore           *driver.RestoreImportProfile
-	sourcePlaneImport       *driver.SourcePlaneImportPublication
-	closed, locked, hasHead bool
-	acquired                driver.LockSet
-	records                 map[string]*driver.Record
-	derived                 map[string]driver.LockState
-	selectionAnnotated      bool
-	blobs                   map[driver.Hash][]byte
-	bumps                   map[string]driver.LockKey
-	allocators              map[string]driver.OfflineAllocator
-	parentCounters          map[string]driver.ParentCounter
-	allocated               map[string]bool
-	checkpointGuards        map[string]uint64
-	checkpointWrites        map[string]driver.Checkpoint
-	sourceDeclarations      map[string]sourceDeclaration
-	stagedParents           map[string][]string
-	stagedIncoming          map[sourceLinkBucket][]string
+	store                               *Store
+	lease                               driver.ActiveLease
+	base                                *state
+	snapshotAt                          model.Revision
+	incarnation                         string
+	restore                             *driver.Meta
+	offlineHistory                      *driver.PreparedOfflineHistory
+	stream                              *historyStreamStage
+	nativeRestore                       *driver.NativeRestoreProfile
+	nativeAllocators                    bool
+	importRestore                       *driver.RestoreImportProfile
+	sourcePlaneImport                   *driver.SourcePlaneImportPublication
+	closed, locked, hasHead, committing bool
+	acquired                            driver.LockSet
+	records                             map[string]*driver.Record
+	derived                             map[string]driver.LockState
+	selectionAnnotated                  bool
+	blobs                               map[driver.Hash][]byte
+	bumps                               map[string]driver.LockKey
+	allocators                          map[string]driver.OfflineAllocator
+	parentCounters                      map[string]driver.ParentCounter
+	allocated                           map[string]bool
+	checkpointGuards                    map[string]uint64
+	checkpointWrites                    map[string]driver.Checkpoint
+	sourceDeclarations                  map[string]sourceDeclaration
+	stagedParents                       map[string][]string
+	stagedIncoming                      map[sourceLinkBucket][]string
 }
 
 func (t *transaction) check(ctx context.Context) error {
 	if err := t.store.check(ctx); err != nil {
 		return err
+	}
+	if t.committing {
+		return fmt.Errorf("memory: transaction commit in progress")
+	}
+	if err := t.store.checkLease(t.lease); err != nil {
+		return err
+	}
+	if t.closed {
+		return driver.ErrTxClosed
+	}
+	if t.incarnation != t.store.state.meta.Incarnation {
+		return driver.ErrIncarnationChanged{From: t.incarnation, To: t.store.state.meta.Incarnation}
+	}
+	return nil
+}
+
+// checkCommit is used only by a commit that has temporarily released Store.mu
+// while its immutable publication plan is prepared. The committing transaction
+// is otherwise unavailable to callers until the final publish or cleanup.
+func (t *transaction) checkCommit(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if t.store.closed {
+		return fmt.Errorf("memory: store closed")
 	}
 	if err := t.store.checkLease(t.lease); err != nil {
 		return err
@@ -91,6 +116,7 @@ func (t *transaction) finish() {
 		s.head = nil
 	}
 	t.closed = true
+	t.committing = false
 	delete(s.transactions, t)
 	t.base = nil
 	t.acquired = nil
@@ -624,12 +650,19 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		return model.Changeset{}, err
 	}
 	checkpoints := t.prepareCheckpointPublication()
+	if s.beforeCommitHook != nil {
+		s.beforeCommitHook()
+	}
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
-	s.state = next
-	s.checkpoints = checkpoints
-	t.finish()
+	if err := s.withLeasePublication(t.lease, func() {
+		s.state = next
+		s.checkpoints = checkpoints
+		t.finish()
+	}); err != nil {
+		return model.Changeset{}, err
+	}
 	return cloneJSON(entry)
 }
 
