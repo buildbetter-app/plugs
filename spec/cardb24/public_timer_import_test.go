@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/testclock"
+	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
 // These expectations are authored independently of the captured archive.
@@ -78,6 +80,148 @@ func b24TimerSource(t *testing.T, data []byte, want b24TimerOracle) dumpformat.R
 	return dumpformat.Record{}
 }
 
+// This is the explicit disposable host plan for the single canonical timer
+// fixture, following converterroundtrip's retained nativeHistoryPlanFromArchive.
+// It maps that one independently declared durable bead and retains every other
+// captured record/sidecar as an origin; it grants no source-driven authority.
+func b24BindTimerSource(t *testing.T, f *fixture, data []byte, profile driver.RestoreImportProfile, want b24TimerOracle) driver.RestoreImportProfile {
+	t.Helper()
+	a, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Manifest().SourcePlaneAddressContract == "" {
+		return profile
+	}
+	if a.HasNativeSourceHistories() {
+		t.Fatal("this canonical snapshot fixture requires a separate full-history admission plan for native table histories")
+	}
+	meta, err := f.store.Meta(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifetime := driver.CheckpointLifetimeRestart
+	if f.engine == "memory" {
+		lifetime = driver.CheckpointLifetimeProcess
+	}
+	persistent, ok := capability.(interface{ Persistent() bool })
+	if capability.WorkflowCheckpointLifetime() != lifetime || !ok || persistent.Persistent() != (f.engine != "memory") {
+		t.Fatal("actual import checkpoint capability reported an incorrect lifetime")
+	}
+	principal, err := json.Marshal(profile.Admission.Actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := driver.SourcePlanePlanV1{
+		Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1,
+		SourceStoreID: a.Manifest().StoreID, ArchiveSHA256: a.SHA256(),
+		Target:     driver.SourcePlaneTargetV1{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, RequireEmpty: true, Lifetime: lifetime, RuntimeContract: driver.SourcePlaneRuntimeContractV1},
+		Principals: []driver.SourcePlanePrincipalV1{{Key: "timer-admin", Source: "explicit disposable B24 fixture host", Authority: "trusted-explicit/1", PrincipalJSON: principal}},
+		Providers:  []driver.SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: workflowplugin.SourceStateSchema, Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"}},
+	}
+	disposition := driver.SourcePlaneDispositionV1{
+		Key: "timer-durable", SourceType: "task", StorageClass: "", SinkKind: "bead", Schema: "bead/1", Lifetime: "core",
+		Statuses: []driver.SourcePlaneStringPairV1{{From: "deferred", To: want.Status}}, RefusalPolicy: "exact-only",
+	}
+	commitment := func(data []byte, presence string) driver.SourcePlaneBytesV1 {
+		return driver.SourcePlaneBytesV1{Presence: presence, Size: uint64(len(data)), SHA256: fmt.Sprintf("%x", sha256.Sum256(data))}
+	}
+	records, err := a.SourcePlaneRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		var row dumpformat.Record
+		var wire struct {
+			Source struct {
+				Fields map[string]json.RawMessage `json:"fields"`
+			} `json:"source"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(record.Raw))
+		decoder.UseNumber()
+		if decoder.Decode(&row) != nil || json.Unmarshal(record.Raw, &wire) != nil {
+			t.Fatal("captured source record cannot be decoded losslessly")
+		}
+		var census []driver.SourcePlaneFieldV1
+		for name, raw := range wire.Source.Fields {
+			presence := "number"
+			switch bytes.TrimSpace(raw)[0] {
+			case 'n':
+				presence = "null"
+			case '{':
+				presence = "object"
+			case '[':
+				presence = "array"
+			case 't', 'f':
+				presence = "boolean"
+			case '"':
+				presence = "text"
+				var text string
+				if err := json.Unmarshal(raw, &text); err != nil {
+					t.Fatal(err)
+				}
+				raw = []byte(text)
+			}
+			census = append(census, driver.SourcePlaneFieldV1{Name: name, Value: commitment(raw, presence)})
+		}
+		sort.Slice(census, func(i, j int) bool { return census[i].Name < census[j].Name })
+		origin := commitment(record.Raw, "object")
+		if row.Kind == "bead" {
+			if row.ID != want.ID || row.Project != want.Project || row.Source.Table != dumpformat.DurableEntityTable || len(plan.Entities) != 0 {
+				t.Fatal("canonical timer admission observed an undeclared entity")
+			}
+			for _, field := range census {
+				rule := driver.SourcePlaneFieldRuleV1{Source: field.Name, Disposition: "origin-only"}
+				switch field.Name {
+				case "id", "title", "status", "metadata", "created_at", "priority", "description":
+					rule.Target, rule.Disposition = field.Name, "exact-map"
+				case "issue_type":
+					rule.Target, rule.Disposition = "type", "exact-map"
+				}
+				disposition.Fields = append(disposition.Fields, rule)
+			}
+			key := driver.SourceEntityKey{Project: row.Project, Plane: row.Source.Table, ID: row.ID}
+			plan.Entities = append(plan.Entities, driver.SourcePlaneEntityV1{Source: key, TargetKind: "bead", TargetID: row.ID, DispositionKey: disposition.Key, PrincipalKey: "timer-admin", Route: driver.SourcePlaneRouteV1{Project: row.Project, SourceID: row.ID, DurableTargetID: row.ID, Preference: "active-first"}, Origin: origin, Fields: census})
+			continue
+		}
+		project := row.Project
+		if row.Source.Identity != nil {
+			project = row.Source.Identity.Project
+		}
+		plan.Origins = append(plan.Origins, driver.SourcePlaneOriginV1{Project: project, Table: row.Source.Table, ID: row.ID, Action: "inert-origin", Raw: origin, Fields: census, Parsed: driver.SourcePlaneBytesV1{Presence: "absent"}})
+	}
+	if len(plan.Entities) != 1 {
+		t.Fatal("canonical timer admission omitted the declared entity")
+	}
+	plan.Dispositions = []driver.SourcePlaneDispositionV1{disposition}
+	sidecars, err := a.SourcePlaneSidecarOrigins()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Origins = append(plan.Origins, sidecars...)
+	sort.Slice(plan.Origins, func(i, j int) bool {
+		a, b := plan.Origins[i], plan.Origins[j]
+		left, right := []string{a.Project, a.Table, a.ID, a.Path, a.Layer}, []string{b.Project, b.Table, b.ID, b.Path, b.Layer}
+		for k := range left {
+			if left[k] != right[k] {
+				return left[k] < right[k]
+			}
+		}
+		return false
+	})
+	profile.DerivedDigest = "" // The existing adapter binds the exact joint image.
+	profile, err = converterroundtrip.BindSourceImport(f.ctx, bytes.NewReader(data), profile, plan)
+	if err != nil {
+		t.Fatal("bind actual canonical timer source plan", err)
+	}
+	b24Retain(t, want.ID+"-"+f.engine+"-joint-plan.json", map[string]any{"profile": profile, "plan": plan, "lifetime": lifetime, "persistent": persistent.Persistent()})
+	return profile
+}
+
 func b24TimerReopen(t *testing.T, f *fixture, application *testclock.Clock, id, phase string) {
 	t.Helper()
 	before := b24ReadSnapshot(t, f)
@@ -129,6 +273,7 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 		SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: key("b24-timer-import"),
 		ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot,
 	}
+	profile = b24BindTimerSource(t, f, data, profile, want)
 	restored, err := converterroundtrip.RestoreImportWithLease(f.ctx, bytes.NewReader(data), f.store, f.lease, profile)
 	if err != nil || restored.Restored.Head != model.Natural64(1) || restored.Restored.HistoryFloor != model.Natural64(1) {
 		t.Fatalf("actual snapshot import: %+v %v", restored, err)
@@ -235,10 +380,21 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 	b24BindApplicationClock(t, f, application)
 	read("imported-initial", want.Title, want.Status, 0)
 	check := converterroundtrip.Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}
-	recovered, err := converterroundtrip.RecoverImport(f.ctx, f.store, profile, check)
-	if err != nil || recovered.Restored.Incarnation != restored.Restored.Incarnation {
-		t.Fatalf("import receipt recovery: %+v %v", recovered, err)
+	recover := func(phase string) {
+		t.Helper()
+		if profile.SourcePlanes != nil {
+			bound, recovered, found, err := converterroundtrip.RecoverBoundSourceImport(f.ctx, f.store)
+			if err != nil || !found || !reflect.DeepEqual(bound, profile) || !reflect.DeepEqual(recovered.Receipt, restored.Receipt) || !reflect.DeepEqual(recovered.SourcePlanes, restored.SourcePlanes) || recovered.Restored.Incarnation != restored.Restored.Incarnation {
+				t.Fatalf("%s joint import receipt recovery: found=%t error=%v", phase, found, err)
+			}
+			return
+		}
+		recovered, err := converterroundtrip.RecoverImport(f.ctx, f.store, profile, check)
+		if err != nil || recovered.Restored.Incarnation != restored.Restored.Incarnation {
+			t.Fatalf("%s import receipt recovery: %+v %v", phase, recovered, err)
+		}
 	}
+	recover("initial")
 	r, err := f.store.Read(f.ctx, driver.View{Incarnation: restored.Restored.Incarnation})
 	if err != nil {
 		t.Fatal(err)
@@ -252,9 +408,7 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 		t.Fatalf("snapshot floor was hidden: %v", err)
 	}
 	b24TimerReopen(t, f, application, want.ID, "initial")
-	if _, err := converterroundtrip.RecoverImport(f.ctx, f.store, profile, check); err != nil {
-		t.Fatalf("reopened import receipt: %v", err)
-	}
+	recover("reopened")
 	read("imported-reopened", want.Title, want.Status, 0)
 	conserve("imported-timed-request-refused", func() {
 		got := f.call("bead.defer", "imported-timed-request-refused", params(map[string]any{"reason": "waiting for timer input", "until": target.Format(time.RFC3339Nano)}))

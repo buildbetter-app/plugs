@@ -63,6 +63,7 @@ _TIMER_SRCS = _PUBLIC_SRCS + ["public_timer_import_test.go"]
 _TIMER_DEPS = _PUBLIC_DEPS + [
     "//internal/core/dumpformat",
     "//internal/integration/converterroundtrip",
+    "//plugins/workflow",
 ]
 
 go_test(

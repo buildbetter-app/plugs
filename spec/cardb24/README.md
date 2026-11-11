@@ -63,6 +63,15 @@ close/open and receipt recovery bind persistence; memory remains same-store.
 Complete logical and physical read conservation includes the snapshot floor,
 all retained versions/log entries, and every SQL application table.
 
+The actual `446dbb` portable timer capture declares the source-plane contract
+without native table histories. Its explicit snapshot admission uses the
+existing joint restore adapter, with one declared durable timer mapping and
+every captured record and sidecar retained by exact byte commitments. The plan
+uses the selected store's real checkpoint lifetime (`process` on memory,
+`restart` on SQL) and persistence marker, and recovery checks the original
+joint profile and receipt. Native table-history captures require their own
+full-history profile and are not flattened by this snapshot fixture.
+
 The unchanged public canonical CLI exposes neither the private Go stale cutoff
 nor the SQL wake predicate's evaluation instant. It also exposes no
 operation-bound `issue_versions` query trace. Exact native equality and no-load
