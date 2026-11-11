@@ -9,13 +9,16 @@ batch, typed later-key and final-item refusals, the actual 1,000-item bound,
 one durable revision for a real metadata rewrite, no-op history, stored replay
 without post delivery, and indexed close results. A mixed close refusal proves
 Plug's atomic ChangeSet; native indexed survivor commits remain a separate
-accepted deviation. Repeated nonempty close reasons must keep the first close.
+accepted deviation. Repeats preserve the first close reason and time: empty or identical reasons
+are no-ops; a different nonempty reason appends one comment as the binding
+17:19 Plug deviation. Legacy unknown reasons follow the 17:24 no-backfill rule.
 SQL cases close and reopen the real store and public endpoint before readback.
 
-The ephemeral case follows the frozen workflow contract: SQLite/PostgreSQL
-perform real public invocation, batch mutation and exact reopened item readback
-without core durable history; memory refuses invocation with the exact typed
-capability error before publishing state. No process persistence is invented.
+The ephemeral case follows adopted PR467 and the binding 17:14 reconciliation:
+all three engines perform real public invocation, batch mutation and exact item
+readback without core durable history. Memory asserts process checkpoint
+lifetime and Persistent()==false; only SQLite/PostgreSQL promise reopen. The
+older workflow-contract memory-refusal text is superseded by that ruling.
 
 The explicit manual native target reuses the admitted pinned source builder
 and disposable database ports from the existing acceptance package. It records

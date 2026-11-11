@@ -157,7 +157,10 @@ func TestB21NativePublicBatchHTTP(t *testing.T) {
 		if len(rows) != 1 || rows[0]["title"] != "native ephemeral patched" || n.history() != before {
 			t.Fatalf("actual native ephemeral readback/history %+v", rows)
 		}
-		n.http("ephemeral-public-read", "GET", "/v0/beads/issues/b21-active", nil, 200)
+		ephemeral := n.http("ephemeral-public-read", "GET", "/v0/beads/issues/b21-active", nil, 200)
+		if ephemeral["id"] != "b21-active" || ephemeral["title"] != "native ephemeral patched" || ephemeral["ephemeral"] != true {
+			t.Fatalf("exact native public ephemeral %+v", ephemeral)
+		}
 	})
 	t.Run("indexed-close-survivors-and-all-idempotent-no-history", func(t *testing.T) {
 		n.use(t)
@@ -176,11 +179,16 @@ func TestB21NativePublicBatchHTTP(t *testing.T) {
 				t.Fatalf("native close index %d %+v", i, item)
 			}
 			if i == 1 {
-				if item["code"] != "not_found" || item["issue"] != nil || item["already_closed"] != nil {
+				if item["code"] != "not_found" || item["detail"] == nil || item["issue"] != nil || item["already_closed"] != nil || item["open_children"] != nil {
 					t.Fatalf("refusal branch %+v", item)
 				}
 			} else {
-				if item["code"] != nil || item["issue"] == nil || item["already_closed"] != (i == 3) || fmt.Sprint(item["open_children"]) != "0" {
+				issue, ok := item["issue"].(map[string]any)
+				reason := "first B"
+				if i == 2 {
+					reason = "first A"
+				}
+				if !ok || item["code"] != nil || item["detail"] != nil || item["already_closed"] != (i == 3) || fmt.Sprint(item["open_children"]) != "0" || issue["id"] != id || issue["status"] != "closed" || issue["close_reason"] != reason {
 					t.Fatalf("success branch index%d %+v", i, item)
 				}
 			}
@@ -189,15 +197,30 @@ func TestB21NativePublicBatchHTTP(t *testing.T) {
 		if len(rows) != 2 || rows[0]["status"] != "closed" || rows[1]["status"] != "closed" || rows[0]["close_reason"] != "first A" || rows[1]["close_reason"] != "first B" || n.history() != before+1 {
 			t.Fatalf("native survivors readback %+v", rows)
 		}
-		before = n.history()
-		n.http("all-idempotent-close", "POST", "/v0/beads/issues:batchClose", map[string]any{"actor": "b21-native", "items": []any{map[string]any{"id": "b21-closea"}, map[string]any{"id": "b21-closeb"}}}, 200)
-		if n.history() != before {
-			t.Fatal("native all-idempotent history")
+		state := n.census()
+		idempotent := n.http("all-idempotent-close", "POST", "/v0/beads/issues:batchClose", map[string]any{"actor": "b21-native", "items": []any{map[string]any{"id": "b21-closea", "reason": "ignored A repeat"}, map[string]any{"id": "b21-closeb", "reason": "first B"}}}, 200)
+		outcomes, _ := idempotent["outcomes"].([]any)
+		if len(outcomes) != 2 {
+			t.Fatalf("native all-idempotent shape %+v", idempotent)
 		}
-		n.http("all-refused-close", "POST", "/v0/beads/issues:batchClose", map[string]any{"actor": "b21-native", "items": []any{map[string]any{"id": "b21-absent"}}}, 200)
-		if n.history() != before {
-			t.Fatal("native all-refused history")
+		for i, expected := range []struct{ id, reason string }{{"b21-closea", "first A"}, {"b21-closeb", "first B"}} {
+			item := outcomes[i].(map[string]any)
+			issue, ok := item["issue"].(map[string]any)
+			if !ok || item["issue_id"] != expected.id || item["already_closed"] != true || item["code"] != nil || issue["id"] != expected.id || issue["status"] != "closed" || issue["close_reason"] != expected.reason {
+				t.Fatalf("native all-idempotent index%d %+v", i, item)
+			}
 		}
+		b21Equal(t, state, n.census(), "native all-idempotent full physical conservation and no history")
+		refused := n.http("all-refused-close", "POST", "/v0/beads/issues:batchClose", map[string]any{"actor": "b21-native", "items": []any{map[string]any{"id": "b21-absent"}}}, 200)
+		outcomes, _ = refused["outcomes"].([]any)
+		if len(outcomes) != 1 {
+			t.Fatalf("native all-refused shape %+v", refused)
+		}
+		item := outcomes[0].(map[string]any)
+		if item["issue_id"] != "b21-absent" || item["code"] != "not_found" || item["detail"] == nil || item["issue"] != nil || item["already_closed"] != nil || item["open_children"] != nil {
+			t.Fatalf("native all-refused outcome %+v", item)
+		}
+		b21Equal(t, state, n.census(), "native all-refused full physical conservation and no history")
 	})
 	t.Run("SQL-and-public-reopen-readback", func(t *testing.T) {
 		n.use(t)
@@ -206,8 +229,14 @@ func TestB21NativePublicBatchHTTP(t *testing.T) {
 		n.stop()
 		n.start()
 		b21Equal(t, before, n.census(), "native SQL physical reopen")
-		n.http("reopened-public-a", "GET", "/v0/beads/issues/b21-a", nil, 200)
-		n.http("reopened-public-ephemeral", "GET", "/v0/beads/issues/b21-active", nil, 200)
+		a := n.http("reopened-public-a", "GET", "/v0/beads/issues/b21-a", nil, 200)
+		if a["id"] != "b21-a" || a["title"] != "native A patched" || a["status"] != "closed" || a["close_reason"] != "B21 completed" {
+			t.Fatalf("exact reopened native durable %+v", a)
+		}
+		active := n.http("reopened-public-ephemeral", "GET", "/v0/beads/issues/b21-active", nil, 200)
+		if active["id"] != "b21-active" || active["title"] != "native ephemeral patched" || active["ephemeral"] != true {
+			t.Fatalf("exact reopened native ephemeral %+v", active)
+		}
 	})
 }
 

@@ -126,24 +126,32 @@ func (f *b21Fixture) open(seed bool) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	// The frozen workflow contract forbids installing an ephemeral provider on
-	// memory. SQL uses the existing host adapter with the real driver lifetime.
-	var provider *workflow.Provider
-	if f.engine != "memory" {
-		checkpoints, e := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
-		if e != nil {
-			t.Fatal(e)
-		}
-		state, e := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
-		if e != nil {
-			t.Fatal(e)
-		}
-		provider, e = workflow.New(state)
-		if e != nil {
-			t.Fatal(e)
-		}
-		provider.WithClock(func() time.Time { return f.now }).WithIdentity("workflow", "default", meta.Incarnation)
+	checkpoints, e := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
+	if e != nil {
+		t.Fatal(e)
 	}
+	state, e := pluginhost.NewWorkflowRuntimeState(checkpoints, f.lease)
+	if e != nil {
+		t.Fatal(e)
+	}
+	// Adopted PR467/17:14 contract: memory has process checkpoints and never
+	// advertises restart persistence. SQL uses the actual restart capability.
+	marker, ok := state.(interface{ Persistent() bool })
+	if !ok {
+		t.Fatal("actual workflow state has no persistence marker")
+	}
+	wantLifetime := driver.CheckpointLifetimeRestart
+	if f.engine == "memory" {
+		wantLifetime = driver.CheckpointLifetimeProcess
+	}
+	if checkpoints.WorkflowCheckpointLifetime() != wantLifetime || marker.Persistent() != (f.engine != "memory") {
+		t.Fatalf("real checkpoint capability lifetime=%s persistent=%v", checkpoints.WorkflowCheckpointLifetime(), marker.Persistent())
+	}
+	provider, e := workflow.New(state)
+	if e != nil {
+		t.Fatal(e)
+	}
+	provider.WithClock(func() time.Time { return f.now }).WithIdentity("workflow", "default", meta.Incarnation)
 	domain := service.New(f.store, f.lease, w, service.WithOntology(rules), service.WithClock(func() time.Time { return f.now }), service.WithWorkflow(provider))
 	registry, e := rpc.NewRegistry()
 	if e != nil {
@@ -386,5 +394,20 @@ func b21Decode(t *testing.T, raw []byte, out any) {
 	d.UseNumber()
 	if e := d.Decode(out); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func (f *b21Fixture) publicFields(ref model.Ref, want map[string]any) {
+	f.t.Helper()
+	row := f.publicRow(ref)
+	if row["id"] != ref.ID {
+		f.t.Fatalf("exact public id %+v", row)
+	}
+	fields, ok := row["fields"].(map[string]any)
+	if !ok {
+		f.t.Fatalf("missing public fields %+v", row)
+	}
+	for key, value := range want {
+		b21Equal(f.t, value, fields[key], "exact public field "+key)
 	}
 }

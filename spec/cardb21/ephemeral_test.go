@@ -4,36 +4,16 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// SQL qualification needs a public item and exact body readback. Memory follows
-// engdocs/plug-runtime/workflow-contract.md:57-65: typed refusal before state.
+// All engines require a public item and exact body readback under the adopted
+// PR467/17:14 contract. Memory has process lifetime; only SQL promises reopen.
 func TestB21PublicEphemeralOnlyBatchHasNoDurableHistory(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			f := newB21(t, engine)
 			before := f.state()
-			checkpointStore := f.store.(driver.CheckpointStore)
-			checkpoint, err := checkpointStore.LoadCheckpoint(f.ctx, "plugin/workflow/default/durable")
-			if err != nil {
-				t.Fatal(err)
-			}
-			posts := f.posts.count()
 			reply := f.call("x.workflow.invoke", f.key(), map[string]any{"project": b21Project, "mode": "ephemeral", "template": "checklist", "checklist": []map[string]any{{"label": "first", "title": "ephemeral original", "type": "issue"}}})
-			if engine == "memory" {
-				b21Code(t, reply, "plugin_durable_state_unavailable")
-				b21Equal(t, before, f.state(), "memory refused invocation conserves complete durable state")
-				after, err := checkpointStore.LoadCheckpoint(f.ctx, "plugin/workflow/default/durable")
-				if err != nil {
-					t.Fatal(err)
-				}
-				b21Equal(t, checkpoint, after, "memory refusal publishes no workflow checkpoint")
-				if f.posts.count() != posts {
-					t.Fatal("memory refused invocation published post")
-				}
-				return
-			}
 			if reply.Error != nil {
 				t.Fatalf("required actual public ephemeral is unavailable on %s: %+v", engine, reply.Error.Data)
 			}

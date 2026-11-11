@@ -20,7 +20,7 @@ DEPS = [
 
 go_test(
     name = "public_batch_test",
-    srcs = ["fixture_test.go", "acceptance_test.go", "ephemeral_test.go", "//spec/cardb20:native_postgres_support"],
+    srcs = ["fixture_test.go", "acceptance_test.go", "ephemeral_test.go", "close_reason_test.go", "//spec/cardb20:native_postgres_support"],
     deps = DEPS,
     args = ["-test.v"],
     size = "large",

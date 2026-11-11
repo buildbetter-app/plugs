@@ -1,6 +1,7 @@
 package cardb20
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -41,15 +42,11 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 					b21Equal(t, c.Revision, c.Results[i].Revision, "single revision per indexed result")
 				}
 				a, b := f.doc(first), f.doc(second)
-				if a.Fields["title"] != "first patched" || a.Fields["description"] != "preserved verbatim Ω" || a.Fields["status"] != "closed" || b.Fields["title"] != "second patched" || b.Fields["status"] != "open" {
+				if a.Fields["title"] != "first patched" || a.Fields["description"] != "preserved verbatim Ω" || a.Fields["status"] != "done" || b.Fields["title"] != "second patched" || b.Fields["status"] != "todo" {
 					t.Fatalf("independent exact final images first=%+v second=%+v", a, b)
 				}
-				for _, ref := range []model.Ref{first, second} {
-					row := f.publicRow(ref)
-					if row["id"] != ref.ID {
-						t.Fatalf("public readback %s", mustB21JSON(row))
-					}
-				}
+				f.publicFields(first, map[string]any{"title": "first patched", "description": "preserved verbatim Ω", "status": "done"})
+				f.publicFields(second, map[string]any{"title": "second patched", "status": "todo"})
 				after := f.state()
 				if len(after.Log) != len(before.Log)+1 || len(after.Log[len(after.Log)-1].Changes) != 2 || len(after.Versions[first.ID]) != 1 || len(after.Versions[second.ID]) != 1 {
 					t.Fatalf("one delta revision, one version per row %+v", after)
@@ -63,7 +60,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				state := f.state()
 				replay := f.apply(key, cs)
 				b21Equal(t, c, b21Commit(t, replay), "exact public replay commit")
-				if !replay.Meta.Replayed || f.posts.count() != calls {
+				if !bytes.Equal(reply.Result, replay.Result) || !replay.Meta.Replayed || f.posts.count() != calls {
 					t.Fatal("replay must not call post subscriber")
 				}
 				b21Equal(t, state, f.state(), "replay durable conservation")
@@ -72,14 +69,14 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 					b21Equal(t, c, f.receipt(key).Commit, "reopened receipt")
 					replay = f.apply(key, cs)
 					b21Equal(t, c, b21Commit(t, replay), "reopened replay")
-					if !replay.Meta.Replayed || f.posts.count() != calls {
+					if !bytes.Equal(reply.Result, replay.Result) || !replay.Meta.Replayed || f.posts.count() != calls {
 						t.Fatal("SQL replay must not fire post")
 					}
 					b21Equal(t, state, f.state(), "reopened replay state")
-					if f.doc(first).Fields["status"] != "closed" {
+					if f.doc(first).Fields["status"] != "done" {
 						t.Fatal("closed value lost on SQL reopen")
 					}
-					f.publicRow(first)
+					f.publicFields(first, map[string]any{"title": "first patched", "description": "preserved verbatim Ω", "status": "done"})
 				}
 				b21Retain(t, engine+"-ordered-commit", map[string]any{"commit": c, "request": cs, "first": a, "second": b, "state": state, "post_calls": calls})
 			})
@@ -114,7 +111,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 						if f.doc(seeded).Fields["title"] != "unchanged anchor" {
 							t.Fatal("failed batch changed exact anchor")
 						}
-						f.publicRow(seeded)
+						f.publicFields(seeded, map[string]any{"title": "unchanged anchor", "status": "todo"})
 						if engine != "memory" {
 							f.reopen()
 							b21Equal(t, before, f.state(), "refusal persisted across SQL reopen")
@@ -159,7 +156,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				if engine != "memory" {
 					f.reopen()
 					b21Equal(t, state, f.state(), "boundary SQL reopen")
-					f.publicRow(ref)
+					f.publicFields(ref, map[string]any{"title": "position 0999", "status": "todo"})
 				}
 			})
 			t.Run("row-delta-and-noop-history-cardinality", func(t *testing.T) {
@@ -199,7 +196,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 					if len(links) != 1 || links[0].Metadata.Gate != "any-children" {
 						t.Fatal("metadata rewrite lost on reopen")
 					}
-					f.publicRow(waiter)
+					f.publicFields(waiter, map[string]any{"title": "waiter", "status": "todo"})
 				}
 			})
 			t.Run("indexed-close-results-and-idempotent-close-no-history", func(t *testing.T) {
@@ -224,7 +221,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				firstA, firstB := b21Close(a), b21Close(b)
 				firstA.Close.Reason, firstB.Close.Reason = "first A", "first B"
 				duplicateB := b21Close(b)
-				duplicateB.Close.Reason = "ignored duplicate B"
+				duplicateB.Close.Reason = "first B"
 				c = b21Commit(t, f.apply(f.key(), model.ChangeSet{Ops: []model.Op{firstB, firstA, duplicateB}}))
 				if len(c.Results) != 3 || c.Revision != b21Next(t, before.Head) {
 					t.Fatal("close commit shape")
@@ -232,7 +229,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				for i, want := range []model.Ref{b, a, b} {
 					b21Equal(t, want, c.Results[i].Ref, "close result index")
 				}
-				if f.doc(a).Fields["status"] != "closed" || f.doc(b).Fields["status"] != "closed" {
+				if f.doc(a).Fields["status"] != "done" || f.doc(b).Fields["status"] != "done" {
 					t.Fatal("exact close readback")
 				}
 				for _, expected := range []struct {
@@ -247,7 +244,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				after := f.state()
 				posts := f.posts.count()
 				repeatA, repeatB := b21Close(a), b21Close(b)
-				repeatA.Close.Reason, repeatB.Close.Reason = "ignored repeat A", "ignored repeat B"
+				repeatA.Close.Reason, repeatB.Close.Reason = "first A", "first B"
 				c = b21Commit(t, f.apply(f.key(), model.ChangeSet{Ops: []model.Op{repeatA, repeatB}}))
 				b21Equal(t, after.Head, c.Revision, "all-idempotent close revision")
 				b21Equal(t, after, f.state(), "all-idempotent close no history")
@@ -257,8 +254,8 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				if engine != "memory" {
 					f.reopen()
 					b21Equal(t, after, f.state(), "close SQL reopen")
-					f.publicRow(a)
-					f.publicRow(b)
+					f.publicFields(a, map[string]any{"title": "close A", "status": "done"})
+					f.publicFields(b, map[string]any{"title": "close B", "status": "done"})
 				}
 			})
 		})

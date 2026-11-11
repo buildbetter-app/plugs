@@ -429,6 +429,12 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if strings.TrimSpace(op.Comment.Body) == "" {
 					return nil, failure("invalid_params", "comment body must not be empty")
 				}
+				// Named close keeps its historical patch+reason lowering and hash.
+				// Its optional reason is subject to the same first-close identity
+				// rule as typed CloseOp; ordinary explicit comments are unchanged.
+				if meta.Method == "bead.close" && current.doc.CloseReason != nil && *current.doc.CloseReason == op.Comment.Body {
+					break
+				}
 				stamp := w.cfg.now().UTC()
 				for _, comment := range current.doc.Comments {
 					if !stamp.After(comment.Time) {

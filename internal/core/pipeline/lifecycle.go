@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
 // CreationTime returns the immutable host-supplied creation instant. A legacy
@@ -82,11 +84,35 @@ func (p *prepared) lifecycleTimes(stamp time.Time) error {
 				value.doc.ClosedAt = nil
 				value.setBy["closedAt"] = "core"
 			}
-		case "bead.close", "bead.fail", "bead.cancel":
+		case "bead.close":
+			if value.doc.ClosedAt == nil {
+				// The legacy named close still hashes and returns its original
+				// patch plus optional comment. Record the first reason only on
+				// its real transition; legacy settled rows remain identity-less.
+				if value.doc.CloseReason == nil {
+					reason := ""
+					for _, change := range p.proposal.Changes {
+						if change.Resource.Ref == value.ref && change.Op.Kind == model.OpComment {
+							reason = change.Op.Comment.Body
+							break
+						}
+					}
+					value.doc.CloseReason = &reason
+					value.setBy["closeReason"] = "request"
+				}
+				closedAt := stamp
+				value.doc.ClosedAt = &closedAt
+				value.setBy["closedAt"] = "core"
+			}
+		case "bead.fail", "bead.cancel":
 			closedAt := stamp
 			value.doc.ClosedAt = &closedAt
 			value.setBy["closedAt"] = "core"
 		case "bead.reopen", "bead.release", "bead.defer":
+			if value.doc.CloseReason != nil {
+				value.doc.CloseReason = nil
+				value.setBy["closeReason"] = "core"
+			}
 			// Reopening clears terminal time but retains the last actual started
 			// entry. A subsequent claim records its own started-category entry.
 			if value.doc.ClosedAt != nil {

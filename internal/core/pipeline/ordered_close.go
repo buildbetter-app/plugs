@@ -103,14 +103,21 @@ func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending
 			p.refusal = refusal
 		}
 	}
+	if op.Reason != "" && strings.TrimSpace(op.Reason) == "" {
+		return nil, failure("invalid_params", "comment body must not be empty")
+	}
+	alreadyClosed := current.doc.CloseReason != nil || current.doc.ClosedAt != nil || ok && current.doc.Fields["status"] == target
+	identicalReason := alreadyClosed && current.doc.CloseReason != nil && *current.doc.CloseReason == op.Reason
+	if ok && !alreadyClosed {
+		reason := op.Reason
+		current.doc.CloseReason = &reason
+		current.setBy["closeReason"] = "request"
+	}
 	if ok && current.doc.Fields["status"] != target {
 		current.doc.Fields["status"] = target
 		current.setBy["fields.status"] = "request"
 	}
-	if op.Reason != "" {
-		if strings.TrimSpace(op.Reason) == "" {
-			return nil, failure("invalid_params", "comment body must not be empty")
-		}
+	if op.Reason != "" && !identicalReason {
 		stamp := w.cfg.now().UTC()
 		for _, comment := range current.doc.Comments {
 			if !stamp.After(comment.Time) {

@@ -3,7 +3,7 @@ package lexicon
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
 	"spec/cardb21/native_test.go": {
-		{name: "TestB21NativePublicBatchHTTP", kind: "func", contextSHA256: "cf326d5ada53a87f938ef5dd2c193f86a929d73b7bb65bcdbeea0e57d31b9bbc", literals: map[int]string{
+		{name: "TestB21NativePublicBatchHTTP", kind: "func", contextSHA256: "e827740efb30bb0b611feac84bdf9a81418e95cb6c76c695149d22b603178ca9", literals: map[int]string{
 			5818: "1b33ef30c9997fefc19db8f8a8264323e582559a6225fbb08b82a21ae8696b37",
 		}},
 		{name: "start", kind: "func", contextSHA256: "31089c2c2a30b18de7fd0f5ca46145bdcd86e808a99d9bf99dfc7d7ea45b462c", literals: map[int]string{
