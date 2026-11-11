@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"net/http"
 	"os"
@@ -415,6 +418,59 @@ func (n *b11Native) metadataDelta(before, after b11Image, from, to, want string)
 	}
 }
 
+// Emit the existing lexicon registry's exact AST bindings on RunsOn. Only the
+// three immutable native protocol literals are selected; no method is exempted.
+func b11ProtocolBinding(t *testing.T, root string) {
+	t.Helper()
+	path := "spec/cardb11/native_test.go"
+	source, err := os.ReadFile(filepath.Join(os.Getenv("PLUG_SOURCE_MODULE_ROOT"), path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := map[string]bool{
+		"32d6f0a5c7dd84ad27ec70dc3497538db281818520ce79b73eebf16c7672ee47": true,
+		"91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75": true,
+		"93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26": true,
+	}
+	var out strings.Builder
+	fmt.Fprintf(&out, "\t%q: {\n", path)
+	count := 0
+	for _, declaration := range file.Decls {
+		method, ok := declaration.(*ast.FuncDecl)
+		if !ok || (method.Name.Name != "metadataAPI" && method.Name.Name != "metadataDelta") {
+			continue
+		}
+		start, end := fset.Position(method.Pos()).Offset, fset.Position(method.End()).Offset
+		fmt.Fprintf(&out, "\t\t{name: %q, kind: \"func\", contextSHA256: %q, literals: map[int]string{\n", method.Name.Name, hashBytes(source[start:end]))
+		ast.Inspect(method, func(node ast.Node) bool {
+			literal, ok := node.(*ast.BasicLit)
+			if !ok || literal.Kind != token.STRING {
+				return true
+			}
+			value, err := strconv.Unquote(literal.Value)
+			if err != nil || !wanted[hashBytes([]byte(value))] {
+				return true
+			}
+			fmt.Fprintf(&out, "\t\t\t%d: %q,\n", fset.Position(literal.Pos()).Offset-start, hashBytes([]byte(value)))
+			count++
+			return true
+		})
+		out.WriteString("\t\t}},\n")
+	}
+	out.WriteString("\t},\n")
+	if count != 3 {
+		t.Fatalf("native protocol AST sites=%d want=3", count)
+	}
+	if err := os.WriteFile(filepath.Join(root, "native-literal-binding.txt"), []byte(out.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
 	// These outcomes follow native's pinned JCS source, independently of the
 	// Plug helper. The public route and exact physical images must confirm them.
@@ -433,6 +489,7 @@ func TestB11NativePublicMetadataComparisonDomains(t *testing.T) {
 	// the worker-safe prefix. Native child environments carry it explicitly too.
 	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	root := b11Output(t, "build")
+	b11ProtocolBinding(t, root)
 	r := &nativeRecorder{t: t, root: root}
 	checkout := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
 	for _, key := range []string{"PLUG_B11_REQUEST_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"} {

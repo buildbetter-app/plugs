@@ -11,8 +11,30 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	proof "github.com/buildbetter-app/plugs/internal/integration/b07positive"
 	public "github.com/buildbetter-app/plugs/internal/integration/b07positive/public"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflow "github.com/buildbetter-app/plugs/plugins/workflow"
 )
+
+// Adopted PR467 and binding17:14 admit truthful process-only memory state.
+func checkpointLifetime(t *testing.T, h *public.Host, engine string) {
+	t.Helper()
+	capability, err := driver.RequireWorkflowCheckpointStore(h.Runtime.Store, h.Runtime.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent, ok := capability.(driver.PersistentCheckpointStore)
+	if !ok {
+		t.Fatal("workflow checkpoint capability omitted its persistence marker")
+	}
+	want := driver.CheckpointLifetimeRestart
+	if engine == "memory" {
+		want = driver.CheckpointLifetimeProcess
+	}
+	if capability.WorkflowCheckpointLifetime() != want || persistent.Persistent() != (engine != "memory") {
+		t.Fatal("selected engine misrepresented checkpoint lifetime or persistence")
+	}
+	proof.Save(t, h.Root, "b11-lifetime.json", map[string]any{"lifetime": capability.WorkflowCheckpointLifetime(), "persistent": persistent.Persistent()})
+}
 
 func metadata(text string) *model.LinkMetadata {
 	token, err := json.Marshal(text)
@@ -238,13 +260,7 @@ func TestB11PublicCrossPlaneEndpointIdentity(t *testing.T) {
 				map[string]any{"label": "source", "title": "active source"},
 				map[string]any{"label": "target", "title": "active target"},
 			}}
-			// Frozen workflow-contract.md57-65 requires this refusal on memory.
-			if engine == "memory" {
-				before := h.Capture()
-				h.Call("x.workflow.invoke", "active-endpoints", invoke, "plugin_durable_state_unavailable")
-				proof.Same(t, before, h.Capture())
-				return
-			}
+			checkpointLifetime(t, h, engine)
 			reply := h.Call("x.workflow.invoke", "active-endpoints", invoke, "")
 			var invoked workflow.InvokeResult
 			if err := json.Unmarshal(reply.Result, &invoked); err != nil || len(invoked.Items) != 2 {

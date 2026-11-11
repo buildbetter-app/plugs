@@ -9,6 +9,7 @@ go_test(
     deps = [
         "//internal/core/model",
         "//internal/core/pipeline",
+        "//internal/storage/driver",
         "//internal/integration/b07positive",
         "//internal/integration/b07positive/public",
         "//plugins/workflow",
