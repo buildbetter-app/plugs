@@ -2,6 +2,15 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
+	"spec/cardb11/native_test.go": {
+		{name: "metadataAPI", kind: "func", contextSHA256: "604a8eea0e4600f8adcdccff73589e3678a3070c7c607b7b9cb76dff04ab43d0", literals: map[int]string{
+			2377: "32d6f0a5c7dd84ad27ec70dc3497538db281818520ce79b73eebf16c7672ee47",
+		}},
+		{name: "metadataDelta", kind: "func", contextSHA256: "b8e06a4d7738a575fe0811b273f206eecb230340708d573d3c9aec53cbfb5f06", literals: map[int]string{
+			1044: "91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75",
+			1958: "93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26",
+		}},
+	},
 	// Canonical native refusal text at one exact B06 assertion site. The
 	// existing AST selector admits this node only, never the method body.
 	"spec/cardb20/b06_native_test.go": {
