@@ -16,6 +16,8 @@ _DEPS = [
 filegroup(
     name = "readback_reference_fixtures",
     srcs = [
+        "testdata/fresh-native/beads-ef3f15.tar.gz",
+        "testdata/fresh-native/beads-ef3f15.git-tree",
         "testdata/typed-reader/beads-e25cf4.tar.gz",
         "testdata/typed-reader/beads-e25cf4.git-tree",
         "testdata/readback-8f19/memory-complete-beads-raw-readback.tar",
@@ -38,12 +40,35 @@ go_test(
     name = "roundtrip_test",
     size = "large",
     tags = ["local", "requires-network"],
-    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "main_test.go", "beads_test.go", "beads_refusal_test.go", "beads_typed_test.go"],
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_fresh.go", "main_test.go", "beads_test.go", "beads_refusal_test.go", "beads_typed_test.go", "beads_fresh_test.go"],
     data = [
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ] + glob(["testdata/readback-8f19/*"]),
     deps = _DEPS,
+)
+
+# Each leaf runs its own unmodified landed recipe with retained-store handoff.
+# Historical runtime tests are linked for their existing reader/DB helpers,
+# but this target selects only the fresh recorder, never the historical run.
+go_test(
+    name = "fresh_same_run_native_test",
+    size = "enormous",
+    timeout = "eternal",
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_fresh.go", "beads_runtime_test.go", "beads_native_regression_test.go", "beads_typed_runtime_test.go", "beads_fresh_runtime_test.go"],
+    args = ["-test.run=^TestFreshSameRunIDStyleATwelveFixtures$$"],
+    data = [
+        "testdata/fresh-native/beads-ef3f15.tar.gz",
+        "testdata/fresh-native/beads-ef3f15.git-tree",
+        "testdata/typed-reader/beads-e25cf4.tar.gz",
+        "testdata/typed-reader/beads-e25cf4.git-tree",
+        "//internal/publicnative:dolt_runtime",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"],
+    tags = ["local", "manual", "requires-network"],
+    deps = _DEPS + ["//internal/publicnative"],
 )
 
 go_test(

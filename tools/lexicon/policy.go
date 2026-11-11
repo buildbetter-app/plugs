@@ -41,6 +41,7 @@ const (
 func DefaultTreePolicy() TreePolicy {
 	return TreePolicy{
 		ReferencePrefixes: []string{
+			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl",
 			"tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl",
@@ -52,6 +53,7 @@ func DefaultTreePolicy() TreePolicy {
 			"spec/s1-b17-b20/reference/b18/record.py",
 		},
 		ReferenceSHA256: map[string]string{
+			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.git-tree":               "c1d92931dfce093264a1ba155869b2bffbb9dd184e9778e2c75abeb081ab1bdb",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree":               "0a31c98fdd08dc93af919d3bb0f4c8470bb4a126d1c7388c49dff7a222889f55",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-reverse-live.jsonl": "3ddad50712c0f10cf59a5ea60c573c75e2ee2a3957d5a01bfa9d22e5410d8182",
 			"tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl":  "2b455dd7d71f77443adee5ea422daecd0ca8ef17594b2af7f1e398860eedfbc1",
@@ -128,6 +130,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.tar.gz":                     "034e39dba83ce13eaa4af01feb753bf4f2fe360551f49de40094573d7dd330cd",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz":                     "89d43f0bc3e8f0ed58393d8982bbd5f290739c9af1228683c5338c08efa36fb6",
 			"tools/roundtrip/testdata/readback-8f19/memory-complete-beads-raw-readback.tar": "dc58689a485ec1c37a85afef956c05d07f328e51062bd4112e14db20e669abae",
 			"tools/roundtrip/testdata/readback-8f19/memory-partial-beads-raw-readback.tar":  "cb51c880fe8cbc69a562799a4eabf1993f18ce6eb4ecda9dea035fdd6299b91c",

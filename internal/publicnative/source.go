@@ -35,6 +35,36 @@ type SourceBuilder struct {
 }
 
 func (b SourceBuilder) Build(spec CanonicalSource) string {
+	return b.BuildWithSource(spec, nil)
+}
+
+// SourceSession exposes the same verified, unmodified extraction and private
+// Bazel server to a consumer of an existing native recipe. It cannot outlive
+// BuildWithSource; source files are never patched by this interface.
+type SourceSession struct {
+	Directory, Binary string
+	bazel, outputBase string
+	settings          []string
+}
+
+// TestArguments selects an existing producer test without introducing a
+// second builder or changing its recipe. Callers retain its original outputs.
+func (s SourceSession) TestArguments(target string, arguments ...string) (string, []string) {
+	args := []string{s.outputBase, "test", "--jobs=2", "--local_resources=memory=8192", "--run_validations", "--lockfile_mode=error", "--cache_test_results=no", "--flaky_test_attempts=1", "--test_output=all"}
+	args = append(args, s.settings...)
+	args = append(args, arguments...)
+	return s.bazel, append(args, target)
+}
+
+// QueryArguments identifies the exact built executable used by a recipe.
+func (s SourceSession) QueryArguments(target string) (string, []string) {
+	args := append([]string{s.outputBase, "cquery"}, s.settings...)
+	return s.bazel, append(args, "--output=files", target)
+}
+
+// BuildWithSource keeps the private canonical build alive while the consumer
+// invokes an already-declared producer recipe against fresh public stores.
+func (b SourceBuilder) BuildWithSource(spec CanonicalSource, consume func(SourceSession)) string {
 	b.T.Helper()
 	archive, err := filepath.Abs(filepath.Join(b.SourceDirectory, spec.Name+".tar.gz"))
 	if err != nil {
@@ -223,6 +253,9 @@ func (b SourceBuilder) Build(spec CanonicalSource) string {
 		"bazel_version": "9.3.0", "go_version": info.GoVersion, "go_build_info": info,
 		"wrapper_sha256": hashBytes(wrapper), "rc_sha256": hashBytes(rc), "canonical_validations": true,
 	})
+	if consume != nil {
+		consume(SourceSession{Directory: source, Binary: binary, bazel: bazel, outputBase: outputBase, settings: append([]string(nil), settings...)})
+	}
 	return binary
 }
 
