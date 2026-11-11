@@ -198,6 +198,7 @@ internal/core/dumpformat/native_delta_history.go
 internal/core/dumpformat/native_delta_json.go
 internal/core/dumpformat/native_delta_parts.go
 internal/core/dumpformat/native_delta_parts_test.go
+internal/core/dumpformat/native_delta_public_images_test.go
 internal/core/dumpformat/native_delta_reconstruct.go
 internal/core/dumpformat/native_delta_reconstruct_test.go
 internal/core/dumpformat/native_delta_records.go

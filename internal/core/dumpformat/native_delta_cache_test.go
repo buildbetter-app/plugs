@@ -121,16 +121,35 @@ func TestNativeDeltaRetainedRowsReleaseAtAuthenticatedFrontier(t *testing.T) {
 	// its sibling, and the immediately previous emitted state remains live.
 	firstBudget := NewNativeDeltaBudget(0)
 	firstOwner := firstBudget.Scope()
-	history, _, err := reconstructNativeDelta(context.Background(), bytes.NewReader(f.stream.Bytes()), f.root, firstOwner)
+	defer firstOwner.Release()
+	var unpruned []map[string]uint64
+	history, _, err := reconstructNativeDeltaVisit(context.Background(), bytes.NewReader(f.stream.Bytes()), f.root, firstOwner, func(NativeHistoryImage, []string) error {
+		unpruned = append(unpruned, firstBudget.Usage().CurrentCategories)
+		return nil
+	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	budget := NewNativeDeltaBudget(0)
+	// This ceiling is insufficient for the same initial authentication above.
+	// A graph-authenticated replay must fit by retiring dead branch owners.
+	budget := NewNativeDeltaBudget(firstBudget.Usage().PeakAccountedDecodedBytes - 1)
 	owner := budget.Scope()
+	defer owner.Release()
 	seen := 0
 	_, _, err = reconstructNativeDeltaCallbacks(context.Background(), bytes.NewReader(f.stream.Bytes()), f.root, owner, func(image NativeHistoryImage, _ []string) error {
 		if !reflect.DeepEqual(image, f.expected[seen]) {
 			t.Fatal("shared branch expired before actual last use", seen)
+		}
+		if seen == 3 {
+			// Before the fourth callback, both dead branches have passed their
+			// last use. Observe live payload/index reservations before teardown;
+			// deleting releaseState at the frontier must fail this assertion.
+			live := budget.Usage().CurrentCategories
+			for _, phase := range []string{"retained_delta_rows", "retained_row_index", "retained_row_ownership", "retained_table_ownership", "retained_table_views"} {
+				if live[phase] == 0 || live[phase] >= unpruned[seen][phase] {
+					t.Fatal("authenticated last-use owners remained live", phase, live[phase], unpruned[seen][phase])
+				}
+			}
 		}
 		seen++
 		return nil
