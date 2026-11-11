@@ -52,7 +52,7 @@ func validateLifecycleTimeMembers(body []byte) error {
 // select the category; concrete status names are never interpreted here. These
 // are application-clock values in the same atomic body as the status and lease,
 // not the storage driver's independently generated changeset/version time.
-func (p *prepared) lifecycleTimes(stamp time.Time) error {
+func (w *Writer) lifecycleTimes(p *prepared, stamp time.Time) error {
 	for _, value := range p.writes {
 		if value.kind == "memory" || value.deleted {
 			continue
@@ -62,12 +62,14 @@ func (p *prepared) lifecycleTimes(stamp time.Time) error {
 			continue
 		}
 		var beforeStatus string
+		var beforeClosed bool
 		if len(value.before) != 0 {
 			before, err := DecodeDocument(value.before)
 			if err != nil {
 				return err
 			}
 			beforeStatus, _ = before.Fields["status"].(string)
+			beforeClosed = w.closedDocument(before)
 		}
 		afterStatus, _ := value.doc.Fields["status"].(string)
 		if beforeStatus == afterStatus {
@@ -85,7 +87,7 @@ func (p *prepared) lifecycleTimes(stamp time.Time) error {
 				value.setBy["closedAt"] = "core"
 			}
 		case "bead.close":
-			if value.doc.ClosedAt == nil {
+			if !beforeClosed && value.doc.ClosedAt == nil {
 				// The legacy named close still hashes and returns its original
 				// patch plus optional comment. Record the first reason only on
 				// its real transition; legacy settled rows remain identity-less.

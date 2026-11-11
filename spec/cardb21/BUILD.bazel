@@ -42,6 +42,7 @@ go_test(
     deps = DEPS + ["//internal/publicnative"],
     data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
     env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256"],
     args = ["-test.v"],
     size = "enormous",
     tags = ["local", "manual", "requires-network"],

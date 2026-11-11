@@ -58,6 +58,7 @@ type b21Fixture struct {
 	t                 *testing.T
 	ctx               context.Context
 	engine, path, dsn string
+	ontologyDocument  ontology.Document
 	now               time.Time
 	store             driver.Store
 	lease             driver.ActiveLease
@@ -78,9 +79,14 @@ type b21Reply struct {
 
 func newB21(t *testing.T, engine string) *b21Fixture {
 	t.Helper()
+	return newB21Ontology(t, engine, ontology.DefaultDocument())
+}
+
+func newB21Ontology(t *testing.T, engine string, document ontology.Document) *b21Fixture {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	t.Cleanup(cancel)
-	f := &b21Fixture{t: t, ctx: ctx, engine: engine, now: time.Date(2026, 11, 11, 16, 42, 0, 0, time.UTC), posts: &b21Posts{}}
+	f := &b21Fixture{t: t, ctx: ctx, engine: engine, now: time.Date(2026, 11, 11, 16, 42, 0, 0, time.UTC), posts: &b21Posts{}, ontologyDocument: document}
 	if engine == "sqlite" {
 		f.path = filepath.Join(t.TempDir(), "b21.sqlite")
 	}
@@ -96,9 +102,9 @@ func (f *b21Fixture) open(seed bool) {
 	var err error
 	switch f.engine {
 	case "memory":
-		f.store, err = memory.NewWithOptions(memory.Options{Clock: func() time.Time { return f.now }, StoreID: "b21-memory", Incarnation: "b21-memory-incarnation"})
+		f.store, err = memory.NewWithOptions(memory.Options{StoreID: "b21-memory", Incarnation: "b21-memory-incarnation"})
 	case "sqlite":
-		f.store, err = (sqlite.Driver{Clock: func() time.Time { return f.now }}).Open(f.ctx, driver.Config{DSN: f.path})
+		f.store, err = (sqlite.Driver{}).Open(f.ctx, driver.Config{DSN: f.path})
 	case "postgres":
 		f.store, err = postgres.Open(f.ctx, driver.Config{DSN: f.dsn})
 	default:
@@ -112,7 +118,7 @@ func (f *b21Fixture) open(seed bool) {
 		t.Fatal(err)
 	}
 	if seed {
-		body, e := service.MarshalOntologySource(service.OntologySource{Base: ontology.DefaultDocument()})
+		body, e := service.MarshalOntologySource(service.OntologySource{Base: f.ontologyDocument})
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -120,7 +126,11 @@ func (f *b21Fixture) open(seed bool) {
 			t.Fatal(e)
 		}
 	}
-	rules := service.NewOntology(nil)
+	compiled, problems := ontology.Compile(f.ontologyDocument, nil, nil)
+	if len(problems) != 0 {
+		t.Fatalf("acceptance ontology: %+v", problems)
+	}
+	rules := service.NewOntology(compiled.Effective)
 	w := pipeline.New(f.store, f.lease, pipeline.WithOntology(rules), pipeline.WithClock(func() time.Time { return f.now }), pipeline.WithIDGenerator(func() (string, error) { f.ids++; return fmt.Sprintf("b21-%s-%04d", f.engine, f.ids), nil }), pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(b21Source))), pipeline.WithPostSubscribers(pipeline.PostBinding{ID: "b21-replay-observer", Subscriber: f.posts}))
 	meta, e := f.store.Meta(f.ctx)
 	if e != nil {
@@ -355,7 +365,7 @@ func (f *b21Fixture) doc(ref model.Ref) pipeline.Document {
 }
 func (f *b21Fixture) publicRow(ref model.Ref) map[string]any {
 	f.t.Helper()
-	r := f.call("bead.get", "", map[string]any{"id": ref, "project": b21Project})
+	r := f.call("bead.get", "", map[string]any{"id": ref})
 	if r.Error != nil {
 		f.t.Fatalf("bead.get: %+v", r.Error.Data)
 	}

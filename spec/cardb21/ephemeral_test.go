@@ -50,6 +50,39 @@ func TestB21PublicEphemeralOnlyBatchHasNoDurableHistory(t *testing.T) {
 					t.Fatal("actual ephemeral value lost on SQL reopen")
 				}
 			}
+			// Keep this durable+wisp batch separate from the wisp-only no-history
+			// observation above. One core row delta yields one revision while
+			// the same public batch changes the actual ephemeral item.
+			mixed := model.ChangeSet{Ops: []model.Op{b21Create("durable", "mixed durable"), b21Patch(ref, map[string]any{"title": "mixed ephemeral"})}}
+			mixedKey := f.key()
+			mixedReply := f.apply(mixedKey, mixed)
+			mixedCommit := b21Commit(t, mixedReply)
+			if len(mixedCommit.Results) != 2 || mixedCommit.Revision != b21Next(t, before.Head) || mixedCommit.Results[1].Ref != ref {
+				t.Fatalf("mixed-plane public commit %+v", mixedCommit)
+			}
+			durable := mixedCommit.Results[0].Ref
+			state := f.state()
+			if len(state.Records) != len(before.Records)+1 || len(state.Log) != len(before.Log)+1 || len(state.Versions[durable.ID]) != 1 {
+				t.Fatal("mixed-plane durable delta is not exactly one row/revision")
+			}
+			f.publicFields(durable, map[string]any{"title": "mixed durable", "status": "todo"})
+			f.publicFields(ref, map[string]any{"title": "mixed ephemeral"})
+			posts := f.posts.count()
+			checkReplay := func() {
+				t.Helper()
+				replayed := f.apply(mixedKey, mixed)
+				if !replayed.Meta.Replayed || string(replayed.Result) != string(mixedReply.Result) || f.posts.count() != posts {
+					t.Fatal("mixed-plane replay changed stored bytes or delivered post")
+				}
+				b21Equal(t, state, f.state(), "mixed replay durable conservation")
+				f.publicFields(ref, map[string]any{"title": "mixed ephemeral"})
+			}
+			checkReplay()
+			if engine != "memory" {
+				f.reopen()
+				checkReplay()
+				f.publicFields(durable, map[string]any{"title": "mixed durable", "status": "todo"})
+			}
 		})
 	}
 }

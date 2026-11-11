@@ -1497,7 +1497,7 @@ func (w *Writer) checkLease(ctx context.Context, doc Document, by model.Principa
 
 func (w *Writer) claims(p *prepared, by model.PrincipalRef, meta model.WriteMeta) error {
 	stamp := w.cfg.now().UTC()
-	if err := p.lifecycleTimes(stamp); err != nil {
+	if err := w.lifecycleTimes(p, stamp); err != nil {
 		return err
 	}
 	if isClaim(meta.Method) && !p.proposal.SameClaim {

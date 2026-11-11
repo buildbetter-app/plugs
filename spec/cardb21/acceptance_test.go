@@ -148,7 +148,7 @@ func TestB21PublicBatchAcceptance(t *testing.T) {
 				state := f.state()
 				ops = append(ops, b21Patch(ref, map[string]any{"title": "refused 1001"}))
 				key := f.key()
-				b21Code(t, f.apply(key, model.ChangeSet{Ops: ops}), "invalid_params")
+				b21Code(t, f.call("tx.apply", key, map[string]any{"changeSet": map[string]any{"ops": ops}}), "invalid_params")
 				b21Equal(t, state, f.state(), "1001 no partial state")
 				if f.receipt(key) != nil {
 					t.Fatal("1001 receipt")

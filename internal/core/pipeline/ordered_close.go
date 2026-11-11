@@ -27,6 +27,22 @@ type createStatuses interface {
 	CreateStatus(project, beadType string, requested *string) (string, bool)
 }
 
+func (w *Writer) closedDocument(doc Document) bool {
+	if doc.CloseReason != nil || doc.ClosedAt != nil {
+		return true
+	}
+	// Ask the same trusted selector whether the current project/type status
+	// is a successful close target. Failed/canceled rows with no close time
+	// retain their existing first-close behavior. No guard is evaluated here.
+	statuses, ok := w.cfg.ontology.(exactCloseStatuses)
+	if !ok {
+		return false
+	}
+	status, _ := doc.Fields["status"].(string)
+	_, selected, closed := statuses.CloseStatuses(doc.Project, doc.Type, &status)
+	return closed && selected == status
+}
+
 type orderedCloseOntology interface {
 	ValidateOrdered(context.Context, []port.Change, port.ProposedChange, port.SnapshotReader) error
 }
@@ -106,7 +122,7 @@ func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending
 	if op.Reason != "" && strings.TrimSpace(op.Reason) == "" {
 		return nil, failure("invalid_params", "comment body must not be empty")
 	}
-	alreadyClosed := current.doc.CloseReason != nil || current.doc.ClosedAt != nil || ok && current.doc.Fields["status"] == target
+	alreadyClosed := w.closedDocument(current.doc) || ok && current.doc.Fields["status"] == target
 	identicalReason := alreadyClosed && current.doc.CloseReason != nil && *current.doc.CloseReason == op.Reason
 	if ok && !alreadyClosed {
 		reason := op.Reason
