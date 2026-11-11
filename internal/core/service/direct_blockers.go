@@ -221,7 +221,7 @@ func (e *directBlockerEvaluation) effective(ctx context.Context, project string)
 
 func (e *directBlockerEvaluation) waitsFor(ctx context.Context, link pipeline.Link, spawner storedBead) (DirectBlockerState, error) {
 	terminal := e.compiled[spawner.doc.Project].SatisfiesBlocks(state(spawner.doc).Status)
-	if link.Metadata == nil && terminal {
+	if !link.Metadata.HasPredicate() && terminal {
 		return DirectBlockerSatisfied, nil
 	}
 	if link.Metadata != nil && link.Metadata.AlsoBlocks && !terminal {

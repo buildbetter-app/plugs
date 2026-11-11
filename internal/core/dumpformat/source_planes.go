@@ -48,7 +48,7 @@ func validateSourcePlaneRecord(r Record, m Manifest, counts map[string]int, stat
 		return fmt.Errorf("operational source rows require source family contract")
 	}
 	columns, ok := sourceTableColumns(m.MainVersion)[table]
-	if !ok || len(fields) != len(strings.Fields(columns)) {
+	if !ok || (table != DurableDependencyTable && table != EphemeralDependencyTable && len(fields) != len(strings.Fields(columns))) {
 		return fmt.Errorf("source plane record schema drift")
 	}
 	for _, column := range strings.Fields(columns) {
