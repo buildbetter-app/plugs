@@ -196,6 +196,8 @@ internal/core/dumpformat/native_delta_history.go
 internal/core/dumpformat/native_delta_json.go
 internal/core/dumpformat/native_delta_parts.go
 internal/core/dumpformat/native_delta_parts_test.go
+internal/core/dumpformat/native_delta_prepared.go
+internal/core/dumpformat/native_delta_prepared_test.go
 internal/core/dumpformat/native_delta_reconstruct.go
 internal/core/dumpformat/native_delta_reconstruct_test.go
 internal/core/dumpformat/native_delta_records.go
@@ -645,6 +647,7 @@ internal/integration/converterroundtrip/planner_extraction_test.go
 internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go
 internal/integration/converterroundtrip/public_source_test.go
+internal/integration/converterroundtrip/receiving_pass_budget_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
 internal/integration/converterroundtrip/restore_lease_test.go
