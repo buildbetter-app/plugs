@@ -26,7 +26,7 @@ func TestB04OrdinaryPublicHTTPAcrossStores(t *testing.T) {
 			o.sameHolder("same-holder","b04-direct")
 			o.refusal("wip-refused","bead.claim",owner,"invalid_params",false,map[string]any{"id":ref("b04-wip")})
 			for i,p:= range []map[string]any{{"limit":1},{"offset":1},{"brief":true}} { o.refusal(fmt.Sprintf("validation-%d",i),"bead.claimNext",owner,"invalid_params",false,p) }
-			o.refusal("missing-actor","bead.claimNext","","invalid_params",false,nil)
+			o.refusal("out-of-range-priority","bead.claimNext",owner,"invalid_params",false,map[string]any{"filter":map[string]any{"priority":5}})
 			o.win("active-next","bead.claimNext","b04-active","awaiting_review",map[string]any{"filter":map[string]any{"resources":[]string{"b04-active","b04-wip"}}})
 			o.empty("empty-selected",map[string]any{"filter":map[string]any{"resources":[]string{"b04-active","b04-wip"}}})
 			if o.f.document("b04-decoy").Lease!=nil { t.Fatal("selected empty front claimed decoy") }
@@ -107,13 +107,14 @@ func TestB04OrdinarySelectionUnderStaticAuthority(t *testing.T) {
 		o.authority=ordinaryAuthority(t,[]model.Ref{ref(ids[1]),ref(ids[2])},o.f.clock.Now)
 		o.install()
 		o.reopen("static-before")
-		filter:=map[string]any{"labelsAny":[]string{"public-selection"}}
+		filter:=map[string]any{"labelsAny":[]string{"public-selection"},"includeEphemeral":false}
 		before:=o.state("static-ready-before")
 		page:=result(t,o.call("static-limit-one","bead.ready",owner,map[string]any{"filter":filter,"limit":1}))
 		items,ok:=page["items"].([]any);if !ok || len(items)!=1 {t.Fatalf("authorized matching limit-one page: %+v",page)}
 		row,ok:=items[0].(map[string]any);if !ok || row["id"]!=ids[1] || page["nextCursor"]!=nil {t.Fatalf("authorization/filter membership must precede pagination: %+v",page)}
 		o.equalState("static-ready-after",before);o.checkReceipts()
 		o.win("static-win","bead.claimNext",ids[1],"todo",map[string]any{"filter":filter})
+		o.refusal("static-workflow-project-refused","bead.claimNext",owner,"forbidden",false,map[string]any{"filter":map[string]any{"labelsAny":[]string{"public-selection"}}})
 		o.empty("static-empty",map[string]any{"filter":filter})
 		o.reopen("static-after")
 		if got:=o.readyIDs("static-drained",filter);len(got)!=0 {t.Fatalf("hidden/mismatch row escaped selection: %v",got)}
