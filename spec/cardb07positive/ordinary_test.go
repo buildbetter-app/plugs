@@ -130,7 +130,7 @@ func ordinaryPositive(t *testing.T, engine string) {
 		bad := model.ChangeSet{Ops: []model.Op{
 			{Kind: model.OpPatch, Patch: &model.PatchOp{Target: active, Fields: map[string]any{"title": "discard active retype draft"}}},
 			{Kind: model.OpPatch, Patch: &model.PatchOp{Target: durable, Fields: map[string]any{"title": "discard durable retype draft"}}},
-			{Kind: model.OpUnlink, Link: change.Ops[3].Link},
+			{Kind: model.OpUnlink, Link: &model.LinkOp{From: active, To: unrelated, LinkKind: "relates-to"}},
 			{Kind: model.OpLink, Link: &model.LinkOp{From: durable, To: active, LinkKind: "blocks"}},
 		}}
 		h.Call("tx.apply", "late-retype", map[string]any{"changeSet": bad}, "ontology_guard_failed")
@@ -156,7 +156,12 @@ func ordinaryPositive(t *testing.T, engine string) {
 		proof.Same(t, after, h.Capture())
 		h.Call("bead.link", "wrong-project", map[string]any{"from": active, "to": unrelated, "kind": "relates-to", "_meta": map[string]any{"project": "another-project"}}, "forbidden")
 		proof.Same(t, after, h.Capture())
-		bad := model.ChangeSet{Ops: []model.Op{change.Ops[0], change.Ops[1], {Kind: model.OpLink, Link: &model.LinkOp{From: active, To: unrelated, LinkKind: "relates-to", Metadata: &model.LinkMetadata{NativeExtensions: map[string]string{"beads.future_invalid": "null true"}}}}}}
+		// Keep the opaque token malformed on the actual public wire. The typed
+		// ChangeSet marshaler correctly refuses it before any RPC can execute.
+		bad := map[string]any{"ops": []any{change.Ops[0], change.Ops[1], map[string]any{
+			"kind": model.OpLink, "from": active, "to": unrelated, "linkKind": "relates-to",
+			"metadata": map[string]any{"nativeExtensions": map[string]string{"beads.future_invalid": "null true"}},
+		}}}
 		h.Call("tx.apply", "malformed-token", map[string]any{"changeSet": bad}, "invalid_params")
 		proof.Same(t, after, h.Capture())
 	})
@@ -218,8 +223,21 @@ func assertOrdinaryCoreEffect(t *testing.T, before, after proof.State, changed, 
 			t.Fatal(err)
 		}
 		oldDoc.Fields["title"] = title
-		if !reflect.DeepEqual(oldDoc, nextDoc) || next.Ref != row.Ref || next.Kind != row.Kind || next.Revision != after.Meta.Head || len(after.Versions[changed]) != len(before.Versions[changed])+1 {
-			t.Fatal("durable patch changed data beyond its exact requested title")
+		if !reflect.DeepEqual(oldDoc, nextDoc) {
+			t.Fatalf("durable patch changed data beyond its exact requested title: want %+v, got %+v", oldDoc, nextDoc)
+		}
+		// Memory retains the create's inferred ID arm and the patch's explicit
+		// ID arm internally. Compare their complete public reference encoding.
+		oldRef, err := json.Marshal(row.Ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextRef, err := json.Marshal(next.Ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(oldRef, nextRef) || next.Kind != row.Kind || next.Revision != after.Meta.Head || len(after.Versions[changed]) != len(before.Versions[changed])+1 {
+			t.Fatal("durable patch changed public identity/kind or missed the exact revision/version effect")
 		}
 		if !reflect.DeepEqual(before.Versions[changed], after.Versions[changed][:len(before.Versions[changed])]) {
 			t.Fatal("mixed patch changed retained durable versions")

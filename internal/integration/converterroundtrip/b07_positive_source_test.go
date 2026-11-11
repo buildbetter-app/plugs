@@ -331,7 +331,7 @@ func TestB07AdmittedSourceMixedLinkSuccess(t *testing.T) {
 				bad := model.ChangeSet{Ops: []model.Op{
 					{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("demo-9"), Fields: map[string]any{"title": "discard active draft"}}},
 					{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("demo-8"), Fields: map[string]any{"title": "discard durable draft"}}},
-					{Kind: model.OpUnlink, Link: links[0].Link},
+					{Kind: model.OpUnlink, Link: &model.LinkOp{From: ref("demo-9"), To: ref("demo-7"), LinkKind: "relates-to"}},
 					{Kind: model.OpLink, Link: &model.LinkOp{From: ref("demo-9"), To: ref("demo-8"), LinkKind: "blocks"}},
 				}}
 				call(t, "tx.apply", "late-retype", map[string]any{"changeSet": bad}, "ontology_guard_failed")
@@ -340,8 +340,12 @@ func TestB07AdmittedSourceMixedLinkSuccess(t *testing.T) {
 				}
 			})
 			t.Run("MalformedOpaqueTokenConservesBothPlanes", func(t *testing.T) {
-				badMetadata := &model.LinkMetadata{NativeExtensions: map[string]string{"beads.future_invalid": "null true"}}
-				bad := model.ChangeSet{Ops: []model.Op{change.Ops[0], change.Ops[1], {Kind: model.OpLink, Link: &model.LinkOp{From: ref("demo-9"), To: ref("demo-7"), LinkKind: "relates-to", Metadata: badMetadata}}}}
+				// Dispatch malformed opaque text to the server rather than asking
+				// the valid-only ChangeSet marshaler to accept it locally.
+				bad := map[string]any{"ops": []any{change.Ops[0], change.Ops[1], map[string]any{
+					"kind": model.OpLink, "from": ref("demo-9"), "to": ref("demo-7"), "linkKind": "relates-to",
+					"metadata": map[string]any{"nativeExtensions": map[string]string{"beads.future_invalid": "null true"}},
+				}}}
 				call(t, "tx.apply", "malformed-opaque", map[string]any{"changeSet": bad}, "invalid_params")
 				proof.Same(t, after, capture(t))
 			})
@@ -353,7 +357,7 @@ func TestB07AdmittedSourceMixedLinkSuccess(t *testing.T) {
 				proof.Same(t, after, capture(t))
 			})
 			t.Run("ExactUnlinkRelinkAndReplay", func(t *testing.T) {
-				unlink := model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{From: ref(active.TargetID), To: ref("demo-7"), LinkKind: "relates-to", Metadata: metadata}}}}
+				unlink := model.ChangeSet{Ops: []model.Op{{Kind: model.OpUnlink, Link: &model.LinkOp{From: ref(active.TargetID), To: ref("demo-7"), LinkKind: "relates-to"}}}}
 				removed := call(t, "tx.apply", "unlink-success", map[string]any{"changeSet": unlink}, "")
 				var commit model.Commit
 				decode(t, removed.Result, &commit)
