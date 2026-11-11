@@ -49,7 +49,8 @@ func TestNativeReceivingVerifierStreamingProductionAllDrivers(t *testing.T) {
    if err:=initial.Release(ctx);err!=nil {t.Fatal(err)}
    ctx,lease,release,err:=HoldRestoreLease(ctx,store,"native-stream-production");if err!=nil {t.Fatal(err)};release=sync.OnceValue(release);defer release()
    profile:=nativeStreamingProfile(t,archive,store,lease)
-   report,err:=RestoreNativeCaptureSetImportWithLease(ctx,archive,store,lease,profile);if err!=nil {t.Fatal("actual wrapper to verifier mint to real stream engine",err)}
+   observed:=nativeStreamObservedStore(t,store)
+   report,err:=RestoreNativeCaptureSetImportWithLease(ctx,archive,observed,lease,profile);if err!=nil {t.Fatal("actual wrapper to verifier mint to real stream engine",err)}
    if report.Receipt==nil || report.Restored.Head!=model.Natural64(33) || report.Restored.HistoryFloor!=model.Natural64(0) {t.Fatal("stream receipt/range missing",report.Restored)}
    reader,err:=store.Read(ctx,driver.View{Incarnation:report.Restored.Incarnation});if err!=nil {t.Fatal(err)}
    rows,readErr:=reader.Get(ctx,[]model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID,model.Natural64(0))});closeErr:=reader.Close();if readErr!=nil || closeErr!=nil || len(rows)!=1 {t.Fatal("real stream evidence missing",readErr,closeErr)}
@@ -57,6 +58,18 @@ func TestNativeReceivingVerifierStreamingProductionAllDrivers(t *testing.T) {
    if json.Unmarshal(rows[0].Body,&marker)!=nil || marker.Version!=driver.OfflineHistoryStreamVersion || marker.History!=profile.HistoryDigest || len(marker.Mapping)!=32 {t.Fatal("production fell back from verified stream route")}
    if err=VerifyNativeCaptureSetReadback(ctx,store,archive,report);err!=nil {t.Fatal("independent real physical/current/history readback",err)}
    nativeStreamRecoveryMarkerControls(t,ctx,archive,store,profile,rows[0].Body)
+   t.Run("original-key-indeterminate-recovery",func(t *testing.T){
+    writes:=observed.writes;before:=snapshot(t,store)
+    unknown:=driver.ErrIndeterminate{IdempotencyKey:profile.IdempotencyKey}
+    call,cancel:=context.WithCancel(ctx);cancel()
+    recovered,err:=recoverNativeReceivingIndeterminate(call,observed,profile,Verification{ArchiveSHA256:profile.ArchiveDigest,DerivedSHA256:profile.DerivedDigest},unknown)
+    if recovered.Archive!=nil {defer recovered.Archive.ReleaseNativeDecoded()}
+    if err!=nil || !reflect.DeepEqual(recovered.Receipt,report.Receipt) || observed.writes!=writes {t.Fatal("actual original durable receipt was not recovered without replay",err,observed.writes,writes)}
+    wrong:=driver.ErrIndeterminate{IdempotencyKey:strings.Repeat("d",32)}
+    _,err=recoverNativeReceivingIndeterminate(ctx,observed,profile,Verification{ArchiveSHA256:profile.ArchiveDigest,DerivedSHA256:profile.DerivedDigest},wrong)
+    var retained driver.ErrIndeterminate;if !errors.As(err,&retained) || retained.IdempotencyKey!=wrong.IdempotencyKey {t.Fatal("wrong original key was resolved",err)}
+    if !reflect.DeepEqual(before,snapshot(t,store)) || observed.writes!=writes {t.Fatal("indeterminate recovery mutated durable receipt or target")}
+   })
    if err=release();err!=nil {t.Fatal(err)}
    store,_=reopen()
    recoveryCtx:=archive.WithNativeDeltaAccounting(context.Background())

@@ -78,17 +78,22 @@ func restoreNativeReceivingStream(ctx context.Context,archive *dumpformat.Archiv
  commit,err:=prepared.Commit(ctx,driver.ChangesetHeader{Incarnation:restored.Incarnation,Kind:model.ChangesetRestore,Time:when,Principal:profile.Admission.Actor,Chain:[]string{},Method:profile.Method,AgentLabel:profile.AgentLabel(),IdempotencyKey:report.IdempotencyKey,RequestHash:report.RequestHash,Response:model.Commit{Revision:restored.Head,Results:results,Warnings:[]model.Warning{}},Changes:changes,LockKeys:lockKeys(requests)})
  check:=Verification{ArchiveSHA256:profile.ArchiveDigest,DerivedSHA256:profile.DerivedDigest}
  if err!=nil {
-  var uncertain driver.ErrIndeterminate;var uncertainPointer *driver.ErrIndeterminate
-  if !errors.As(err,&uncertain) && !errors.As(err,&uncertainPointer) {return report,err}
-  key:=uncertain.IdempotencyKey;if uncertainPointer!=nil {key=uncertainPointer.IdempotencyKey};if key!=report.IdempotencyKey {return report,err}
-  // Resolve only the original keyed receipt. Never replay a consumed stream or
-  // infer a rollback from cancellation/cleanup after a possible commit.
-  recoveryCtx,cancel:=context.WithTimeout(context.WithoutCancel(ctx),5*time.Second);defer cancel()
-  recovered,lookupErr:=RecoverImport(recoveryCtx,target,profile,check);if lookupErr!=nil {return report,err}
+  recovered,lookupErr:=recoverNativeReceivingIndeterminate(ctx,target,profile,check,err);if lookupErr!=nil{return report,lookupErr}
   recovered.Archive=archive;recovered.Target=meta;recovered.Recovered=true;return recovered,nil
  }
  if commit.Kind!=model.ChangesetRestore || commit.Incarnation!=restored.Incarnation || commit.Revision!=restored.Head {return report,fmt.Errorf("restore commit did not retain the completed stream")}
  report.Restored=restored
  receiverView,err:=receivePlan(archive,plan,nil);if err!=nil {return report,err}
  recovered,err:=recoverSourceImport(ctx,target,profile,check,&receivingEvidence{archive:archive,plan:&receiverView,logical:sourceLogical,requestHash:report.RequestHash});if err!=nil {return report,err};report.Receipt=recovered.Receipt;return report,nil
+}
+
+// recoverNativeReceivingIndeterminate resolves only the actual original key.
+// The consumed stream is never replayed; cancellation cannot turn an uncertain
+// durable outcome into a determinate rollback or a new receiving transaction.
+func recoverNativeReceivingIndeterminate(ctx context.Context,target driver.Store,profile driver.RestoreImportProfile,check Verification,cause error)(Report,error) {
+ var uncertain driver.ErrIndeterminate;var uncertainPointer *driver.ErrIndeterminate
+ if !errors.As(cause,&uncertain) && !errors.As(cause,&uncertainPointer) {return Report{},cause}
+ key:=uncertain.IdempotencyKey;if uncertainPointer!=nil {key=uncertainPointer.IdempotencyKey};if key!=profile.IdempotencyKey {return Report{},cause}
+ recoveryCtx,cancel:=context.WithTimeout(context.WithoutCancel(ctx),5*time.Second);defer cancel()
+ recovered,err:=RecoverImport(recoveryCtx,target,profile,check);if err!=nil {return Report{},cause};return recovered,nil
 }
