@@ -27,6 +27,7 @@ type transaction struct {
 	incarnation             string
 	restore                 *driver.Meta
 	offlineHistory          *driver.PreparedOfflineHistory
+	stream                  *historyStreamStage
 	nativeRestore           *driver.NativeRestoreProfile
 	nativeAllocators        bool
 	importRestore           *driver.RestoreImportProfile
@@ -67,6 +68,9 @@ func (t *transaction) check(ctx context.Context) error {
 func (t *transaction) finish() {
 	if t.closed {
 		return
+	}
+	if t.stream != nil {
+		_ = t.stream.close()
 	}
 	s := t.store
 	for _, request := range t.acquired {
@@ -401,7 +405,7 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
-	if t.offlineHistory != nil {
+	if t.offlineHistory != nil || t.stream != nil {
 		return model.Changeset{}, fmt.Errorf("prepared history requires CommitOfflineHistory")
 	}
 	if !t.hasHead || s.head != t {

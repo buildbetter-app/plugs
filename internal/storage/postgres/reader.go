@@ -114,6 +114,9 @@ func (r *reader) finish() error {
 	}
 	r.store.untrack(r)
 	if r.writer != nil {
+		if r.writer.stream != nil {
+			err = errors.Join(err, r.writer.stream.close())
+		}
 		r.writer.clearSourceOverlay()
 		r.writer.records = nil
 		r.writer.identities = nil
