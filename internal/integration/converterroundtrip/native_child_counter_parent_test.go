@@ -21,13 +21,11 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-const publicCounterChild = "clockready-wisp-wf0.1"
-
 // This is the unchanged committed 9aea fixture from actual public capture
 // c774/run43216037385. Its original SQL and create receipt are the oracle;
 // neither a generated store nor the receiver's output supplies expectations.
 // The transient original Dolt directory was not retained by the producer.
-func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string) {
+func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string, string) {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/native-ready-c774-43216037385.tar.gz")
 	if err != nil || hashBytes(raw) != "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f" {
@@ -104,13 +102,14 @@ func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string) {
 	if !ok || parentID == "" {
 		t.Fatal("independent SQL parent identity absent")
 	}
-	child, parent := find("issues", "id", publicCounterChild), find("wisps", "id", parentID)
-	counter := find("wisp_child_counters", "parent_id", parentID)
 	var created struct {
 		ID string `json:"id"`
 	}
 	decode(t, files["commands/127-create-ordinary_child.stdout"], &created)
-	if child == nil || parent == nil || find("issues", "id", parentID) != nil || counter["last_child"] != json.Number("1") || created.ID != publicCounterChild {
+	childID := created.ID
+	child, parent := find("issues", "id", childID), find("wisps", "id", parentID)
+	counter := find("wisp_child_counters", "parent_id", parentID)
+	if childID != parentID+".1" || child == nil || parent == nil || find("issues", "id", parentID) != nil || counter["last_child"] != json.Number("1") {
 		t.Fatal("independent child/active-only-parent/counter/create input differs")
 	}
 	// The established portable issue contract rebuilds these two operational
@@ -141,7 +140,7 @@ func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string) {
 		if r.ID == parentID {
 			t.Fatal("active parent synthesized as durable issue")
 		}
-		if r.ID == publicCounterChild {
+		if r.ID == childID {
 			childFound = reflect.DeepEqual(r.Source.Fields, childFields)
 		}
 	}
@@ -156,13 +155,13 @@ func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string) {
 	if !childFound || !parentFound || !counterFound {
 		t.Fatal("prepared exact original child, parent or raw counter changed")
 	}
-	return a, parentID
+	return a, childID, parentID
 }
 
 func TestPublicNativeChildCounterActiveParentReceivingAndReopen(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			a, parentID := publicChildCounterCapture(t)
+			a, childID, parentID := publicChildCounterCapture(t)
 			ctx := a.WithNativeDeltaAccounting(context.Background())
 			store, initial, reopen := openIdentityTarget(t, engine)
 			if err := initial.Release(ctx); err != nil {
@@ -216,12 +215,12 @@ func TestPublicNativeChildCounterActiveParentReceivingAndReopen(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer r.Close()
-				rows, err := r.Get(ctx, []model.Ref{model.RefByID(publicCounterChild, model.Natural64(0))})
+				rows, err := r.Get(ctx, []model.Ref{model.RefByID(childID, model.Natural64(0))})
 				if err != nil || len(rows) != 1 {
 					t.Fatal("exact imported child absent", err)
 				}
 				doc, err := pipeline.DecodeDocument(rows[0].Body)
-				if err != nil || rows[0].Kind != "bead" || doc.ID != publicCounterChild || doc.Project != "clockready" {
+				if err != nil || rows[0].Kind != "bead" || doc.ID != childID || doc.Project != "clockready" {
 					t.Fatal("child identity or number changed", err)
 				}
 				allocator, err := r.(driver.AllocatorReader).LoadAllocator(ctx, "clockready")
@@ -250,7 +249,7 @@ func TestPublicNativeChildCounterActiveParentReceivingAndReopen(t *testing.T) {
 			if usage.LimitBytes != 2147483648 || usage.CurrentAccountedDecodedBytes != 0 || len(usage.CurrentCategories) != 0 || len(usage.CurrentCharges) != 0 {
 				t.Fatal("final receiving accounting differs", usage)
 			}
-			t.Logf("public_child_counter_receiving=PASS engine=%s child=%s parent=%s child_number=1 native_parent_counter=1 source_sha256=%s before_after_SQL_equal=true imported_and_reopened_full_readback=true after_release_bytes=0", engine, publicCounterChild, parentID, a.SHA256())
+			t.Logf("public_child_counter_receiving=PASS engine=%s child=%s parent=%s child_number=1 native_parent_counter=1 source_sha256=%s before_after_SQL_equal=true imported_and_reopened_full_readback=true after_release_bytes=0", engine, childID, parentID, a.SHA256())
 		})
 	}
 }
