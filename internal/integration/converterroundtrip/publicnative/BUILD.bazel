@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+
+DEPS = [
+    "//internal/core/dumpformat",
+    "//internal/core/model",
+    "//internal/storage/driver",
+    "//internal/storage/historyverify",
+]
+
+go_binary(
+    name = "publicnative",
+    srcs = ["main.go"],
+    embedsrcs = ["inputs.json"],
+    deps = DEPS,
+    visibility = ["//:__subpackages__"],
+)
+
+go_test(
+    name = "publicnative_test",
+    srcs = ["main.go", "main_test.go"],
+    embedsrcs = ["inputs.json"],
+    data = [
+        ":publicnative",
+        "run-public-proof.py",
+        "//tools/native-receive",
+        "//internal/core/dumpformat:native_joined_public_pair",
+        "//internal/integration/converterroundtrip:public_native_policy",
+    ],
+    env = {
+        "PUBLIC_NATIVE_PROOF_BINARY": "$(rootpath :publicnative)",
+        "NATIVE_RECEIVE_BINARY": "$(rootpath //tools/native-receive)",
+    },
+    deps = DEPS,
+    size = "large",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

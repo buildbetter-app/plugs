@@ -93,3 +93,9 @@ filegroup(
     ],
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "public_native_policy",
+    srcs = ["testdata/real-store-import-policy-v2.md"],
+    visibility = ["//internal/integration/converterroundtrip/publicnative:__pkg__"],
+)

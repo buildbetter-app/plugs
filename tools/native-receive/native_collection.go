@@ -301,7 +301,7 @@ func prepareNativeCaptureCollectionRequest(ctx context.Context, paths archivePat
 		policy, rawBinding, schema = nil, nil, nil
 		err := prepared.Close()
 		inputs.Release()
-		return err
+		return errors.Join(err, nativeCollectionOwnerReleased(budget))
 	}
 	keep = true
 	return input, nil
@@ -528,8 +528,18 @@ func runNativeCaptureCollection(ctx context.Context, paths archivePaths, request
 		err := recovered.Close()
 		policy, rawBinding, schema, rawRequest = nil, nil, nil, nil
 		inputs.Release()
-		return err
+		return errors.Join(err, nativeCollectionOwnerReleased(budget))
 	}
 	keepResponse, keepRecovered = true, true
 	return out, nil
+}
+
+// main invokes response cleanup after dropping the encoded response views.
+// A successful command therefore includes complete byte and charge cleanup.
+func nativeCollectionOwnerReleased(budget *dumpformat.NativeDeltaBudget) error {
+	usage := budget.Usage()
+	if usage.CurrentAccountedDecodedBytes != 0 || len(usage.CurrentCategories) != 0 || len(usage.CurrentCharges) != 0 {
+		return fmt.Errorf("native collection response owner still reserved")
+	}
+	return nil
 }

@@ -673,6 +673,12 @@ internal/integration/converterroundtrip/planner_extraction_test.go
 internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go
 internal/integration/converterroundtrip/public_source_test.go
+internal/integration/converterroundtrip/publicnative/BUILD.bazel
+internal/integration/converterroundtrip/publicnative/README.md
+internal/integration/converterroundtrip/publicnative/inputs.json
+internal/integration/converterroundtrip/publicnative/main.go
+internal/integration/converterroundtrip/publicnative/main_test.go
+internal/integration/converterroundtrip/publicnative/run-public-proof.py
 internal/integration/converterroundtrip/receiving_pass_budget_test.go
 internal/integration/converterroundtrip/receiving_stream.go
 internal/integration/converterroundtrip/receiving_stream_test.go
