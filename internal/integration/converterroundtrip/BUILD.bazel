@@ -32,6 +32,8 @@ go_test(
         "testdata/real-store-import-policy-v2.md",
         "testdata/b15-native-r11-d74f91f9.packet.tar.gz",
         "testdata/b15-native-r11-d74f91f9.packet.json",
+        "testdata/b15-native-r11-current-oracle.tar.gz",
+        "testdata/b15-native-r11-current-oracle.json",
         "testdata/public-native-delta-small-0e4d5da4.tar.gz",
         "testdata/native-ready-c774-43216037385.tar.gz",
         "testdata/native-ready-c774-43216037385.tar.gz.provenance.json",

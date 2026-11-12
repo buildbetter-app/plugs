@@ -46,28 +46,34 @@ func b15JSON(t *testing.T, value any) []byte {
 	return raw
 }
 
-// The consumer accepts only the final r11 producer packet. The request still
-// supplies the capture and oracle paths; these immutable digests bind that
-// invocation to the independently reviewed source identity rather than to an
-// anticipated or synthetic fixture.
+// The consumer accepts only the final r11 producer packet and its separately
+// derived current-envelope oracle. Both immutable inputs bind the invocation
+// to the original source; the original request and oracle remain unchanged.
 type b15NativeSourceBinding struct {
-	StoreID, CaptureSHA256, LedgerSHA256, StatesSHA256, RequestSHA256 string
+	StoreID              string
+	CaptureSHA256        string
+	LedgerSHA256         string
+	StatesSHA256         string
+	RequestSHA256        string
+	ConsumerLedgerSHA256 string
 }
 
 var b15NativeSourceBindings = map[string]b15NativeSourceBinding{
 	"commentcody": {
-		StoreID:       "native/e08de6af03275f11375cc6639b6fb1476da3e8ad7a8bf98513dc223792d18d9e",
-		CaptureSHA256: "982e40d7e2fc175b8892cc9b00d00b633d9a6d7df4ce807a239b4da9e4373ed4",
-		LedgerSHA256:  "6c3354509db532cf7dd62fa7e34d667b5acb8ead30dceb7d92829acb9f993b1a",
-		StatesSHA256:  "a932df103024d943f1caa241092589cf93a2fc7fb391d767a8bfb81b03d0b781",
-		RequestSHA256: "e43074c719e8242c577e3ee914841357e530b85cab68868b2a702968f87a8202",
+		StoreID:              "native/e08de6af03275f11375cc6639b6fb1476da3e8ad7a8bf98513dc223792d18d9e",
+		CaptureSHA256:        "982e40d7e2fc175b8892cc9b00d00b633d9a6d7df4ce807a239b4da9e4373ed4",
+		LedgerSHA256:         "6c3354509db532cf7dd62fa7e34d667b5acb8ead30dceb7d92829acb9f993b1a",
+		StatesSHA256:         "a932df103024d943f1caa241092589cf93a2fc7fb391d767a8bfb81b03d0b781",
+		RequestSHA256:        "e43074c719e8242c577e3ee914841357e530b85cab68868b2a702968f87a8202",
+		ConsumerLedgerSHA256: "c32e8ce695cb82e6c7bc0e23dc29f1f520a34265006cb139085402465a31f4d5",
 	},
 	"commentsignals": {
-		StoreID:       "native/c3f9fd5817d3380c213c557020d5945b676c2059528e1345327dc1fc60f60b13",
-		CaptureSHA256: "c29754b3857d6d842e70ae67004930630e21fad70214c903f9cad1ea5fa8e058",
-		LedgerSHA256:  "499d7bd57f22efc118825ec6f901be689e2f53ae44812e2a9caa9d3dec67c9a3",
-		StatesSHA256:  "e6b878c9e417cb4b1c7a204c9eddec13e270ce4bb9abce0bc04ea46c7a5312c4",
-		RequestSHA256: "2152a90f804b895295221922e844fdb20ae486a9fc9d439588bd93f2c9adbb9e",
+		StoreID:              "native/c3f9fd5817d3380c213c557020d5945b676c2059528e1345327dc1fc60f60b13",
+		CaptureSHA256:        "c29754b3857d6d842e70ae67004930630e21fad70214c903f9cad1ea5fa8e058",
+		LedgerSHA256:         "499d7bd57f22efc118825ec6f901be689e2f53ae44812e2a9caa9d3dec67c9a3",
+		StatesSHA256:         "e6b878c9e417cb4b1c7a204c9eddec13e270ce4bb9abce0bc04ea46c7a5312c4",
+		RequestSHA256:        "2152a90f804b895295221922e844fdb20ae486a9fc9d439588bd93f2c9adbb9e",
+		ConsumerLedgerSHA256: "8acd24c3e774aed1a902bd9b8392bd01e909e1bd754ea23ba0bdf35f65b688b1",
 	},
 }
 
@@ -78,6 +84,9 @@ const (
 	b15NativeRootEnv        = "PLUG_B15_NATIVE_ROOT"
 	b15NativeOriginalReqEnv = "PLUG_B15_NATIVE_ORIGINAL_REQUEST_SHA256"
 	b15NativePacketRunfile  = "internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz"
+	b15NativePacketSHA256   = "12ebe1d5a091f0878cfd7825ac84d33c07a233b4571d090cb79b1a3b47d04aa9"
+	b15NativeOracleRunfile  = "internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.tar.gz"
+	b15NativeOracleSHA256   = "4d1eb105e3697c7eda1d3518c857b8fe2944a6ac7fd65bdb54b247739f6bfb9b"
 )
 
 func b15NativeRunfile(t *testing.T, rel string) string {
@@ -98,8 +107,9 @@ func b15NativeRunfile(t *testing.T, rel string) string {
 
 // The producer packet is immutable source input, transported as a runfile so
 // remote Bazel sees the exact request, native capture and independent oracle.
-// It is unpacked at the paths retained in each request; request/capture/oracle
-// digests below still bind every byte before the receiver opens it.
+// The original request and oracle stay unchanged. A separate consumer oracle
+// corrects only current history-envelope labels using the original source
+// manifest's classifications; all rows, typed hashes and state roots survive.
 func b15MaterializeNativePacket(t *testing.T) string {
 	t.Helper()
 	if os.Getenv(b15NativePacketEnv) != "1" {
@@ -109,7 +119,18 @@ func b15MaterializeNativePacket(t *testing.T) string {
 	if err := os.Chmod(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	input, err := os.Open(b15NativeRunfile(t, b15NativePacketRunfile))
+	b15UnpackNativeInput(t, root, b15NativePacketRunfile, b15NativePacketSHA256)
+	b15UnpackNativeInput(t, root, b15NativeOracleRunfile, b15NativeOracleSHA256)
+	return root
+}
+
+func b15UnpackNativeInput(t *testing.T, root, runfile, digest string) {
+	t.Helper()
+	path := b15NativeRunfile(t, runfile)
+	if publicProofHashFile(t, path) != digest {
+		t.Fatalf("B15 committed input digest differs: %s", runfile)
+	}
+	input, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +166,7 @@ func b15MaterializeNativePacket(t *testing.T) string {
 			if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
 				t.Fatal(err)
 			}
-			file, err := os.OpenFile(destination, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+			file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -161,7 +182,6 @@ func b15MaterializeNativePacket(t *testing.T) string {
 			t.Fatalf("unsupported B15 packet member type %q", header.Name)
 		}
 	}
-	return root
 }
 
 func b15PrepareNativeRequest(t *testing.T, root, project string) (string, b15NativeSourceBinding) {
@@ -187,8 +207,15 @@ func b15PrepareNativeRequest(t *testing.T, root, project string) (string, b15Nat
 	if req.Source.Project != project {
 		t.Fatalf("B15 original request project differs: %s", req.Source.Project)
 	}
+	if publicProofHashFile(t, filepath.Join(root, project, "oracle", "tables.ndjson")) != binding.LedgerSHA256 || publicProofHashFile(t, filepath.Join(root, project, "oracle", "states.ndjson")) != binding.StatesSHA256 {
+		t.Fatal("B15 preserved original oracle binding differs")
+	}
 	req.Capture = filepath.Join(root, project, "capture", "capture-set")
-	req.Oracle = filepath.Join(root, project, "oracle")
+	req.Oracle = filepath.Join(root, project, "consumer-oracle")
+	req.LedgerSHA256 = binding.ConsumerLedgerSHA256
+	if publicProofHashFile(t, filepath.Join(req.Oracle, "tables.ndjson")) != req.LedgerSHA256 || publicProofHashFile(t, filepath.Join(req.Oracle, "states.ndjson")) != binding.StatesSHA256 {
+		t.Fatal("B15 current consumer oracle binding differs")
+	}
 	resolved, err := json.Marshal(req)
 	if err != nil {
 		t.Fatal(err)
@@ -197,12 +224,8 @@ func b15PrepareNativeRequest(t *testing.T, root, project string) (string, b15Nat
 	if err := os.WriteFile(resolvedPath, append(resolved, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Setenv(b15NativeRootEnv, root); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Setenv(b15NativeOriginalReqEnv, binding.RequestSHA256); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv(b15NativeRootEnv, root)
+	t.Setenv(b15NativeOriginalReqEnv, binding.RequestSHA256)
 	return resolvedPath, binding
 }
 
@@ -235,13 +258,14 @@ func b15BindNativeExecutable(t *testing.T) {
 	if configured := os.Getenv("PLUG_PUBLIC_PROOF_ELF_SHA256"); configured != "" && configured != actual {
 		t.Fatalf("B15 compiled ELF binding differs: configured=%s actual=%s", configured, actual)
 	}
-	if err := os.Setenv("PLUG_PUBLIC_PROOF_ELF_SHA256", actual); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("PLUG_PUBLIC_PROOF_ELF_SHA256", actual)
 }
 
 func b15NativeRequest(t *testing.T) publicProofRequest {
 	t.Helper()
+	if os.Getenv(b15NativePacketEnv) != "1" {
+		t.Fatal("B15 requires the committed native packet")
+	}
 	path := os.Getenv("PLUG_PUBLIC_PROOF_REQUEST")
 	if path == "" || publicProofHashFile(t, path) != os.Getenv("PLUG_PUBLIC_PROOF_REQUEST_SHA256") {
 		t.Fatal("B15 request binding differs")
@@ -257,20 +281,17 @@ func b15NativeRequest(t *testing.T) publicProofRequest {
 		t.Fatal(err)
 	}
 	want, ok := b15NativeSourceBindings[req.Source.Project]
-	resolvedHash := os.Getenv("PLUG_PUBLIC_PROOF_REQUEST_SHA256")
-	if !ok || (os.Getenv(b15NativePacketEnv) != "1" && resolvedHash != want.RequestSHA256) || (os.Getenv(b15NativePacketEnv) == "1" && os.Getenv(b15NativeOriginalReqEnv) != want.RequestSHA256) || req.Format != "public-native-capture-proof/1" || req.ProducerHead != "d74f91f9f0fdcd9c95c7f30bd42a2d257fc219b3" || req.Source.StoreID != want.StoreID || req.CaptureSHA256 != want.CaptureSHA256 || req.LedgerSHA256 != want.LedgerSHA256 || req.StatesSHA256 != want.StatesSHA256 || req.RestoreTime != "2040-01-02T03:05:00Z" || req.RestoreMode != "full" || req.Commits != 85 || req.JournalTable != "bd_events_journal" {
+	if !ok || os.Getenv(b15NativeOriginalReqEnv) != want.RequestSHA256 || req.Format != "public-native-capture-proof/1" || req.ProducerHead != "d74f91f9f0fdcd9c95c7f30bd42a2d257fc219b3" || req.Source.StoreID != want.StoreID || req.CaptureSHA256 != want.CaptureSHA256 || req.LedgerSHA256 != want.ConsumerLedgerSHA256 || req.StatesSHA256 != want.StatesSHA256 || req.RestoreTime != "2040-01-02T03:05:00Z" || req.RestoreMode != "full" || len(req.RestoreFirstSequence) != 0 || req.Commits != 85 || req.JournalTable != dumpformat.SourceEventJournalTable {
 		t.Fatal("B15 request is not the final r11 source packet")
 	}
-	if os.Getenv(b15NativePacketEnv) == "1" {
-		root := os.Getenv(b15NativeRootEnv)
-		if root == "" || !filepath.IsAbs(root) {
-			t.Fatal("B15 resolved packet root is missing")
-		}
-		for _, path := range []string{req.Capture, req.Oracle} {
-			clean := filepath.Clean(path)
-			if !filepath.IsAbs(clean) || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
-				t.Fatalf("B15 request points outside committed native packet: %s", path)
-			}
+	root := os.Getenv(b15NativeRootEnv)
+	if root == "" || !filepath.IsAbs(root) {
+		t.Fatal("B15 resolved packet root is missing")
+	}
+	for _, path := range []string{req.Capture, req.Oracle} {
+		clean := filepath.Clean(path)
+		if !filepath.IsAbs(clean) || !strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			t.Fatalf("B15 request points outside committed native packet: %s", path)
 		}
 	}
 	return req
@@ -358,7 +379,7 @@ func b15ReadNativeComments(t *testing.T, req publicProofRequest) []b15NativeComm
 		if entry.Kind != "current" || entry.Family != "comments" && entry.Family != dumpformat.EphemeralCommentTable {
 			continue
 		}
-		if tables[entry.Family] || entry.SourceRows != 509 || entry.ImportedRows != entry.SourceRows {
+		if tables[entry.Family] || entry.History != b15NativeCommentHistory(entry.Family) || entry.SourceRows != 509 || entry.ImportedRows != entry.SourceRows {
 			t.Fatal("B15 needs each complete, nonempty original comment family exactly once")
 		}
 		tables[entry.Family] = true
@@ -447,6 +468,17 @@ func b15AssertSourceCommentRecords(t *testing.T, archive *dumpformat.Archive, re
 	}
 }
 
+func b15NativeCommentHistory(table string) string {
+	switch table {
+	case "comments":
+		return dumpformat.FamilyVersioned
+	case dumpformat.EphemeralCommentTable:
+		return dumpformat.FamilyUnversioned
+	default:
+		return ""
+	}
+}
+
 func b15AssertStoredNativeComments(t *testing.T, ctx context.Context, store driver.Store, req publicProofRequest, expected []b15NativeComment) {
 	t.Helper()
 	meta, err := store.Meta(ctx)
@@ -461,15 +493,17 @@ func b15AssertStoredNativeComments(t *testing.T, ctx context.Context, store driv
 		page, err := reader.Query(ctx, driver.Query{AsOf: &meta.Head, Limit: 256, Cursor: cursor})
 		publicProofError(t, "B15-current-records", err)
 		for _, record := range page.Items {
-			if !strings.HasPrefix(record.Ref.ID, driver.NativeTableHistoryRecordPrefix) && !strings.HasPrefix(record.Ref.ID, "source/native-current/") {
+			// Retained commit rows have separate history identities. Only the
+			// current namespace is the imported/reopened source tuple multiset.
+			if !strings.HasPrefix(record.Ref.ID, "source/native-current/") {
 				continue
 			}
 			tableMeta, row, err := dumpformat.DecodeNativeRowRecord(record)
 			publicProofError(t, "B15-native-row-decode", err)
 			if tableMeta != nil {
 				if tableMeta.Table == "comments" || tableMeta.Table == dumpformat.EphemeralCommentTable {
-					if tableMeta.Source != req.Source {
-						t.Fatal("B15 current comment metadata changed original source identity")
+					if tableMeta.Source != req.Source || tableMeta.History != b15NativeCommentHistory(tableMeta.Table) || tableMeta.IdentityKind != dumpformat.NativeRowD3Physical || tableMeta.RowCount != 509 {
+						t.Fatal("B15 current comment metadata changed source, history class or physical census")
 					}
 					metas[tableMeta.Table]++
 				}
@@ -478,8 +512,8 @@ func b15AssertStoredNativeComments(t *testing.T, ctx context.Context, store driv
 			if row.Table != "comments" && row.Table != dumpformat.EphemeralCommentTable {
 				continue
 			}
-			if row.Source != req.Source || row.IdentityKind != dumpformat.NativeRowD3Physical {
-				t.Fatal("B15 current physical comment source or identity kind changed")
+			if row.Source != req.Source || row.History != b15NativeCommentHistory(row.Table) || row.IdentityKind != dumpformat.NativeRowD3Physical {
+				t.Fatal("B15 current physical comment source, history class or identity kind changed")
 			}
 			id, ok := row.Fields["id"].(string)
 			if !ok || id == "" {
@@ -875,24 +909,31 @@ func b15NativeContinuations(req publicProofRequest) (publicProofContinuation, pu
 	var committed b15NativeConservation
 	writer := func(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error {
 		expected := b15ReadNativeComments(t, req)
+		publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-independent-native-comments.json"), expected)
 		b15AssertSourceCommentRecords(t, report.Archive, req, expected)
 		b15AssertStoredNativeComments(t, ctx, store, req, expected)
 		threads = b15NativeThreads(t, req, profile, expected)
-		var frames []json.RawMessage
+		var clients []*b15NativeClient
+		defer func() {
+			var frames []json.RawMessage
+			for _, client := range clients {
+				frames = append(frames, client.frames...)
+			}
+			publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-writer-public-frames.json"), frames)
+		}()
 		for _, thread := range threads {
 			client := b15BindNativeClient(t, ctx, store, lease, profile, report, thread.Actor)
+			clients = append(clients, client)
 			client.assertThread(thread)
 			client.assertRefusals(thread, threads)
 			for _, body := range []string{" \t**literal**\n東京 e\u0301  ", "same operation clock", "already future newest"} {
 				client.appendComment(thread, body, threads)
 			}
-			frames = append(frames, client.frames...)
 		}
 		committed = b15NativeState(t, ctx, store, threads)
 		b15AssertStoredNativeComments(t, ctx, store, req, expected)
-		publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-writer-public-frames.json"), frames)
-		publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-independent-native-comments.json"), expected)
 		publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-committed-state.json"), committed)
+		t.Logf("B15 writer assertions reached: project=%s driver=%s native_tuples=%d threads=%d live_appends=12", req.Source.Project, os.Getenv("PLUG_PUBLIC_PROOF_DRIVER"), len(expected), len(threads))
 		return nil
 	}
 	assertion := func(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error {
@@ -902,16 +943,23 @@ func b15NativeContinuations(req publicProofRequest) (publicProofContinuation, pu
 		expected := b15ReadNativeComments(t, req)
 		b15AssertSourceCommentRecords(t, report.Archive, req, expected)
 		b15AssertStoredNativeComments(t, ctx, store, req, expected)
-		var frames []json.RawMessage
+		var clients []*b15NativeClient
+		defer func() {
+			var frames []json.RawMessage
+			for _, client := range clients {
+				frames = append(frames, client.frames...)
+			}
+			publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-reopened-public-frames.json"), frames)
+		}()
 		for _, thread := range threads {
 			client := b15BindNativeClient(t, ctx, store, lease, profile, report, thread.Actor)
+			clients = append(clients, client)
 			client.assertThread(thread)
-			frames = append(frames, client.frames...)
 		}
 		if !reflect.DeepEqual(committed, b15NativeState(t, ctx, store, threads)) {
 			t.Fatal("B15 read-only post-reopen assertion changed current target state")
 		}
-		publicProofJSON(t, filepath.Join(os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"), "B15-reopened-public-frames.json"), frames)
+		t.Logf("B15 post-writer reopen assertions reached: project=%s driver=%s native_tuples=%d threads=%d", req.Source.Project, os.Getenv("PLUG_PUBLIC_PROOF_DRIVER"), len(expected), len(threads))
 		return nil
 	}
 	return writer, assertion
@@ -1078,54 +1126,74 @@ func b15NativeHostPlan(t *testing.T, ctx context.Context, archive *dumpformat.Ar
 // lifecycle separately for both source projects and all three target drivers.
 func TestB15NativeCommentImportedReopen(t *testing.T) {
 	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_RUN")
-	packet := os.Getenv(b15NativePacketEnv) == "1"
-	var packetRoot string
-	if packet {
-		packetRoot = b15MaterializeNativePacket(t)
-		// The packet is a committed runfile, so the remote test process binds
-		// its actual compiled ELF before entering the shared callback. A caller
-		// supplied digest is still checked above rather than replaced silently.
-		b15BindNativeExecutable(t)
+	packetRoot := b15MaterializeNativePacket(t)
+	// Bind the actual compiled ELF before entering the shared callback. A
+	// caller-supplied digest must agree with it.
+	b15BindNativeExecutable(t)
+	if os.Getenv(b15NativeProjectsEnv) == "" || os.Getenv(b15NativeDriversEnv) == "" {
+		t.Fatal("B15 committed packet mode requires explicit project and driver lists")
 	}
-	if packet {
-		if os.Getenv(b15NativeProjectsEnv) == "" || os.Getenv(b15NativeDriversEnv) == "" {
-			t.Fatal("B15 committed packet mode requires explicit project and driver lists")
+	outputRoot := os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT")
+	if outputRoot == "" {
+		artifacts := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+		if !filepath.IsAbs(artifacts) {
+			t.Fatal("B15 needs an absolute output root or Bazel artifact directory")
 		}
-		if output := os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT"); output == "" || !filepath.IsAbs(output) {
-			t.Fatal("B15 committed packet mode requires an absolute output root")
+		outputRoot = filepath.Join(artifacts, "B15-native")
+	}
+	if !filepath.IsAbs(outputRoot) {
+		t.Fatal("B15 committed packet mode requires an absolute output root")
+	}
+	for _, project := range b15NativeList(t, b15NativeProjectsEnv, "") {
+		if _, ok := b15NativeSourceBindings[project]; !ok {
+			t.Fatalf("B15 packet project is not admitted: %s", project)
 		}
-		for _, project := range b15NativeList(t, b15NativeProjectsEnv, "") {
-			if _, ok := b15NativeSourceBindings[project]; !ok {
-				t.Fatalf("B15 packet project is not admitted: %s", project)
+		for _, engine := range b15NativeList(t, b15NativeDriversEnv, "") {
+			if engine != "memory" && engine != "sqlite" && engine != "postgres" {
+				t.Fatalf("B15 target driver is not admitted: %s", engine)
 			}
-			for _, engine := range b15NativeList(t, b15NativeDriversEnv, "") {
-				t.Run(project+"/"+engine, func(t *testing.T) {
-					request, _ := b15PrepareNativeRequest(t, packetRoot, project)
-					resolvedHash := publicProofHashFile(t, request)
-					outputRoot := os.Getenv("PLUG_PUBLIC_PROOF_OUTPUT")
-					output := filepath.Join(outputRoot, project, engine)
-					if err := os.MkdirAll(filepath.Dir(output), 0700); err != nil {
-						t.Fatal(err)
+			t.Run(project+"/"+engine, func(t *testing.T) {
+				request, binding := b15PrepareNativeRequest(t, packetRoot, project)
+				resolvedHash := publicProofHashFile(t, request)
+				output := filepath.Join(outputRoot, project, engine)
+				if err := os.MkdirAll(filepath.Dir(output), 0700); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range map[string]string{
+					"PLUG_PUBLIC_PROOF_DRIVER":         engine,
+					"PLUG_PUBLIC_PROOF_REQUEST":        request,
+					"PLUG_PUBLIC_PROOF_REQUEST_SHA256": resolvedHash,
+					"PLUG_PUBLIC_PROOF_OUTPUT":         output,
+				} {
+					t.Setenv(key, value)
+				}
+				req := b15NativeRequest(t)
+				bindings := map[string]any{
+					"project":                 project,
+					"driver":                  engine,
+					"packet_sha256":           b15NativePacketSHA256,
+					"consumer_oracle_sha256":  b15NativeOracleSHA256,
+					"original_request_sha256": binding.RequestSHA256,
+					"resolved_request":        request,
+					"resolved_request_sha256": resolvedHash,
+					"capture":                 req.Capture,
+					"capture_sha256":          req.CaptureSHA256,
+					"oracle":                  req.Oracle,
+					"ledger_sha256":           req.LedgerSHA256,
+					"states_sha256":           req.StatesSHA256,
+					"elf_sha256":              os.Getenv("PLUG_PUBLIC_PROOF_ELF_SHA256"),
+					"output":                  output,
+				}
+				t.Logf("B15 native invocation: %s", b15JSON(t, bindings))
+				t.Cleanup(func() {
+					if publicProofHashFile(t, request) != resolvedHash || publicProofHashFile(t, filepath.Join(packetRoot, project, "request.full.json")) != binding.RequestSHA256 || publicProofHashFile(t, filepath.Join(req.Oracle, "tables.ndjson")) != binding.ConsumerLedgerSHA256 || publicProofHashFile(t, filepath.Join(req.Oracle, "states.ndjson")) != binding.StatesSHA256 {
+						t.Fatal("B15 lifecycle mutated its request or independent oracle")
 					}
-					for key, value := range map[string]string{
-						"PLUG_PUBLIC_PROOF_DRIVER":         engine,
-						"PLUG_PUBLIC_PROOF_REQUEST":        request,
-						"PLUG_PUBLIC_PROOF_REQUEST_SHA256": resolvedHash,
-						"PLUG_PUBLIC_PROOF_OUTPUT":         output,
-					} {
-						if err := os.Setenv(key, value); err != nil {
-							t.Fatal(err)
-						}
-					}
-					req := b15NativeRequest(t)
-					writer, afterReopen := b15NativeContinuations(req)
-					runPublicNativeExternalCaptureWithHostPlan(t, b15NativeHostPlan, writer, afterReopen)
 				})
-			}
+				writer, afterReopen := b15NativeContinuations(req)
+				runPublicNativeExternalCaptureWithHostPlan(t, b15NativeHostPlan, writer, afterReopen)
+				publicProofJSON(t, filepath.Join(output, "B15-input-bindings.json"), bindings)
+			})
 		}
-		return
 	}
-	req := b15NativeRequest(t)
-	writer, afterReopen := b15NativeContinuations(req)
-	runPublicNativeExternalCaptureWithHostPlan(t, b15NativeHostPlan, writer, afterReopen)
 }
