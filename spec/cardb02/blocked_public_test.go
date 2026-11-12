@@ -320,16 +320,46 @@ func TestB02PublicBlockedNativeGateReasonsAndStaleFlags(t *testing.T) {
 			}
 			initial := map[string][]string{"all": {"spawner"}, "any-plus-root": {"root", "spawner"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}, "open-fallback": {"spawner"}}
 			f.observe("gates-initial-stale", initial)
-			// Membership retains the live all-children condition. Native display omits
-			// a closed spawner, even when it is the reason the stored set is blocked.
+			// The default ontology forbids adding an open child to a closed parent.
+			// Preserve the original public-linked child bodies for the deliberately
+			// inconsistent legacy read-projection control below; this is no public
+			// writer parity claim for that refused state.
+			linkedChildren := f.h.Capture()
 			for _, role := range []string{"open-child", "done-child"} {
 				f.write("bead.unlink", map[string]any{"from": f.refs[role], "to": f.refs["spawner"], "kind": "parent-child"})
 			}
 			f.write("bead.close", map[string]any{"id": f.refs["spawner"]})
+			beforeRefusedLink := f.h.Capture()
+			f.seq++
+			f.h.Call("bead.link", fmt.Sprintf("b02-closed-parent-refusal-%d", f.seq), map[string]any{"from": f.refs["open-child"], "to": f.refs["spawner"], "kind": "parent-child"}, "ontology_guard_failed")
+			proof.Same(t, beforeRefusedLink, f.h.Capture())
+			// Native can store this graph. Plug's public writer must keep its
+			// guard; install only the original child postimages through the
+			// certified fixture port to qualify the public read projection.
+			parent := f.refs["spawner"]
+			legacyChildren := []conformance.FixtureChange{}
 			for _, role := range []string{"open-child", "done-child"} {
-				f.link(role, "spawner", "parent-child", nil)
+				ref := f.refs[role]
+				row := linkedChildren.Row(t, ref.ID)
+				doc, err := pipeline.DecodeDocument(row.Body)
+				if err != nil || doc.Parent == nil || !sameRef(*doc.Parent, parent) || len(doc.Links) != 1 || doc.Links[0].Kind != "parent-child" || !sameRef(doc.Links[0].To, parent) || doc.Links[0].Metadata != nil {
+					t.Fatal("original child does not contain the exact public parent edge", role, err)
+				}
+				graph := &conformance.FixtureGraphSource{Parent: &parent, Links: []driver.SourceLink{{Kind: "parent-child", To: parent}}}
+				legacyChildren = append(legacyChildren, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: row.Body, Graph: graph})
 			}
-			f.observe("closed-spawner-open-child", map[string][]string{"any-plus-root": {"root"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}, "open-fallback": {"open-parent"}})
+			if _, err := conformance.Seed(context.Background(), f.h.Runtime.Store, f.h.Runtime.Lease, driver.ChangesetHeader{Time: time.Date(2026, 11, 11, 17, 5, 0, 0, time.UTC)}, legacyChildren); err != nil {
+				t.Fatal(err)
+			}
+			legacyState := f.h.Capture()
+			for _, role := range []string{"open-child", "done-child"} {
+				if !bytes.Equal(legacyState.Row(t, f.refs[role].ID).Body, linkedChildren.Row(t, f.refs[role].ID).Body) {
+					t.Fatal("legacy read fixture did not retain the original child body", role)
+				}
+			}
+			// Membership retains the live all-children condition. Native display
+			// omits a closed spawner and uses the immediate parent fallback.
+			f.observe("legacy-closed-spawner-open-child", map[string][]string{"any-plus-root": {"root"}, "also": {"childless"}, "parent": {"root"}, "fallback": {"parent"}, "open-fallback": {"open-parent"}})
 			f.write("bead.reopen", map[string]any{"id": f.refs["spawner"]})
 			f.observe("spawner-reopened", initial)
 			f.write("bead.close", map[string]any{"id": f.refs["open-child"]})
@@ -357,8 +387,31 @@ func TestB02PublicBlockedPagingFiltersAndWorkflowVisibility(t *testing.T) {
 			for _, role := range []string{"one", "two", "three"} {
 				f.link(role, "root", "blocks", nil)
 			}
-			f.write("bead.update", map[string]any{"id": f.refs["owned"], "fields": map[string]any{"priority": 1}})
+			f.write("bead.update", map[string]any{"id": f.refs["owned"], "fields": map[string]any{"fields": map[string]any{"priority": 1}}})
 			before := f.h.Capture()
+			checkPriority := func() {
+				t.Helper()
+				var items map[string]struct {
+					Fields map[string]any
+				}
+				if json.Unmarshal(f.h.Capture().Workflow(t)["items"], &items) != nil || items[f.refs["owned"].ID].Fields["priority"] != float64(1) {
+					t.Fatal("priority is not stored in the exact workflow fields")
+				}
+				var got struct {
+					Bead workflow.ItemView
+				}
+				reply := f.call("bead.get", map[string]any{"id": f.refs["owned"]})
+				if json.Unmarshal(reply.Result, &got) != nil || got.Bead.ID != f.refs["owned"].ID || got.Bead.Fields["priority"] != float64(1) {
+					t.Fatal("public readback lost stored workflow priority", string(reply.Result))
+				}
+				proof.Same(t, before, f.h.Capture())
+			}
+			checkPriority()
+			if engine != "memory" {
+				f.h.Reopen()
+				proof.Same(t, before, f.h.Capture())
+				checkPriority()
+			}
 			reply := f.call("bead.blocked", map[string]any{"limit": 1, "filter": map[string]any{"priority": 1}})
 			var filtered blockedPage
 			if json.Unmarshal(reply.Result, &filtered) != nil || len(filtered.Items) != 1 || filtered.Items[0].Bead.ID != f.refs["owned"].ID {
