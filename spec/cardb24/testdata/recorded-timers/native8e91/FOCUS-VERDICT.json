@@ -1,0 +1,35 @@
+{
+  "scope": "LITERAL_EXACT_HEAD_FOCUS_RED",
+  "original": "/tmp/plug-swarm/ci-local/remote/s1-ready-defer-8e91-focus-8e91a0d223e5-20261111T173719Z-2d550825e88d",
+  "run_receipt": "sha=8e91a0d223e5e9d61cf4827af06c79a75f255f2b\nlabel=s1-ready-defer-8e91-focus\ndispatch_label=s1-ready-defer-8e91-focus-2d550825e88d\nworkflow=plug-remote-bazel.yml\nexpected_run_name=remote-bazel s1-ready-defer-8e91-focus-2d550825e88d 8e91a0d223e5e9d61cf4827af06c79a75f255f2b\nstarted_at=20261111T173719Z\npushed\ndispatched\nrun_id=43069975067\nrun_url=https://github.com/buildbetter-app/plugs/actions/runs/43069975067\nstatus=completed\nconclusion=failure\ncompleted_at=20261111T174234Z\nduration_seconds=301\nartifact=remote-bazel-s1-ready-defer-8e91-focus-2d550825e88d\nbranch-deleted\n",
+  "command": "bazel test //cmd/plug-capture-sql-server:native_ready_defer_fixture_test --cache_test_results=no --flaky_test_attempts=1 --test_env=GO_TEST_WRAP_TESTV=1 --test_output=all --test_timeout=900\\,900\\,900\\,9000 --jobs=2 --local_resources=memory=8192 --@rules_go//go/config:tags=gms_pure_go --run_under=//tools/bazel:test_env \n",
+  "exit_code": "3",
+  "new_test_raw_verdicts": [
+    "--- FAIL: TestPublicBehaviorReadyFixture (23.45s)",
+    "--- FAIL: TestPublicBehaviorDeferFixture (12.49s)"
+  ],
+  "assertion_failures": [
+    "behavior_ready_defer_fixture_test.go:516: actual native command: exit status 1",
+    "behavior_ready_defer_fixture_test.go:633: wake changed prior commit metadata"
+  ],
+  "xml_new_tests": [
+    {
+      "attributes": {
+        "classname": "native_ready_defer_fixture_test",
+        "name": "TestPublicBehaviorDeferFixture",
+        "time": "12.490"
+      },
+      "failure": true,
+      "skipped": false
+    },
+    {
+      "attributes": {
+        "classname": "native_ready_defer_fixture_test",
+        "name": "TestPublicBehaviorReadyFixture",
+        "time": "23.450"
+      },
+      "failure": true,
+      "skipped": false
+    }
+  ]
+}

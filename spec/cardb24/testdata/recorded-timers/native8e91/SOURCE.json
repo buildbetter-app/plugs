@@ -1,0 +1,20 @@
+{
+  "head": "8e91a0d223e5e9d61cf4827af06c79a75f255f2b",
+  "tree": "50f05d45d3fa1970de18e03b72d2d5dadb93a8ba",
+  "parents": [
+    "c2bf57c3761d3511fc5a9bbcd3ffc4f78f3d0230"
+  ],
+  "base": "b1c03e196f277b6821610af983499d49ecc366c5",
+  "worktree": "/home/dev/.paseo/worktrees/10mmulyl/s1-native-ready-defer-author-20261111-1705",
+  "scope": "SOURCE_ONLY_GATES_PENDING_DISPATCH",
+  "paths": {
+    "cmd/plug-capture-sql-server/behavior_ready_defer_fixture_test.go": {
+      "sha256": "573cb47a4c4d95c44e38124aa8479058990c9c304face04be8bdfdd4eeeefd4c",
+      "git_blob": "f8901ca4b58fc08ab9898f7880be4a845909a74a"
+    },
+    "cmd/plug-capture-sql-server/BUILD.bazel": {
+      "sha256": "74d3eaba0303bef02e83a55cf1a4318e6eacd6b2440df966b2ad0bc4f5ed8fe7",
+      "git_blob": "4ff46427c93cb677080c096250d0c90612f80ed7"
+    }
+  }
+}

@@ -1,0 +1,423 @@
+{
+  "version": "b24-recorded-native-timers/1",
+  "consumer_parent": "eef30ff0b0c60267243cc5b8e487d36818137c2b",
+  "independent_oracle_author": "a91c62c2-255e-47bf-b74d-1feb6e604501",
+  "native_clock_source": "8e91a0d223e5e9d61cf4827af06c79a75f255f2b",
+  "native_clock_run": "43069975067",
+  "native_clock_original_verdict": "RED_PARTIAL_PREFIX_ONLY",
+  "canonical_capture_source_head": "904bc63db262d2f914fb0158a002b3a04e5e110a",
+  "canonical_capture_original_run": "43067608625",
+  "canonical_behavior_pin": "9d6fff760b7a314b476539198504d77ce0959656",
+  "canonical_capture_pin": "446dbbdaf978385099aeb8625e08016889fffccf",
+  "limits": {
+    "native_after_wake_physical": "NOT_REACHED",
+    "native_repeat_after": "NOT_REACHED",
+    "native_version_read": "NOT_MEASURED",
+    "native_subsecond_stale": "NOT_PROVED",
+    "official_admission": "NOT_RUN"
+  },
+  "files": [
+    {
+      "path": "canonical904/beads-446dbb-build.json",
+      "sha256": "91018e5fbc4d849ff57f2b7d6758c78fcab73e9f30266a2aba7be351880c81e1",
+      "size": 23417,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/beads-446dbb-build.json"
+    },
+    {
+      "path": "canonical904/beads-9d6fff-build.json",
+      "sha256": "f60d35a654278186f838589df28c1123936a7282b425f639f953361b0082bad6",
+      "size": 23417,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/beads-9d6fff-build.json"
+    },
+    {
+      "path": "canonical904/timer-capture/timer-native-dump.tar",
+      "sha256": "8a2dc7723a0922ff9b0d7ee57722a71352aa67953d01400d1f35454709b49e6f",
+      "size": 163328,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/timer-capture/timer-native-dump.tar"
+    },
+    {
+      "path": "canonical904/timer-native-limits.json",
+      "sha256": "0e577cc84233d0f659ac4eef944523017809976ba1b7e70165a68751c104342a",
+      "size": 1743,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/timer-native-limits.json"
+    },
+    {
+      "path": "canonical904/timer-native-version.stdout",
+      "sha256": "6df8370c04397887fb617a5a1aebe3a94d9f1ac639485afb05ce3b24b4ea065f",
+      "size": 178,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/timer-native-version.stdout"
+    },
+    {
+      "path": "canonical904/timer-physical-dates.stdout",
+      "sha256": "6c27cf89965da3e43f2969e1e503db8f7de969d57571bfb25cb60d01cc0a1f46",
+      "size": 224,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/timer-physical-dates.stdout"
+    },
+    {
+      "path": "canonical904/timer-request-run-binding.json",
+      "sha256": "eacefa52310e15b13e64261cca3b5fa955ae9d0973656a4b7a0bf2572e5fff0f",
+      "size": 1198,
+      "original": "/tmp/plug-swarm/reports/b24-native-timers-1f77-20261111/focus-904bc63d-frozen/original/testlogs.tgz!./spec/cardb24/canonical_timer_import_test/test.outputs/timer-request-run-binding.json"
+    },
+    {
+      "path": "independent-expected-8e91.json",
+      "sha256": "4600a59dd792661d1cc9ea9c2401f7058cbe3e96efadea80d05845ac65b11462",
+      "size": 7285,
+      "original": "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/EXPECTED-SUPPLEMENT-8e91.json"
+    },
+    {
+      "path": "native8e91/FOCUS-VERDICT.json",
+      "sha256": "e19e4d50c4db0530eb36d502a46dd4f716d7ec21b9641ea9b92175d196d668fd",
+      "size": 1952,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/FOCUS-VERDICT.json"
+    },
+    {
+      "path": "native8e91/PARTIAL-NATIVE-HANDOFF.json",
+      "sha256": "cc2218008499ce2c2de97135a92a77f882981761290aedf0885661f7b9728460",
+      "size": 6291,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/PARTIAL-NATIVE-HANDOFF.json"
+    },
+    {
+      "path": "native8e91/SOURCE.json",
+      "sha256": "80ab3e8e4f0bbdd5131472172a66c6303183d4b87949a4f99a0c99fd3563c2fe",
+      "size": 821,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/SOURCE.json"
+    },
+    {
+      "path": "native8e91/blank-reason-refusal-after-sql-state.json",
+      "sha256": "51ce0b3588390fe6d58385b9123beaeab322602df49ce5ebac1e5daf1b40593b",
+      "size": 84443,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/blank-reason-refusal-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/command-001.json",
+      "sha256": "4238caf80828d5f090c4111d69c314c176c48017825ea5720586491a8343b8f2",
+      "size": 1472,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-001.json"
+    },
+    {
+      "path": "native8e91/command-002.json",
+      "sha256": "b23585fa99b38ef4d55d1a1f2159c5fac5e9f1834a0b5241dde7ac87cc6a1e97",
+      "size": 1427,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-002.json"
+    },
+    {
+      "path": "native8e91/command-004.json",
+      "sha256": "bbd93f0fc14920bba5cdd82229c0663b9641c6a3070d579595a60862108be5a6",
+      "size": 1923,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-004.json"
+    },
+    {
+      "path": "native8e91/command-005.json",
+      "sha256": "a144fc10cd58c4bb79b733358f89adac3faf34aaa73f727f99f60252d2694b36",
+      "size": 1930,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-005.json"
+    },
+    {
+      "path": "native8e91/command-006.json",
+      "sha256": "2fe69d6d45330da99edd32c4a3e105ece2c32b9e149cb122b6357b238f6b83c9",
+      "size": 1962,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-006.json"
+    },
+    {
+      "path": "native8e91/command-007.json",
+      "sha256": "066aa452ae2ea436b3f37408fd9b9d299a6269ee25a871a2231198941ee556d8",
+      "size": 1471,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-007.json"
+    },
+    {
+      "path": "native8e91/command-008.json",
+      "sha256": "15ea69284394884f8bac36422c27745b814f452fba990ee9ea753e827cbf57ea",
+      "size": 1671,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-008.json"
+    },
+    {
+      "path": "native8e91/command-009.json",
+      "sha256": "edd4a2b3af1ffe83c945b5fe4223a2cbbc654e5f09d6e3f2c9b48d31f35ff016",
+      "size": 1949,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-009.json"
+    },
+    {
+      "path": "native8e91/command-012.json",
+      "sha256": "d05b753643b41d89fe6ef1c8ff09e9ee0c297726172e4be20a3742bb8c3c017f",
+      "size": 1477,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-012.json"
+    },
+    {
+      "path": "native8e91/command-013.json",
+      "sha256": "b5a66baf87f2a63f333543dd08a51e3c63df20eed996f540d5d65f9c0642ac80",
+      "size": 1491,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-013.json"
+    },
+    {
+      "path": "native8e91/command-015.json",
+      "sha256": "8cefa5f6a9af55f85db5f2adb95be9316d18789b26a773058d8994dff20d7bdb",
+      "size": 1477,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-015.json"
+    },
+    {
+      "path": "native8e91/command-016.json",
+      "sha256": "df6bc9040bca87a92a04325336b2639de9446a6401004e6fad572317c9b23083",
+      "size": 1491,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-016.json"
+    },
+    {
+      "path": "native8e91/command-018.json",
+      "sha256": "35144adce5f4246e13fddf7eab768aaeda8c674f138c85a36b4f009f597f1d64",
+      "size": 1876,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-018.json"
+    },
+    {
+      "path": "native8e91/command-019.json",
+      "sha256": "65c7f6971a0c73e78626ec12f34a22689fbdc39b98b0b2a97f6d3ef8e27206a7",
+      "size": 1914,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-019.json"
+    },
+    {
+      "path": "native8e91/command-020.json",
+      "sha256": "ca23943f00d193160c7ca4d69ae7cf6f970bf6c8e574676062c4ca3db900ebf1",
+      "size": 1488,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-020.json"
+    },
+    {
+      "path": "native8e91/command-021.json",
+      "sha256": "2dc586f6c9abc72cef7491a0d6b9431e155fd8e3b02e9138333fe4d0eb87f685",
+      "size": 1489,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-021.json"
+    },
+    {
+      "path": "native8e91/command-023.json",
+      "sha256": "4ce6b333fec64cb55854aba864e96fd98c56b7524252c6bc2cc06d6e97f0c578",
+      "size": 2495,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-023.json"
+    },
+    {
+      "path": "native8e91/command-024.json",
+      "sha256": "fb078deb681c5c100c0600bb70c993dc38d69e7ac1cc8f62e0bb7772347baae6",
+      "size": 2280,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-024.json"
+    },
+    {
+      "path": "native8e91/command-026.json",
+      "sha256": "0d1ced866a7ce056123172c9e7628365651be4316ceee2d47784c9bfb6d15847",
+      "size": 1480,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-026.json"
+    },
+    {
+      "path": "native8e91/command-028.json",
+      "sha256": "8f91fb00406af63415a5f90eb47a2be4f3e1b10ff8c00d9bd4d8b8797c876a10",
+      "size": 2555,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/command-028.json"
+    },
+    {
+      "path": "native8e91/past-woken-sql-state.json",
+      "sha256": "ea86b68cd923630ebbd76d9a9d7fd35bfd9291ee99f2ee8f3a96c74eae40ecab",
+      "size": 90032,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/past-woken-sql-state.json"
+    },
+    {
+      "path": "native8e91/past-written-before-wake-sql-state.json",
+      "sha256": "7fa9d92f410110eff9554cdbaef9ee9ebaec6f31ca430512a48f272a4af96ead",
+      "size": 89121,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/past-written-before-wake-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-after-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-after-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-after-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-after-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-after-clock.json",
+      "sha256": "7c6bddf4810c9584e462387a0873186a6a29512de0d0f10e7e69355d1612471f",
+      "size": 123,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-after-clock.json"
+    },
+    {
+      "path": "native8e91/stale-after-environment-and-flags.json",
+      "sha256": "df697edff6e8a637edc56fee7ecf14387289a7ec415295d01dd01a94c81d4e2c",
+      "size": 3460,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-after-inventory.json.sources/environment-and-flags.json"
+    },
+    {
+      "path": "native8e91/stale-age--1-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-age--1-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-age--1-refusal-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-age--1-refusal-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-age-0-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-age-0-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-age-0-refusal-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-age-0-refusal-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-at-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-at-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-at-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-at-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-at-clock.json",
+      "sha256": "bed2021c798f57aff373b7bdb81a50745208d23aa47a4ee8b2184cb8c3e9e32d",
+      "size": 120,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-at-clock.json"
+    },
+    {
+      "path": "native8e91/stale-at-environment-and-flags.json",
+      "sha256": "a1dbcb565cc6502a457e91692d5deba3022f2392a875b8e6acbf07b2c101e2f0",
+      "size": 3450,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-at-inventory.json.sources/environment-and-flags.json"
+    },
+    {
+      "path": "native8e91/stale-before-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-before-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-before-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-before-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-before-clock.json",
+      "sha256": "03c21a463f678fff37d296a4303c8432d1fef987efa05d3a3411a0b6bed35373",
+      "size": 124,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-before-clock.json"
+    },
+    {
+      "path": "native8e91/stale-before-environment-and-flags.json",
+      "sha256": "ea36f3748cbe03a18f00cd8395a1ad8a6a87fed9da91cdda6da4cdc0188bbf8d",
+      "size": 3466,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-before-inventory.json.sources/environment-and-flags.json"
+    },
+    {
+      "path": "native8e91/stale-deferred-after-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-deferred-after-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-deferred-after-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-deferred-after-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-deferred-at-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-deferred-at-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-deferred-at-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-deferred-at-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-deferred-before-after-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-deferred-before-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-deferred-before-before-sql-state.json",
+      "sha256": "b686622a64c7703a3c090d027d736cb9deadcd5ade3dc4ad6a9011f170c2aac5",
+      "size": 100060,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-deferred-before-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/stale-operation-inputs.json",
+      "sha256": "1ddd831413649d0797ad12bac71fb80bff86cd25a28492aedcebcbeef28a2064",
+      "size": 307,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/stale-operation-inputs.json"
+    },
+    {
+      "path": "native8e91/timer-retained-sql-state.json",
+      "sha256": "51ce0b3588390fe6d58385b9123beaeab322602df49ce5ebac1e5daf1b40593b",
+      "size": 84443,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/timer-retained-sql-state.json"
+    },
+    {
+      "path": "native8e91/wake-at-after-sql-state.json",
+      "sha256": "460fc1a014ec6b8d79500051075d003f7d4d224ca730083887c0aecd5ba30cc4",
+      "size": 117505,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-at-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/wake-at-before-sql-state.json",
+      "sha256": "82e58ce291cdc0e65df09d228d6a1f37248a1d73db9fc6e88b493e645950fb75",
+      "size": 116278,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-at-before-sql-state.json"
+    },
+    {
+      "path": "native8e91/wake-go-only-past-clock.json",
+      "sha256": "3eb7e3d8c9a0cf95977c82a4f26f303d211d3acbe29dbe2e7a2ec625dca810a2",
+      "size": 146,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-go-only-past-clock.json"
+    },
+    {
+      "path": "native8e91/wake-go-only-past-environment-and-flags.json",
+      "sha256": "280921b680f0e20d8a2764e3f6c8ae74779074a5f09285ef12499e241b09ee67",
+      "size": 3531,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-go-only-past-inventory.json.sources/environment-and-flags.json"
+    },
+    {
+      "path": "native8e91/wake-operation-inputs.json",
+      "sha256": "5d224c99234f419f69568590c6af504dfbc3bf4c9e3b84585050fb361333ac5c",
+      "size": 472,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-operation-inputs.json"
+    },
+    {
+      "path": "native8e91/wake-sql-at-clock.json",
+      "sha256": "a8a18384c961a999c432fc9a0274fc29c728e0b19e042a6932a0d19e5503e18a",
+      "size": 133,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-sql-at-clock.json"
+    },
+    {
+      "path": "native8e91/wake-sql-at-environment-and-flags.json",
+      "sha256": "2279cf38992a9a9fbed851bea928e5f81f0dca2325bef21ba8d585657f45cd9a",
+      "size": 3496,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-sql-at-inventory.json.sources/environment-and-flags.json"
+    },
+    {
+      "path": "native8e91/wake-sql-before-after-sql-state.json",
+      "sha256": "82e58ce291cdc0e65df09d228d6a1f37248a1d73db9fc6e88b493e645950fb75",
+      "size": 116278,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-sql-before-after-sql-state.json"
+    },
+    {
+      "path": "native8e91/wake-sql-before-before-sql-state.json",
+      "sha256": "82e58ce291cdc0e65df09d228d6a1f37248a1d73db9fc6e88b493e645950fb75",
+      "size": 116278,
+      "original": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-sql-before-before-sql-state.json"
+    }
+  ]
+}

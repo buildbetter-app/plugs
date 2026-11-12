@@ -1,0 +1,2714 @@
+{
+  "tables": {
+    "bd_events_journal": {
+      "columns": [
+        "actor",
+        "comment_json",
+        "dep_json",
+        "issue_id",
+        "issue_json",
+        "op",
+        "seq",
+        "ts"
+      ],
+      "rows": []
+    },
+    "bd_events_seq": {
+      "columns": [
+        "id",
+        "next_seq"
+      ],
+      "rows": [
+        {
+          "id": 0,
+          "next_seq": 0
+        }
+      ]
+    },
+    "child_counters": {
+      "columns": [
+        "last_child",
+        "parent_id"
+      ],
+      "rows": []
+    },
+    "comments": {
+      "columns": [
+        "author",
+        "created_at",
+        "id",
+        "issue_id",
+        "text"
+      ],
+      "rows": []
+    },
+    "compaction_snapshots": {
+      "columns": [
+        "compaction_level",
+        "created_at",
+        "id",
+        "issue_id",
+        "snapshot_json"
+      ],
+      "rows": []
+    },
+    "config": {
+      "columns": [
+        "key",
+        "value"
+      ],
+      "rows": [
+        {
+          "key": "auto_compact_enabled",
+          "value": "false"
+        },
+        {
+          "key": "compact_batch_size",
+          "value": "50"
+        },
+        {
+          "key": "compact_parallel_workers",
+          "value": "5"
+        },
+        {
+          "key": "compact_tier1_days",
+          "value": "30"
+        },
+        {
+          "key": "compact_tier1_dep_levels",
+          "value": "2"
+        },
+        {
+          "key": "compact_tier2_commits",
+          "value": "100"
+        },
+        {
+          "key": "compact_tier2_days",
+          "value": "90"
+        },
+        {
+          "key": "compact_tier2_dep_levels",
+          "value": "5"
+        },
+        {
+          "key": "compaction_enabled",
+          "value": "false"
+        },
+        {
+          "key": "issue_prefix",
+          "value": "clockdefer"
+        },
+        {
+          "key": "versioned-history.enabled",
+          "value": "false"
+        }
+      ]
+    },
+    "custom_statuses": {
+      "columns": [
+        "category",
+        "name"
+      ],
+      "rows": []
+    },
+    "custom_types": {
+      "columns": [
+        "name"
+      ],
+      "rows": []
+    },
+    "dependencies": {
+      "columns": [
+        "created_at",
+        "created_by",
+        "depends_on_external",
+        "depends_on_issue_id",
+        "depends_on_wisp_id",
+        "id",
+        "issue_id",
+        "metadata",
+        "thread_id",
+        "type"
+      ],
+      "rows": []
+    },
+    "epoch_minted_addresses": {
+      "columns": [
+        "address",
+        "carried_from",
+        "gone_at_epoch",
+        "minted_at",
+        "minted_epoch",
+        "minted_id",
+        "store_id"
+      ],
+      "rows": []
+    },
+    "events": {
+      "columns": [
+        "actor",
+        "comment",
+        "created_at",
+        "event_type",
+        "id",
+        "issue_id",
+        "new_value",
+        "old_value"
+      ],
+      "rows": [
+        {
+          "actor": "Native capture",
+          "comment": null,
+          "created_at": "2026-11-11T17:42:10Z",
+          "event_type": "created",
+          "id": "c82ec411-82f1-5cdb-83a1-69d942fe2851",
+          "issue_id": "clockdefer-timer",
+          "new_value": "",
+          "old_value": ""
+        },
+        {
+          "actor": "Native capture",
+          "comment": null,
+          "created_at": "2026-11-11T17:42:10Z",
+          "event_type": "status_changed",
+          "id": "fc6ba078-72a8-59b6-9859-c6510e7806d6",
+          "issue_id": "clockdefer-timer",
+          "new_value": "{\"defer_until\":\"2099-06-15T00:00:00Z\",\"status\":\"deferred\"}",
+          "old_value": "{\"id\":\"clockdefer-timer\",\"title\":\"timer original\",\"notes\":\"existing notes\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\",\"owner\":\"capture@example.invalid\",\"created_at\":\"2026-11-03T12:00:00Z\",\"created_by\":\"Native capture\",\"updated_at\":\"2026-11-03T12:00:00Z\",\"due_at\":\"2099-01-15T00:00:00Z\"}"
+        },
+        {
+          "actor": "Native capture",
+          "comment": null,
+          "created_at": "2026-11-11T17:42:10Z",
+          "event_type": "updated",
+          "id": "b2361c2f-79c9-5c8e-8047-8f69fb702803",
+          "issue_id": "clockdefer-timer",
+          "new_value": "{\"title\":\"timer unrelated\"}",
+          "old_value": "{\"id\":\"clockdefer-timer\",\"title\":\"timer original\",\"notes\":\"existing notes\",\"status\":\"deferred\",\"priority\":2,\"issue_type\":\"task\",\"owner\":\"capture@example.invalid\",\"created_at\":\"2026-11-03T12:00:00Z\",\"created_by\":\"Native capture\",\"updated_at\":\"2026-11-03T12:00:00Z\",\"due_at\":\"2099-01-15T00:00:00Z\",\"defer_until\":\"2099-06-15T00:00:00Z\"}"
+        },
+        {
+          "actor": "Native capture",
+          "comment": null,
+          "created_at": "2026-11-11T17:42:11Z",
+          "event_type": "updated",
+          "id": "f1310bf4-3463-53cd-9d45-ce02275cfa54",
+          "issue_id": "clockdefer-timer",
+          "new_value": "{\"notes\":\"existing notes\\nwaiting deliberately\"}",
+          "old_value": "{\"id\":\"clockdefer-timer\",\"title\":\"timer unrelated\",\"notes\":\"existing notes\",\"status\":\"deferred\",\"priority\":2,\"issue_type\":\"task\",\"owner\":\"capture@example.invalid\",\"created_at\":\"2026-11-03T12:00:00Z\",\"created_by\":\"Native capture\",\"updated_at\":\"2026-11-03T12:00:00Z\",\"due_at\":\"2099-01-15T00:00:00Z\",\"defer_until\":\"2099-06-15T00:00:00Z\"}"
+        }
+      ]
+    },
+    "federation_peers": {
+      "columns": [
+        "created_at",
+        "last_sync",
+        "name",
+        "password_encrypted",
+        "remote_url",
+        "sovereignty",
+        "updated_at",
+        "username"
+      ],
+      "rows": []
+    },
+    "ignored_schema_migrations": {
+      "columns": [
+        "applied_at",
+        "content_hash",
+        "version"
+      ],
+      "rows": [
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "08780b28ddef6c15f5de558ea08d821b52610f810555739ee1d737779986c607",
+          "version": 5
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "0efade0ecb620420ee42127d3f67230da108e31f2ff3c4281855a8dc9e187ecd",
+          "version": 11
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "127a4af7012769e5f016b13b198b7a57ff8386a10f8a68ffb9ff204989564d1b",
+          "version": 13
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "12e18a8bdd214d6f96625e78998433ccc9c2d0ef4d1a35307f2653e725c800b9",
+          "version": 4
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "1f031aaf2037280e62cbf604748a4157bf25e3a60b3392af7d74835c5059bdd8",
+          "version": 17
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "29ad3654218700481b9541331c714ecbbe96dc81c04dc83fba6bf8d35bed7fa4",
+          "version": 14
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "31a55421b78d8c90db6cfba5bf8e99e87d6123271575282f761aa077e5d36386",
+          "version": 16
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "3c2120bf55d15e71a9f96972007c3d914154d17ea37a2b51b44412e3e3df6ef1",
+          "version": 18
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "3cfa1e07a3d02eb7f791814d9642a93b9af3bf63728943afa05dcb0e489919c8",
+          "version": 21
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "3d0adcb9f5833b4ba70fb48f88e1043250796feb7173abe000ea4de85eb8b3a5",
+          "version": 22
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "3d1ee4f9dde3342d110474c8090a30c474edafe2290e4372a3fc4607c1fdc030",
+          "version": 9
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "4746f10d7040d0b7a9e127437356de87765d12d2d27ee37c9800191e6b619d14",
+          "version": 6
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "51375854ec081d2e0b1434b5ff8b6d87092b891636214ebb9f1dbef22438cc1a",
+          "version": 8
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "59bf3bea7ab1b7a5be03816dec7f3e57c082d5564e6691b4405d1b73b0ad90c9",
+          "version": 27
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "59d6644667b7e34f9d23261cb694d461ddd4953969e75519d370b0cce8afd0e8",
+          "version": 10
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "69a96330e00643dfeddc4bf6ae9bf3b743a3cfddd86f16dc7b8912758b1b570d",
+          "version": 24
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "9ff476e6c73a3a477aec95143d5cbf180517a9484f647447392576f13181a015",
+          "version": 20
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "a73e9a486124f89e90d50f4597fd1d7ad08e5d0d654459ec87b7520b47f1bb5f",
+          "version": 1
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "c1b9ef1e7a51de8e62ba01b171f93159b2e89af1b747e5595618e668c239eff0",
+          "version": 28
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "c3c8d92846a54183cc99afc09f779f6f5ba8030c16ce46b3ee750314bf134627",
+          "version": 7
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "c575c6710169f2e697f3aca60f5f698acc8a64af0edb1e2305b9d377fd845f45",
+          "version": 2
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "c81ca9edc80c25f6ab4f92d05d6ea412a780b108d1ed83745027440e9723dceb",
+          "version": 25
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "d0edd83ca4cfbc46bd17799c6497a70c8c011d130d08a00c71daf792ee1dcd51",
+          "version": 23
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "db072d67a403e60d5bcbe924b84e473adb09f2326d36ede82fcdab17bb1e2a87",
+          "version": 19
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "dc5c1b9a74e42184451796068ecba1ca11d8ebd0fe7e8c4bd4900d0cfee30446",
+          "version": 26
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "e128a1301a2bcb967f684b09318aa5cf7ed9adb5f6dd7d412de3d67d1de2b28d",
+          "version": 12
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "e761d5c3ceb9610edbb2e1d153e82d235cc7d7f0b87f28a45bec43835e6a4e19",
+          "version": 15
+        },
+        {
+          "applied_at": "2026-11-03T12:00:10Z",
+          "content_hash": "f82947deeafe589598e2a1802eddf17712bd322692f924bb5653b0fbd5c46a0d",
+          "version": 3
+        }
+      ]
+    },
+    "interactions": {
+      "columns": [
+        "actor",
+        "created_at",
+        "error",
+        "exit_code",
+        "extra",
+        "id",
+        "issue_id",
+        "kind",
+        "label",
+        "model",
+        "parent_id",
+        "prompt",
+        "reason",
+        "response",
+        "tool_name"
+      ],
+      "rows": []
+    },
+    "issue_counter": {
+      "columns": [
+        "last_id",
+        "prefix"
+      ],
+      "rows": []
+    },
+    "issue_snapshots": {
+      "columns": [
+        "archived_events",
+        "compaction_level",
+        "compressed_size",
+        "id",
+        "issue_id",
+        "original_content",
+        "original_size",
+        "snapshot_time"
+      ],
+      "rows": []
+    },
+    "issue_versions": {
+      "columns": [
+        "attribution_status",
+        "change_actor",
+        "change_agent",
+        "change_at",
+        "change_message",
+        "durable_state",
+        "epoch",
+        "issue_id",
+        "removed_at",
+        "removed_reason",
+        "removed_restriction",
+        "revision"
+      ],
+      "rows": []
+    },
+    "issues": {
+      "columns": [
+        "acceptance_criteria",
+        "actor",
+        "agent_state",
+        "assignee",
+        "await_id",
+        "await_type",
+        "close_reason",
+        "closed_at",
+        "closed_by_session",
+        "compacted_at",
+        "compacted_at_commit",
+        "compaction_level",
+        "content_hash",
+        "created_at",
+        "created_by",
+        "current_revision",
+        "defer_until",
+        "description",
+        "design",
+        "due_at",
+        "ephemeral",
+        "estimated_minutes",
+        "event_kind",
+        "external_ref",
+        "hook_bead",
+        "id",
+        "is_blocked",
+        "is_template",
+        "issue_type",
+        "last_activity",
+        "metadata",
+        "mol_type",
+        "no_history",
+        "notes",
+        "original_size",
+        "owner",
+        "participation_generation",
+        "payload",
+        "pinned",
+        "priority",
+        "rig",
+        "role_bead",
+        "role_type",
+        "row_lock",
+        "sender",
+        "source_repo",
+        "source_system",
+        "spec_id",
+        "started_at",
+        "status",
+        "storage_class",
+        "target",
+        "timeout_ns",
+        "title",
+        "updated_at",
+        "waiters",
+        "wisp_type",
+        "work_type"
+      ],
+      "rows": [
+        {
+          "acceptance_criteria": "",
+          "actor": "",
+          "agent_state": "",
+          "assignee": null,
+          "await_id": "",
+          "await_type": "",
+          "close_reason": "",
+          "closed_at": null,
+          "closed_by_session": "",
+          "compacted_at": null,
+          "compacted_at_commit": null,
+          "compaction_level": 0,
+          "content_hash": "f5376ca4483028dd2391106ba02e74038a5bdf0102b208613b74c694f6e799ac",
+          "created_at": "2026-11-03T12:00:00Z",
+          "created_by": "Native capture",
+          "current_revision": 1,
+          "defer_until": "2099-06-15T00:00:00Z",
+          "description": "",
+          "design": "",
+          "due_at": "2099-01-15T00:00:00Z",
+          "ephemeral": 0,
+          "estimated_minutes": null,
+          "event_kind": "",
+          "external_ref": null,
+          "hook_bead": "",
+          "id": "clockdefer-timer",
+          "is_blocked": 0,
+          "is_template": 0,
+          "issue_type": "task",
+          "last_activity": null,
+          "metadata": {},
+          "mol_type": "",
+          "no_history": 0,
+          "notes": "existing notes\nwaiting deliberately",
+          "original_size": null,
+          "owner": "capture@example.invalid",
+          "participation_generation": null,
+          "payload": "",
+          "pinned": 0,
+          "priority": 2,
+          "rig": "",
+          "role_bead": "",
+          "role_type": "",
+          "row_lock": 7642068413378450171,
+          "sender": "",
+          "source_repo": "",
+          "source_system": "",
+          "spec_id": "",
+          "started_at": null,
+          "status": "deferred",
+          "storage_class": null,
+          "target": "",
+          "timeout_ns": 0,
+          "title": "timer unrelated",
+          "updated_at": "2026-11-03T12:00:00Z",
+          "waiters": "",
+          "wisp_type": "",
+          "work_type": ""
+        }
+      ]
+    },
+    "labels": {
+      "columns": [
+        "issue_id",
+        "label"
+      ],
+      "rows": []
+    },
+    "leases": {
+      "columns": [
+        "granted_at",
+        "granted_node",
+        "heartbeat_at",
+        "holder",
+        "issue_id",
+        "lease_expires_at"
+      ],
+      "rows": []
+    },
+    "local_metadata": {
+      "columns": [
+        "key",
+        "value"
+      ],
+      "rows": [
+        {
+          "key": "bd_version",
+          "value": "1.3.0"
+        },
+        {
+          "key": "issue-create/v1/492",
+          "value": "-8414647730297849376"
+        }
+      ]
+    },
+    "metadata": {
+      "columns": [
+        "key",
+        "value"
+      ],
+      "rows": [
+        {
+          "key": "_project_id",
+          "value": "186ebaf3-2cf6-4ccb-8fd4-3129a05f1157"
+        },
+        {
+          "key": "clone_id",
+          "value": "2d0fd98e9f72a8c7"
+        },
+        {
+          "key": "last_import_time",
+          "value": "2026-11-11T17:42:10Z"
+        },
+        {
+          "key": "repo_id",
+          "value": "b90fad3fde2ebcd63e2d9b14cfa89492"
+        }
+      ]
+    },
+    "provenance_events": {
+      "columns": [
+        "actor",
+        "created_at",
+        "id",
+        "issue_id",
+        "kind",
+        "occurred_at",
+        "payload",
+        "ref",
+        "ref_kind",
+        "source"
+      ],
+      "rows": []
+    },
+    "repo_mtimes": {
+      "columns": [
+        "jsonl_path",
+        "last_checked",
+        "mtime_ns",
+        "repo_path"
+      ],
+      "rows": []
+    },
+    "routes": {
+      "columns": [
+        "created_at",
+        "path",
+        "prefix",
+        "updated_at"
+      ],
+      "rows": []
+    },
+    "schema_migrations": {
+      "columns": [
+        "content_hash",
+        "version"
+      ],
+      "rows": [
+        {
+          "content_hash": "002dc637d45840487c35a01ce15cee04872baa45c21f8e20170a4339135a38e7",
+          "version": 38
+        },
+        {
+          "content_hash": "093c7a41145508879844d16cbe5acfa69baddbb19bf3e05f00bc08720adea657",
+          "version": 48
+        },
+        {
+          "content_hash": "09782d195f22d620ba41802856f9eb6e1a10f68bc5bcc8f3616624f8c28b576a",
+          "version": 25
+        },
+        {
+          "content_hash": "0c9bc4d97e2c5ee5d276c952333b934cd7d7d18210997d6bfd72d17f0fdb14f0",
+          "version": 1
+        },
+        {
+          "content_hash": "0e17f1cb9fc5ee5a7c43ca8e02b9fd59814f8fd4372f9ffb17b50c34388614ce",
+          "version": 14
+        },
+        {
+          "content_hash": "1780f0dc941d97b74af53d5603646d05e83d94eee5a02ac68ccf929200deaec0",
+          "version": 3
+        },
+        {
+          "content_hash": "1ef173be07ca58d17cb09ba3b3f5ca0c96edfcace8d52ae3adde2fd27e8248bd",
+          "version": 63
+        },
+        {
+          "content_hash": "2237ddbe13f5a783c65da3bb1292d9a5d89a5f22fddb0c33d2db57f1492df22c",
+          "version": 55
+        },
+        {
+          "content_hash": "24a816406a6f40c66db98697869d172b2b4366b107788fdd00f44b99abee45c3",
+          "version": 28
+        },
+        {
+          "content_hash": "25ea9ad8e849dc7e32e7c5850631bedc63a5c5da3bdc58ccb2762fd7a6c758fc",
+          "version": 64
+        },
+        {
+          "content_hash": "269ef83f083766b7f2fd2dfd2814ef36a585ae4aa18bcab0468a713d48595e48",
+          "version": 9
+        },
+        {
+          "content_hash": "2d5cf3a6d4245b48c1b893efcc17b9fa25f1ea807e61290cf54064451fc58d93",
+          "version": 31
+        },
+        {
+          "content_hash": "2e51058ba15be9d87415949bb03c2c7c2f0e0743c5ae0d3e819b617d95f61680",
+          "version": 54
+        },
+        {
+          "content_hash": "3359343efb7c28e5803de07e9088670489615d151843d7f23705f3ca8dd6a1e8",
+          "version": 49
+        },
+        {
+          "content_hash": "33daef6b5a07364fc5f59ab59b0f5c677dcf98d9bd0866c7c3bea874f1f01348",
+          "version": 26
+        },
+        {
+          "content_hash": "35ac76b3d0b2d6287cad1329c77c8a0562bb6310ba0ac34ae273d72d4bed0e2a",
+          "version": 4
+        },
+        {
+          "content_hash": "395dcbf186deedb592d8ed144e0b7953455efa0ccf02076d3b63e5e5d05dc241",
+          "version": 45
+        },
+        {
+          "content_hash": "3df660feb6b64c84ef74c408fe8f5840a2815936534362ed123122f795a21c26",
+          "version": 19
+        },
+        {
+          "content_hash": "3e847922cb99c19d35dfcb7f76ee0aad0c956e7c11dffb575af1c601eadd7b6e",
+          "version": 67
+        },
+        {
+          "content_hash": "40419632ba75d92dfcf08e16e77a780f014172a17068f6021937df9086a24588",
+          "version": 60
+        },
+        {
+          "content_hash": "42b86d6b7352f7e158532cc67f4afa142dc2503ce9f780733c06fc9da3478751",
+          "version": 32
+        },
+        {
+          "content_hash": "435f5ef129dd4999a9b393c98d633038f0e443280a26e63f7d4315bf025dab1f",
+          "version": 6
+        },
+        {
+          "content_hash": "46d95b41a56e14d3675b5d8bc8269e63991501497e7e7e899a821c20ef3534c2",
+          "version": 71
+        },
+        {
+          "content_hash": "4aff5a7cc2e1e0250ce4cdb911d010c936681871fb627bceee4b2dc4647dd0a1",
+          "version": 47
+        },
+        {
+          "content_hash": "4bab7acbe2d8e441f156cc5912f421dcb214b9b08d7958eacc8e3a7318ab5f57",
+          "version": 17
+        },
+        {
+          "content_hash": "4d6a5a5fc5e386f2c538b4f3574b82fb2ba025176997953a0a4fbd2a91cddf68",
+          "version": 46
+        },
+        {
+          "content_hash": "531524854cc0e2361817d1ad94ba9470b0e81e378a5422ffb8bce71f3500adf9",
+          "version": 44
+        },
+        {
+          "content_hash": "548b8a69ab82179b7ee7ab3cc87ef00b3ae28d5a3a4976f42364f6939e384668",
+          "version": 43
+        },
+        {
+          "content_hash": "5d556c01404eb06acfb9df2b20fde36a2e91bd8a7d14462acbd3c0ae928ea286",
+          "version": 16
+        },
+        {
+          "content_hash": "60ae32bc26c41da2e743c1172f73930d18482b8a98aea08b9de85f6009f9c01d",
+          "version": 52
+        },
+        {
+          "content_hash": "68e8ef1fc336e8ca6973f6b927b09d3206a7ebd96db9c4cdceab52fb8498c431",
+          "version": 12
+        },
+        {
+          "content_hash": "6aa04b3f66566b243c9a4fc09136af5c17f0ffe947a489245e3c451b995a59b9",
+          "version": 15
+        },
+        {
+          "content_hash": "7526beadee13aa7d6ee2175e9a543210b07c1a4426c382f251ebd31eebe32745",
+          "version": 37
+        },
+        {
+          "content_hash": "779b66fcf99faf9250eba61bb3ae456fed111742ce71229981c6e09d309f72fa",
+          "version": 72
+        },
+        {
+          "content_hash": "7add95ead971c57618cfbc52e5cb6771d872785bfc035bde12cd27a76358848e",
+          "version": 34
+        },
+        {
+          "content_hash": "7ddb30dabe32a66197de78f62400f41d000cf43d0ba8ba2a3943536504dddcdb",
+          "version": 13
+        },
+        {
+          "content_hash": "816da3feeed531ca9787dca8d4b8072dd94b64d573cf4b6751c61f2390c88a68",
+          "version": 24
+        },
+        {
+          "content_hash": "83eac6ffa400a5bd57c10f15f8f7f6b6cd8b133cba3a498808e7c256de583514",
+          "version": 69
+        },
+        {
+          "content_hash": "84dc6a3950a5447e6665e3d98b43f11a7631dc4e53bab1be332d135e51c9511f",
+          "version": 18
+        },
+        {
+          "content_hash": "8d55135274c1c75e722e802b250911cc574d52a4ba74fbb13edde84f30f9b3a4",
+          "version": 30
+        },
+        {
+          "content_hash": "906e5eeda82f31d983b4d85bdec7ff1470c365f2b50605113075689c51eebe94",
+          "version": 68
+        },
+        {
+          "content_hash": "9256746bb0d6ad9ed9afba0f0501259f0a3599b7d7da507dd7d808a13c688c75",
+          "version": 33
+        },
+        {
+          "content_hash": "96265ff898753f3bb34549fafa18bbaeb67519705b8cf4e32e67f1058df6841a",
+          "version": 50
+        },
+        {
+          "content_hash": "99db9b4b5a785ddd209dff628364c4c1eff549c3ca5ec48a64c604b15ef95bfb",
+          "version": 8
+        },
+        {
+          "content_hash": "9c1c6d557a03e71cf6b49123831c9f5b5f910fcea3ca51e982ec4acce04ea6ec",
+          "version": 58
+        },
+        {
+          "content_hash": "9ca011fa0b24ddf26f689eebf347cc2f80dc90256b099d91b993ec82c4d74da5",
+          "version": 2
+        },
+        {
+          "content_hash": "9d0fbb3d02955d25442c4a628ac518236068a97ecf164edbc814216bd5a55adc",
+          "version": 42
+        },
+        {
+          "content_hash": "a1be987f0b89af87e76db6a75f53bf400d1ddca5ff2d096cfe0db985880abfe4",
+          "version": 70
+        },
+        {
+          "content_hash": "a524d42ba0eced9350edbf6402dc2952957ff8f75a896bc8339c4cbc8596c793",
+          "version": 66
+        },
+        {
+          "content_hash": "acc28e9b1aa7272c16c86fcb9fd4a2038ae47729a60b53bb75f3a9df05cd3a82",
+          "version": 56
+        },
+        {
+          "content_hash": "b989fc49ab03e06ff6520f150d6958efdbd3f444b69b824f7b4bb283ca6f2b65",
+          "version": 29
+        },
+        {
+          "content_hash": "bca95662441635454b879bb44ca1e607df9c5efd8fd802be3d53a7371a5ced86",
+          "version": 20
+        },
+        {
+          "content_hash": "bde5204466541dddb53a652fe58561c08b6b3c1fa7feb38a0a582d432d76bda6",
+          "version": 11
+        },
+        {
+          "content_hash": "c7068d67ad3e2b4852549e04d97f25814121de83db919e220bdcb9bdd9b61e5e",
+          "version": 40
+        },
+        {
+          "content_hash": "c7341bb977daff92e073db2579e63058cef88d43f1e09b13fa153a772caac2a6",
+          "version": 65
+        },
+        {
+          "content_hash": "c7de6089997344784a71e7d82ea5e417baaf66320b4533d225a4a6bc3c74222a",
+          "version": 62
+        },
+        {
+          "content_hash": "c8cbe4bebbe0f92c8a0ccc2a1a0d11ad442635811c2dab093c34c9341a8499b2",
+          "version": 5
+        },
+        {
+          "content_hash": "cb34cbe311fd89a17d72067f449a65089f2fc9a7c4b3774d54448db5ebc3d659",
+          "version": 10
+        },
+        {
+          "content_hash": "d11cd7cb462239e49c0b2f9b93ac73771106d5450ebc3422bb7737748c6f967b",
+          "version": 23
+        },
+        {
+          "content_hash": "d19284a2be70a448db7746ae009cb264dc86dac0d9094aae9fe80a713a08ee70",
+          "version": 21
+        },
+        {
+          "content_hash": "d2d65b92789f137da8ee586067c862a9c7744921ccac421e1b793f42050b62a2",
+          "version": 61
+        },
+        {
+          "content_hash": "db65f241d1e82da41f34b960abc912f78b72e7dc1cb6dd2298974308edf8b768",
+          "version": 39
+        },
+        {
+          "content_hash": "dd3b58a8bbed4c49e855a6002981a285f10b6094938534dd3da9b121155f24d6",
+          "version": 27
+        },
+        {
+          "content_hash": "deb741d5ac5fc1e0cd2e60eb47e84f384ed3455b18d3e2f12cb4e935fe461059",
+          "version": 51
+        },
+        {
+          "content_hash": "e55f1870c2bc031c574b495ebca650365a9c8088d7a8968fb86a19cab81267e8",
+          "version": 36
+        },
+        {
+          "content_hash": "e84ef393576df31550570fd3217579b1880850c0645b7d2b6ad8cf55a18ac1c0",
+          "version": 41
+        },
+        {
+          "content_hash": "f0186029a1c87d579b67e0540ec22ad0bd0fc59793b07f7d24a24e122b77c394",
+          "version": 59
+        },
+        {
+          "content_hash": "f13909f0db89f48db694a782d1805eee7ee1b2b2e4dcb3d4b12352333cbcb330",
+          "version": 53
+        },
+        {
+          "content_hash": "f86e0f77be2e58affe1c485767b8dd450408d782c0413a41948ca0c0b6d72d06",
+          "version": 57
+        },
+        {
+          "content_hash": "f917fe319540155572f5c51618cbbe20ec8b9b669d5926d68e3a62629c317c5a",
+          "version": 35
+        },
+        {
+          "content_hash": "f92c4d3dd32cae489142de34c4706900736c91cdc53b0d54e87e71656b828dc9",
+          "version": 7
+        },
+        {
+          "content_hash": "fc1375e64620cd4264516718d8f924d88131881f4c00c51471b7630c11b74a45",
+          "version": 22
+        }
+      ]
+    },
+    "store_epoch": {
+      "columns": [
+        "bumped_at",
+        "bumped_reason",
+        "epoch",
+        "id"
+      ],
+      "rows": []
+    },
+    "wisp_child_counters": {
+      "columns": [
+        "last_child",
+        "parent_id"
+      ],
+      "rows": []
+    },
+    "wisp_comments": {
+      "columns": [
+        "author",
+        "created_at",
+        "id",
+        "issue_id",
+        "text"
+      ],
+      "rows": []
+    },
+    "wisp_dependencies": {
+      "columns": [
+        "created_at",
+        "created_by",
+        "depends_on_external",
+        "depends_on_issue_id",
+        "depends_on_wisp_id",
+        "id",
+        "issue_id",
+        "metadata",
+        "thread_id",
+        "type"
+      ],
+      "rows": []
+    },
+    "wisp_events": {
+      "columns": [
+        "actor",
+        "comment",
+        "created_at",
+        "event_type",
+        "id",
+        "issue_id",
+        "new_value",
+        "old_value"
+      ],
+      "rows": []
+    },
+    "wisp_labels": {
+      "columns": [
+        "issue_id",
+        "label"
+      ],
+      "rows": []
+    },
+    "wisps": {
+      "columns": [
+        "acceptance_criteria",
+        "actor",
+        "agent_state",
+        "assignee",
+        "await_id",
+        "await_type",
+        "close_reason",
+        "closed_at",
+        "closed_by_session",
+        "compacted_at",
+        "compacted_at_commit",
+        "compaction_level",
+        "content_hash",
+        "created_at",
+        "created_by",
+        "current_revision",
+        "defer_until",
+        "description",
+        "design",
+        "due_at",
+        "ephemeral",
+        "estimated_minutes",
+        "event_kind",
+        "external_ref",
+        "hook_bead",
+        "id",
+        "is_blocked",
+        "is_template",
+        "issue_type",
+        "last_activity",
+        "metadata",
+        "mol_type",
+        "no_history",
+        "notes",
+        "original_size",
+        "owner",
+        "participation_generation",
+        "payload",
+        "pinned",
+        "priority",
+        "rig",
+        "role_bead",
+        "role_type",
+        "row_lock",
+        "sender",
+        "source_repo",
+        "source_system",
+        "spec_id",
+        "started_at",
+        "status",
+        "storage_class",
+        "target",
+        "timeout_ns",
+        "title",
+        "updated_at",
+        "waiters",
+        "wisp_type",
+        "work_type"
+      ],
+      "rows": []
+    }
+  },
+  "source_graph": {
+    "Head": "qskckta3h31d0vr21305pd217mj32qle",
+    "Clean": true,
+    "Commits": [
+      {
+        "id": "0s4ecf62bld81314knpdi27d2uaqu9nk",
+        "parents": [
+          "hlv6mvrehq252r60d6bukmma7ov3k416"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.922Z",
+          "author_email": "root@localhost",
+          "commit_order": 27,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.922Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0025_update_ready_issues_view.up.sql",
+          "parents": "hlv6mvrehq252r60d6bukmma7ov3k416",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "18sdf644h62l93b52j3c45ra1pcdbibb",
+        "parents": [
+          "1b4pqpa73gttvp4t7hf5scaqkej8ff9n"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.592Z",
+          "author_email": "root@localhost",
+          "commit_order": 16,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.592Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0014_create_interactions.up.sql",
+          "parents": "1b4pqpa73gttvp4t7hf5scaqkej8ff9n",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "1b4pqpa73gttvp4t7hf5scaqkej8ff9n",
+        "parents": [
+          "dop1jjj9eld8rakevdkql6dj75m6lcio"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.565Z",
+          "author_email": "root@localhost",
+          "commit_order": 15,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.565Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0013_create_issue_counter.up.sql",
+          "parents": "dop1jjj9eld8rakevdkql6dj75m6lcio",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "1q0kh4lhpss74ni5b9vmnvs5d9gangku",
+        "parents": [
+          "kvv743jv8n2jts9lm10bc2do9g08onen"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.162Z",
+          "author_email": "root@localhost",
+          "commit_order": 35,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.162Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0033_add_wisp_type_column.up.sql",
+          "parents": "kvv743jv8n2jts9lm10bc2do9g08onen",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "21ror02t4r1idbv9ev82kmv5pidaf9p0",
+        "parents": [
+          "9n2t868pdjggcdiliq6vbmdt63nor3b8"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.506Z",
+          "author_email": "root@localhost",
+          "commit_order": 47,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.506Z",
+          "email": "root@localhost",
+          "message": "disable nonlocal tables for fk migrations",
+          "parents": "9n2t868pdjggcdiliq6vbmdt63nor3b8",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "2324rbfgi549m5r8sqnp0caa0pbql74o",
+        "parents": [
+          "t2pem1rn8atfuu6ard60j0pihdk6g990"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.356Z",
+          "author_email": "root@localhost",
+          "commit_order": 39,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.356Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0037_uuid_primary_keys.up.sql",
+          "parents": "t2pem1rn8atfuu6ard60j0pihdk6g990",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "256snld538dilh59anma3infit4ehdcn",
+        "parents": [
+          "jcvau9k3spri0encjmg0d4091r4ogic9"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.17Z",
+          "author_email": "root@localhost",
+          "commit_order": 56,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.17Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0049_longtext_large_content_columns.up.sql",
+          "parents": "jcvau9k3spri0encjmg0d4091r4ogic9",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "2b44qbku2tt271edqfqgmenert53iffq",
+        "parents": [
+          "bgqciftut7sk3j21ognnjia2rg13fn9r"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.879Z",
+          "author_email": "root@localhost",
+          "commit_order": 66,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.879Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0059_recompute_null_gate_is_blocked.up.sql",
+          "parents": "bgqciftut7sk3j21ognnjia2rg13fn9r",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "2hh50jct8g7olfead3pv76naomepqdl6",
+        "parents": [],
+        "metadata": {
+          "author": "Dolt System Account",
+          "author_date": "2026-11-11T17:42:06.15Z",
+          "author_email": "doltuser@dolthub.com",
+          "commit_order": 1,
+          "committer": "Dolt System Account",
+          "date": "2026-11-11T17:42:06.154Z",
+          "email": "doltuser@dolthub.com",
+          "message": "Initialize data repository",
+          "parents": "",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "31ckndvpc3ha5pscksnsraeejmcf8olp",
+        "parents": [
+          "75ppkunk7eb7b1mrii5iomfguo9od3m2"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.03Z",
+          "author_email": "root@localhost",
+          "commit_order": 71,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.03Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0063_create_provenance_events.up.sql",
+          "parents": "75ppkunk7eb7b1mrii5iomfguo9od3m2",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "3465f928ppig9ff4lkjhd0mio08qh0d3",
+        "parents": [
+          "6cl4d2p88ea3dbg27t8v4rpfn6chmm92"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.433Z",
+          "author_email": "root@localhost",
+          "commit_order": 41,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.433Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0039_drop_child_counters_fk.up.sql",
+          "parents": "6cl4d2p88ea3dbg27t8v4rpfn6chmm92",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "36jjudmullt31erbcen8i75gktaa57b1",
+        "parents": [
+          "73is9jo4e3onimok3ck7jih6m6die9bu"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.705Z",
+          "author_email": "root@localhost",
+          "commit_order": 49,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.705Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0042_add_on_update_cascade.up.sql",
+          "parents": "73is9jo4e3onimok3ck7jih6m6die9bu",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "37visjb6r1uphg13vev70v9t88vk1ftk",
+        "parents": [
+          "3465f928ppig9ff4lkjhd0mio08qh0d3"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.446Z",
+          "author_email": "root@localhost",
+          "commit_order": 42,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.446Z",
+          "email": "root@localhost",
+          "message": "create nonlocal table wisps",
+          "parents": "3465f928ppig9ff4lkjhd0mio08qh0d3",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "3c87tvuhpist66n9d1308tkkg41qrfdu",
+        "parents": [
+          "ejcvileqfoldkvh97qj8o1qv5vq0gh1c"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.949Z",
+          "author_email": "root@localhost",
+          "commit_order": 68,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.949Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0061_content_derived_aux_ids.up.sql",
+          "parents": "ejcvileqfoldkvh97qj8o1qv5vq0gh1c",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "3odgtcq7k485isp9ndtog8dmoiaam3sq",
+        "parents": [
+          "ggf6mkja5mmnc8jpgvadnuc84oh9n3ov"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.744Z",
+          "author_email": "root@localhost",
+          "commit_order": 64,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.744Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0057_events_value_columns_idempotent_longtext.up.sql",
+          "parents": "ggf6mkja5mmnc8jpgvadnuc84oh9n3ov",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "4dfgargpt69if3930vbaudf4trvbh2a2",
+        "parents": [
+          "nk25brfnvk0r1vapc8gp2j90d7vnnmng"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:10.24Z",
+          "author_email": "root@localhost",
+          "commit_order": 81,
+          "committer": "root",
+          "date": "2026-11-11T17:42:10.24Z",
+          "email": "root@localhost",
+          "message": "schema: apply migrations",
+          "parents": "nk25brfnvk0r1vapc8gp2j90d7vnnmng",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "5k03en6vsb67pp5ji774tjvd8jksoei1",
+        "parents": [
+          "256snld538dilh59anma3infit4ehdcn"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.198Z",
+          "author_email": "root@localhost",
+          "commit_order": 57,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.198Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0050_dependencies_deterministic_id.up.sql",
+          "parents": "256snld538dilh59anma3infit4ehdcn",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "5m0oeu95tnjd1ncvn8avsati6im57p4m",
+        "parents": [
+          "hodhrahm0bsnh2jt1c1al63nn271sbbm"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.856Z",
+          "author_email": "root@localhost",
+          "commit_order": 51,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.856Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0044_update_views_drop_depends_on_id.up.sql",
+          "parents": "hodhrahm0bsnh2jt1c1al63nn271sbbm",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "6cl4d2p88ea3dbg27t8v4rpfn6chmm92",
+        "parents": [
+          "2324rbfgi549m5r8sqnp0caa0pbql74o"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.406Z",
+          "author_email": "root@localhost",
+          "commit_order": 40,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.406Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0038_drop_hop_columns.up.sql",
+          "parents": "2324rbfgi549m5r8sqnp0caa0pbql74o",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "6dag6hdoq3lilpjlgghd06jjvkd9n83p",
+        "parents": [
+          "1q0kh4lhpss74ni5b9vmnvs5d9gangku"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.188Z",
+          "author_email": "root@localhost",
+          "commit_order": 36,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.188Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0034_add_spec_id_column.up.sql",
+          "parents": "1q0kh4lhpss74ni5b9vmnvs5d9gangku",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "72spkrfj0hh1tbc6sc81tmvoipirqtbe",
+        "parents": [
+          "3c87tvuhpist66n9d1308tkkg41qrfdu"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.97Z",
+          "author_email": "root@localhost",
+          "commit_order": 69,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.97Z",
+          "email": "root@localhost",
+          "message": "schema: drop versioned events table for ignored-plane flip (bd-red8u)",
+          "parents": "3c87tvuhpist66n9d1308tkkg41qrfdu",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "73is9jo4e3onimok3ck7jih6m6die9bu",
+        "parents": [
+          "21ror02t4r1idbv9ev82kmv5pidaf9p0"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.607Z",
+          "author_email": "root@localhost",
+          "commit_order": 48,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.607Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0041_split_dependencies_target.up.sql",
+          "parents": "21ror02t4r1idbv9ev82kmv5pidaf9p0",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "75ppkunk7eb7b1mrii5iomfguo9od3m2",
+        "parents": [
+          "72spkrfj0hh1tbc6sc81tmvoipirqtbe"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.002Z",
+          "author_email": "root@localhost",
+          "commit_order": 70,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.002Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0062_events_dolt_ignore.up.sql",
+          "parents": "72spkrfj0hh1tbc6sc81tmvoipirqtbe",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "7b2i9r5vddgdq9mrp46491nofj29tntm",
+        "parents": [
+          "31ckndvpc3ha5pscksnsraeejmcf8olp"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.076Z",
+          "author_email": "root@localhost",
+          "commit_order": 72,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.076Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0064_create_events_journal.up.sql",
+          "parents": "31ckndvpc3ha5pscksnsraeejmcf8olp",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "7nhipdetiuilqm1fb5kgptusnc1i87pl",
+        "parents": [
+          "gok5d0olundmg5oirutba2rficbm0egd"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.105Z",
+          "author_email": "root@localhost",
+          "commit_order": 33,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.105Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0031_wisp_events_created_at_index.up.sql",
+          "parents": "gok5d0olundmg5oirutba2rficbm0egd",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "7qrm6c2cdggfmjmi42ptpi88rqafo3h6",
+        "parents": [
+          "kcqk012sjnu025jrfftpriugleknnel3"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.499Z",
+          "author_email": "root@localhost",
+          "commit_order": 12,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.499Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0010_create_compaction_snapshots.up.sql",
+          "parents": "kcqk012sjnu025jrfftpriugleknnel3",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "7vsgb8jg6kra3vd06k9qnroe71909kl4",
+        "parents": [
+          "6dag6hdoq3lilpjlgghd06jjvkd9n83p"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.253Z",
+          "author_email": "root@localhost",
+          "commit_order": 37,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.253Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0035_migrate_infra_to_wisps.up.sql",
+          "parents": "6dag6hdoq3lilpjlgghd06jjvkd9n83p",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "9n2t868pdjggcdiliq6vbmdt63nor3b8",
+        "parents": [
+          "j46dvjnsmqtkre6fpco4bndhld5cdjl3"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.492Z",
+          "author_email": "root@localhost",
+          "commit_order": 46,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.492Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0040_ignored_tables_also_nonlocal_tables.up.sql",
+          "parents": "j46dvjnsmqtkre6fpco4bndhld5cdjl3",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "a1ir2sot2pkhd32lk9vgpe90f1ap0ptk",
+        "parents": [
+          "hg7cl4bfcm7rhio4svdh07f4tkcdg4bv"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.211Z",
+          "author_email": "root@localhost",
+          "commit_order": 75,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.211Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0067_add_versioned_beads_schema.up.sql",
+          "parents": "hg7cl4bfcm7rhio4svdh07f4tkcdg4bv",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "aoi63jrt90h415f7ho6t8djshlsuj2ec",
+        "parents": [
+          "sis6nhihojcp3bsnpfal8hclsp77d446"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.059Z",
+          "author_email": "root@localhost",
+          "commit_order": 31,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.059Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0029_create_local_metadata.up.sql",
+          "parents": "sis6nhihojcp3bsnpfal8hclsp77d446",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "b5d5eqsvb43p51fflhhcuurdm0m44bls",
+        "parents": [
+          "o0jcv1u3qeloe0gb1d0d7lre38j8pue2"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.292Z",
+          "author_email": "root@localhost",
+          "commit_order": 3,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.292Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0001_create_issues.up.sql",
+          "parents": "o0jcv1u3qeloe0gb1d0d7lre38j8pue2",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "b5q25tu8gs8b89kqj1ajsj9gtmlut4e8",
+        "parents": [
+          "5k03en6vsb67pp5ji774tjvd8jksoei1"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.283Z",
+          "author_email": "root@localhost",
+          "commit_order": 58,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.283Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0051_drop_aux_id_defaults.up.sql",
+          "parents": "5k03en6vsb67pp5ji774tjvd8jksoei1",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "bgqciftut7sk3j21ognnjia2rg13fn9r",
+        "parents": [
+          "3odgtcq7k485isp9ndtog8dmoiaam3sq"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.813Z",
+          "author_email": "root@localhost",
+          "commit_order": 65,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.813Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0058_heal_wisp_dependencies_split_constraints.up.sql",
+          "parents": "3odgtcq7k485isp9ndtog8dmoiaam3sq",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "bpcs29i390li6i3dckem0mfesqtda4jh",
+        "parents": [
+          "a1ir2sot2pkhd32lk9vgpe90f1ap0ptk"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.264Z",
+          "author_email": "root@localhost",
+          "commit_order": 76,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.264Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0068_add_attribution_status.up.sql",
+          "parents": "a1ir2sot2pkhd32lk9vgpe90f1ap0ptk",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "c38c7dhfo532kvf8dd0a75c56mqd89pl",
+        "parents": [
+          "o34uag8353hvnmi89a80iob66utjjehb"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.859Z",
+          "author_email": "root@localhost",
+          "commit_order": 25,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.859Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0023_add_no_history_column.up.sql",
+          "parents": "o34uag8353hvnmi89a80iob66utjjehb",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "cb8ih9la1lg50bk13bccqn2kid4ulejf",
+        "parents": [
+          "qmihd74sf2atcihd3altcfg0rkimkqv3"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.672Z",
+          "author_email": "root@localhost",
+          "commit_order": 62,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.672Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0055_move_leases_to_table.up.sql",
+          "parents": "qmihd74sf2atcihd3altcfg0rkimkqv3",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "cvnak9e33a5d0f1koubb75egrff7gqlv",
+        "parents": [
+          "vdkkh9i58e5bnhls5e497qucpjrctis4"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.427Z",
+          "author_email": "root@localhost",
+          "commit_order": 9,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.427Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0007_create_metadata.up.sql",
+          "parents": "vdkkh9i58e5bnhls5e497qucpjrctis4",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "dolv2vapi0bq8sst747392dca5k1o1jm",
+        "parents": [
+          "4dfgargpt69if3930vbaudf4trvbh2a2"
+        ],
+        "metadata": {
+          "author": "beads",
+          "author_date": "2026-11-11T17:42:10.287Z",
+          "author_email": "beads@local",
+          "commit_order": 82,
+          "committer": "beads",
+          "date": "2026-11-11T17:42:10.287Z",
+          "email": "beads@local",
+          "message": "bd init",
+          "parents": "4dfgargpt69if3930vbaudf4trvbh2a2",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "dop1jjj9eld8rakevdkql6dj75m6lcio",
+        "parents": [
+          "s480ukg558rh55tsecgh30ah3ga66oja"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.541Z",
+          "author_email": "root@localhost",
+          "commit_order": 14,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.541Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0012_create_routes.up.sql",
+          "parents": "s480ukg558rh55tsecgh30ah3ga66oja",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "dpl2gr517qagejupnei2hk1qafulae13",
+        "parents": [
+          "g2nvvogqrlcgvqup7q89v1fk06m76euk"
+        ],
+        "metadata": {
+          "author": "beads",
+          "author_date": "2026-11-11T17:42:10.889Z",
+          "author_email": "beads@local",
+          "commit_order": 85,
+          "committer": "beads",
+          "date": "2026-11-11T17:42:10.889Z",
+          "email": "beads@local",
+          "message": "bd: update clockdefer-timer",
+          "parents": "g2nvvogqrlcgvqup7q89v1fk06m76euk",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "ejcvileqfoldkvh97qj8o1qv5vq0gh1c",
+        "parents": [
+          "2b44qbku2tt271edqfqgmenert53iffq"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.93Z",
+          "author_email": "root@localhost",
+          "commit_order": 67,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.93Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0060_add_storage_class.up.sql",
+          "parents": "2b44qbku2tt271edqfqgmenert53iffq",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "g2nvvogqrlcgvqup7q89v1fk06m76euk",
+        "parents": [
+          "lt2o6lg34a8hms591v9aabhbt9gp540k"
+        ],
+        "metadata": {
+          "author": "beads",
+          "author_date": "2026-11-11T17:42:10.755Z",
+          "author_email": "beads@local",
+          "commit_order": 84,
+          "committer": "beads",
+          "date": "2026-11-11T17:42:10.755Z",
+          "email": "beads@local",
+          "message": "bd: create issue",
+          "parents": "lt2o6lg34a8hms591v9aabhbt9gp540k",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "gahmcio6s7a6jh840ns8qpvb3bb6vfeq",
+        "parents": [
+          "bpcs29i390li6i3dckem0mfesqtda4jh"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.31Z",
+          "author_email": "root@localhost",
+          "commit_order": 77,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.31Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0069_widen_issue_versions_datetime_precision.up.sql",
+          "parents": "bpcs29i390li6i3dckem0mfesqtda4jh",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "ggf6mkja5mmnc8jpgvadnuc84oh9n3ov",
+        "parents": [
+          "cb8ih9la1lg50bk13bccqn2kid4ulejf"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.706Z",
+          "author_email": "root@localhost",
+          "commit_order": 63,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.706Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0056_add_comments_keyset_index.up.sql",
+          "parents": "cb8ih9la1lg50bk13bccqn2kid4ulejf",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "gok5d0olundmg5oirutba2rficbm0egd",
+        "parents": [
+          "aoi63jrt90h415f7ho6t8djshlsuj2ec"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.079Z",
+          "author_email": "root@localhost",
+          "commit_order": 32,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.079Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0030_migrate_local_metadata_keys.up.sql",
+          "parents": "aoi63jrt90h415f7ho6t8djshlsuj2ec",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "hg7cl4bfcm7rhio4svdh07f4tkcdg4bv",
+        "parents": [
+          "ugp0une6k63sbl59vte0raa7ohqa46fm"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.142Z",
+          "author_email": "root@localhost",
+          "commit_order": 74,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.142Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0066_add_events_journal_actor.up.sql",
+          "parents": "ugp0une6k63sbl59vte0raa7ohqa46fm",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "hlv6mvrehq252r60d6bukmma7ov3k416",
+        "parents": [
+          "c38c7dhfo532kvf8dd0a75c56mqd89pl"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.892Z",
+          "author_email": "root@localhost",
+          "commit_order": 26,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.892Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0024_create_custom_status_type_tables.up.sql",
+          "parents": "c38c7dhfo532kvf8dd0a75c56mqd89pl",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "hodhrahm0bsnh2jt1c1al63nn271sbbm",
+        "parents": [
+          "36jjudmullt31erbcen8i75gktaa57b1"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.823Z",
+          "author_email": "root@localhost",
+          "commit_order": 50,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.823Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0043_drop_dependencies_generated_column.up.sql",
+          "parents": "36jjudmullt31erbcen8i75gktaa57b1",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "hoqto11hi6otua8f49pootntupfrmskb",
+        "parents": [
+          "lm9qtqm559e4512nna9gcgufml507bp2"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.64Z",
+          "author_email": "root@localhost",
+          "commit_order": 18,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.64Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0016_default_config.up.sql",
+          "parents": "lm9qtqm559e4512nna9gcgufml507bp2",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "hsef8lugd7nd5lb2uitafo1tror0akpn",
+        "parents": [
+          "5m0oeu95tnjd1ncvn8avsati6im57p4m"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.887Z",
+          "author_email": "root@localhost",
+          "commit_order": 52,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.887Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0045_update_blocked_view_drop_depends_on_id.up.sql",
+          "parents": "5m0oeu95tnjd1ncvn8avsati6im57p4m",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "i8it32oh1e1t4nb8vc9c1a2cbkjaerke",
+        "parents": [
+          "qgsvar7h9r1ia35jhk5qm2rvqk74c4vk"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.338Z",
+          "author_email": "root@localhost",
+          "commit_order": 5,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.338Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0003_create_labels.up.sql",
+          "parents": "qgsvar7h9r1ia35jhk5qm2rvqk74c4vk",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "id6na5mpvblb8jef5b8uegc1b89p7t0d",
+        "parents": [
+          "mc4cbudh4h5lt0vb67k042riqjmkhsoe"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.382Z",
+          "author_email": "root@localhost",
+          "commit_order": 7,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.382Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0005_create_events.up.sql",
+          "parents": "mc4cbudh4h5lt0vb67k042riqjmkhsoe",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "ihlmqu8f5n1fs2fcusbji9ncchlpt31t",
+        "parents": [
+          "rgod37dgdvhsmlat8flf17mgnhbrcvr8"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.714Z",
+          "author_email": "root@localhost",
+          "commit_order": 21,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.714Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0019_wisps_dolt_ignore.up.sql",
+          "parents": "rgod37dgdvhsmlat8flf17mgnhbrcvr8",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "j46dvjnsmqtkre6fpco4bndhld5cdjl3",
+        "parents": [
+          "s115hdadk19sg8badvfbkvp2cvam3576"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.476Z",
+          "author_email": "root@localhost",
+          "commit_order": 45,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.476Z",
+          "email": "root@localhost",
+          "message": "create nonlocal table local_metadata",
+          "parents": "s115hdadk19sg8badvfbkvp2cvam3576",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "j6se3a972g1shh69a4bglp61bjr9m5mp",
+        "parents": [
+          "ph5t9f8bi6uhrtfgs97jnqkrtdohe4nc"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.467Z",
+          "author_email": "root@localhost",
+          "commit_order": 60,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.467Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0053_repair_rig_wisps.up.sql",
+          "parents": "ph5t9f8bi6uhrtfgs97jnqkrtdohe4nc",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "j8qor3lcqcg8ruaqbb2fvchuceh97vos",
+        "parents": [
+          "oedf5jdnvmqgg3br8o098ibu5p8co8a7"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.777Z",
+          "author_email": "root@localhost",
+          "commit_order": 23,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.777Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0021_create_wisp_auxiliary.up.sql",
+          "parents": "oedf5jdnvmqgg3br8o098ibu5p8co8a7",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "jcvau9k3spri0encjmg0d4091r4ogic9",
+        "parents": [
+          "o1gak4bqftk5ggkg85gokusg7jorr72i"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.07Z",
+          "author_email": "root@localhost",
+          "commit_order": 55,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.07Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0048_widen_event_value_columns.up.sql",
+          "parents": "o1gak4bqftk5ggkg85gokusg7jorr72i",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "k22il0j2hfmjjb6425v2e317nrsv57ih",
+        "parents": [
+          "gahmcio6s7a6jh840ns8qpvb3bb6vfeq"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.361Z",
+          "author_email": "root@localhost",
+          "commit_order": 78,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.361Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0070_add_participation_generation.up.sql",
+          "parents": "gahmcio6s7a6jh840ns8qpvb3bb6vfeq",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "kcqk012sjnu025jrfftpriugleknnel3",
+        "parents": [
+          "oosn4kjbkafgm9km5tgtd1qft2itsd1b"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.476Z",
+          "author_email": "root@localhost",
+          "commit_order": 11,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.476Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0009_create_issue_snapshots.up.sql",
+          "parents": "oosn4kjbkafgm9km5tgtd1qft2itsd1b",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "kvv743jv8n2jts9lm10bc2do9g08onen",
+        "parents": [
+          "7nhipdetiuilqm1fb5kgptusnc1i87pl"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.135Z",
+          "author_email": "root@localhost",
+          "commit_order": 34,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.135Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0032_drop_schema_migrations_applied_at.up.sql",
+          "parents": "7nhipdetiuilqm1fb5kgptusnc1i87pl",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "lm9qtqm559e4512nna9gcgufml507bp2",
+        "parents": [
+          "18sdf644h62l93b52j3c45ra1pcdbibb"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.616Z",
+          "author_email": "root@localhost",
+          "commit_order": 17,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.616Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0015_create_federation_peers.up.sql",
+          "parents": "18sdf644h62l93b52j3c45ra1pcdbibb",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "lt2o6lg34a8hms591v9aabhbt9gp540k",
+        "parents": [
+          "dolv2vapi0bq8sst747392dca5k1o1jm"
+        ],
+        "metadata": {
+          "author": "beads",
+          "author_date": "2026-11-11T17:42:10.413Z",
+          "author_email": "beads@local",
+          "commit_order": 83,
+          "committer": "beads",
+          "date": "2026-11-11T17:42:10.413Z",
+          "email": "beads@local",
+          "message": "bd: config set (auto-commit) by Native capture",
+          "parents": "dolv2vapi0bq8sst747392dca5k1o1jm",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "mc4cbudh4h5lt0vb67k042riqjmkhsoe",
+        "parents": [
+          "i8it32oh1e1t4nb8vc9c1a2cbkjaerke"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.36Z",
+          "author_email": "root@localhost",
+          "commit_order": 6,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.36Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0004_create_comments.up.sql",
+          "parents": "i8it32oh1e1t4nb8vc9c1a2cbkjaerke",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "n9fjnsjuhj1llltefp1evlgm9flusg33",
+        "parents": [
+          "dpl2gr517qagejupnei2hk1qafulae13"
+        ],
+        "metadata": {
+          "author": "beads",
+          "author_date": "2026-11-11T17:42:11.02Z",
+          "author_email": "beads@local",
+          "commit_order": 86,
+          "committer": "beads",
+          "date": "2026-11-11T17:42:11.02Z",
+          "email": "beads@local",
+          "message": "bd: update clockdefer-timer",
+          "parents": "dpl2gr517qagejupnei2hk1qafulae13",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "nk25brfnvk0r1vapc8gp2j90d7vnnmng",
+        "parents": [
+          "u1vmg0q0nodgon1s7ulds1nsv4ndo2ah"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.425Z",
+          "author_email": "root@localhost",
+          "commit_order": 80,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.425Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0072_add_epoch_minted_addresses.up.sql",
+          "parents": "u1vmg0q0nodgon1s7ulds1nsv4ndo2ah",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "nqlo61ag7biua2eibjc574piv33oltch",
+        "parents": [
+          "0s4ecf62bld81314knpdi27d2uaqu9nk"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.953Z",
+          "author_email": "root@localhost",
+          "commit_order": 28,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.953Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0026_update_blocked_issues_view.up.sql",
+          "parents": "0s4ecf62bld81314knpdi27d2uaqu9nk",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "o0jcv1u3qeloe0gb1d0d7lre38j8pue2",
+        "parents": [
+          "2hh50jct8g7olfead3pv76naomepqdl6"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.252Z",
+          "author_email": "root@localhost",
+          "commit_order": 2,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.252Z",
+          "email": "root@localhost",
+          "message": "schema: seed dolt_ignore patterns",
+          "parents": "2hh50jct8g7olfead3pv76naomepqdl6",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "o1gak4bqftk5ggkg85gokusg7jorr72i",
+        "parents": [
+          "vfc96uub6mof8qhmpps91nrgqaqhfllt"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.039Z",
+          "author_email": "root@localhost",
+          "commit_order": 54,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.039Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0047_recompute_mixed_is_blocked.up.sql",
+          "parents": "vfc96uub6mof8qhmpps91nrgqaqhfllt",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "o34uag8353hvnmi89a80iob66utjjehb",
+        "parents": [
+          "j8qor3lcqcg8ruaqbb2fvchuceh97vos"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.809Z",
+          "author_email": "root@localhost",
+          "commit_order": 24,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.809Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0022_wisp_dep_type_index.up.sql",
+          "parents": "j8qor3lcqcg8ruaqbb2fvchuceh97vos",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "oedf5jdnvmqgg3br8o098ibu5p8co8a7",
+        "parents": [
+          "ihlmqu8f5n1fs2fcusbji9ncchlpt31t"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.739Z",
+          "author_email": "root@localhost",
+          "commit_order": 22,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.739Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0020_create_wisps.up.sql",
+          "parents": "ihlmqu8f5n1fs2fcusbji9ncchlpt31t",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "oosn4kjbkafgm9km5tgtd1qft2itsd1b",
+        "parents": [
+          "cvnak9e33a5d0f1koubb75egrff7gqlv"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.449Z",
+          "author_email": "root@localhost",
+          "commit_order": 10,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.449Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0008_create_child_counters.up.sql",
+          "parents": "cvnak9e33a5d0f1koubb75egrff7gqlv",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "ph5t9f8bi6uhrtfgs97jnqkrtdohe4nc",
+        "parents": [
+          "b5q25tu8gs8b89kqj1ajsj9gtmlut4e8"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.322Z",
+          "author_email": "root@localhost",
+          "commit_order": 59,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.322Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0052_add_date_indexes.up.sql",
+          "parents": "b5q25tu8gs8b89kqj1ajsj9gtmlut4e8",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "q5prgrtg6d3g0kj93d2po1if8h5kmr74",
+        "parents": [
+          "37visjb6r1uphg13vev70v9t88vk1ftk"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.457Z",
+          "author_email": "root@localhost",
+          "commit_order": 43,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.457Z",
+          "email": "root@localhost",
+          "message": "create nonlocal table wisp_*",
+          "parents": "37visjb6r1uphg13vev70v9t88vk1ftk",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "qgsvar7h9r1ia35jhk5qm2rvqk74c4vk",
+        "parents": [
+          "b5d5eqsvb43p51fflhhcuurdm0m44bls"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.317Z",
+          "author_email": "root@localhost",
+          "commit_order": 4,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.317Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0002_create_dependencies.up.sql",
+          "parents": "b5d5eqsvb43p51fflhhcuurdm0m44bls",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "qmihd74sf2atcihd3altcfg0rkimkqv3",
+        "parents": [
+          "j6se3a972g1shh69a4bglp61bjr9m5mp"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:08.58Z",
+          "author_email": "root@localhost",
+          "commit_order": 61,
+          "committer": "root",
+          "date": "2026-11-11T17:42:08.58Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0054_add_lease_columns.up.sql",
+          "parents": "j6se3a972g1shh69a4bglp61bjr9m5mp",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "qskckta3h31d0vr21305pd217mj32qle",
+        "parents": [
+          "n9fjnsjuhj1llltefp1evlgm9flusg33"
+        ],
+        "metadata": {
+          "author": "beads",
+          "author_date": "2026-11-11T17:42:11.14Z",
+          "author_email": "beads@local",
+          "commit_order": 87,
+          "committer": "beads",
+          "date": "2026-11-11T17:42:11.14Z",
+          "email": "beads@local",
+          "message": "bd: update clockdefer-timer",
+          "parents": "n9fjnsjuhj1llltefp1evlgm9flusg33",
+          "refs": "HEAD -\u003e main",
+          "signature": ""
+        }
+      },
+      {
+        "id": "rgod37dgdvhsmlat8flf17mgnhbrcvr8",
+        "parents": [
+          "tno9bq5ken73f9dl9sn6q5l7kia0qi50"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.697Z",
+          "author_email": "root@localhost",
+          "commit_order": 20,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.697Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0018_create_blocked_issues_view.up.sql",
+          "parents": "tno9bq5ken73f9dl9sn6q5l7kia0qi50",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "s115hdadk19sg8badvfbkvp2cvam3576",
+        "parents": [
+          "q5prgrtg6d3g0kj93d2po1if8h5kmr74"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.466Z",
+          "author_email": "root@localhost",
+          "commit_order": 44,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.466Z",
+          "email": "root@localhost",
+          "message": "create nonlocal table repo_mtimes",
+          "parents": "q5prgrtg6d3g0kj93d2po1if8h5kmr74",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "s480ukg558rh55tsecgh30ah3ga66oja",
+        "parents": [
+          "7qrm6c2cdggfmjmi42ptpi88rqafo3h6"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.519Z",
+          "author_email": "root@localhost",
+          "commit_order": 13,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.519Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0011_create_repo_mtimes.up.sql",
+          "parents": "7qrm6c2cdggfmjmi42ptpi88rqafo3h6",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "sis6nhihojcp3bsnpfal8hclsp77d446",
+        "parents": [
+          "soi4l92k4hmht32heg6tidqusir2b3e7"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.037Z",
+          "author_email": "root@localhost",
+          "commit_order": 30,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.037Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0028_local_state_dolt_ignore.up.sql",
+          "parents": "soi4l92k4hmht32heg6tidqusir2b3e7",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "soi4l92k4hmht32heg6tidqusir2b3e7",
+        "parents": [
+          "nqlo61ag7biua2eibjc574piv33oltch"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.003Z",
+          "author_email": "root@localhost",
+          "commit_order": 29,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.003Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0027_add_started_at.up.sql",
+          "parents": "nqlo61ag7biua2eibjc574piv33oltch",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "t2pem1rn8atfuu6ard60j0pihdk6g990",
+        "parents": [
+          "7vsgb8jg6kra3vd06k9qnroe71909kl4"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.272Z",
+          "author_email": "root@localhost",
+          "commit_order": 38,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.272Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0036_cleanup_autopush_metadata.up.sql",
+          "parents": "7vsgb8jg6kra3vd06k9qnroe71909kl4",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "tno9bq5ken73f9dl9sn6q5l7kia0qi50",
+        "parents": [
+          "hoqto11hi6otua8f49pootntupfrmskb"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.667Z",
+          "author_email": "root@localhost",
+          "commit_order": 19,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.667Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0017_create_ready_issues_view.up.sql",
+          "parents": "hoqto11hi6otua8f49pootntupfrmskb",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "u1vmg0q0nodgon1s7ulds1nsv4ndo2ah",
+        "parents": [
+          "k22il0j2hfmjjb6425v2e317nrsv57ih"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.398Z",
+          "author_email": "root@localhost",
+          "commit_order": 79,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.398Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0071_add_removed_restriction.up.sql",
+          "parents": "k22il0j2hfmjjb6425v2e317nrsv57ih",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "ugp0une6k63sbl59vte0raa7ohqa46fm",
+        "parents": [
+          "7b2i9r5vddgdq9mrp46491nofj29tntm"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:09.107Z",
+          "author_email": "root@localhost",
+          "commit_order": 73,
+          "committer": "root",
+          "date": "2026-11-11T17:42:09.107Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0065_widen_wisp_comments_text.up.sql",
+          "parents": "7b2i9r5vddgdq9mrp46491nofj29tntm",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "vdkkh9i58e5bnhls5e497qucpjrctis4",
+        "parents": [
+          "id6na5mpvblb8jef5b8uegc1b89p7t0d"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:06.404Z",
+          "author_email": "root@localhost",
+          "commit_order": 8,
+          "committer": "root",
+          "date": "2026-11-11T17:42:06.404Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0006_create_config.up.sql",
+          "parents": "id6na5mpvblb8jef5b8uegc1b89p7t0d",
+          "refs": "",
+          "signature": ""
+        }
+      },
+      {
+        "id": "vfc96uub6mof8qhmpps91nrgqaqhfllt",
+        "parents": [
+          "hsef8lugd7nd5lb2uitafo1tror0akpn"
+        ],
+        "metadata": {
+          "author": "root",
+          "author_date": "2026-11-11T17:42:07.943Z",
+          "author_email": "root@localhost",
+          "commit_order": 53,
+          "committer": "root",
+          "date": "2026-11-11T17:42:07.943Z",
+          "email": "root@localhost",
+          "message": "schema: apply migration 0046_add_is_blocked.up.sql",
+          "parents": "hsef8lugd7nd5lb2uitafo1tror0akpn",
+          "refs": "",
+          "signature": ""
+        }
+      }
+    ],
+    "Boundaries": null
+  }
+}
