@@ -104,6 +104,14 @@ func publicChildCounterCapture(t *testing.T) *dumpformat.Archive {
 	if child == nil || parent == nil || find("issues", "id", publicCounterParent) != nil || counter["last_child"] != json.Number("1") || created.ID != publicCounterChild {
 		t.Fatal("independent child/active-only-parent/counter/create witness differs")
 	}
+	// The established portable issue contract rebuilds these two operational
+	// SQL columns. Every other child field remains an exact SQL expectation.
+	childFields := dumpformat.Row{}
+	for key, value := range child {
+		if key != "row_lock" && key != "is_blocked" {
+			childFields[key] = value
+		}
+	}
 	prefix := "physical/capture-set/"
 	a, err := dumpformat.ReadNativeCaptureSet(context.Background(), bytes.NewReader(files[prefix+"capture-set.json"]), bytes.NewReader(files[prefix+"head.tar"]), func(_ context.Context, n uint64) (io.ReadCloser, error) {
 		data, ok := files[prefix+fmt.Sprintf("parts/%020d.part", n)]
@@ -125,7 +133,7 @@ func publicChildCounterCapture(t *testing.T) *dumpformat.Archive {
 			t.Fatal("active parent synthesized as durable issue")
 		}
 		if r.ID == publicCounterChild {
-			childFound = reflect.DeepEqual(r.Source.Fields, child)
+			childFound = reflect.DeepEqual(r.Source.Fields, childFields)
 		}
 	}
 	for _, r := range a.Records("beads-archive") {
