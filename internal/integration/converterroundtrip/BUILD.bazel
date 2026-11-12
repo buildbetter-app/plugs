@@ -34,6 +34,7 @@ go_test(
         "testdata/native-ready-c774-43216037385.tar.gz",
         "testdata/native-ready-c774-43216037385.tar.gz.provenance.json",
         "//internal/core/dumpformat:native_joined_public_pair",
+        "testdata/b19-native-small-expectations.json",
         "//internal/core/dumpformat:testdata/native-tables-synthetic.tar",
         "testdata/synthetic-plug-dump-1.tar",
         ":public_source_fixtures",

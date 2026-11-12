@@ -631,6 +631,7 @@ internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/b07_positive_source_test.go
 internal/integration/converterroundtrip/b13_fullcard_search_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
+internal/integration/converterroundtrip/b19_native_modes_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/graph_certification.go
 internal/integration/converterroundtrip/graph_certification_test.go

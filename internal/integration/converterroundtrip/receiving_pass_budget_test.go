@@ -317,6 +317,11 @@ func (r *receivingCountedSnapshot) SourcePlaneCheckpoint(key string) (driver.Che
 
 func receivingPublicProfile(t *testing.T, a *dumpformat.Archive, s driver.Store, lease driver.ActiveLease) driver.RestoreImportProfile {
 	t.Helper()
+	return receivingPublicProfileMode(t, a, s, lease, driver.RestoreHistoryModeFull, nil)
+}
+
+func receivingPublicProfileMode(t *testing.T, a *dumpformat.Archive, s driver.Store, lease driver.ActiveLease, mode driver.RestoreHistoryMode, selection *driver.NativeDeltaHistoryPolicy) driver.RestoreImportProfile {
+	t.Helper()
 	plan := func() driver.SourcePlanePlanV1 {
 		work, release := a.NativeDeltaAccountingScope()
 		defer release()
@@ -332,7 +337,7 @@ func receivingPublicProfile(t *testing.T, a *dumpformat.Archive, s driver.Store,
 	sort.Slice(plan.Dispositions[0].Statuses, func(i, j int) bool {
 		return plan.Dispositions[0].Statuses[i].From < plan.Dispositions[0].Statuses[j].From
 	})
-	p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(a.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: a.SHA256(), HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: nativeFixtureTime.Format("2006-01-02T15:04:05.999999999Z07:00")}
+	p := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(a.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: a.SHA256(), HistoryMode: mode, HistoryTime: nativeFixtureTime.Format("2006-01-02T15:04:05.999999999Z07:00"), NativeDeltaHistory: selection}
 	bound, err := BindNativeCaptureSetImport(a.WithNativeDeltaAccounting(context.Background()), a, p, plan)
 	if err != nil {
 		t.Fatal("actual bind", err)

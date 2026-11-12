@@ -47,7 +47,8 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 		return err
 	}
 	floor := model.Natural64(1)
-	if bound.HistoryMode == driver.RestoreHistoryModeFull {
+	if bound.HistoryMode == driver.RestoreHistoryModeFull ||
+		bound.HistoryMode == driver.RestoreHistoryModePartial && bound.NativeDeltaHistory != nil && bound.NativeDeltaHistory.FirstSequence == 1 {
 		floor = model.Natural64(0)
 	}
 	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: receipt.Commit.Revision, HistoryFloor: floor}
