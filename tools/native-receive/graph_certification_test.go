@@ -353,7 +353,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 						graphcertfixture.Decode(t, envelope.Error, &failure)
 						return envelope.Result, &failure.Data
 					}
-					created, failed := call("bead.create", map[string]any{"type": "task", "parent": model.RefByID(parent, model.Natural64(0)), "fields": map[string]any{"title": "first imported child"}}, "first-create")
+					created, failed := call("bead.create", map[string]any{"type": "issue", "parent": model.RefByID(parent, model.Natural64(0)), "fields": map[string]any{"title": "first imported child"}}, "first-create")
 					if failed != nil || len(created.Results) != 1 || created.Results[0].Ref.ID != parent+".1" || work.Attempts != 1 || work.Beads != 0 {
 						t.Fatal("first create must succeed once without full graph read", created, work)
 					}
@@ -483,7 +483,7 @@ func TestNativeReceiveGraphCertificationTwentyThousandPlanRefusal(t *testing.T) 
 	if !errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), "plan byte limit") || len(encoded) != 0 {
 		t.Fatal("20k must retain typed plan-size refusal with no partial encoding", err, len(encoded))
 	}
-	input := request{Format: "plug-native-receiving-request/1", ArchiveSHA256: archive.SHA256(), SourceStoreID: archive.Manifest().StoreID, Projects: []string{archive.Manifest().Projects[0].Prefix}, SourcePlan: plan}
+	input := request{Format: "plug-native-receiving-request/1", ArchiveSHA256: archive.SHA256(), SourceStoreID: archive.Manifest().StoreID, Projects: []string{archive.Manifest().Projects[0].Prefix}, Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourcePlan: plan}
 	raw := graphcertfixture.JSON(t, input)
 	if len(raw) <= driver.SourcePlaneMaxPlanBytes {
 		t.Fatal("expected existing complete-request bound at 20k")

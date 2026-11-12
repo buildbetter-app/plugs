@@ -199,6 +199,34 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 	if idColumn < 0 {
 		t.Fatal("missing issue identity column")
 	}
+	// Keep the authored scale input small enough for the unchanged native
+	// decoded ceiling. The public seed intentionally contains a very large
+	// description; this fixture tests admission and certification behavior, so
+	// compact the two text fields consistently in every representation instead
+	// of spending the receiving budget on repeated prose.
+	for i := range records {
+		records[i].Body["description"] = "x"
+		records[i].Source.Fields["description"] = "x"
+		records[i].Body["title"] = "x"
+		records[i].Source.Fields["title"] = "x"
+	}
+	for i := range tables["issues"] {
+		b, err := base64.StdEncoding.DecodeString(tables["issues"][i].NormalizedJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields dumpformat.Row
+		Decode(t, b, &fields)
+		fields["description"] = "x"
+		fields["title"] = "x"
+		for j, c := range issueSchema.Columns {
+			switch c.Name {
+			case "description", "title":
+				tables["issues"][i].Cells[j].Value = "x"
+			}
+		}
+		tables["issues"][i].NormalizedJSON = base64.StdEncoding.EncodeToString(JSON(t, fields))
+	}
 	// Match the physical prototype to the exact portable source image.
 	for _, row := range tables["issues"] {
 		var fields dumpformat.Row
