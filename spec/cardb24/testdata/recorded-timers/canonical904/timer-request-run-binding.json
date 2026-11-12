@@ -1,0 +1,26 @@
+{
+  "attempt": "1",
+  "candidate": "904bc63db262d2f914fb0158a002b3a04e5e110a",
+  "capture_source": {
+    "Name": "beads-446dbb",
+    "Commit": "446dbbdaf978385099aeb8625e08016889fffccf",
+    "Tree": "64f0d22c8622c2a20da2bfe8c3ad49458fd12b06",
+    "Parent": "a367be65df60baa1ee8444f1e437904122f25f87",
+    "ArchiveSHA": "32034b6d242f252144f6353f0d9d2f8b7d50739faf7973d62de93cafe25f3959",
+    "ManifestSHA": "a2456b25849b281d86ac57a461e21e0cc244cd80602c20269d88e7b9e28bc246",
+    "Entries": 5158
+  },
+  "native_source": {
+    "Name": "beads-9d6fff",
+    "Commit": "9d6fff760b7a314b476539198504d77ce0959656",
+    "Tree": "cde121d6e4119e454857ad1c3ca293e2791be840",
+    "Parent": "cadad184cefce7da159ea4b18c9bd44865e72f6b",
+    "ArchiveSHA": "8aa8d07655ec6903703a4c94a4b1aa12d4fb509ab647cd1958f73f8342d3fe6e",
+    "ManifestSHA": "23d84a56302ad19c50d9d25af733b2da50f9137aaf9308b273cab039b6023ae3",
+    "Entries": 5087
+  },
+  "run": "43067608625",
+  "shared_recipe_sha256": "0003df7485b16dc2ad3ace5533194f47b748ab15319e13698365ec562798c87b",
+  "workflow_ref": "buildbetter-app/plugs/.github/workflows/plug-remote-bazel.yml@refs/heads/main",
+  "workflow_sha": "92288d2fc18b93aa9614cdae2e54d6838ce21745"
+}

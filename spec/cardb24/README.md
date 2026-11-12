@@ -78,3 +78,30 @@ operation-bound `issue_versions` query trace. Exact native equality and no-load
 therefore remain `NOT_MEASURED`; actual no-mint and observed timestamps do not
 fill those missing cells. No clock shim, allocator/GMS edit or protected
 fixture is introduced.
+
+The new ordinary `recorded_timer_test` consumes unchanged public native
+originals instead of creating another capture. It compares the separately
+authored `a91` expectations with the reached `8e91` strict stale second-tick
+samples, nonpositive-age and blank-reason refusals, exact notes append, past
+warning/write, split Go/SQL wake before/at, and actual history-off version-row
+conservation. Each engine then executes new public byte-RPC controls with
+separate application/durable clocks, complete read/refusal images, ordinary
+ChangeSets, exact ordered comments and explicit reopen. SQLite and PostgreSQL
+actually close/open; memory remains same-store.
+
+The same target imports the saved canonical non-NULL due/defer archive from
+original `904` run `43067608625` through the existing finite joint snapshot
+caller. It runs field/readback/reopen controls in the ordinary whole suite
+without rebuilding or recapturing the native source. The input manifest binds
+all original bytes, source/run identities and native build/SQL/request
+receipts. The independent expectations precede this consumer; captured ready
+membership never supplies an oracle.
+
+This is a new consumer acceptance unit, not a completed native fixture result.
+The `8e91` original focus remains RED after its reached prefix. Native
+repeat-after and after-wake physical capture are `NOT_REACHED`; operation-bound
+version READ is `NOT_MEASURED`, and native subsecond stale precision is
+`NOT_PROVED`. Exact next-source focus/whole outcomes remain pending the
+controller's paced execution window and distinct review. The current producer
+confirmed no completed successor clock input; native-history capture import
+remains a separate receiver-owned Full-profile dependency.

@@ -1,0 +1,285 @@
+{
+  "scope": "INDEPENDENT_EXPECTED_PROJECTIONS_NOT_CAPTURED_OUTPUTS",
+  "derivation": "Supplement to the frozen pre-source oracle for final operation inputs supplied by the author; native source predicates and comparator independently reviewed",
+  "source_head": "8e91a0d223e5e9d61cf4827af06c79a75f255f2b",
+  "supersedes_only": "Final independent mixed SQL-only inputs and second-tick stale samples; all predecessor oracle files and RED observations preserved unchanged",
+  "boundary_utc": "2026-11-03T12:00:00Z",
+  "identity_binding": "Generated identities must come from actual public-create inputs and raw create stdout, never ready output or Plug consumer output",
+  "active_expected_roles": {
+    "aging": {
+      "id": "clockready-aging",
+      "source_table": "issues",
+      "priority": 0,
+      "created_at": "2026-11-01T12:00:00Z",
+      "status": "open"
+    },
+    "wisp": {
+      "input_key": "wisp",
+      "source_table": "wisps",
+      "title": "active recent priority two",
+      "priority": 2,
+      "created_at": "2026-11-03T11:00:00Z",
+      "status": "open"
+    },
+    "control": {
+      "id": "clockready-control",
+      "source_table": "issues",
+      "title": "ordinary priority four companion",
+      "priority": 4,
+      "created_at": "2026-11-03T11:00:00Z",
+      "status": "open"
+    },
+    "blocked": {
+      "input_key": "blocked_wisp",
+      "source_table": "wisps",
+      "priority": 0,
+      "created_at": "2026-11-03T11:00:00Z",
+      "status": "open",
+      "blocked_by": "clockready-blocker"
+    },
+    "blocker": {
+      "id": "clockready-blocker",
+      "source_table": "issues",
+      "status": "in_progress"
+    }
+  },
+  "active_order_roles": {
+    "public_default_included": [
+      "aging",
+      "wisp",
+      "control"
+    ],
+    "public_default_durable_only": [
+      "aging",
+      "control"
+    ],
+    "hybrid_at_48h": [
+      "aging",
+      "wisp",
+      "control"
+    ],
+    "hybrid_after_48h": [
+      "wisp",
+      "control",
+      "aging"
+    ],
+    "after_blocker_closed_default": [
+      "aging",
+      "blocked",
+      "wisp",
+      "control"
+    ],
+    "after_blocker_reopened_default": [
+      "aging",
+      "wisp",
+      "control"
+    ],
+    "hybrid_sql_only_after_cutoff": [
+      "wisp",
+      "control",
+      "aging"
+    ]
+  },
+  "active_prefix_limits": [
+    1,
+    2,
+    1000
+  ],
+  "active_parent_edges": [
+    {
+      "subject_input": "ordinary_child",
+      "subject_table": "issues",
+      "type": "parent-child",
+      "target_input": "wisp",
+      "target_table": "wisps"
+    },
+    {
+      "subject_input": "active_child",
+      "subject_table": "wisps",
+      "type": "parent-child",
+      "target_id": "clockready-control",
+      "target_table": "issues"
+    }
+  ],
+  "stale": {
+    "stored_updated_at": "2026-11-02T12:00:00Z",
+    "sql_fixed": "2026-11-03T19:00:00Z",
+    "go_points": [
+      "2026-11-03T11:59:59Z",
+      "2026-11-03T12:00:00Z",
+      "2026-11-03T12:00:01Z"
+    ],
+    "open_ids": [
+      [],
+      [],
+      [
+        "clockdefer-stale"
+      ]
+    ],
+    "explicit_deferred_ids": [
+      [],
+      [],
+      [
+        "clockdefer-stale-deferred"
+      ]
+    ],
+    "closed_included": false,
+    "nonpositive_age": {
+      "exit_code": 1,
+      "stdout_json": {
+        "error": "--days must be at least 1",
+        "schema_version": 1
+      },
+      "stderr": "",
+      "all_tables_and_graph": "UNCHANGED"
+    },
+    "sample_tick_ns": 1000000000,
+    "subsecond_cutoff_precision": "NOT_PROVED; earlier +1us empty original preserved with its RED expectation"
+  },
+  "timer": {
+    "id": "clockdefer-timer",
+    "title": "timer unrelated",
+    "status": "deferred",
+    "due_at": {
+      "sql_null": false,
+      "utc": "2099-01-15T00:00:00Z"
+    },
+    "defer_until": {
+      "sql_null": false,
+      "utc": "2099-06-15T00:00:00Z"
+    },
+    "notes": "existing notes\nwaiting deliberately",
+    "blank_reason": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "Error: reason cannot be empty\n",
+      "all_tables_and_graph": "UNCHANGED"
+    }
+  },
+  "wake": {
+    "dated_input_keys": [
+      "dated",
+      "active"
+    ],
+    "indefinite_input_keys": [
+      "indefinite",
+      "indefinite_active"
+    ],
+    "created_at": "2026-11-03T12:00:00Z",
+    "due_at": {
+      "sql_null": false,
+      "utc": "2099-01-15T00:00:00Z"
+    },
+    "defer_until_before": {
+      "sql_null": false,
+      "utc": "2026-11-03T12:00:01Z"
+    },
+    "steps": [
+      {
+        "name": "wake-go-only-past",
+        "go": "2026-11-03T12:00:20.123456789Z",
+        "sql": "2026-11-03T12:00:00.999999Z",
+        "ids": [],
+        "dated_status": "deferred",
+        "dated_updated_at": "2026-11-03T12:00:00Z",
+        "all_tables_and_graph": "UNCHANGED"
+      },
+      {
+        "name": "wake-sql-at",
+        "go": "2026-11-03T12:00:20.123456789Z",
+        "sql": "2026-11-03T12:00:01Z",
+        "ids": "lexicographically ascending actual public-create dated and active identities",
+        "dated_status": "open",
+        "dated_defer_sql_null": true,
+        "dated_updated_at": "2026-11-03T12:00:20Z",
+        "new_event_per_family": 1,
+        "new_durable_graph_child": 1
+      },
+      {
+        "name": "wake-sql-after",
+        "go": "2026-11-03T12:00:21.123456789Z",
+        "sql": "2026-11-03T12:00:01.000001Z",
+        "ids": "same input-derived ascending pair",
+        "dated_status": "open",
+        "dated_defer_sql_null": true,
+        "dated_updated_at": "2026-11-03T12:00:20Z",
+        "all_tables_and_graph": "UNCHANGED"
+      }
+    ],
+    "event_projection": {
+      "event_type": "status_changed",
+      "actor": "bd-defer-wake",
+      "old_value": "deferred",
+      "new_value": "open",
+      "created_at": "ACTUAL_UNCONTROLLED_AUDIT_VALUE"
+    },
+    "indefinite_after": {
+      "status": "deferred",
+      "defer_sql_null": true,
+      "updated_at": "2026-11-03T12:00:00Z"
+    },
+    "history_off_version_rows": 0,
+    "history_off_version_load": "NOT_MEASURED"
+  },
+  "precision": {
+    "go_input_ns": 1,
+    "sql_expression_ns": 1000,
+    "stored_datetime_expected_precision": 0,
+    "stored_precision_status": "REQUIRES_ACTUAL_METADATA_AND_READBACK"
+  },
+  "runtime_verdict": "NOT_DELIVERED",
+  "active_clock_steps": [
+    {
+      "name": "mixed-at",
+      "go": "2026-11-03T12:00:00Z",
+      "sql": "2026-11-03T19:00:00Z",
+      "default_roles": [
+        "aging",
+        "wisp",
+        "control"
+      ],
+      "hybrid_roles": [
+        "aging",
+        "wisp",
+        "control"
+      ]
+    },
+    {
+      "name": "mixed-after",
+      "go": "2026-11-03T12:00:00.000001Z",
+      "sql": "2026-11-03T19:00:00Z",
+      "default_roles": [
+        "aging",
+        "wisp",
+        "control"
+      ],
+      "hybrid_roles": [
+        "wisp",
+        "control",
+        "aging"
+      ]
+    },
+    {
+      "name": "mixed-sql-only",
+      "go": "2026-11-03T12:00:00.000001Z",
+      "sql": "2026-11-03T19:00:01Z",
+      "default_roles": [
+        "aging",
+        "wisp",
+        "control"
+      ],
+      "hybrid_roles": [
+        "wisp",
+        "control",
+        "aging"
+      ]
+    }
+  ],
+  "active_graph_child_labels": {
+    "public_create_option": "--no-inherit-labels",
+    "expected_labels": [
+      "active-child"
+    ],
+    "ordering_label_absent": "active-clock"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "active": "clockdefer-wisp-xza",
+  "dated": "clockdefer-dated",
+  "defer_until": "2026-11-03T12:00:01Z",
+  "due_at": "2099-01-15T00:00:00Z",
+  "expected_stored_update": "2026-11-03T12:00:20Z",
+  "go_update_input": "2026-11-03T12:00:20.123456789Z",
+  "history_off_load": "NOT_MEASURED: no operation-bound SQL/read trace",
+  "indefinite": "clockdefer-indefinite",
+  "indefinite_active": "clockdefer-wisp-th8",
+  "sql_comparison": "defer_until \u003c= UTC_TIMESTAMP()"
+}

@@ -77,6 +77,20 @@ go_test(
     deps = _TIMER_DEPS,
 )
 
+# Saved public native originals supply the independently reviewed inputs. The
+# test still performs real Writer/service/byte-RPC calls and SQL close/open;
+# it builds or captures no native producer and does not relabel partial REDs.
+go_test(
+    name = "recorded_timer_test",
+    srcs = _TIMER_SRCS + ["recorded_timer_test.go"],
+    data = glob(["testdata/recorded-timers/**"]),
+    args = ["-test.v", "-test.run=^TestB24Recorded(NativeClockComparisons|CanonicalNonNullTimersDurable)$$"],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+    deps = _TIMER_DEPS,
+)
+
 # A separate anchored selector makes the new native controls reachable without
 # rerunning or changing the predecessor manual target's accepted contract.
 go_test(

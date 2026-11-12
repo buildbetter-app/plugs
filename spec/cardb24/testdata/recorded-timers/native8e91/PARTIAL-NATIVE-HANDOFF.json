@@ -1,0 +1,102 @@
+{
+  "format": "s1-native-ready-defer-stage-handoff/1",
+  "scope": "PARTIAL_ORIGINALS_ONLY_NOT_COMPLETED_FIXTURE_QUALIFICATION",
+  "source": {
+    "head": "8e91a0d223e5e9d61cf4827af06c79a75f255f2b",
+    "tree": "50f05d45d3fa1970de18e03b72d2d5dadb93a8ba",
+    "base": "b1c03e196f277b6821610af983499d49ecc366c5",
+    "worktree": "/home/dev/.paseo/worktrees/10mmulyl/s1-native-ready-defer-author-20261111-1705",
+    "review": "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/SOURCE-REVIEW-8e91.md",
+    "wip": "uncommitted refs-only fixture correction; no new gate or source qualification"
+  },
+  "gates": {
+    "focus": {
+      "run_id": "43069975067",
+      "verdict": "RED; both new tests reached; no skips",
+      "detail": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/FOCUS-VERDICT.json"
+    },
+    "whole": {
+      "run_id": "43069973986",
+      "verdict": "RED; raw11 executed10PASS1FAIL226skipped; new fixture NO_STATUS",
+      "detail": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/WHOLE-VERDICT.json"
+    }
+  },
+  "original_manifest": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/ORIGINAL-MANIFEST.json",
+  "extracted_manifest": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/EXTRACTED-MANIFEST.json",
+  "seal_sequence": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/SEAL-SEQUENCE.json",
+  "independent_expectations": [
+    "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/INDEPENDENT-EXPECTATIONS.md",
+    "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/EXPECTED-TUPLES.json",
+    "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/EXPECTED-SUPPLEMENT-8e91.json",
+    "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/EXPECTED-TYPE-AND-EDGE-PROJECTIONS.md"
+  ],
+  "B01": {
+    "actual_live_originals": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockready",
+    "public_create_role_inputs": {
+      "active_child": "clockready-control.1",
+      "blocked_wisp": "clockready-wisp-4vr",
+      "blocker": "clockready-blocker",
+      "ordinary": "clockready-control",
+      "ordinary_child": "clockready-wisp-wf0.1",
+      "wisp": "clockready-wisp-wf0"
+    },
+    "physical_final": "UNAVAILABLE: unchanged standalone capture refused history-walk/other; original diagnostic retained in test.log; no accepted graph-policy refusal or cause inferred",
+    "native_p74": "No native stored lag; all 60s samples recompute; no Plug P74 parity claim"
+  },
+  "B24": {
+    "actual_live_originals": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer",
+    "public_create_role_inputs": {
+      "active": "clockdefer-wisp-xza",
+      "dated": "clockdefer-dated",
+      "defer_until": "2026-11-03T12:00:01Z",
+      "due_at": "2099-01-15T00:00:00Z",
+      "expected_stored_update": "2026-11-03T12:00:20Z",
+      "go_update_input": "2026-11-03T12:00:20.123456789Z",
+      "history_off_load": "NOT_MEASURED: no operation-bound SQL/read trace",
+      "indefinite": "clockdefer-indefinite",
+      "indefinite_active": "clockdefer-wisp-th8",
+      "sql_comparison": "defer_until <= UTC_TIMESTAMP()"
+    },
+    "physical_before_wake": {
+      "inventory.json": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/physical-before-wake/inventory.json",
+      "capture.tar": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/physical-before-wake/capture.tar",
+      "physical-evidence.json": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/physical-before-wake/physical-evidence.json",
+      "inventory.json.sources": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/physical-before-wake/inventory.json.sources"
+    },
+    "capture_stage": "after actual timer preservation/reasons/stale/refusals and wake preparation, before split-clock wake; immutable exact source rows copied and independently SQL-compared by reached test",
+    "timer_input_oracle": {
+      "project": "clockdefer",
+      "id": "clockdefer-timer",
+      "title": "timer unrelated",
+      "issue_type": "task",
+      "priority": 2,
+      "status": "deferred",
+      "created_at": "2026-11-03T12:00:00Z",
+      "updated_at": "2026-11-03T12:00:00Z",
+      "due_at": {
+        "sql_null": false,
+        "utc": "2099-01-15T00:00:00Z"
+      },
+      "defer_until": {
+        "sql_null": false,
+        "utc": "2099-06-15T00:00:00Z"
+      },
+      "notes": "existing notes\nwaiting deliberately",
+      "expected_source_table": "issues",
+      "independent_oracle": "/tmp/plug-swarm/reviews/S1-native-ready-defer-reviewer-20261111-1705/EXPECTED-SUPPLEMENT-8e91.json"
+    },
+    "after_wake_live_sql": "/tmp/plug-swarm/reports/S1-native-ready-defer-author-20261111-1705/8e91a0d223e5/focus-extracted/test.outputs/clockdefer/wake-at-after-sql-state.json",
+    "physical_after_wake": "NOT_REACHED: graph-ref decoration fixture assertion failed after exact SQL wake/conservation checks",
+    "history_off_no_mint": "actual issue_versions row conservation reached; no-load separate",
+    "history_off_no_load": "NOT_MEASURED: no operation-bound issue_versions read trace",
+    "stale_second_tick": "before/at/after one-second samples reached; prior +1us[] discrepancy remains literal/subsecondNOT_PROVED"
+  },
+  "clock_scope": "live companion Go/SQL input and actual SQL observations are independent; physical tool uses unchanged embedded route with capture-clock env removed, no controlled embedded SQL claim",
+  "limits": [
+    "Ready physical positive NOT_PROVED",
+    "Defer full test RED; repeat-after and after-wake physical NOT_REACHED",
+    "Whole RED/new target NOT_RUN there",
+    "No consumer proof, native-history admission, official/private or FullS1 credit",
+    "No retry/substitute/workaround authorized by boundary correspondence"
+  ]
+}
