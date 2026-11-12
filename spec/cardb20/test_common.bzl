@@ -1,6 +1,6 @@
 # Shared source and dependency order for the existing card targets.
 
-COMMON = ["current_test.go", "postgres_test.go", "runtime_test.go", "policy_test.go", "caller_test.go", "sql_rows_test.go", "caller_closure_test.go"]
+COMMON = ["current_test.go", "postgres_test.go", "runtime_test.go", "policy_test.go", "caller_test.go", "sql_rows_test.go", "caller_closure_test.go", "vocabulary_test.go"]
 DEPS = [
     "//internal/cli",
     "//internal/client",
