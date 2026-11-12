@@ -1,12 +1,14 @@
 package cardb20
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,20 +32,24 @@ import (
 
 const b23RichFixtureRoot = "testdata/native-rich-review-project"
 
+type b23RichFileBinding struct {
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
 type b23RichFixtureManifest struct {
-	Schema  string `json:"schema"`
-	Archive struct {
-		Bytes  int    `json:"bytes"`
-		SHA256 string `json:"sha256"`
-	} `json:"archive"`
-	ArchiveMembers map[string]struct {
-		Bytes  int    `json:"bytes"`
-		SHA256 string `json:"sha256"`
-	} `json:"archive_members"`
-	OracleFiles map[string]struct {
-		Bytes  int    `json:"bytes"`
-		SHA256 string `json:"sha256"`
-	} `json:"oracle_files"`
+	Schema         string                        `json:"schema"`
+	Archive        b23RichFileBinding            `json:"archive"`
+	ArchiveMembers map[string]b23RichFileBinding `json:"archive_members"`
+	OracleFiles    map[string]b23RichFileBinding `json:"oracle_files"`
+	CaptureSet     struct {
+		Directory   string                        `json:"directory"`
+		Format      string                        `json:"format"`
+		Contract    string                        `json:"contract"`
+		TotalBytes  int                           `json:"total_bytes"`
+		Files       map[string]b23RichFileBinding `json:"files"`
+		HeadMembers map[string]b23RichFileBinding `json:"head_members"`
+	} `json:"capture_set"`
 	Source struct {
 		ProducerHead   string `json:"producer_head"`
 		ProducerTree   string `json:"producer_tree"`
@@ -100,7 +106,35 @@ func b23RichHash(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func b23RichFixture(t *testing.T) ([]byte, b23RichFixtureManifest, *dumpformat.Archive) {
+// Check raw TAR commitments without admitting or remapping the legacy input.
+func b23RichTarBindings(t *testing.T, raw []byte, expected map[string]b23RichFileBinding) {
+	t.Helper()
+	reader := tar.NewReader(bytes.NewReader(raw))
+	seen := map[string]bool{}
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, bound := expected[header.Name]
+		if !bound {
+			continue
+		}
+		member, err := io.ReadAll(reader)
+		if err != nil || seen[header.Name] || len(member) != want.Bytes || b23RichHash(member) != want.SHA256 {
+			t.Fatalf("rich raw archive member %s changed: %v", header.Name, err)
+		}
+		seen[header.Name] = true
+	}
+	if len(seen) != len(expected) {
+		t.Fatalf("rich raw archive bindings missing: got=%d want=%d", len(seen), len(expected))
+	}
+}
+
+func b23RichFixture(t *testing.T) (b23RichFixtureManifest, *dumpformat.Archive) {
 	t.Helper()
 	var manifest b23RichFixtureManifest
 	if err := json.Unmarshal(b23RichReadFile(t, "fixture-manifest.json"), &manifest); err != nil {
@@ -122,17 +156,45 @@ func b23RichFixture(t *testing.T) ([]byte, b23RichFixtureManifest, *dumpformat.A
 			t.Fatalf("rich oracle %s changed", name)
 		}
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("read rich native archive: %v", err)
+	b23RichTarBindings(t, data, manifest.ArchiveMembers)
+	// The original legacy TAR remains a refusal control, before any target is
+	// opened. Native history is admitted only through the authenticated set.
+	if _, err := dumpformat.Read(bytes.NewReader(data)); err == nil || err.Error() != "typed body/source mapping mismatch" {
+		t.Fatalf("legacy native archive refusal changed: %v", err)
 	}
-	for name, expected := range manifest.ArchiveMembers {
-		member, ok := archive.Member(name)
+	t.Logf("B23_LEGACY_NATIVE_REFUSAL sha256=%s reason=typed body/source mapping mismatch target_opened=false", manifest.Archive.SHA256)
+	if manifest.CaptureSet.Directory != "capture-set" || manifest.CaptureSet.Format != "beads-native-capture-set/2" || manifest.CaptureSet.Contract != "beads-native-delta/2" || len(manifest.CaptureSet.Files) != 3 || manifest.CaptureSet.TotalBytes != 2678929 {
+		t.Fatal("rich authenticated capture-set binding changed")
+	}
+	total := 0
+	for _, name := range []string{"capture-set.json", "head.tar", "parts/00000000000000000001.part"} {
+		expected, ok := manifest.CaptureSet.Files[name]
+		member := b23RichReadFile(t, filepath.Join(manifest.CaptureSet.Directory, name))
 		if !ok || len(member) != expected.Bytes || b23RichHash(member) != expected.SHA256 {
-			t.Fatalf("rich archive member %s changed", name)
+			t.Fatalf("rich capture-set file %s changed", name)
 		}
+		total += len(member)
 	}
-	return data, manifest, archive
+	if total != manifest.CaptureSet.TotalBytes || total > 20*1024*1024 {
+		t.Fatalf("rich capture-set byte census=%d", total)
+	}
+	var root dumpformat.NativeCaptureSet
+	if err := json.Unmarshal(b23RichReadFile(t, "capture-set/capture-set.json"), &root); err != nil {
+		t.Fatal(err)
+	}
+	if root.Format != manifest.CaptureSet.Format || root.Contract != manifest.CaptureSet.Contract || root.StoreID != manifest.Source.StoreID || !reflect.DeepEqual(root.Projects, []string{manifest.Source.Project}) || root.Head != manifest.Source.SourceHead || root.Totals.Commits != uint64(manifest.Source.CommitCount) || root.PartCount != 1 {
+		t.Fatal("rich capture-set source identity differs from independent oracle binding")
+	}
+	b23RichTarBindings(t, b23RichReadFile(t, "capture-set/head.tar"), manifest.CaptureSet.HeadMembers)
+	archive, err := dumpformat.ReadNativeCaptureSetDirectory(context.Background(), filepath.Join(b23RichFixtureRoot, manifest.CaptureSet.Directory), dumpformat.NativeCaptureSetOptions{})
+	if err != nil {
+		t.Fatalf("read authenticated rich native capture set: %v", err)
+	}
+	if !archive.HasNativeDelta() || archive.Manifest().StoreID != manifest.Source.StoreID {
+		t.Fatal("rich native capture set lost its authenticated source binding")
+	}
+	t.Cleanup(archive.ReleaseNativeDecoded)
+	return manifest, archive
 }
 
 func b23RichOracle(t *testing.T) (b23RichSourceCommits, []b23RichState, b23RichTable, b23RichTable) {
@@ -704,39 +766,98 @@ func b23RichHistoryEvidence(t *testing.T, store driver.Store, meta driver.Meta) 
 	return evidence
 }
 
-func b23RichAssertEvidence(t *testing.T, evidence driver.HistoryImportEvidence, scope dumpformat.NativeHistory) {
+func b23RichAssertEvidence(t *testing.T, evidence driver.HistoryImportEvidence, scope dumpformat.NativeHistory, states []b23RichState) {
 	t.Helper()
-	if evidence.Source != driver.NativeTableHistorySource || evidence.Mode != driver.RestoreHistoryModeFull || !evidence.Complete || evidence.First != 1 || evidence.Head != uint64(len(scope.Images)) || !evidence.Floor.IsZero() || len(evidence.Gaps) != 0 || len(evidence.Mapping) != len(scope.Images) {
+	if evidence.Source != driver.NativeTableHistorySource || evidence.Mode != driver.RestoreHistoryModeFull || !evidence.Complete || evidence.First != 1 || evidence.Head != uint64(len(scope.Commits)) || !evidence.Floor.IsZero() || len(evidence.Gaps) != 0 || len(evidence.Mapping) != len(scope.Commits) || len(states) != len(evidence.Mapping) {
 		t.Fatalf("native history evidence boundary=%+v", evidence)
 	}
 	for i, mapping := range evidence.Mapping {
-		image := scope.Images[i]
-		if mapping.SourceStoreID != scope.StoreID || mapping.Project != scope.Projects[0] || mapping.SourceSequence != image.Sequence || mapping.Sequence != uint64(i+1) || mapping.Revision != model.Natural64(uint64(i+1)) || len(mapping.EventIDs) != 0 || len(mapping.CommitIDs) != 1 || mapping.CommitIDs[0] != image.CommitID {
-			t.Fatalf("native history mapping %d differs: %+v image=%+v", i+1, mapping, image)
+		state := states[i]
+		if mapping.SourceStoreID != scope.StoreID || mapping.Project != scope.Projects[0] || mapping.SourceSequence != state.Sequence || mapping.Sequence != uint64(i+1) || mapping.Revision != model.Natural64(uint64(i+1)) || len(mapping.EventIDs) != 0 || len(mapping.CommitIDs) != 1 || mapping.CommitIDs[0] != state.CommitID {
+			t.Fatalf("native history mapping %d differs: %+v source=%+v", i+1, mapping, state)
 		}
 	}
 }
 
-func b23RichAssertSourceOracle(t *testing.T, archive *dumpformat.Archive, manifest b23RichFixtureManifest, commits b23RichSourceCommits, states []b23RichState) dumpformat.NativeHistory {
+func b23RichAssertSourceOracle(t *testing.T, archive *dumpformat.Archive, manifest b23RichFixtureManifest, commits b23RichSourceCommits, states []b23RichState) (dumpformat.NativeHistory, []b23RichState) {
 	t.Helper()
-	scopes := archive.NativeSourceHistories()
+	scopes, err := archive.NativeSourceHistoriesChecked()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(scopes) != 1 {
 		t.Fatalf("rich native source scope count=%d want=1", len(scopes))
 	}
 	scope := scopes[0]
-	if scope.StoreID != manifest.Source.StoreID || len(scope.Projects) != 1 || scope.Projects[0] != manifest.Source.Project || !scope.Complete || len(scope.Gaps) != 0 || len(scope.Commits) != manifest.Source.CommitCount || len(scope.Images) != manifest.Source.CommitCount || len(states) != manifest.Source.CommitCount || len(commits.Commits) != manifest.Source.CommitCount {
-		t.Fatalf("rich native source census store=%s projects=%v commits=%d images=%d states=%d oracle=%d", scope.StoreID, scope.Projects, len(scope.Commits), len(scope.Images), len(states), len(commits.Commits))
+	if scope.StoreID != manifest.Source.StoreID || len(scope.Projects) != 1 || scope.Projects[0] != manifest.Source.Project || !scope.Complete || len(scope.Gaps) != 0 || len(scope.Commits) != manifest.Source.CommitCount || len(states) != manifest.Source.CommitCount+2 || len(commits.Commits) != manifest.Source.CommitCount {
+		t.Fatalf("rich native source census store=%s projects=%v commits=%d states=%d oracle=%d", scope.StoreID, scope.Projects, len(scope.Commits), len(states), len(commits.Commits))
 	}
-	for i, commit := range scope.Commits {
-		want := commits.Commits[i]
-		if commit.ID != want.ID || !reflect.DeepEqual(commit.Parents, want.Parents) {
-			t.Fatalf("native source commit %d identity changed: got=%+v want=%+v", i+1, commit, want)
+	// The native graph is listed by ID; image order is recorded separately
+	// by the producer's commit frames. Preserve both original qualifications.
+	graphIndex := map[string]int{}
+	for i, commit := range commits.Commits {
+		if commit.ID == "" {
+			t.Fatal("independent native graph contains an empty commit ID")
 		}
-		image := scope.Images[i]
-		state := states[i]
-		if image.Sequence != uint64(i+1) || image.CommitID != commit.ID || state.Sequence != image.Sequence || state.CommitID != image.CommitID || state.Kind != "commit" || state.TableCount != len(image.Tables) || len(state.PhysicalRootSHA) != sha256.Size*2 {
-			t.Fatalf("native source image/state %d mismatch image=%+v state=%+v", i+1, image, state)
+		if _, duplicate := graphIndex[commit.ID]; duplicate {
+			t.Fatal("independent native graph repeats a commit ID")
 		}
+		graphIndex[commit.ID] = i
+	}
+	seen := map[string]bool{}
+	for _, commit := range scope.Commits {
+		index, exists := graphIndex[commit.ID]
+		if !exists || seen[commit.ID] || !reflect.DeepEqual(commit.Parents, commits.Commits[index].Parents) {
+			t.Fatalf("native source graph identity/parents changed: %+v", commit)
+		}
+		seen[commit.ID] = true
+	}
+	commitStates := []b23RichState{}
+	frameIDs := map[string]bool{}
+	ancillary := map[string]b23RichState{}
+	for _, state := range states {
+		switch state.Kind {
+		case "commit":
+			if state.Sequence != uint64(len(commitStates)+1) || !seen[state.CommitID] || frameIDs[state.CommitID] {
+				t.Fatal("independent native commit-frame sequence changed")
+			}
+			frameIDs[state.CommitID] = true
+			commitStates = append(commitStates, state)
+		case "head-checkpoint", "current":
+			if _, duplicate := ancillary[state.Kind]; duplicate || state.Sequence != 0 || state.CommitID != manifest.Source.SourceHead || len(state.PhysicalRootSHA) != sha256.Size*2 {
+				t.Fatal("independent native ancillary frame changed")
+			}
+			ancillary[state.Kind] = state
+		default:
+			t.Fatalf("unexpected independent native frame kind %q", state.Kind)
+		}
+	}
+	if len(commitStates) != manifest.Source.CommitCount || len(ancillary) != 2 || !commits.Clean || commits.Head != manifest.Source.SourceHead {
+		t.Fatal("independent native graph/frame completeness changed")
+	}
+	head, current := ancillary["head-checkpoint"], ancillary["current"]
+	last := commitStates[len(commitStates)-1]
+	if head.TableCount != 23 || current.TableCount != 36 || head.CommitID != last.CommitID || head.PhysicalRootSHA != last.PhysicalRootSHA || head.TableCount != last.TableCount {
+		t.Fatal("independent HEAD/current frames or final committed root changed")
+	}
+	// V2 keeps HEAD detached and streams the historical states. Do not retain
+	// callback tables or substitute HEAD for any of the 122 independent windows.
+	if len(scope.Images) != 1 || scope.Images[0].CommitID != manifest.Source.SourceHead || scope.Images[0].Sequence != uint64(manifest.Source.CommitCount) {
+		t.Fatal("native capture-set detached HEAD identity changed")
+	}
+	images := 0
+	if err := archive.VisitNativeDeltaImages(context.Background(), func(image dumpformat.NativeHistoryImage, _ []string) error {
+		if images >= len(commitStates) {
+			return fmt.Errorf("native source stream has extra image %d", image.Sequence)
+		}
+		state := commitStates[images]
+		if image.Sequence != uint64(images+1) || image.CommitID != state.CommitID || state.Sequence != image.Sequence || state.CommitID != image.CommitID || state.Kind != "commit" || state.TableCount != len(image.Tables) || len(state.PhysicalRootSHA) != sha256.Size*2 {
+			return fmt.Errorf("native source image/state %d mismatch", images+1)
+		}
+		images++
+		return nil
+	}); err != nil || images != manifest.Source.CommitCount {
+		t.Fatalf("native source stream incomplete: images=%d want=%d err=%v", images, manifest.Source.CommitCount, err)
 	}
 	issues, ok := scope.Current["issues"]
 	if !ok || len(issues.Rows) != 12 {
@@ -746,55 +867,24 @@ func b23RichAssertSourceOracle(t *testing.T, archive *dumpformat.Archive, manife
 	if !ok || len(labels.Rows) != 20 {
 		t.Fatalf("native current labels census=%d", len(labels.Rows))
 	}
-	return scope
+	return scope, commitStates
 }
 
-func b23RichNativeWindowReadback(t *testing.T, store driver.Store, meta driver.Meta, archive *dumpformat.Archive, scope dumpformat.NativeHistory, mapping driver.SourceImportRevision) {
+func b23RichNativeWindowReadback(t *testing.T, store driver.Store, meta driver.Meta, mapping driver.SourceImportRevision) {
 	t.Helper()
+	// The existing typed capture-set verifier checks every mapped native
+	// row/meta snapshot. This separate selected-window check retains the
+	// portable-row boundary without applying the legacy V1 row codec to V2.
 	reader, err := store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation, At: &mapping.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	var image *dumpformat.NativeHistoryImage
-	for i := range scope.Images {
-		if scope.Images[i].Sequence == mapping.SourceSequence {
-			image = &scope.Images[i]
-			break
-		}
-	}
-	if image == nil || len(mapping.CommitIDs) != 1 || mapping.CommitIDs[0] != image.CommitID {
-		t.Fatalf("native mapping has no exact source image: %+v", mapping)
-	}
-	identity := dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}
-	tables := make([]string, 0, len(image.Tables))
-	for table := range image.Tables {
-		tables = append(tables, table)
-	}
-	sort.Strings(tables)
-	for _, table := range tables {
-		expected, err := dumpformat.NativeV1TableRecords(identity, table, "retained-native-commit", image.Tables[table])
-		if err != nil {
-			t.Fatal(err)
-		}
-		refs := make([]model.Ref, len(expected))
-		for i := range expected {
-			refs[i] = expected[i].Ref
-		}
-		got, err := reader.Get(context.Background(), refs)
-		if err != nil || len(got) != len(expected) {
-			t.Fatalf("native source window %d table=%s rows=%d want=%d err=%v", mapping.SourceSequence, table, len(got), len(expected), err)
-		}
-		for i := range expected {
-			if got[i].Ref != expected[i].Ref || got[i].Kind != expected[i].Kind || !bytes.Equal(got[i].Body, expected[i].Body) {
-				t.Fatalf("native source window %d table=%s row %d differs", mapping.SourceSequence, table, i)
-			}
-		}
-	}
 	portable, err := reader.Get(context.Background(), []model.Ref{model.RefByID("review-project-a1b", model.Natural64(0))})
 	if err != nil || len(portable) != 0 {
 		t.Fatalf("native source window fabricated portable bead at revision %s: rows=%d err=%v", mapping.Revision, len(portable), err)
 	}
+	t.Logf("B23_NATIVE_WINDOW source_sequence=%d commit_ids=%v target_revision=%s portable_rows=0", mapping.SourceSequence, mapping.CommitIDs, mapping.Revision)
 }
 
 func b23RichNativeOldAsOf(t *testing.T, server *rpc.Server, store driver.Store, restored driver.Meta, firstMapping driver.SourceImportRevision, before driver.Meta) {
@@ -819,9 +909,9 @@ func b23RichNativeOldAsOf(t *testing.T, server *rpc.Server, store driver.Store, 
 }
 
 func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
-	data, manifest, archive := b23RichFixture(t)
+	manifest, archive := b23RichFixture(t)
 	commits, states, issueTable, labelTable := b23RichOracle(t)
-	scope := b23RichAssertSourceOracle(t, archive, manifest, commits, states)
+	scope, commitStates := b23RichAssertSourceOracle(t, archive, manifest, commits, states)
 	issues := b23RichOracleRows(t, issueTable)
 	labelRows := b23RichOracleLabels(t, labelTable)
 	fixedHistoryTime := time.Date(2026, 11, 11, 19, 0, 0, 0, time.UTC)
@@ -833,26 +923,33 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := b23RichPlan(t, archive, f.store, f.lease)
+			plan := func() driver.SourcePlanePlanV1 {
+				work, release := archive.NativeDeltaAccountingScope()
+				defer release()
+				return b23RichPlan(t, work, f.store, f.lease)
+			}()
 			profile := driver.RestoreImportProfile{
 				Admission: driver.RestoreImportAdmission{
 					Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b23-native-importer"}, Authority: "restore-admin", AdmissionDigest: b23RichHash([]byte("b23 native rich authenticated admission")),
 				},
 				SourceStoreID: driver.StoreID(plan.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: "b23-rich-native-history-20261111", ArchiveDigest: plan.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: fixedHistoryTime.Format(time.RFC3339Nano),
 			}
-			bound, err := converterroundtrip.BindSourceImport(f.ctx, bytes.NewReader(data), profile, plan)
+			bound, err := converterroundtrip.BindNativeCaptureSetImport(f.ctx, archive, profile, plan)
 			if err != nil {
 				t.Fatalf("bind actual rich native source import: %v", err)
 			}
-			report, err := converterroundtrip.RestoreImportWithLease(f.ctx, bytes.NewReader(data), f.store, f.lease, bound)
+			report, err := converterroundtrip.RestoreNativeCaptureSetImportWithLease(f.ctx, archive, f.store, f.lease, bound)
 			if err != nil {
 				t.Fatalf("restore actual rich native source import: %v", err)
 			}
-			if report.SourcePlanes == nil || report.Receipt == nil || report.Restored.Head != model.Natural64(uint64(len(scope.Images)+1)) || report.Restored.StoreID != driver.StoreID(plan.SourceStoreID) || report.Restored.Incarnation == beforeRestore.Incarnation {
+			if report.SourcePlanes == nil || report.Receipt == nil || report.Restored.Head != model.Natural64(uint64(len(scope.Commits)+1)) || report.Restored.StoreID != driver.StoreID(plan.SourceStoreID) || report.Restored.Incarnation == beforeRestore.Incarnation {
 				t.Fatalf("native import metadata/receipt=%+v", report)
 			}
 			evidence := b23RichHistoryEvidence(t, f.store, report.Restored)
-			b23RichAssertEvidence(t, evidence, scope)
+			b23RichAssertEvidence(t, evidence, scope, commitStates)
+			if err := converterroundtrip.VerifyNativeCaptureSetReadback(f.ctx, f.store, archive, report); err != nil {
+				t.Fatalf("every mapped native typed source row/meta readback: %v", err)
+			}
 			if bound.HistoryDigest == "" || bound.DerivedDigest == "" || bound.SourcePlanes == nil {
 				t.Fatalf("bound profile lacks exact source/history digests: %+v", bound)
 			}
@@ -861,7 +958,7 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			// retained source images. Portable business rows are checked separately
 			// at the final restore head below.
 			for _, index := range []int{0, len(evidence.Mapping) / 2, len(evidence.Mapping) - 1} {
-				b23RichNativeWindowReadback(t, f.store, report.Restored, archive, scope, evidence.Mapping[index])
+				b23RichNativeWindowReadback(t, f.store, report.Restored, evidence.Mapping[index])
 			}
 
 			f.server = b23RichServer(t, f, "")
@@ -923,17 +1020,23 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			}
 			f.server = b23RichServer(t, f, "")
 			recoveredProfile, recovered, found, err := converterroundtrip.RecoverBoundSourceImport(f.ctx, f.store)
+			if recovered.Archive != nil {
+				defer recovered.Archive.ReleaseNativeDecoded()
+			}
 			if err != nil || !found || recovered.Receipt == nil || !reflect.DeepEqual(recovered.Receipt, report.Receipt) || !reflect.DeepEqual(recovered.SourcePlanes, report.SourcePlanes) {
 				t.Fatalf("native source receipt/recovery changed on %s reopen: found=%v err=%v", engine, found, err)
 			}
 			if recoveredProfile.ArchiveDigest != bound.ArchiveDigest || recoveredProfile.HistoryDigest != bound.HistoryDigest || recoveredProfile.HistoryTime != bound.HistoryTime {
 				t.Fatalf("native source profile changed on reopen: got=%+v want=%+v", recoveredProfile, bound)
 			}
+			if err := converterroundtrip.VerifyNativeCaptureSetReadback(f.ctx, f.store, archive, recovered); err != nil {
+				t.Fatalf("reopened every mapped native typed source row/meta readback: %v", err)
+			}
 			reopenedAt := viewops.AsOf{Revision: reopened.Head, Incarnation: reopened.Incarnation}
 			b23RichNativeCurrentExpectations(t, f.server, issues, labelRows, reopenedAt)
 			b23RichReadyCount(t, f.server, ids, reopenedAt)
 			for _, index := range []int{0, len(evidence.Mapping) / 2, len(evidence.Mapping) - 1} {
-				b23RichNativeWindowReadback(t, f.store, recovered.Restored, archive, scope, evidence.Mapping[index])
+				b23RichNativeWindowReadback(t, f.store, recovered.Restored, evidence.Mapping[index])
 			}
 			reopenedReadMeta, err := f.store.Meta(f.ctx)
 			if err != nil {

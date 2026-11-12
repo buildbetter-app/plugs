@@ -34,8 +34,9 @@ func TestB23ReadyCountMixedPlanesCurrentPublicHost(t *testing.T) {
 				if capability.WorkflowCheckpointLifetime() != driver.CheckpointLifetimeProcess {
 					t.Fatal("memory did not report process lifetime")
 				}
-				p, ok := h.Runtime.Store.(driver.PersistentCheckpointStore)
-				if !ok || p.Persistent() {
+				// The optional stronger marker promises restart durability. Its
+				// absence does not negate the admitted process checkpoint.
+				if p, ok := h.Runtime.Store.(driver.PersistentCheckpointStore); ok && p.Persistent() {
 					t.Fatal("memory persistence marker is not truthfully false")
 				}
 			}

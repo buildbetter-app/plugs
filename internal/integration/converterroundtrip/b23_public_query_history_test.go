@@ -218,12 +218,14 @@ func TestB23SyntheticSQLSourceMappedPublicQueryHistoryAndPhysicalReopen(t *testi
 								t.Fatalf("unknown historical row substituted head: %s %+v", raw, refusal)
 							}
 						} else {
-							var row struct {
-								ID     string
-								Fields map[string]any
-								Labels []string
+							var result struct {
+								Bead struct {
+									ID     string
+									Fields map[string]any
+									Labels []string
+								} `json:"bead"`
 							}
-							if refusal != nil || json.Unmarshal(raw, &row) != nil || row.ID != "demo-42v" || row.Fields["title"] != wantTitle || !reflect.DeepEqual(append([]string{}, row.Labels...), wantLabels) {
+							if refusal != nil || json.Unmarshal(raw, &result) != nil || result.Bead.ID != "demo-42v" || result.Bead.Fields["title"] != wantTitle || !reflect.DeepEqual(append([]string{}, result.Bead.Labels...), wantLabels) {
 								t.Fatalf("source get changed: %s %+v", raw, refusal)
 							}
 						}

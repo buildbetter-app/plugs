@@ -154,12 +154,14 @@ func seedQuery(t *testing.T, f *fixture) []model.Ref {
 		}
 		refs = append(refs, c.Results[0].Ref)
 		var read struct {
-			ID     string
-			Fields map[string]any
-			Labels []string
+			Bead struct {
+				ID     string
+				Fields map[string]any
+				Labels []string
+			} `json:"bead"`
 		}
 		raw := f.call("bead.get", fmt.Sprintf("seed-read-%d", i), map[string]any{"id": c.Results[0].Ref})
-		if err := json.Unmarshal(raw, &read); err != nil || read.ID != queryIDs[i] || read.Fields["title"] != row.title || !reflect.DeepEqual(read.Labels, row.labels) {
+		if err := json.Unmarshal(raw, &read); err != nil || read.Bead.ID != queryIDs[i] || read.Bead.Fields["title"] != row.title || !reflect.DeepEqual(read.Bead.Labels, row.labels) {
 			t.Fatalf("committed readback=%s want=%+v %v", raw, row, err)
 		}
 	}

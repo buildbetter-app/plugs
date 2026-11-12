@@ -29,6 +29,74 @@
       "sha256": "95c74b2bc16d96514c9638e4cb6bb462feacebdd84b26bf21a4f1b30aa1121e4"
     }
   },
+  "capture_set": {
+    "contract": "beads-native-delta/2",
+    "decoded_limit": "existing NativeCaptureSetOptions default; no override",
+    "directory": "capture-set",
+    "files": {
+      "capture-set.json": {
+        "bytes": 713,
+        "sha256": "427b062163f7461b7ed623256d654fa24e711e8dc6441d200c2a5c762c1634c2"
+      },
+      "head.tar": {
+        "bytes": 277504,
+        "sha256": "558e825e69d4643b47ed1f926e462d835ea562ed76963f6d649fc69e7b8d1e7a"
+      },
+      "parts/00000000000000000001.part": {
+        "bytes": 2400712,
+        "sha256": "780a3ea4713bc9f4d1ead0c1bbe6c136b03cc7ec38e30202699fd64a21f075a3"
+      }
+    },
+    "format": "beads-native-capture-set/2",
+    "head_members": {
+      "config/sources.json": {
+        "bytes": 71481,
+        "sha256": "dee2038c20562af09ed4faf33f3c6189802404f067c076272e4c6bdcdb4d6616"
+      },
+      "history/source.json": {
+        "bytes": 68436,
+        "sha256": "28b59336b089f99a5e51a91f1b38186621a12d8ac77b4cb6959a9b49d1a361e7"
+      },
+      "manifest.json": {
+        "bytes": 13764,
+        "sha256": "33b9a773de29cd89a57ca8986e5b15f93f841c4852c0b8d3d8a5997d47967356"
+      },
+      "records/bead.ndjson": {
+        "bytes": 22562,
+        "sha256": "6920fd2deb96366296d7ff0880ba1f15a8cdeff308adcaab0afec0043ed727e1"
+      },
+      "records/beads-archive.ndjson": {
+        "bytes": 86903,
+        "sha256": "1f8021066e0095ef50cdeb8a0cb08f2efc52fb9d12e32a1b2e771f86a5a47245"
+      },
+      "records/config.ndjson": {
+        "bytes": 3998,
+        "sha256": "acc5c1ae02567ae3145f4751be2ed4d7b5881808a48e76c209c41c23c87f32a3"
+      },
+      "records/edge.ndjson": {
+        "bytes": 4122,
+        "sha256": "95c74b2bc16d96514c9638e4cb6bb462feacebdd84b26bf21a4f1b30aa1121e4"
+      }
+    },
+    "history_consumer": "VisitNativeDeltaImages; ephemeral tables are not retained; all 122 identities/order/table-count checks require verified terminal EOF",
+    "independent_oracle_frames": {
+      "commit_frames": 122,
+      "current_frames": 1,
+      "head_checkpoint_frames": 1,
+      "history_order": "original native commit-frame sequences 1..122; not inferred from graph listing or imported revision",
+      "native_graph_order": "original lexicographic ID listing; identities and ordered parents compared by commit ID"
+    },
+    "input_binding_sha256": "329130376856a5e938b832c9bdfa20e3d81623362788658c5230791ad5255e8e",
+    "legacy_archive_disposition": "unchanged exact typed body/source mapping mismatch refusal before target open",
+    "receiver_disposition_sha256": "a28f26d5b66a966b7dd17da386c05884aa26137298f549aef09c41dde82ac29a",
+    "route": [
+      "ReadNativeCaptureSetDirectory",
+      "BindNativeCaptureSetImport",
+      "RestoreNativeCaptureSetImportWithLease"
+    ],
+    "total_bytes": 2678929,
+    "typed_source_readback": "VerifyNativeCaptureSetReadback on every mapped typed native row/meta snapshot and current attachment, before and after physical SQL reopen; selected first/middle/final windows retain portable-row absence checks"
+  },
   "oracle_files": {
     "oracle/issues-current.table.json": {
       "bytes": 15475,

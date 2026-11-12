@@ -8,14 +8,46 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// Reuse the existing fixed-permission public HTTP admission fixture. The
-// inherited count units are unchanged; this new test exercises ReadyCounter
-// on GuardedService, never a core-service count behind authorization.
+// Keep this complete Ready fixture separate from the inherited ordinary-count
+// seed. Ready requires a stored creation time as well as status and priority.
+func b23ReadyCountFixture(t *testing.T, open storeFactory) *fixture {
+	t.Helper()
+	f := newFixtureOn(t, open(t), nil)
+	var changes []conformance.FixtureChange
+	for _, row := range []struct {
+		n             int
+		title, status string
+	}{
+		{3, "needle-zeta", "todo"},
+		{4, "needle-secret", "todo"},
+		{5, "needle-done", "done"},
+		{7, "Needle-case", "todo"},
+	} {
+		body, err := json.Marshal(map[string]any{
+			"id": fixtureRef(row.n).ID, "type": "issue", "project": "project", "createdAt": "2026-11-11T00:00:00Z",
+			"fields": map[string]any{"title": row.title, "status": row.status, "priority": 0},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, conformance.FixtureChange{Ref: fixtureRef(row.n), Kind: "bead", Op: model.OpCreate, Body: body})
+	}
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, changes); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// Use the existing fixed-permission public HTTP admission. The inherited
+// count units are unchanged; this exercises ReadyCounter on GuardedService,
+// never a core-service count behind authorization.
 func TestB23PublicReadyCountUsesCurrentFixedAuthority(t *testing.T) {
 	countDrivers(t, func(t *testing.T, open storeFactory) {
-		f := ordinaryCountFixture(t, open)
+		f := b23ReadyCountFixture(t, open)
 		filter := map[string]any{"resources": []string{fixtureRef(3).ID, fixtureRef(4).ID, fixtureRef(5).ID, fixtureRef(7).ID}}
 		for i, limit := range []int{1, 1000} {
 			for j, by := range []model.PrincipalRef{countReader(), {Kind: "user", ID: "user:empty-count", Caveats: map[string]any{"refs": []model.Ref{}}}} {
