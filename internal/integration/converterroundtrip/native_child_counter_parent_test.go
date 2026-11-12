@@ -22,13 +22,12 @@ import (
 )
 
 const publicCounterChild = "clockready-wisp-wf0.1"
-const publicCounterParent = "clockready-wisp-wf0"
 
 // This is the unchanged committed 9aea fixture from actual public capture
 // c774/run43216037385. Its original SQL and create receipt are the oracle;
 // neither a generated store nor the receiver's output supplies expectations.
 // The transient original Dolt directory was not retained by the producer.
-func publicChildCounterCapture(t *testing.T) *dumpformat.Archive {
+func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string) {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/native-ready-c774-43216037385.tar.gz")
 	if err != nil || hashBytes(raw) != "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f" {
@@ -95,14 +94,24 @@ func publicChildCounterCapture(t *testing.T) *dumpformat.Archive {
 		}
 		return found
 	}
-	child, parent := find("issues", "id", publicCounterChild), find("wisps", "id", publicCounterParent)
-	counter := find("wisp_child_counters", "parent_id", publicCounterParent)
+	// The parent identity comes from the original SQL counter row, never
+	// from splitting a child suffix or from the receiving result.
+	parentCounters := state.Tables["wisp_child_counters"].Rows
+	if len(parentCounters) != 1 {
+		t.Fatal("independent SQL parent counter census differs")
+	}
+	parentID, ok := parentCounters[0]["parent_id"].(string)
+	if !ok || parentID == "" {
+		t.Fatal("independent SQL parent identity absent")
+	}
+	child, parent := find("issues", "id", publicCounterChild), find("wisps", "id", parentID)
+	counter := find("wisp_child_counters", "parent_id", parentID)
 	var created struct {
 		ID string `json:"id"`
 	}
 	decode(t, files["commands/127-create-ordinary_child.stdout"], &created)
-	if child == nil || parent == nil || find("issues", "id", publicCounterParent) != nil || counter["last_child"] != json.Number("1") || created.ID != publicCounterChild {
-		t.Fatal("independent child/active-only-parent/counter/create witness differs")
+	if child == nil || parent == nil || find("issues", "id", parentID) != nil || counter["last_child"] != json.Number("1") || created.ID != publicCounterChild {
+		t.Fatal("independent child/active-only-parent/counter/create input differs")
 	}
 	// The established portable issue contract rebuilds these two operational
 	// SQL columns. Every other child field remains an exact SQL expectation.
@@ -124,12 +133,12 @@ func publicChildCounterCapture(t *testing.T) *dumpformat.Archive {
 		t.Fatal("prepare authentic capture with active-only counter parent", err)
 	}
 	t.Cleanup(a.ReleaseNativeDecoded)
-	if a.SHA256() != want[prefix+"capture-set.json"] || len(a.Manifest().Projects) != 1 || a.Manifest().Projects[0].ChildCounters[publicCounterParent] != 1 {
+	if a.SHA256() != want[prefix+"capture-set.json"] || len(a.Manifest().Projects) != 1 || a.Manifest().Projects[0].ChildCounters[parentID] != 1 {
 		t.Fatal("prepared source identity or parent counter differs")
 	}
 	childFound, parentFound, counterFound := false, false, false
 	for _, r := range a.Records("bead") {
-		if r.ID == publicCounterParent {
+		if r.ID == parentID {
 			t.Fatal("active parent synthesized as durable issue")
 		}
 		if r.ID == publicCounterChild {
@@ -137,23 +146,23 @@ func publicChildCounterCapture(t *testing.T) *dumpformat.Archive {
 		}
 	}
 	for _, r := range a.Records("beads-archive") {
-		if r.Source.Table == "wisps" && r.Source.Fields["id"] == publicCounterParent {
+		if r.Source.Table == "wisps" && r.Source.Fields["id"] == parentID {
 			parentFound = reflect.DeepEqual(r.Source.Fields, parent)
 		}
-		if r.Source.Table == "wisp_child_counters" && r.Source.Fields["parent_id"] == publicCounterParent {
+		if r.Source.Table == "wisp_child_counters" && r.Source.Fields["parent_id"] == parentID {
 			counterFound = reflect.DeepEqual(r.Source.Fields, counter)
 		}
 	}
 	if !childFound || !parentFound || !counterFound {
 		t.Fatal("prepared exact original child, parent or raw counter changed")
 	}
-	return a
+	return a, parentID
 }
 
 func TestPublicNativeChildCounterActiveParentReceivingAndReopen(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			a := publicChildCounterCapture(t)
+			a, parentID := publicChildCounterCapture(t)
 			ctx := a.WithNativeDeltaAccounting(context.Background())
 			store, initial, reopen := openIdentityTarget(t, engine)
 			if err := initial.Release(ctx); err != nil {
@@ -216,7 +225,7 @@ func TestPublicNativeChildCounterActiveParentReceivingAndReopen(t *testing.T) {
 					t.Fatal("child identity or number changed", err)
 				}
 				allocator, err := r.(driver.AllocatorReader).LoadAllocator(ctx, "clockready")
-				if err != nil || allocator.Children[publicCounterParent] != 1 {
+				if err != nil || allocator.Children[parentID] != 1 {
 					t.Fatal("actual parent counter changed", allocator, err)
 				}
 			}
@@ -241,7 +250,7 @@ func TestPublicNativeChildCounterActiveParentReceivingAndReopen(t *testing.T) {
 			if usage.LimitBytes != 2147483648 || usage.CurrentAccountedDecodedBytes != 0 || len(usage.CurrentCategories) != 0 || len(usage.CurrentCharges) != 0 {
 				t.Fatal("final receiving accounting differs", usage)
 			}
-			t.Logf("public_child_counter_receiving=PASS engine=%s child=%s parent=%s child_number=1 native_parent_counter=1 source_sha256=%s before_after_SQL_equal=true imported_and_reopened_full_readback=true after_release_bytes=0", engine, publicCounterChild, publicCounterParent, a.SHA256())
+			t.Logf("public_child_counter_receiving=PASS engine=%s child=%s parent=%s child_number=1 native_parent_counter=1 source_sha256=%s before_after_SQL_equal=true imported_and_reopened_full_readback=true after_release_bytes=0", engine, publicCounterChild, parentID, a.SHA256())
 		})
 	}
 }
