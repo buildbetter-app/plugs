@@ -183,7 +183,23 @@ func (o *Ontology) ValidateOrdered(ctx context.Context, images []port.Change, fi
 	for _, id := range order {
 		change := checks[id]
 		last := latest[id]
-		change.After, change.SetBy = last.After, last.SetBy
+		change.After = last.After
+		// A resource's final body includes every earlier write, but its last
+		// close must retain that operation's status-touch provenance. Otherwise
+		// a repeated same-target close inherits an earlier close's status touch
+		// and is rejected as a generic update during settlement validation.
+		setBy := make(map[string]string, len(last.SetBy))
+		for path, setter := range last.SetBy {
+			setBy[path] = setter
+		}
+		if change.Op.Kind == model.OpClose {
+			if setter, touched := change.SetBy["fields.status"]; touched {
+				setBy["fields.status"] = setter
+			} else {
+				delete(setBy, "fields.status")
+			}
+		}
+		change.SetBy = setBy
 		if !hasDocument(last.After) {
 			change.Op = last.Op
 		}

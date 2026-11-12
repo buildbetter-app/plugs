@@ -309,5 +309,8 @@ force does not bypass a template. Batch close reports item-indexed refusals.
 `fields_required`, `evidence_required`, `no_open_children`,
 `no_open_blockers`, `not_template`, `gates_resolved`, and `permission` (P23b);
 workflow slots and categories replace status literals, and permission asks the
-`transition` action (AZ9). Conditional/custom rules move to validating pre
+`transition` action (AZ9).
+A repeat close preserves the first reason and time: empty or identical reasons
+are no-ops, while a different nonempty reason adds one comment as an adopted
+Plug deviation from native. Conditional/custom rules move to validating pre
 subscribers.

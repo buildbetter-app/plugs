@@ -50,12 +50,13 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 		// This ordinary host lowers its named lifecycle slot to one patch;
 		// source-installed typed-close history remains a separate retained unit.
 		operation=model.OpPatch
-		paths=append(paths,"/closedAt","/lease");keys=append(keys,"closedAt","lease")
+		paths=append(paths,"/closedAt","/closeReason","/lease");keys=append(keys,"closedAt","closeReason","lease")
 	case "bead.reopen", "bead.defer":
 		paths=append(paths,"/lease");keys=append(keys,"lease")
 		doc,err:=pipeline.DecodeDocument(previous.Body)
 		if err!=nil {t.Fatal(err)}
 		if doc.ClosedAt!=nil {paths=append(paths,"/closedAt");keys=append(keys,"closedAt")}
+		if doc.CloseReason!=nil {paths=append(paths,"/closeReason");keys=append(keys,"closeReason")}
 	default:t.Fatal("undeclared publication operation",method)
 	}
 	sort.Strings(paths)
@@ -74,6 +75,11 @@ func effectVersion(t *testing.T, before, after proof.State, previous, current dr
 		if value,ok:=result.SetBy[key];ok && value!="request" {t.Fatal("relation/lifecycle provenance differs from public request",key)}
 	}
 	if value,ok:=result.SetBy["closedAt"];ok && value!="core" {t.Fatal("lifecycle provenance differs from core")}
+	if value,ok:=result.SetBy["closeReason"];ok {
+		want := "core"
+		if method == "bead.close" { want = "request" }
+		if value != want { t.Fatal("first-close reason provenance differs from the declared lifecycle effect") }
+	}
 }
 
 // Reader rows materialize branch zero while public requests may omit that

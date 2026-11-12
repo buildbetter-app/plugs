@@ -281,7 +281,7 @@ func TestB07KnownDependencyKindsHaveOnlyAdoptedReadyAndCloseEffects(t *testing.T
 						final := e.snapshot(t)
 						edgeRequireSingleCommit(t, beforeClose, final, edgeRequireReceipt(t, final, closeProbe, closed.Result, false), from)
 						edgeRequireLinks(t, final, from, edgeLinkValue(to, kind))
-						edgeRequireOnlyEdgeAndFields(t, beforeClose, final, from, map[string]any{"status": "done"}, &e.f.now)
+						edgeRequireOnlyEdgeAndFields(t, beforeClose, final, from, map[string]any{"status": "done"}, edgeExpectedClose{At: &e.f.now, Reason: new(string)})
 					}
 				})
 			}
@@ -358,7 +358,7 @@ func TestB07LocalParentChildSchedulingRefusalAndTypedDetach(t *testing.T) {
 				edgeRequireSuccess(t, closed)
 				afterClose := e.snapshot(t)
 				edgeRequireSingleCommit(t, beforeClose, afterClose, edgeRequireReceipt(t, afterClose, closeBlocker, closed.Result, false), blocker)
-				edgeRequireOnlyEdgeAndFields(t, beforeClose, afterClose, blocker, map[string]any{"status": "done"}, &e.f.now)
+				edgeRequireOnlyEdgeAndFields(t, beforeClose, afterClose, blocker, map[string]any{"status": "done"}, edgeExpectedClose{At: &e.f.now, Reason: new(string)})
 				edgeRequirePublicReady(t, e, child.ID, parent.ID)
 
 				// Same-spelled external identity never changes Parent. A local
@@ -893,12 +893,13 @@ func TestB07ConditionalEdgeUsesAdoptedFailureOutcomeAcrossReopen(t *testing.T) {
 			edgeRequirePublicReady(t, e, to.ID)
 			for i, step := range []struct {
 				method, status string
+				reason         *string
 				ready          []string
 			}{
-				{"bead.close", "done", nil},
-				{"bead.reopen", "todo", []string{to.ID}},
-				{"bead.fail", "failed", []string{from.ID}},
-				{"bead.reopen", "todo", []string{to.ID}},
+				{"bead.close", "done", new(string), nil},
+				{"bead.reopen", "todo", nil, []string{to.ID}},
+				{"bead.fail", "failed", nil, []string{from.ID}},
+				{"bead.reopen", "todo", nil, []string{to.ID}},
 			} {
 				p := e.probe(step.method, "conditional-transition-"+model.Natural64(uint64(i)).String())
 				before := e.snapshot(t)
@@ -910,7 +911,7 @@ func TestB07ConditionalEdgeUsesAdoptedFailureOutcomeAcrossReopen(t *testing.T) {
 				if step.method == "bead.reopen" {
 					closedAt = nil
 				}
-				edgeRequireOnlyEdgeAndFields(t, before, after, to, map[string]any{"status": step.status}, closedAt)
+				edgeRequireOnlyEdgeAndFields(t, before, after, to, map[string]any{"status": step.status}, edgeExpectedClose{At: closedAt, Reason: step.reason})
 				edgeRequireLinks(t, after, from, edgeLinkValue(to, "conditional-blocks"))
 				edgeRequirePublicReady(t, e, step.ready...)
 				e.f.reopen(t)

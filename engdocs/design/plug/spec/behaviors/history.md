@@ -225,6 +225,9 @@ idempotent.
 ChangeSet rather than allowing a hidden second transaction; subscriber
 failures are `result.warnings` (D28). Idempotency replay returns the stored
 Commit and runs no post subscriber.
+Each repeated close preserves the first reason and time, makes empty or
+identical reasons no-ops, and appends a different nonempty reason as one comment
+in the atomic batch (the named Plug deviation from native).
 
 ## B22 — compare-and-set revision and transaction guarantees
 

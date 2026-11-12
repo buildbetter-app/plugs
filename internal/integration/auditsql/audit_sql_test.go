@@ -36,8 +36,8 @@ func assertClosePlan(t *testing.T, f *fixture, g graph, set model.Changeset, dig
 		t.Fatalf("incomplete close publication: %+v", set)
 	}
 	equalJSON(t, set.Principal, writerPrincipal)
-	equalJSON(t, set.Changes[0], model.ChangeRecord{Ref: g.blocker, Op: model.OpPatch, FromRevision: model.Natural64(2), ChangedPaths: []string{"/closedAt", "/comments", "/fields/status", "/lease"}})
-	provenance := model.EventProvenance{Method: "bead.close", Slot: "close", SetBy: map[string]string{"closedAt": "core", "fields.status": "request", "comments": "request", "lease": "request"}, Cause: model.EventCause{Root: key(6), Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}
+	equalJSON(t, set.Changes[0], model.ChangeRecord{Ref: g.blocker, Op: model.OpPatch, FromRevision: model.Natural64(2), ChangedPaths: []string{"/closeReason", "/closedAt", "/comments", "/fields/status", "/lease"}})
+	provenance := model.EventProvenance{Method: "bead.close", Slot: "close", SetBy: map[string]string{"closeReason": "request", "closedAt": "core", "fields.status": "request", "comments": "request", "lease": "request"}, Cause: model.EventCause{Root: key(6), Depth: model.Natural64(0), Chain: []string{}}, Chain: []string{}}
 	for i, descriptor := range set.Events {
 		if descriptor.Index.String() != model.Natural64(uint64(i)).String() || !descriptor.ChangeIndex.IsZero() || descriptor.Resource.Kind != "bead" {
 			t.Fatalf("descriptor order/anchor=%+v", descriptor)
@@ -87,6 +87,9 @@ func assertDelivered(t *testing.T, events []model.Event, set model.Changeset) {
 		if i == 0 {
 			if e.Before["fields"].(map[string]any)["status"] != "todo" || e.After["fields"].(map[string]any)["status"] != "done" {
 				t.Fatalf("ordinary history images=%+v", e)
+			}
+			if _, present := e.Before["closeReason"]; present || e.After["closeReason"] != "SQL audited close" {
+				t.Fatalf("first close reason history images=%+v", e)
 			}
 			equalJSON(t, e.Changed, set.Changes[0].ChangedPaths)
 		} else if e.Changed == nil || len(e.Changed) != 0 || e.Before != nil || e.After != nil {
