@@ -33,17 +33,18 @@ var (
 // observed before the restore transaction. Target is intentionally the
 // pre-restore snapshot so refusal reports cannot be mistaken for a commit.
 type Report struct {
-	Archive         *dumpformat.Archive
-	Target          driver.Meta
-	Restored        driver.Meta
-	IdempotencyKey  string
-	RequestHash     string
-	Recovered       bool
-	SourcePlanes    *driver.SourcePlaneCommitBindingV1
-	Receipt         *driver.IdempotencyRecord
-	NativeFamilies  []NativeFamilyReport
-	NativeSchemas   []NativeSchemaReport  `json:",omitempty"`
-	NativeHistories []NativeHistoryReport `json:",omitempty"`
+	Archive            *dumpformat.Archive
+	Target             driver.Meta
+	Restored           driver.Meta
+	IdempotencyKey     string
+	RequestHash        string
+	Recovered          bool
+	SourcePlanes       *driver.SourcePlaneCommitBindingV1
+	Receipt            *driver.IdempotencyRecord
+	NativeFamilies     []NativeFamilyReport
+	NativeSchemas      []NativeSchemaReport               `json:",omitempty"`
+	NativeHistories    []NativeHistoryReport              `json:",omitempty"`
+	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence `json:",omitempty"`
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -222,8 +223,8 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, fmt.Errorf("%w: import source store does not match archive", ErrRestoreUnavailable)
 		}
 		restoreTime = time.Now().UTC()
-		if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
-			if profile.HistoryTime == "" || profile.HistoryDigest == "" {
+		if profile.HistoryMode != driver.RestoreHistoryModeSnapshot || profile.NativeDeltaHistory != nil {
+			if profile.HistoryTime == "" || profile.HistoryMode != driver.RestoreHistoryModeSnapshot && profile.HistoryDigest == "" {
 				return report, driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 			}
 			restoreTime, err = time.Parse(time.RFC3339Nano, profile.HistoryTime)
@@ -239,6 +240,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	report.NativeFamilies = append([]NativeFamilyReport(nil), plan.nativeFamilies...)
 	report.NativeSchemas = plan.nativeSchemas
 	report.NativeHistories = plan.nativeHistories
+	report.NativeDeltaHistory = plan.nativeDeltaHistory
 	if profile != nil && len(checks) == 0 {
 		checks = []Verification{{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}}
 	}
@@ -704,13 +706,14 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	var families []NativeFamilyReport
 	var schemas []NativeSchemaReport
 	var histories []NativeHistoryReport
-	if source != nil && bound.SourcePlanes != nil && bound.HistoryMode == driver.RestoreHistoryModeFull {
-		families, schemas, histories, err = recoverNativeFamiliesArchive(ctx, r, bound, receipt, source.archive, source.plan)
+	var policy *driver.NativeDeltaHistoryEvidence
+	if source != nil && bound.SourcePlanes != nil && (bound.HistoryMode == driver.RestoreHistoryModeFull || bound.NativeDeltaHistory != nil) {
+		families, schemas, histories, policy, err = recoverNativeFamiliesArchive(ctx, r, bound, receipt, source.archive, source.plan)
 	}
 	if err != nil {
 		return Report{}, nativeDeltaRecoveryError(err)
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories}, nil
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories, NativeDeltaHistory: policy}, nil
 }
 
 type restoreRecord struct {
@@ -722,17 +725,18 @@ type restoreRecord struct {
 // restorePlan is the receiver's mutable publication view of a detached leaf
 // plan. Publication appends target-incarnation-dependent records only here.
 type restorePlan struct {
-	leaf            nativeprojection.Plan
-	nativeFamilies  []NativeFamilyReport
-	nativeSchemas   []NativeSchemaReport
-	nativeHistories []NativeHistoryReport
-	records         []restoreRecord
-	sentinels       []driver.Sentinel
-	derived         []derivedImage
-	derivedDigest   string
-	blobs           map[string][]byte
-	nativeCapture   *dumpformat.Archive
-	allocators      []driver.OfflineAllocator
+	leaf               nativeprojection.Plan
+	nativeFamilies     []NativeFamilyReport
+	nativeSchemas      []NativeSchemaReport
+	nativeHistories    []NativeHistoryReport
+	nativeDeltaHistory *driver.NativeDeltaHistoryEvidence
+	records            []restoreRecord
+	sentinels          []driver.Sentinel
+	derived            []derivedImage
+	derivedDigest      string
+	blobs              map[string][]byte
+	nativeCapture      *dumpformat.Archive
+	allocators         []driver.OfflineAllocator
 }
 
 type importBindingEvidence = nativeprojection.ImportBindingEvidence
@@ -812,7 +816,7 @@ func receivePlan(archive *dumpformat.Archive, plan nativeprojection.Plan, err er
 	if err != nil {
 		return restorePlan{}, err
 	}
-	view := restorePlan{leaf: plan, nativeFamilies: image.NativeFamilies, nativeSchemas: image.NativeSchemas, nativeHistories: image.NativeHistories, sentinels: image.Sentinels, derived: image.Derived, derivedDigest: image.DerivedDigest, blobs: image.Blobs, allocators: image.Allocators}
+	view := restorePlan{leaf: plan, nativeFamilies: image.NativeFamilies, nativeSchemas: image.NativeSchemas, nativeHistories: image.NativeHistories, nativeDeltaHistory: image.NativeDeltaHistory, sentinels: image.Sentinels, derived: image.Derived, derivedDigest: image.DerivedDigest, blobs: image.Blobs, allocators: image.Allocators}
 	for _, record := range image.Records {
 		view.records = append(view.records, restoreRecord{ref: record.Ref, kind: record.Kind, body: record.Body})
 	}

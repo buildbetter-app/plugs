@@ -130,7 +130,8 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		return Report{}, nil, driver.ErrConflict
 	}
 	floor := model.Natural64(1)
-	if bound.HistoryMode == driver.RestoreHistoryModeFull {
+	if bound.HistoryMode == driver.RestoreHistoryModeFull ||
+		bound.HistoryMode == driver.RestoreHistoryModePartial && bound.NativeDeltaHistory != nil && bound.NativeDeltaHistory.FirstSequence == 1 {
 		floor = model.Natural64(0)
 	}
 	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: report.Receipt.Commit.Revision, HistoryFloor: floor}

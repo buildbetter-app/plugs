@@ -37,6 +37,7 @@ type Snapshot struct {
 	NativeFamilies []NativeFamilyReport
 	NativeSchemas []NativeSchemaReport
 	NativeHistories []NativeHistoryReport
+	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence
 }
 
 func Build(archive *dumpformat.Archive) (Plan, error) {
@@ -96,7 +97,7 @@ func (p Plan) RequestBinding() (driver.RestoreImportProfile, time.Time, bool, er
 func (p Plan) Snapshot() (Snapshot, error) {
 	if !p.Built() { return Snapshot{}, fmt.Errorf("unbuilt receiving plan") }
 	if err := p.archive.ChargeNativeDeltaBytes("planner_snapshot_record_slots", uint64(len(p.image.records))*256); err != nil { return Snapshot{}, err }
-	view := Snapshot{Derived: p.image.derived, DerivedDigest: p.image.derivedDigest, Blobs: p.image.blobs, Allocators: p.image.allocators, Sentinels: p.image.sentinels, NativeFamilies: p.image.nativeFamilies, NativeSchemas: p.image.nativeSchemas, NativeHistories: p.image.nativeHistories}
+	view := Snapshot{Derived: p.image.derived, DerivedDigest: p.image.derivedDigest, Blobs: p.image.blobs, Allocators: p.image.allocators, Sentinels: p.image.sentinels, NativeFamilies: p.image.nativeFamilies, NativeSchemas: p.image.nativeSchemas, NativeHistories: p.image.nativeHistories, NativeDeltaHistory: p.image.nativeDeltaHistory}
 	if p.image.records != nil {
 		view.Records = make([]driver.Record, len(p.image.records))
 		for i, record := range p.image.records {
@@ -157,6 +158,10 @@ func detachSnapshot(view Snapshot) Snapshot {
 			}
 		}
 		view.NativeHistories[i].Coverage = coverage
+	}
+	view.NativeDeltaHistory = clonePointer(view.NativeDeltaHistory)
+	if view.NativeDeltaHistory != nil {
+		view.NativeDeltaHistory.OmittedPrefix = clonePointer(view.NativeDeltaHistory.OmittedPrefix)
 	}
 	return view
 }

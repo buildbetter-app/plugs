@@ -32,6 +32,7 @@ type restorePlan struct {
 	nativeFamilies  []NativeFamilyReport
 	nativeSchemas   []NativeSchemaReport
 	nativeHistories []NativeHistoryReport
+	nativeDeltaHistory *driver.NativeDeltaHistoryEvidence
 	records         []restoreRecord
 	sentinels       []driver.Sentinel
 	derived         []DerivedImage
@@ -509,7 +510,7 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		}
 	}
 	if nativeTables && mode == planImport {
-		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
+		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull && !(archive.HasNativeDelta() && profile.NativeDeltaHistory != nil) {
 			return restorePlan{}, fmt.Errorf("%w: native table publication requires bound full source-plane restore", driver.ErrUnsupported)
 		}
 		current, families, err := NativeCurrentRecords(archive, restoreTime, NativeOperationContext(contexts))
@@ -530,7 +531,18 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if err != nil {
 			return restorePlan{}, err
 		}
-		accounting := NativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families, Schemas: plan.nativeSchemas, Histories: plan.nativeHistories}
+		if profile.NativeDeltaHistory != nil {
+			plan.nativeDeltaHistory, err = NativeDeltaHistoryEvidence(archive, *profile)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			if profile.HistoryMode == driver.RestoreHistoryModeSnapshot {
+				if err := add(model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0)), "beads-archive", NativeSnapshotHistoryEvidence(plan.nativeDeltaHistory)); err != nil {
+					return restorePlan{}, err
+				}
+			}
+		}
+		accounting := NativeFamilyEvidence{Contract: manifest.SourceFamilyContract, RestoreTime: restoreTime.UTC().Format(time.RFC3339Nano), Families: families, Schemas: plan.nativeSchemas, Histories: plan.nativeHistories, NativeDeltaHistory: plan.nativeDeltaHistory}
 		if err := add(model.RefByID(NativeFamilyReportID, model.Natural64(0)), "instance_config", accounting); err != nil {
 			return restorePlan{}, err
 		}
