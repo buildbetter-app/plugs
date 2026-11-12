@@ -214,19 +214,26 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 	for len(records) < count {
 		id := fmt.Sprintf("%s-cert%06d", manifest.Projects[0].Prefix, len(records))
 		parent = id
+		// Keep scaled authored rows deliberately small. The source fixture's
+		// second bead is a valid prototype, but its 3 KiB description would be
+		// multiplied across every current row by the native decoded accounting
+		// and verifier's per-record validation charge. This fixture reduction
+		// exercises the unchanged admission and import paths without consuming
+		// that budget on repeated prose.
+		description := "x"
 		var record dumpformat.Record
 		Decode(t, JSON(t, prototype), &record)
 		record.ID = id
 		record.Source.Fields["id"] = id
-		record.Source.Fields["description"] = "authored scale row"
-		record.Body["description"] = "authored scale row"
+		record.Source.Fields["description"] = description
+		record.Body["description"] = description
 		records = append(records, record)
 		row := physical
 		row.Cells = append([]dumpformat.NativeDeltaCell(nil), physical.Cells...)
 		row.Cells[idColumn].Value = id
 		for j, c := range issueSchema.Columns {
 			if c.Name == "description" {
-				row.Cells[j].Value = "authored scale row"
+				row.Cells[j].Value = description
 			}
 		}
 		key, err := dumpformat.NativeDeltaPrimaryKey(issueSchema, row.Cells)
@@ -241,7 +248,7 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 		var fields dumpformat.Row
 		Decode(t, b, &fields)
 		fields["id"] = id
-		fields["description"] = "authored scale row"
+		fields["description"] = description
 		// The native row contract includes the canonical JSON line terminator.
 		row.NormalizedJSON = base64.StdEncoding.EncodeToString(JSON(t, fields))
 		tables["issues"] = append(tables["issues"], row)

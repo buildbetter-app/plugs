@@ -326,8 +326,11 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 						t.Helper()
 						params["_meta"] = map[string]any{"idempotencyKey": graphcertfixture.Hash([]byte(t.Name() + name)), "deadlineMs": 10000}
 						raw := graphcertfixture.JSON(t, map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-						request := httptest.NewRequest(http.MethodPost, httpjson.Path, bytes.NewReader(raw))
+						request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+httpjson.Path, bytes.NewReader(raw))
 						request.Header.Set("Content-Type", "application/json")
+						request.Header.Set("Plug-RPC", "1")
+						request.Host = "127.0.0.1"
+						request.RemoteAddr = "127.0.0.1:12345"
 						response := httptest.NewRecorder()
 						started := time.Now()
 						handler.ServeHTTP(response, request)
@@ -464,7 +467,19 @@ func TestNativeReceiveGraphCertificationTwentyThousandPlanRefusal(t *testing.T) 
 	}
 	defer archive.ReleaseNativeDecoded()
 	plan := graphcertfixture.Plan(t, archive, driver.CheckpointLifetimeProcess)
-	encoded, err := driver.EncodeSourcePlanePlanV1(plan)
+	// The receiver applies these provisional values before validating the
+	// declaration. Keep the actual request below unchanged (with its empty
+	// target/SHA fields), but use the same validation-ready copy for the typed
+	// plan-size control so the existing byte-limit refusal is the first error.
+	validationPlan := plan
+	validationPlan.Target.StoreID, validationPlan.Target.Incarnation = "pending-new-target", "pending-new-target"
+	validationPlan.Providers = append([]driver.SourcePlaneProviderV1(nil), plan.Providers...)
+	for i := range validationPlan.Providers {
+		if validationPlan.Providers[i].LogicalImageSHA256 == "" && validationPlan.Providers[i].LogicalImageSize == 0 {
+			validationPlan.Providers[i].LogicalImageSHA256 = strings.Repeat("0", 64)
+		}
+	}
+	encoded, err := driver.EncodeSourcePlanePlanV1(validationPlan)
 	if !errors.Is(err, driver.ErrUnsupported) || !strings.Contains(err.Error(), "plan byte limit") || len(encoded) != 0 {
 		t.Fatal("20k must retain typed plan-size refusal with no partial encoding", err, len(encoded))
 	}
