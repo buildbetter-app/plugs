@@ -100,6 +100,10 @@ func buildPlanForInspection(archive *dumpformat.Archive) (restorePlan, error) {
 }
 
 func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode, contexts ...context.Context) (restorePlan, error) {
+	return buildPlanModeWithCurrent(archive, profile, restoreTime, mode, nil, contexts...)
+}
+
+func buildPlanModeWithCurrent(archive *dumpformat.Archive, profile *driver.RestoreImportProfile, restoreTime time.Time, mode planMode, collection *collectionCurrent, contexts ...context.Context) (restorePlan, error) {
 	scratch, releaseScratch := archive.NativeDeltaAccountingScope()
 	defer releaseScratch()
 	manifest, err := scratch.ManifestChecked()
@@ -512,7 +516,13 @@ func buildPlanMode(archive *dumpformat.Archive, profile *driver.RestoreImportPro
 		if profile.SourcePlanes == nil || profile.HistoryMode != driver.RestoreHistoryModeFull {
 			return restorePlan{}, fmt.Errorf("%w: native table publication requires bound full source-plane restore", driver.ErrUnsupported)
 		}
-		current, families, err := NativeCurrentRecords(archive, restoreTime, NativeOperationContext(contexts))
+		var current []driver.Record
+		var families []NativeFamilyReport
+		if collection != nil {
+			current, families = collection.records, collection.families
+		} else {
+			current, families, err = NativeCurrentRecords(archive, restoreTime, NativeOperationContext(contexts))
+		}
 		if err != nil {
 			return restorePlan{}, err
 		}

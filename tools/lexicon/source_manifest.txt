@@ -181,6 +181,8 @@ internal/core/dumpformat/migration.go
 internal/core/dumpformat/migration_hashes.go
 internal/core/dumpformat/migration_sources.go
 internal/core/dumpformat/migration_test.go
+internal/core/dumpformat/native_collection.go
+internal/core/dumpformat/native_collection_test.go
 internal/core/dumpformat/native_commit_initial_test.go
 internal/core/dumpformat/native_commit_schema.go
 internal/core/dumpformat/native_commit_schema_test.go
@@ -243,6 +245,13 @@ internal/core/dumpformat/status_categories.go
 internal/core/dumpformat/status_categories_test.go
 internal/core/dumpformat/testdata/commit-schema-registry-c8ab0ce7.json
 internal/core/dumpformat/testdata/commit-schema-registry-ff8006bf.json
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/creation-record.json
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/capture-set.json
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/head.tar
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/parts/00000000000000000001.part
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/capture-set.json
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/head.tar
+internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/parts/00000000000000000001.part
 internal/core/dumpformat/testdata/native-tables-synthetic.tar
 internal/core/dumpformat/testdata/producer-0f44-reprocody.tar
 internal/core/dumpformat/testdata/producer-0f44-reprosignals.tar
@@ -289,6 +298,7 @@ internal/core/model/testdata/openrpc-components.json
 internal/core/model/unsupported_error_test.go
 internal/core/nativeprojection/BUILD.bazel
 internal/core/nativeprojection/allocator.go
+internal/core/nativeprojection/collection.go
 internal/core/nativeprojection/image.go
 internal/core/nativeprojection/labels.go
 internal/core/nativeprojection/native_current.go
@@ -633,6 +643,7 @@ internal/integration/converterroundtrip/memory_reverse.go
 internal/integration/converterroundtrip/native_boundary_fixture_test.go
 internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_capture_set_cli_test.go
+internal/integration/converterroundtrip/native_collection_plan_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
@@ -1276,6 +1287,8 @@ internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/offline_history.go
+internal/storage/driver/offline_history_source_order.go
+internal/storage/driver/offline_history_source_order_test.go
 internal/storage/driver/offline_history_stream.go
 internal/storage/driver/offline_history_stream_consume.go
 internal/storage/driver/offline_history_stream_test.go
@@ -1312,6 +1325,9 @@ internal/storage/historyverify/checkpoint.go
 internal/storage/historyverify/engines_test.go
 internal/storage/historyverify/export_test.go
 internal/storage/historyverify/native.go
+internal/storage/historyverify/native_collection.go
+internal/storage/historyverify/native_collection_bind.go
+internal/storage/historyverify/native_collection_test.go
 internal/storage/historyverify/native_evidence.go
 internal/storage/historyverify/native_frames.go
 internal/storage/historyverify/native_plan.go

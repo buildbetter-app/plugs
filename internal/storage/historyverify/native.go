@@ -36,6 +36,8 @@ type NativeArchiveStream struct {
  sealed, closed bool
  closeErr error
  pullRelease func()
+ originalDir string
+ cleanup func() error
 }
 
 type checkpointRecord struct {
@@ -128,5 +130,5 @@ func (s *NativeArchiveStream) Seal(ctx context.Context,request driver.OfflineHis
 // releases only private resources, including after a possibly committed result.
 func (s *NativeArchiveStream) Close() error {
  if s==nil {return nil};if s.closed {return s.closeErr};s.closed=true
- if s.pullRelease!=nil {s.pullRelease();s.pullRelease=nil};if s.file!=nil {s.closeErr=s.file.Close()};if s.path!="" {s.closeErr=errors.Join(s.closeErr,os.Remove(s.path))};if s.release!=nil {s.release();s.release=nil};s.archive=nil;s.file=nil;s.nativeCurrent=nil;s.revisions=nil;s.files=nil;return s.closeErr
+ if s.pullRelease!=nil {s.pullRelease();s.pullRelease=nil};if s.file!=nil {s.closeErr=s.file.Close()};if s.path!="" {s.closeErr=errors.Join(s.closeErr,os.Remove(s.path))};s.archive=nil;s.file=nil;s.nativeCurrent=nil;s.revisions=nil;s.files=nil;if s.release!=nil {s.release();s.release=nil};if s.cleanup!=nil {s.closeErr=errors.Join(s.closeErr,s.cleanup());s.cleanup=nil};return s.closeErr
 }

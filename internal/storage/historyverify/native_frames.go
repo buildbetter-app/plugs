@@ -42,6 +42,8 @@ type nativeFrames struct {
  seen map[string]bool
  headDone,currentDone bool
  commits,tables,decoded uint64
+ offset uint64
+ segment bool
 }
 func newNativeFrames(ctx context.Context,s *NativeArchiveStream) (*nativeFrames,error) {
  b:=&nativeFrames{ctx:ctx,stream:s,digest:sha256.New(),classes:map[string]string{},counts:map[string]int{},physical:map[string]driver.OfflineHistorySourceTable{},head:map[string]checkpointRecord{},replay:map[string]checkpointRecord{},seen:map[string]bool{}}
@@ -139,7 +141,7 @@ func (b *nativeFrames) commit(c dumpformat.NativeDeltaRowCommit) error {
   changes=append(changes,nativeChange{name,key,change})
   if change.After==nil {delete(b.stream.revisions,key)}else{
    if _,present:=b.stream.revisions[key];!present {if err:=b.stream.archive.ChargeNativeDeltaBytes("verifier_current_revision_index",uint64(len(key))+96);err!=nil{return err}}
-   b.stream.revisions[key]=model.Natural64(c.Sequence)
+   b.stream.revisions[key]=model.Natural64(c.Sequence+b.offset)
   }
  }
  // This census comes from every real table's rolling metadata, including
@@ -152,7 +154,7 @@ func (b *nativeFrames) commit(c dumpformat.NativeDeltaRowCommit) error {
  if authentic.Sequence!=c.Sequence || authentic.CommitID!=c.CommitID || authentic.RootSHA256!=root || !reflect.DeepEqual(authentic.Tables,census) {return ErrCheckpoint{"physical commit census differs from independently authenticated preimages"}}
  sort.Slice(changes,func(i,j int)bool{if changes[i].name!=changes[j].name{return changes[i].name<changes[j].name};return changes[i].key<changes[j].key})
  graph:=b.graph[c.Sequence-1]
- frame:=driver.OfflineHistoryStreamCommit{SourceStoreID:b.source,Project:b.project,SourceSequence:c.Sequence,Sequence:c.Sequence,CommitIDs:1,ParentIDs:uint64(len(graph.parents)),Tables:uint64(len(changes)),Physical:&driver.OfflineHistorySourceCommit{Root:root,Tables:uint64(len(census)),TablesSHA256:root}}
+ frame:=driver.OfflineHistoryStreamCommit{SourceStoreID:b.source,Project:b.project,SourceSequence:c.Sequence,Sequence:c.Sequence+b.offset,CommitIDs:1,ParentIDs:uint64(len(graph.parents)),Tables:uint64(len(changes)),Physical:&driver.OfflineHistorySourceCommit{Root:root,Tables:uint64(len(census)),TablesSHA256:root}}
  hash:=sha256.New();_,_=hash.Write([]byte("plug-offline-history-commit/1\n"))
  if err=b.frame(driver.OfflineHistoryStreamFrame{Kind:"commit",Commit:&frame},hash);err!=nil {return err}
  if err=b.frame(driver.OfflineHistoryStreamFrame{Kind:"id",ID:&driver.OfflineHistoryStreamID{Kind:"commit",Value:c.CommitID}},hash);err!=nil {return err}
@@ -214,6 +216,7 @@ func (b *nativeFrames) finish() error {
  if b.commits!=b.stream.header.Head || !b.headDone || !b.currentDone || len(b.seen)!=len(b.classes) || len(b.stream.files)<3 {return ErrCheckpoint{"native independent verification is incomplete"}}
  var err error;b.stream.head,err=convertedRoot(b.head);if err!=nil {return err}
  replay,err:=convertedRoot(b.replay);if err!=nil {return err};if replay!=b.stream.head {return ErrCheckpoint{"exact transcript HEAD differs from independent checkpoint"}}
+ if b.segment {return nil}
  b.stream.digest=hex.EncodeToString(b.digest.Sum(nil))
  end:=driver.OfflineHistoryStreamEnd{Commits:b.commits,Tables:b.tables,DecodedBytes:b.decoded}
  if err=b.frame(driver.OfflineHistoryStreamFrame{Kind:"end",End:&end},nil);err!=nil {return err}

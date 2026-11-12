@@ -93,7 +93,7 @@ func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
 	// A v2 attachment is exposed only after every graph/schema/table and both
 	// checkpoints have passed. Avoid copying all rows just to repeat this gate.
-	if a.HasNativeDelta() {
+	if a.HasNativeDelta() || a.HasNativeCaptureCollection() {
 		if mode != driver.RestoreHistoryModeFull {
 			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}

@@ -2,10 +2,10 @@ package nativeprojection
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"strconv"
+	"strings"
 )
 
 // The manifest's hash_length describes admitted source IDs, including older
@@ -15,6 +15,9 @@ func ImportedAllocator(archive *dumpformat.Archive, project dumpformat.Project) 
 	a := driver.NewHashAllocator(project.Prefix, 3, 8, 0.25)
 	seen := map[string]bool{}
 	for _, record := range archive.Records("config") {
+		if record.Source.Identity != nil && record.Source.Identity.Project != project.Prefix {
+			continue
+		}
 		if record.Source.Table != "config" || record.Project != "" && record.Project != project.Prefix {
 			continue
 		}
@@ -78,4 +81,3 @@ func ImportedAllocator(archive *dumpformat.Archive, project dumpformat.Project) 
 	}
 	return a, nil
 }
-
