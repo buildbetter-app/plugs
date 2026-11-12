@@ -313,6 +313,10 @@ func TestPublicNativeRunnerExercisesActualSmallJoinedReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The CLI requires a regular intent file; Bazel runfiles may be symlinks.
+	regularPolicy := filepath.Join(t.TempDir(), "policy.md")
+	retainProofFile(t, policy, regularPolicy, 0600)
+	policy = regularPolicy
 	script, err := filepath.Abs("run-public-proof.py")
 	if err != nil {
 		t.Fatal(err)
