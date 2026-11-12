@@ -155,6 +155,10 @@ func DefaultTreePolicy() TreePolicy {
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz"] = "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27"
+	// Independent native table commitments retain exact producer vocabulary.
+	// Only these authenticated reference bytes receive that disposition.
+	policy.ReferencePrefixes = append(policy.ReferencePrefixes, "internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json")
+	policy.ReferenceSHA256["internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json"] = "3f5d9c0226f972701b2cc3433a37b5f1321f082a3cb933248a734031055a987b"
 
 	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/head.tar"] = "a48d37135afe56aca95c6675385855c148ae5dbdc9327dbe44bf715b7a073a4e"
 	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/parts/00000000000000000001.part"] = "1cf35b0abf24d69a53efe296a3b6e0163d3bcb4e88e7f8409101eef94b1d3adc"

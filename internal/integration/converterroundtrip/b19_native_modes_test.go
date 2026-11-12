@@ -23,7 +23,7 @@ import (
 
 // The expectations name original producer frames and native catalog entries.
 // They are independent of the receiver's mapping and history lowerer. This
-// genuine small capture has an inert current-only wisp, not an active bridge.
+// genuine small capture has an inert current-only transient row.
 type b19NativeExpected struct {
 	CaptureSHA256 string            `json:"capture_sha256"`
 	StoreID       string            `json:"store_id"`
