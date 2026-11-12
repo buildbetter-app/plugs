@@ -601,6 +601,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 			if _, err = c.ExecContext(ctx, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,?,?)`, id, revKey(head+1), v.Base, versionData); err != nil {
 				return err
 			}
+			if err = populateHistoricalQueryFields(ctx, c, id, revKey(head+1), versionData); err != nil {
+				return err
+			}
 			state := driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &ref}, Revision: revision, Present: record != nil}
 			if err = publishKey(ctx, c, state); err != nil {
 				return err
