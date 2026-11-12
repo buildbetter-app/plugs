@@ -46,13 +46,13 @@ type NativeDeltaPrepared struct {
 // only; raw roots, heads and parts remain owned by this preparation and are
 // released by Close. The detached ledger remains charged to owner until the
 // caller discards it and releases that owner. The owner must be outside this
-// preparation and share its session budget. The canonical order is
+// preparation, be a releasable child scope, and share its session budget. The canonical order is
 // capture-set.json, head.tar, then each numeric part in ordinal order.
 func (p *NativeDeltaPrepared) NativeCaptureFileLedger(owner *NativeDeltaBudget) ([]NativeCaptureFile, error) {
 	if p == nil || !p.ready {
 		return nil, fmt.Errorf("unqualified native staging view")
 	}
-	if owner == nil || owner == p.budget || owner.root() != p.budget.root() {
+	if owner == nil || owner.parent == nil || owner == p.budget || owner.root() != p.budget.root() {
 		return nil, fmt.Errorf("native capture ledger requires shared owner")
 	}
 	for scope := owner.parent; scope != nil; scope = scope.parent {

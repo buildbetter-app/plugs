@@ -300,7 +300,7 @@ func validateNativeDeltaSecretReferences(family string, values map[string]any) e
 				if err := validateNativeCredentialValue(family, logicalKey, values["value"]); err != nil {
 					return err
 				}
-			} else if err := validateNativeNestedCredentialValue(family, logicalKey, values["value"]); err != nil {
+			} else if err := validateNativeNestedCredentialValue(family, values["value"]); err != nil {
 				return err
 			}
 			// `key` and `value` are the row envelope, not credential fields. The
@@ -310,7 +310,7 @@ func validateNativeDeltaSecretReferences(family string, values map[string]any) e
 				if key == "key" || key == "value" {
 					continue
 				}
-				if err := validateNativeNestedCredentialValue(family, key, value); err != nil {
+				if err := validateNativeNestedCredentialValue(family, value); err != nil {
 					return err
 				}
 			}
@@ -373,10 +373,10 @@ func validateNativeCredentialValue(family, field string, value any) error {
 	if secretKey(field) {
 		return nativeStoredCredential(family, field)
 	}
-	return validateNativeNestedCredentialValue(family, field, value)
+	return validateNativeNestedCredentialValue(family, value)
 }
 
-func validateNativeNestedCredentialValue(family, prefix string, value any) error {
+func validateNativeNestedCredentialValue(family string, value any) error {
 	switch value := value.(type) {
 	case map[string]any:
 		if ref, ok := value["$secret"]; ok {
@@ -387,23 +387,21 @@ func validateNativeNestedCredentialValue(family, prefix string, value any) error
 			return nil
 		}
 		for key, item := range value {
-			field := key
-			if prefix != "" {
-				field = prefix + "." + key
-			}
+			// Classify the borrowed local key. Counts-only diagnostics need no
+			// source path, so the walk never allocates growing key-path copies.
 			if secretKey(key) {
-				if err := validateNativeCredentialValue(family, field, item); err != nil {
+				if err := validateNativeCredentialValue(family, key, item); err != nil {
 					return err
 				}
 				continue
 			}
-			if err := validateNativeNestedCredentialValue(family, field, item); err != nil {
+			if err := validateNativeNestedCredentialValue(family, item); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for _, item := range value {
-			if err := validateNativeNestedCredentialValue(family, prefix, item); err != nil {
+			if err := validateNativeNestedCredentialValue(family, item); err != nil {
 				return err
 			}
 		}

@@ -40,6 +40,13 @@ func TestNativePreparedCaptureFileLedgerChargesBeforeReturningCandidate(t *testi
 	}
 	owner := prepared.budget.parent.Scope()
 	defer owner.Release()
+	beforeRoot := owner.Usage().CurrentAccountedDecodedBytes
+	if ledger, err := prepared.NativeCaptureFileLedger(owner.root()); ledger != nil || err == nil {
+		t.Fatal("root owner accepted a ledger with no release lifecycle")
+	}
+	if owner.Usage().CurrentAccountedDecodedBytes != beforeRoot {
+		t.Fatal("refused root owner retained ledger bytes")
+	}
 	need, err := nativeCaptureFileLedgerJSONSize(prepared.files)
 	if err != nil {
 		t.Fatal(err)
