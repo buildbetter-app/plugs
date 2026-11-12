@@ -48,8 +48,9 @@ connects them without rewriting either result.
 The exact native deletion oracle is independently derived from the pinned
 source, not observed output. Ignored migration 0004 in
 `internal/storage/schema/migrations/ignored/`
-adds `wisp_events.issue_id -> wisps.id ON DELETE CASCADE`; dependency constraints
-are separately removed by the existing diagnostic fixture, and the event
+adds `ON DELETE CASCADE` from the ephemeral event table's `issue_id` to the
+ephemeral item table's `id`; dependency constraints are separately removed by
+the existing diagnostic fixture, and the event
 constraint remains installed. `internal/storage/issueops/create.go` emits one
 created event for z. `internal/storage/issueops/dependencies.go` emits one
 dependency_added event for the successful ordinary z -> y blocks edge.
@@ -61,7 +62,7 @@ with empty old/comment and new_value
 `Added dependency: b06-z-block-z blocks b06-z-block-y`.
 Only z's hydration row and those two victim-owned event rows may disappear.
 Their full preimages remain recorded. All unrelated rows, including other
-wisp_events, and both complete dependency families must retain exact values.
+ephemeral event rows, and both complete dependency families must retain exact values.
 This is diagnostic cascade/conservation proof, not history-import proof.
 
 Memory proves process-lifetime state with Persistent false. SQLite and
