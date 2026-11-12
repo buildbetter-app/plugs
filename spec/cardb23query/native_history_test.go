@@ -214,6 +214,13 @@ func b23RichFixture(t *testing.T) (b23RichFixtureManifest, *dumpformat.Archive) 
 	if !archive.HasNativeDelta() || archive.Manifest().StoreID != manifest.Source.StoreID {
 		t.Fatal("rich native capture set lost its authenticated source binding")
 	}
+	wantTypes := []dumpformat.OntologyDirective{{
+		ID: "native-map-type/3bf8fdf7c3010cc345498082ad7222b598ce1f571daef98da9f2b91a6d87b638", Kind: "map_type",
+		Target: dumpformat.OntologyTarget{Project: "review-project", Type: "rich_kind"}, From: "rich_kind", To: "issue",
+	}}
+	if !reflect.DeepEqual(archive.Manifest().Ontology, wantTypes) {
+		t.Fatal("independently bound public type directive changed")
+	}
 	t.Cleanup(archive.ReleaseNativeDecoded)
 	return manifest, archive
 }
@@ -311,9 +318,8 @@ func b23RichFields(t *testing.T, record driver.SourcePlaneRecordV1) []driver.Sou
 	return fields
 }
 
-func b23RichPlan(t *testing.T, archive *dumpformat.Archive, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {
+func b23RichPlan(t *testing.T, ctx context.Context, archive *dumpformat.Archive, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {
 	t.Helper()
-	ctx := context.Background()
 	meta, err := store.Meta(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +442,13 @@ func b23RichStatuses(statuses map[string]bool) []driver.SourcePlaneStringPairV1 
 	return pairs
 }
 
-func b23RichServer(t *testing.T, f *fixture, denied string) *rpc.Server {
+type b23RichClient struct {
+	server *rpc.Server
+	ctx    context.Context
+	frames *[]frame
+}
+
+func b23RichServer(t *testing.T, f *fixture, denied string) *b23RichClient {
 	t.Helper()
 	document := ontology.DefaultDocument()
 	compiled, problems := ontology.Compile(document, nil, nil)
@@ -474,10 +486,10 @@ func b23RichServer(t *testing.T, f *fixture, denied string) *rpc.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return server
+	return &b23RichClient{server: server, ctx: f.ctx, frames: &f.frames}
 }
 
-func b23RichCall(t *testing.T, server *rpc.Server, method, label string, params map[string]any) (json.RawMessage, *model.ErrorData) {
+func b23RichCall(t *testing.T, server *b23RichClient, method, label string, params map[string]any) (json.RawMessage, *model.ErrorData) {
 	t.Helper()
 	if params == nil {
 		params = map[string]any{}
@@ -487,7 +499,8 @@ func b23RichCall(t *testing.T, server *rpc.Server, method, label string, params 
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := server.Dispatch(context.Background(), request)
+	response := server.server.Dispatch(server.ctx, request)
+	*server.frames = append(*server.frames, frame{append(json.RawMessage(nil), request...), append(json.RawMessage(nil), response...)})
 	var envelope struct {
 		Result json.RawMessage
 		Error  *struct{ Data model.ErrorData }
@@ -509,7 +522,7 @@ type b23RichPublicRow struct {
 	Fields map[string]any `json:"fields"`
 }
 
-func b23RichCurrentRows(t *testing.T, server *rpc.Server, label string, definition map[string]any, expected *viewops.AsOf) []b23RichPublicRow {
+func b23RichCurrentRows(t *testing.T, server *b23RichClient, label string, definition map[string]any, expected *viewops.AsOf) []b23RichPublicRow {
 	t.Helper()
 	raw, refusal := b23RichCall(t, server, "view.run", label, map[string]any{"definition": definition})
 	if refusal != nil {
@@ -532,7 +545,7 @@ func b23RichCurrentRows(t *testing.T, server *rpc.Server, label string, definiti
 	return result.Items
 }
 
-func b23RichCurrentRowsAt(t *testing.T, server *rpc.Server, label string, definition map[string]any, at viewops.AsOf) []b23RichPublicRow {
+func b23RichCurrentRowsAt(t *testing.T, server *b23RichClient, label string, definition map[string]any, at viewops.AsOf) []b23RichPublicRow {
 	t.Helper()
 	params := map[string]any{"definition": definition, "asOf": at}
 	raw, refusal := b23RichCall(t, server, "view.run", label, params)
@@ -603,7 +616,23 @@ func b23RichNativeCurrentDefinition(query string, resources, types []string) map
 	return map[string]any{"filter": filter, "fields": []string{"id", "type", "status", "labels", "fields.title"}, "sort": []string{"id"}, "budgetTokens": 1000}
 }
 
-func b23RichNativeCurrentExpectations(t *testing.T, server *rpc.Server, issues map[string]map[string]any, labelRows map[string][]string, at viewops.AsOf) []b23RichPublicRow {
+// This oracle uses the frozen source kinds and explicit head-manifest directive,
+// independently of the imported public rows. Raw issue_type remains unchanged
+// in the source tables and the all-window typed native readback.
+func b23RichPublicType(t *testing.T, sourceType string) string {
+	t.Helper()
+	switch sourceType {
+	case "task", "rich_kind":
+		return "issue"
+	case "gate":
+		return "gate"
+	default:
+		t.Fatalf("unbound rich source type %q", sourceType)
+		return ""
+	}
+}
+
+func b23RichNativeCurrentExpectations(t *testing.T, server *b23RichClient, issues map[string]map[string]any, labelRows map[string][]string, at viewops.AsOf) []b23RichPublicRow {
 	t.Helper()
 	all := b23RichCurrentRows(t, server, "rich-current-all", b23RichNativeCurrentDefinition("", nil, nil), &at)
 	rows := all
@@ -617,8 +646,9 @@ func b23RichNativeCurrentExpectations(t *testing.T, server *rpc.Server, issues m
 		}
 		seen[row.ID] = true
 		want := issues[row.ID]
-		if row.Type != b23RichSourceValue(want["issue_type"]) || row.Fields["title"] != want["title"] || row.Status != b23RichSourceValue(want["status"]) || !equalStringSet(row.Labels, labelRows[row.ID]) {
-			t.Fatalf("imported public row differs from independent oracle: id=%s got=%+v want title=%v status=%v labels=%v", row.ID, row, want["title"], want["status"], labelRows[row.ID])
+		wantType := b23RichPublicType(t, b23RichSourceValue(want["issue_type"]))
+		if row.Type != wantType || row.Fields["title"] != want["title"] || row.Status != b23RichSourceValue(want["status"]) || !equalStringSet(row.Labels, labelRows[row.ID]) {
+			t.Fatalf("imported public row differs from independent oracle: id=%s got=%+v want type=%s source_type=%v title=%v status=%v labels=%v", row.ID, row, wantType, want["issue_type"], want["title"], want["status"], labelRows[row.ID])
 		}
 	}
 	if len(seen) != len(issues) {
@@ -627,11 +657,11 @@ func b23RichNativeCurrentExpectations(t *testing.T, server *rpc.Server, issues m
 	// Intersections, OR, exclusion, status, type and resource-plane filters are
 	// all evaluated by the public view seam over the imported native head.
 	alpha := []string{"review-project-a1b"}
-	rows = b23RichCurrentRows(t, server, "rich-filter-all", b23RichNativeCurrentDefinition("title=Rich AND label=alpha AND status=awaiting_review AND type=rich_kind", alpha, []string{"rich_kind"}), &at)
+	rows = b23RichCurrentRows(t, server, "rich-filter-all", b23RichNativeCurrentDefinition("title=Rich AND label=alpha AND status=awaiting_review AND type=issue", alpha, []string{"issue"}), &at)
 	if len(rows) != 1 || rows[0].ID != "review-project-a1b" {
 		t.Fatalf("native all/intersection predicate=%+v", rows)
 	}
-	rows = b23RichCurrentRows(t, server, "rich-filter-any-exclude", b23RichNativeCurrentDefinition("title=Rich AND (label=alpha OR label=CaseTag) AND NOT label=renamecase", nil, []string{"rich_kind"}), &at)
+	rows = b23RichCurrentRows(t, server, "rich-filter-any-exclude", b23RichNativeCurrentDefinition("title=Rich AND (label=alpha OR label=CaseTag) AND NOT label=renamecase", nil, []string{"issue"}), &at)
 	if len(rows) != 1 || rows[0].ID != "review-project-a1b" {
 		t.Fatalf("native any/exclude predicate=%+v", rows)
 	}
@@ -650,7 +680,7 @@ func equalStringSet(left, right []string) bool {
 	return strings.Join(left, "\x00") == strings.Join(right, "\x00")
 }
 
-func b23RichNativePages(t *testing.T, server *rpc.Server, label string, definition map[string]any, at viewops.AsOf, want []string) {
+func b23RichNativePages(t *testing.T, server *b23RichClient, label string, definition map[string]any, at viewops.AsOf, want []string) {
 	t.Helper()
 	cursor := ""
 	seen := map[string]bool{}
@@ -698,7 +728,7 @@ func b23RichNativePages(t *testing.T, server *rpc.Server, label string, definiti
 	t.Fatal("native pages did not terminate")
 }
 
-func b23RichNativeCount(t *testing.T, server *rpc.Server, label string, definition map[string]any, at viewops.AsOf, want int) {
+func b23RichNativeCount(t *testing.T, server *b23RichClient, label string, definition map[string]any, at viewops.AsOf, want int) {
 	t.Helper()
 	raw, refusal := b23RichCall(t, server, "view.run", label, map[string]any{"definition": definition, "asOf": at, "countOnly": true})
 	if refusal != nil {
@@ -726,7 +756,7 @@ func b23RichNativeCount(t *testing.T, server *rpc.Server, label string, definiti
 	}
 }
 
-func b23RichReadyCount(t *testing.T, server *rpc.Server, ids []string, at viewops.AsOf) {
+func b23RichReadyCount(t *testing.T, server *b23RichClient, ids []string, at viewops.AsOf) {
 	t.Helper()
 	filter := map[string]any{"resources": ids}
 	for _, limit := range []int{1, 1000} {
@@ -769,13 +799,13 @@ func b23RichReadyCount(t *testing.T, server *rpc.Server, ids []string, at viewop
 	}
 }
 
-func b23RichHistoryEvidence(t *testing.T, store driver.Store, meta driver.Meta) driver.HistoryImportEvidence {
+func b23RichHistoryEvidence(t *testing.T, ctx context.Context, store driver.Store, meta driver.Meta) driver.HistoryImportEvidence {
 	t.Helper()
-	reader, err := store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := reader.Get(context.Background(), []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+	rows, err := reader.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
 	closeErr := reader.Close()
 	if err != nil || closeErr != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
 		t.Fatalf("native history evidence readback rows=%d err=%v close=%v", len(rows), err, closeErr)
@@ -891,24 +921,24 @@ func b23RichAssertSourceOracle(t *testing.T, archive *dumpformat.Archive, manife
 	return scope, commitStates
 }
 
-func b23RichNativeWindowReadback(t *testing.T, store driver.Store, meta driver.Meta, mapping driver.SourceImportRevision) {
+func b23RichNativeWindowReadback(t *testing.T, ctx context.Context, store driver.Store, meta driver.Meta, mapping driver.SourceImportRevision) {
 	t.Helper()
 	// The existing typed capture-set verifier checks every mapped native
 	// row/meta snapshot. This separate selected-window check retains the
 	// portable-row boundary without applying the legacy V1 row codec to V2.
-	reader, err := store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation, At: &mapping.Revision})
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &mapping.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	portable, err := reader.Get(context.Background(), []model.Ref{model.RefByID("review-project-a1b", model.Natural64(0))})
+	portable, err := reader.Get(ctx, []model.Ref{model.RefByID("review-project-a1b", model.Natural64(0))})
 	if err != nil || len(portable) != 0 {
 		t.Fatalf("native source window fabricated portable bead at revision %s: rows=%d err=%v", mapping.Revision, len(portable), err)
 	}
 	t.Logf("B23_NATIVE_WINDOW source_sequence=%d commit_ids=%v target_revision=%s portable_rows=0", mapping.SourceSequence, mapping.CommitIDs, mapping.Revision)
 }
 
-func b23RichNativeOldAsOf(t *testing.T, server *rpc.Server, store driver.Store, restored driver.Meta, firstMapping driver.SourceImportRevision, before driver.Meta) {
+func b23RichNativeOldAsOf(t *testing.T, server *b23RichClient, store driver.Store, restored driver.Meta, firstMapping driver.SourceImportRevision, before driver.Meta) {
 	t.Helper()
 	at := viewops.AsOf{Revision: firstMapping.Revision, Incarnation: restored.Incarnation}
 	raw, refusal := b23RichCall(t, server, "bead.get", "rich-old-get", map[string]any{"id": model.RefByID("review-project-a1b", model.Natural64(0)), "asOf": at})
@@ -923,7 +953,7 @@ func b23RichNativeOldAsOf(t *testing.T, server *rpc.Server, store driver.Store, 
 	if err := json.Unmarshal(raw, &result); err != nil || len(result.Items) != 0 {
 		t.Fatalf("native table history fabricated old portable view: %s", raw)
 	}
-	after, err := store.Meta(context.Background())
+	after, err := store.Meta(server.ctx)
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("old-asOf read changed store metadata: before=%+v after=%+v err=%v", before, after, err)
 	}
@@ -939,7 +969,20 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
-			f := open(t, engine)
+			f := openQueryFixture(t, engine, true)
+			assertActiveLease := func(phase string) {
+				t.Helper()
+				if err := context.Cause(f.ctx); err != nil {
+					t.Fatalf("caller restore lease context cancelled at %s: %v", phase, err)
+				}
+				select {
+				case <-f.lease.Lost():
+					t.Fatalf("caller restore lease lost at %s", phase)
+				default:
+				}
+				t.Logf("B23_RESTORE_LEASE_ACTIVE engine=%s phase=%s", engine, phase)
+			}
+			assertActiveLease("before-bind")
 			beforeRestore, err := f.store.Meta(f.ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -947,7 +990,7 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			plan := func() driver.SourcePlanePlanV1 {
 				work, release := archive.NativeDeltaAccountingScope()
 				defer release()
-				return b23RichPlan(t, work, f.store, f.lease)
+				return b23RichPlan(t, f.ctx, work, f.store, f.lease)
 			}()
 			profile := driver.RestoreImportProfile{
 				Admission: driver.RestoreImportAdmission{
@@ -966,11 +1009,12 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			if report.SourcePlanes == nil || report.Receipt == nil || report.Restored.Head != model.Natural64(uint64(len(scope.Commits)+1)) || report.Restored.StoreID != driver.StoreID(plan.SourceStoreID) || report.Restored.Incarnation == beforeRestore.Incarnation {
 				t.Fatalf("native import metadata/receipt=%+v", report)
 			}
-			evidence := b23RichHistoryEvidence(t, f.store, report.Restored)
+			evidence := b23RichHistoryEvidence(t, f.ctx, f.store, report.Restored)
 			b23RichAssertEvidence(t, evidence, scope, commitStates)
 			if err := converterroundtrip.VerifyNativeCaptureSetReadback(f.ctx, f.store, archive, report); err != nil {
 				t.Fatalf("every mapped native typed source row/meta readback: %v", err)
 			}
+			assertActiveLease("after-122-window-readback")
 			if bound.HistoryDigest == "" || bound.DerivedDigest == "" || bound.SourcePlanes == nil {
 				t.Fatalf("bound profile lacks exact source/history digests: %+v", bound)
 			}
@@ -979,39 +1023,40 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			// retained source images. Portable business rows are checked separately
 			// at the final restore head below.
 			for _, index := range []int{0, len(evidence.Mapping) / 2, len(evidence.Mapping) - 1} {
-				b23RichNativeWindowReadback(t, f.store, report.Restored, evidence.Mapping[index])
+				b23RichNativeWindowReadback(t, f.ctx, f.store, report.Restored, evidence.Mapping[index])
 			}
 
-			f.server = b23RichServer(t, f, "")
+			server := b23RichServer(t, f, "")
 			at := viewops.AsOf{Revision: report.Restored.Head, Incarnation: report.Restored.Incarnation}
-			rows := b23RichNativeCurrentExpectations(t, f.server, issues, labelRows, at)
+			rows := b23RichNativeCurrentExpectations(t, server, issues, labelRows, at)
 			ids := make([]string, 0, len(rows))
 			for _, row := range rows {
 				ids = append(ids, row.ID)
 			}
 			sort.Strings(ids)
 
-			intersection := b23RichNativeCurrentDefinition("title=Rich AND label=alpha AND status=awaiting_review AND type=rich_kind", []string{"review-project-a1b"}, []string{"rich_kind"})
+			intersection := b23RichNativeCurrentDefinition("title=Rich AND label=alpha AND status=awaiting_review AND type=issue", []string{"review-project-a1b"}, []string{"issue"})
 			intersection["budgetTokens"] = 1
-			b23RichNativePages(t, f.server, "rich-intersection-pages", intersection, at, []string{"review-project-a1b"})
+			b23RichNativePages(t, server, "rich-intersection-pages", intersection, at, []string{"review-project-a1b"})
 			for _, budget := range []int{1, 1000} {
-				definition := b23RichNativeCurrentDefinition("title=Rich AND label=alpha AND status=awaiting_review AND type=rich_kind", []string{"review-project-a1b"}, []string{"rich_kind"})
+				definition := b23RichNativeCurrentDefinition("title=Rich AND label=alpha AND status=awaiting_review AND type=issue", []string{"review-project-a1b"}, []string{"issue"})
 				definition["budgetTokens"] = budget
-				b23RichNativeCount(t, f.server, fmt.Sprintf("rich-intersection-count-%d", budget), definition, at, 1)
+				b23RichNativeCount(t, server, fmt.Sprintf("rich-intersection-count-%d", budget), definition, at, 1)
 			}
-			anyExclude := b23RichNativeCurrentDefinition("title=Rich AND (label=alpha OR label=CaseTag) AND NOT label=renamecase", nil, []string{"rich_kind"})
+			anyExclude := b23RichNativeCurrentDefinition("title=Rich AND (label=alpha OR label=CaseTag) AND NOT label=renamecase", nil, []string{"issue"})
 			anyExclude["budgetTokens"] = 1
-			b23RichNativeCount(t, f.server, "rich-any-exclude-count", anyExclude, at, 1)
+			b23RichNativeCount(t, server, "rich-any-exclude-count", anyExclude, at, 1)
 			unknown := b23RichNativeCurrentDefinition("label=does-not-exist", nil, nil)
-			b23RichNativeCount(t, f.server, "rich-unknown-count", unknown, at, 0)
+			b23RichNativeCount(t, server, "rich-unknown-count", unknown, at, 0)
 			blank := b23RichNativeCurrentDefinition("", nil, nil)
-			b23RichNativeCount(t, f.server, "rich-blank-count", blank, at, len(ids))
+			b23RichNativeCount(t, server, "rich-blank-count", blank, at, len(ids))
 
 			// Title ordering is an independent natural/tie oracle; the page
 			// walk must conserve the complete keyset without repeats.
 			natural := b23RichNativeCurrentDefinition("", nil, nil)
+			natural["sort"] = []string{"title", "id"}
 			natural["budgetTokens"] = 1
-			b23RichNativePages(t, f.server, "rich-natural-pages", natural, at, []string{
+			b23RichNativePages(t, server, "rich-natural-pages", natural, at, []string{
 				"review-project-afr", "review-project-702", "review-project-700", "review-project-703", "review-project-705", "review-project-704", "review-project-701", "review-project-a1b.1", "review-project-80a", "review-project-c2d", "review-project-a1b.2", "review-project-a1b",
 			})
 
@@ -1028,18 +1073,23 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 				t.Fatal(err)
 			}
 			b23RichNativeOldAsOf(t, deniedServer, f.store, report.Restored, evidence.Mapping[0], readMeta)
-			b23RichReadyCount(t, f.server, ids, at)
+			b23RichReadyCount(t, server, ids, at)
 
 			if after, err := f.store.Meta(f.ctx); err != nil || !reflect.DeepEqual(after, readMeta) {
 				t.Fatalf("native public reads mutated metadata: before=%+v after=%+v err=%v", readMeta, after, err)
 			}
+			assertActiveLease("before-reopen")
 
 			f.reopen()
 			reopened, err := f.store.Meta(f.ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			f.server = b23RichServer(t, f, "")
+			if !reflect.DeepEqual(reopened, readMeta) {
+				t.Fatalf("native source metadata changed on %s reopen: before=%+v after=%+v", engine, readMeta, reopened)
+			}
+			assertActiveLease("after-reopen")
+			server = b23RichServer(t, f, "")
 			recoveredProfile, recovered, found, err := converterroundtrip.RecoverBoundSourceImport(f.ctx, f.store)
 			if recovered.Archive != nil {
 				defer recovered.Archive.ReleaseNativeDecoded()
@@ -1053,17 +1103,22 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			if err := converterroundtrip.VerifyNativeCaptureSetReadback(f.ctx, f.store, archive, recovered); err != nil {
 				t.Fatalf("reopened every mapped native typed source row/meta readback: %v", err)
 			}
+			reopenedEvidence := b23RichHistoryEvidence(t, f.ctx, f.store, reopened)
+			if !reflect.DeepEqual(evidence, reopenedEvidence) {
+				t.Fatal("native source history mapping changed on reopen")
+			}
 			reopenedAt := viewops.AsOf{Revision: reopened.Head, Incarnation: reopened.Incarnation}
-			b23RichNativeCurrentExpectations(t, f.server, issues, labelRows, reopenedAt)
-			b23RichReadyCount(t, f.server, ids, reopenedAt)
+			b23RichNativeCurrentExpectations(t, server, issues, labelRows, reopenedAt)
+			b23RichReadyCount(t, server, ids, reopenedAt)
 			for _, index := range []int{0, len(evidence.Mapping) / 2, len(evidence.Mapping) - 1} {
-				b23RichNativeWindowReadback(t, f.store, recovered.Restored, evidence.Mapping[index])
+				b23RichNativeWindowReadback(t, f.ctx, f.store, recovered.Restored, evidence.Mapping[index])
 			}
 			reopenedReadMeta, err := f.store.Meta(f.ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
-			b23RichNativeOldAsOf(t, f.server, f.store, recovered.Restored, evidence.Mapping[0], reopenedReadMeta)
+			b23RichNativeOldAsOf(t, server, f.store, recovered.Restored, evidence.Mapping[0], reopenedReadMeta)
+			assertActiveLease("after-reopened-readback")
 		})
 	}
 }

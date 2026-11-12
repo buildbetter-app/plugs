@@ -22,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/core/viewops"
+	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/viewrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -35,21 +36,32 @@ const project = "b23-public-query"
 
 type frame struct{ Request, Response json.RawMessage }
 type fixture struct {
-	t           *testing.T
-	ctx         context.Context
-	engine, dsn string
-	store       driver.Store
-	lease       driver.ActiveLease
-	server      *rpc.Server
-	clock       *testclock.Clock
-	denied      string
-	next        int
-	frames      []frame
-	ids         []string
+	t            *testing.T
+	ctx          context.Context
+	baseCtx      context.Context
+	holdLease    bool
+	releaseLease func() error
+	engine, dsn  string
+	store        driver.Store
+	lease        driver.ActiveLease
+	server       *rpc.Server
+	clock        *testclock.Clock
+	denied       string
+	next         int
+	frames       []frame
+	ids          []string
 }
 
 func open(t *testing.T, engine string) *fixture {
-	f := &fixture{t: t, ctx: context.Background(), engine: engine, clock: testclock.New(t, time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))}
+	return openQueryFixture(t, engine, false)
+}
+
+func openQueryFixture(t *testing.T, engine string, holdLease bool) *fixture {
+	ctx := context.Background()
+	if holdLease {
+		ctx = t.Context()
+	}
+	f := &fixture{t: t, ctx: ctx, baseCtx: ctx, holdLease: holdLease, engine: engine, clock: testclock.New(t, time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))}
 	switch engine {
 	case "sqlite":
 		f.dsn = filepath.Join(t.TempDir(), "b23.sqlite")
@@ -61,6 +73,7 @@ func open(t *testing.T, engine string) *fixture {
 	return f
 }
 func (f *fixture) connect() {
+	f.ctx = f.baseCtx
 	var err error
 	switch f.engine {
 	case "memory":
@@ -73,7 +86,11 @@ func (f *fixture) connect() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.lease, err = f.store.Lease(f.ctx, "b23-public-query", driver.LeaseTTL)
+	if f.holdLease {
+		f.ctx, f.lease, f.releaseLease, err = converterroundtrip.HoldRestoreLease(f.ctx, f.store, "b23-public-query")
+	} else {
+		f.lease, err = f.store.Lease(f.ctx, "b23-public-query", driver.LeaseTTL)
+	}
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -123,10 +140,23 @@ func (f *fixture) connect() {
 }
 func (f *fixture) close() {
 	if f.lease != nil {
-		if err := f.lease.Release(f.ctx); err != nil {
+		var err error
+		if f.releaseLease != nil {
+			op := f.ctx
+			err = f.releaseLease()
+			f.releaseLease = nil
+			if op.Err() != context.Canceled {
+				f.t.Error("held restore lease did not cancel its operation on release")
+			}
+			f.t.Logf("B23_RESTORE_LEASE_RELEASED engine=%s operation_cancelled=%t", f.engine, op.Err() == context.Canceled)
+		} else {
+			err = f.lease.Release(f.ctx)
+		}
+		if err != nil {
 			f.t.Error(err)
 		}
 		f.lease = nil
+		f.ctx = f.baseCtx
 	}
 	if f.store != nil {
 		if err := f.store.Close(); err != nil {
