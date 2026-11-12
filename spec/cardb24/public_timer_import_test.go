@@ -108,9 +108,18 @@ func b24BindTimerSource(t *testing.T, f *fixture, data []byte, profile driver.Re
 	if f.engine == "memory" {
 		lifetime = driver.CheckpointLifetimeProcess
 	}
-	persistent, ok := capability.(interface{ Persistent() bool })
-	if capability.WorkflowCheckpointLifetime() != lifetime || !ok || persistent.Persistent() != (f.engine != "memory") {
-		t.Fatal("actual import checkpoint capability reported an incorrect lifetime")
+	// Process lifetime is an explicit workflow capability. Restart persistence
+	// is a separate, stronger optional driver capability; direct memory stores
+	// do not promise it. Observe both before asserting either contract.
+	actualLifetime := capability.WorkflowCheckpointLifetime()
+	persistence, hasPersistence := capability.(driver.PersistentCheckpointStore)
+	persistent := hasPersistence && persistence.Persistent()
+	b24Retain(t, want.ID+"-"+f.engine+"-checkpoint-capability.json", map[string]any{
+		"workflow_lifetime": actualLifetime, "persistent_capability_present": hasPersistence,
+		"restart_persistent": persistent, "persistent_basis": "optional-driver-capability",
+	})
+	if actualLifetime != lifetime || persistent != (f.engine != "memory") {
+		t.Fatalf("actual import checkpoint capability: lifetime=%q persistent_capability=%t restart_persistent=%t", actualLifetime, hasPersistence, persistent)
 	}
 	principal, err := json.Marshal(profile.Admission.Actor)
 	if err != nil {
@@ -218,7 +227,7 @@ func b24BindTimerSource(t *testing.T, f *fixture, data []byte, profile driver.Re
 	if err != nil {
 		t.Fatal("bind actual canonical timer source plan", err)
 	}
-	b24Retain(t, want.ID+"-"+f.engine+"-joint-plan.json", map[string]any{"profile": profile, "plan": plan, "lifetime": lifetime, "persistent": persistent.Persistent()})
+	b24Retain(t, want.ID+"-"+f.engine+"-joint-plan.json", map[string]any{"profile": profile, "plan": plan, "lifetime": lifetime, "persistent": persistent, "persistent_capability_present": hasPersistence})
 	return profile
 }
 
@@ -425,6 +434,25 @@ func b24RunTimerImport(t *testing.T, engine string, data []byte, want b24TimerOr
 			t.Fatalf("blank defer reason accepted: %+v", got)
 		}
 	})
+	// The imported mapping is already in the adopted backlog slot. A second
+	// defer must refuse without appending a comment or changing any image.
+	// Enter ReadyEligible explicitly before exercising a positive defer.
+	conserve("imported-already-backlog-defer", func() {
+		got := f.call("bead.defer", "imported-already-backlog-defer", params(map[string]any{"reason": "waiting for timer input"}))
+		if got.Error == nil || got.Error.Data.Code != "invalid_params" {
+			t.Fatalf("already-backlog defer lost its typed refusal: %+v", got)
+		}
+		violations, ok := got.Error.Data.Details["violations"].([]any)
+		if !ok || len(violations) != 1 {
+			t.Fatalf("already-backlog defer omitted its status violation: %+v", got.Error)
+		}
+		violation, ok := violations[0].(map[string]any)
+		if !ok || violation["code"] != "invalid_params" || violation["field"] != "status" {
+			t.Fatalf("already-backlog defer changed its status refusal: %+v", got.Error)
+		}
+	})
+	commit(t, f.call("bead.reopen", "imported-prepare-defer", params(nil)))
+	read("imported-ready-before-defer", updated, "todo", 0)
 	prior := f.state(t)
 	commit(t, f.call("bead.defer", "imported-defer", params(map[string]any{"reason": "waiting for timer input"})))
 	deferred := f.state(t)

@@ -2124,6 +2124,8 @@ tools/lexicon/b07_native_protocol_literals.go
 tools/lexicon/b07_native_protocol_literals_test.go
 tools/lexicon/b07_represented_literals.go
 tools/lexicon/b07_represented_literals_test.go
+tools/lexicon/b24_recorded_timer_references.go
+tools/lexicon/b24_recorded_timer_references_test.go
 tools/lexicon/checker.go
 tools/lexicon/checker_test.go
 tools/lexicon/cmd/lexicon_check/main.go

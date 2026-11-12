@@ -105,3 +105,13 @@ version READ is `NOT_MEASURED`, and native subsecond stale precision is
 controller's paced execution window and distinct review. The current producer
 confirmed no completed successor clock input; native-history capture import
 remains a separate receiver-owned Full-profile dependency.
+
+The retained `e1585fca` focus is RED: its six clock cells passed, while the
+non-NULL import cells and lexicon gate failed. The causal caller observes the
+selected driver's explicit workflow lifetime and optional stronger persistence
+capability before asserting them. An imported entity already in backlog must
+retain its exact typed defer refusal and unchanged state; explicit reopen
+prepares the subsequent positive defer. Raw fixture vocabulary is admitted
+only through the complete 68-path SHA-256 table. Changed bytes and unknown
+siblings remain refusals, and the consumer validator remains ordinary source.
+These source corrections carry no new runtime qualification.

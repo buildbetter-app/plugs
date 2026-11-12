@@ -173,6 +173,12 @@ func DefaultTreePolicy() TreePolicy {
 	for name, digest := range undoSQLReferences() {
 		policy.ReferenceSHA256[name] = digest
 	}
+	// Every raw timer fixture, including siblings without vocabulary matches,
+	// is bound to exact source-reviewed bytes, never a vocabulary prefix.
+	policy.ReferencePrefixes = append(policy.ReferencePrefixes, "spec/cardb24/testdata/recorded-timers/")
+	for name, digest := range b24RecordedTimerReferences() {
+		policy.ReferenceSHA256[name] = digest
+	}
 	return policy
 }
 
