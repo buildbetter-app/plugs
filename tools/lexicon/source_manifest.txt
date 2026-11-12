@@ -799,6 +799,7 @@ internal/integration/graphacceptance/graph_test.go
 internal/integration/graphacceptance/unsupported_test.go
 internal/integration/graphcertfixture/BUILD.bazel
 internal/integration/graphcertfixture/capture.go
+internal/integration/graphcertfixture/capture_admission_test.go
 internal/integration/graphcertfixture/plan.go
 internal/integration/heartbeads/BUILD.bazel
 internal/integration/heartbeads/fixture_test.go
