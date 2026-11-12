@@ -98,7 +98,11 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		if err != nil {
 			return fail(err)
 		}
-		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions VALUES($1,$2,$3,$4)`, []byte(id), r.Revision.String(), v.Base, raw); err != nil {
+		fields, err := historicalQueryFields(raw)
+		if err != nil {
+			return fail(err)
+		}
+		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions(key,revision,is_base,value,query_fields) VALUES($1,$2,$3,$4,$5::jsonb)`, []byte(id), r.Revision.String(), v.Base, raw, fields); err != nil {
 			return fail(err)
 		}
 		if err = t.writeState(ctx, id, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &r.Ref}, Revision: r.Revision, Present: !row.Deleted}); err != nil {

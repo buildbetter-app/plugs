@@ -99,6 +99,9 @@ func (s *Store) initialize(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, schemaDDL); err != nil {
 		return err
 	}
+	if err = ensureHistoricalQueryFields(ctx, tx); err != nil {
+		return err
+	}
 	id, err := identity()
 	if err != nil {
 		return err

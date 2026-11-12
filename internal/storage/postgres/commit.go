@@ -452,6 +452,7 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 	counts := make([]string, 0, publicationBatchRows)
 	bases := make([]bool, 0, publicationBatchRows)
 	versions := make([][]byte, 0, publicationBatchRows)
+	queryFields := make([]string, 0, publicationBatchRows)
 	flush := func() error {
 		if len(keys) == 0 {
 			return nil
@@ -462,12 +463,13 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 		 ON CONFLICT (key) DO UPDATE SET revision=EXCLUDED.revision,body=EXCLUDED.body,deleted=EXCLUDED.deleted,version_count=EXCLUDED.version_count`, keys, refs, kinds, entry.Revision.String(), bodies, deleted, counts); err != nil {
 			return err
 		}
-		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions (key,revision,is_base,value)
-		 SELECT key,$2::numeric(20,0),is_base,value FROM unnest($1::bytea[],$3::boolean[],$4::bytea[]) AS version_rows(key,is_base,value)`, keys, entry.Revision.String(), bases, versions); err != nil {
+		if _, err := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions (key,revision,is_base,value,query_fields)
+		 SELECT key,$2::numeric(20,0),is_base,value,query_fields::jsonb FROM unnest($1::bytea[],$3::boolean[],$4::bytea[],$5::text[]) AS version_rows(key,is_base,value,query_fields)`, keys, entry.Revision.String(), bases, versions, queryFields); err != nil {
 			return err
 		}
 		keys, refs, kinds, bodies = keys[:0], refs[:0], kinds[:0], bodies[:0]
 		deleted, counts, bases, versions = deleted[:0], counts[:0], bases[:0], versions[:0]
+		queryFields = queryFields[:0]
 		return nil
 	}
 	for id, record := range t.records {
@@ -513,6 +515,11 @@ func (t *transaction) writeRecords(ctx context.Context, entry model.Changeset) e
 		deleted = append(deleted, record == nil)
 		counts = append(counts, decimal(count+1))
 		bases = append(bases, version.Base)
+		fields, err := historicalQueryFields(raw)
+		if err != nil {
+			return err
+		}
+		queryFields = append(queryFields, fields)
 		versions = append(versions, raw)
 		if len(keys) == publicationBatchRows {
 			if err := flush(); err != nil {

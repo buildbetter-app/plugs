@@ -85,8 +85,8 @@ func decodeQueryAfter(value, filter string, at, index uint64) (string, error) {
 	return string(key), nil
 }
 
-// queryCursor preserves the predecessor ordinal cursor below head. Current
-// head pages use only the stateless After marker; a nonzero Index without it
+// queryCursor preserves the predecessor ordinal cursor for staged and
+// non-keyset current queries. Head and historical keyset pages use After; a nonzero Index without it
 // is an old offset cursor and is refused rather than translated through an
 // OFFSET query.
 func (r *reader) queryCursor(c *driver.Cursor, filter string, currentHead bool) (string, uint64, error) {
@@ -220,8 +220,9 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 		return empty, err
 	}
 	// Only an ordinary read pinned at its current head can use the keyset
-	// projection. Staged transactions and below-head snapshots retain the
-	// predecessor's full reconstruction, filtering and ordinal cursor path.
+	// projection. Staged transactions and other current-head filters retain
+	// the predecessor's reconstruction and ordinal cursor path. Historical
+	// queries have a separate bounded selector below.
 	currentHead := r.writer == nil && r.at == head && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind)
 	if currentHead {
 		after, index, err := r.queryCursor(q.Cursor, filter, true)
@@ -229,6 +230,13 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return empty, err
 		}
 		return r.queryHead(ctx, kind, hasKind, filter, after, index, limit)
+	}
+	if r.writer == nil && r.at < head {
+		after, index, err := r.historicalQueryCursor(ctx, q.Cursor, filter, q.Filter)
+		if err != nil {
+			return empty, err
+		}
+		return r.queryHistorical(ctx, q.Filter, filter, after, index, limit)
 	}
 	_, start, err := r.queryCursor(q.Cursor, filter, false)
 	if err != nil {

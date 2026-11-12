@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS records_live_kind_key
  ON plug_postgres.records(kind,key) WHERE NOT deleted;
 CREATE TABLE IF NOT EXISTS plug_postgres.versions (
  key bytea NOT NULL, revision numeric(20,0) NOT NULL,
- is_base boolean NOT NULL, value bytea NOT NULL,
+ is_base boolean NOT NULL, value bytea NOT NULL, query_fields jsonb,
  PRIMARY KEY (key, revision)
 );
 CREATE TABLE IF NOT EXISTS plug_postgres.states (

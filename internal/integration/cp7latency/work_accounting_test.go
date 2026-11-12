@@ -234,10 +234,21 @@ func TestPostgresHistoricalReadCountsDiscardedCurrentBodies(t *testing.T) {
 				}
 				work := counts.work()
 				wantBytes := repeat * int64(len(currentOne)+len(originalOne)+len(originalTwo))
-				if work.Payloads != repeat*3 || work.PayloadBytes != wantBytes {
-					t.Fatalf("discarded/repeated historical work=%+v want_payloads=%d want_bytes=%d", work, repeat*3, wantBytes)
+				wantPayloads := repeat * 3
+				if method == "Query" {
+					// Historical keyset selection reconstructs only the matching
+					// row; Get/Observe still count their discarded current body.
+					wantBytes = repeat * int64(len(originalOne))
+					wantPayloads = repeat
 				}
-				t.Logf("CP7_HISTORICAL_BODY_WORK method=%s repeat=%d output_rows=%d current_body_scans_per_call=1 historical_bodies_per_call=2 absent=1 deleted_current_body=0 payload_records=%d payload_bytes=%d", method, repeat, len(got), work.Payloads, work.PayloadBytes)
+				if work.Payloads != wantPayloads || work.PayloadBytes != wantBytes {
+					t.Fatalf("discarded/repeated historical work=%+v want_payloads=%d want_bytes=%d", work, wantPayloads, wantBytes)
+				}
+				if method == "Query" {
+					t.Logf("CP7_HISTORICAL_BODY_WORK method=Query repeat=%d output_rows=%d selected_historical_bodies_per_call=1 discarded_current_body=0 payload_records=%d payload_bytes=%d", repeat, len(got), work.Payloads, work.PayloadBytes)
+				} else {
+					t.Logf("CP7_HISTORICAL_BODY_WORK method=%s repeat=%d output_rows=%d current_body_scans_per_call=1 historical_bodies_per_call=2 absent=1 deleted_current_body=0 payload_records=%d payload_bytes=%d", method, repeat, len(got), work.Payloads, work.PayloadBytes)
+				}
 			}
 		})
 	}
