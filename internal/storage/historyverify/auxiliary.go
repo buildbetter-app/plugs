@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"sort"
 
+ "github.com/buildbetter-app/plugs/internal/core/dumpformat"
+
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -22,6 +24,12 @@ type Auxiliary struct {
 }
 
 func AuxiliaryRoot(a Auxiliary) (Root, error) {
+ return auxiliaryRoot(a, nil)
+}
+
+// originals is private verifier output from successful reauthentication. It
+// adds the exact raw capture blob membership without retaining its bodies.
+func auxiliaryRoot(a Auxiliary, originals map[string]dumpformat.File) (Root, error) {
 	// These keys are already retained by the ordinary transaction's one current
 	// image, not by historical replay. No history bodies or mapping list enter it.
 	type part struct {
@@ -64,18 +72,21 @@ func AuxiliaryRoot(a Auxiliary) (Root, error) {
 			return Root{}, err
 		}
 	}
-	for key, v := range a.Blobs {
-		sum := sha256.Sum256(v)
-		if string(key) != hex.EncodeToString(sum[:]) {
-			return Root{}, ErrCheckpoint{"staged blob differs from content address"}
-		}
-		if err := add("blob", string(key), struct {
-			Bytes  int
-			SHA256 string
-		}{len(v), string(key)}); err != nil {
-			return Root{}, err
-		}
-	}
+ type blob struct { Bytes int64; SHA256 string }
+ blobs := map[driver.Hash]blob{}
+ for key, value := range a.Blobs {
+  sum := sha256.Sum256(value)
+  if string(key) != hex.EncodeToString(sum[:]) { return Root{}, ErrCheckpoint{"staged blob differs from content address"} }
+  blobs[key] = blob{int64(len(value)), string(key)}
+ }
+ for _, file := range originals {
+  key := driver.Hash(file.SHA256)
+  value := blob{file.Size, file.SHA256}
+  if old, exists := blobs[key]; exists && old != value { return Root{}, ErrCheckpoint{"original blob differs from receiving image"} }
+  blobs[key] = value
+ }
+ for key, value := range blobs { if err := add("blob", string(key), value); err != nil { return Root{}, err } }
+
 	for key, v := range a.Bumps {
 		if err := add("bump", key, v); err != nil {
 			return Root{}, err
