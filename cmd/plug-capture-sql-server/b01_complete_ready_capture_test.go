@@ -128,8 +128,8 @@ func (b *b01ReadyCapture) state(name string) b01ReadyState {
 	b.f.t.Helper()
 	source, ctx := plugdump.SQLSource{DB: b.f.db}, context.Background()
 	log, err := source.ReadSourceCommits(ctx)
-	if err != nil {
-		b.f.t.Fatal("actual source commit census", err)
+	if err != nil || !log.Clean {
+		b.f.t.Fatalf("actual source graph must be clean: %+v %v", log, err)
 	}
 	names, err := source.Tables(ctx)
 	if err != nil {
@@ -154,6 +154,7 @@ func (b *b01ReadyCapture) state(name string) b01ReadyState {
 
 func (b *b01ReadyCapture) ready(name string, want []string, limit int, extra ...string) []string {
 	b.f.t.Helper()
+	before := b.state("states/" + name + "-ready-before")
 	argv := append([]string{"ready", "--json", "--limit", strconv.Itoa(limit)}, extra...)
 	actual, err := ids(b.run(name, b.f.bd, argv...), false)
 	if err != nil {
@@ -172,10 +173,15 @@ func (b *b01ReadyCapture) ready(name string, want []string, limit int, extra ...
 	if !reflect.DeepEqual(actual, expected) {
 		b.f.t.Fatalf("native %s got=%q want=%q", name, actual, expected)
 	}
+	if after := b.state("states/" + name + "-ready-after"); !reflect.DeepEqual(before, after) {
+		b.f.t.Fatalf("native %s changed complete source tables, schema, ignore or clean commit graph", name)
+	}
 	return actual
 }
 
-func (b *b01ReadyCapture) point(name string, goTime, sqlTime time.Time, hybrid []string) {
+// Every preserved create, durable clock and mixed clock step observes the
+// actual Go hook through the unchanged public inventory, alongside real SQL.
+func (b *b01ReadyCapture) step(name string, goTime, sqlTime time.Time) string {
 	b.f.t.Helper()
 	b.f.step(name, goTime, sqlTime)
 	b.f.sqlClock(sqlTime)
@@ -189,7 +195,7 @@ func (b *b01ReadyCapture) point(name string, goTime, sqlTime time.Time, hybrid [
 		b.f.t.Fatal(err)
 	}
 	b.json("clocks/"+name+"/actual-sql.json", map[string]string{"utc_timestamp_6": sqlAt, "utc_timestamp": sqlDefault})
-	before := b.state("states/" + name + "-before")
+	before := b.state("states/" + name + "-clock-before")
 	// This unchanged public inventory port reads the actual Go hook and SQL
 	// clock, authenticating the same clock-file bytes used by ready commands.
 	inventory := filepath.Join(b.out, "clocks", name, "inventory.json")
@@ -210,7 +216,17 @@ func (b *b01ReadyCapture) point(name string, goTime, sqlTime time.Time, hybrid [
 		b.f.t.Fatalf("actual independent clock sidecar differs: %v %s", err, sidecar)
 	}
 	b.save("clocks/"+name+"/actual-clock-sidecar.json", sidecar)
-	point := b01ReadyPoint{Name: name, GoTime: goTime, SQLTime: sqlTime, ClockSHA256: fmt.Sprintf("%x", sha256.Sum256(clockBytes)), Default: []string{"aging", "wisp", "control"}, Hybrid: hybrid, Observations: map[string][]string{}}
+	if after := b.state("states/" + name + "-clock-after"); !reflect.DeepEqual(before, after) {
+		b.f.t.Fatal("public clock inventory changed complete native tables or clean graph")
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(clockBytes))
+}
+
+func (b *b01ReadyCapture) point(name string, goTime, sqlTime time.Time, hybrid []string) {
+	b.f.t.Helper()
+	clockSHA := b.step(name, goTime, sqlTime)
+	before := b.state("states/" + name + "-before")
+	point := b01ReadyPoint{Name: name, GoTime: goTime, SQLTime: sqlTime, ClockSHA256: clockSHA, Default: []string{"aging", "wisp", "control"}, Hybrid: hybrid, Observations: map[string][]string{}}
 	for _, limit := range []int{0, 1, 2, 1000} {
 		for _, sortBy := range []string{"default", "hybrid"} {
 			args := []string{"--include-ephemeral", "--label", "active-clock"}
@@ -462,7 +478,7 @@ func TestB01CompleteIndependentReadyCapture(t *testing.T) {
 	}
 	b.json("operation-inputs.json", inputs)
 	for _, in := range inputs {
-		f.step("create-"+in.Role, in.Created, boundary.Add(10*time.Second))
+		b.step("create-"+in.Role, in.Created, boundary.Add(10*time.Second))
 		if b.create(in.Role, in.Title, "--id", in.ID, "--priority", strconv.Itoa(in.Priority), "--labels", "ready-clock") != in.ID {
 			t.Fatal("public create changed explicit input identity")
 		}
@@ -476,8 +492,9 @@ func TestB01CompleteIndependentReadyCapture(t *testing.T) {
 			}
 			found = true
 			for key, want := range map[string]any{"title": in.Title, "status": "open", "issue_type": "task", "priority": in.Priority, "created_at": in.Created.Format(time.RFC3339Nano), "updated_at": in.Created.Format(time.RFC3339Nano), "due_at": nil, "defer_until": nil} {
-				if fmt.Sprint(row[key]) != fmt.Sprint(want) {
-					t.Fatalf("actual public input readback %s.%s=%v want=%v", in.Role, key, row[key], want)
+				actual, present := row[key]
+				if !present || !equalPhysicalCaptureJSON(actual, want) {
+					t.Fatalf("actual public input readback %s.%s=%#v present=%t want=%#v", in.Role, key, actual, present, want)
 				}
 			}
 		}
@@ -495,8 +512,7 @@ func TestB01CompleteIndependentReadyCapture(t *testing.T) {
 		{"48h-before", -time.Microsecond}, {"48h-at", 0}, {"48h-after", time.Microsecond},
 		{"60s-before", time.Minute - time.Nanosecond}, {"60s-at", time.Minute}, {"60s-after", time.Minute + time.Nanosecond},
 	} {
-		f.step("go-only-"+point.name, boundary.Add(point.delta), boundary.Add(10*time.Second))
-		f.sqlClock(boundary.Add(10 * time.Second))
+		b.step("go-only-"+point.name, boundary.Add(point.delta), boundary.Add(10*time.Second))
 		hybrid := priority
 		if point.delta > 0 {
 			hybrid = hybridAfter
@@ -518,14 +534,13 @@ func TestB01CompleteIndependentReadyCapture(t *testing.T) {
 		name  string
 		delta time.Duration
 	}{{"before", -time.Microsecond}, {"at", 0}, {"after", time.Microsecond}} {
-		f.step("sql-only-"+point.name, boundary, boundary.Add(point.delta))
-		f.sqlClock(boundary.Add(point.delta))
+		b.step("sql-only-"+point.name, boundary, boundary.Add(point.delta))
 		b.ready("sql-only-"+point.name, priority, 1000, "--label", "ready-clock", "--sort", "hybrid")
 	}
 	if !equalPhysicalCaptureJSON(created, b.state("states/five-role-read-only-final")) {
 		t.Fatal("five-role default/hybrid/oldest or SQL-only reads changed source")
 	}
-	f.step("active-create", boundary.Add(-time.Hour), boundary.Add(10*time.Second))
+	b.step("active-create", boundary.Add(-time.Hour), boundary.Add(10*time.Second))
 	wisp := b.create("wisp", "active recent priority two", "--ephemeral", "--priority", "2", "--labels", "active-clock")
 	blocked := b.create("blocked", "active blocked priority zero", "--ephemeral", "--priority", "0", "--labels", "active-clock")
 	control := b.create("control", "ordinary priority four companion", "--id", "clockready-control", "--priority", "4", "--labels", "active-clock")
@@ -537,12 +552,21 @@ func TestB01CompleteIndependentReadyCapture(t *testing.T) {
 	b.create("active_child", "active child of ordinary parent", "--ephemeral", "--parent", control, "--no-inherit-labels", "--labels", "active-child")
 	b.run("retain-genuine-active-comment", f.bd, "comments", "add", wisp, "retained B01 active comment", "--author", "capture", "--json")
 	b.json("active-operation-inputs.json", b.roles)
+	b.step("active-at", boundary, boundary.Add(10*time.Second))
 	active := b.state("states/active-placement")
 	for _, role := range []string{"wisp", "blocked", "active_child"} {
 		found := false
 		for _, row := range active.Tables["wisps"].Rows {
 			if row["id"] == b.roles[role] {
 				found = true
+				if role == "wisp" {
+					for field, want := range (plugdump.Row{"title": "active recent priority two", "priority": 2, "status": "open", "created_at": boundary.Add(-time.Hour).Format(time.RFC3339Nano)}) {
+						actual, present := row[field]
+						if !present || !equalPhysicalCaptureJSON(actual, want) {
+							t.Fatalf("literal active field %s=%#v present=%t want=%#v", field, actual, present, want)
+						}
+					}
+				}
 			}
 		}
 		if !found {
