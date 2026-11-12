@@ -334,9 +334,13 @@ func lockKeySortKey(key LockKey) string {
 // fields prevent a cursor issued for another method, filter, principal, or
 // ontology from being replayed against this reader.
 type Cursor struct {
-	Incarnation      string
-	Revision         model.Revision
-	Index            model.Natural
+	Incarnation string
+	Revision    model.Revision
+	Index       model.Natural
+	// After is the opaque last-returned key used by keyset pagination. An
+	// empty value retains the legacy cursor shape for methods that do not use
+	// keyset continuation.
+	After            string `json:"after,omitempty"`
 	Method           string
 	FilterDigest     string
 	PrincipalDigest  string

@@ -579,6 +579,7 @@ type Cursor struct {
 	Incarnation      string   `json:"incarnation"`
 	Revision         Revision `json:"revision"`
 	Index            Natural  `json:"index"`
+	After            string   `json:"after,omitempty"`
 	Method           string   `json:"method"`
 	FilterDigest     string   `json:"filterDigest"`
 	PrincipalDigest  string   `json:"principalDigest"`
