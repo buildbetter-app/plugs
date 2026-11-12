@@ -7,7 +7,10 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
 
-type b02DeltaMixedEdge struct{ From, To, Kind, Gate string }
+type b02DeltaMixedEdge struct {
+	From, To, Kind, Gate string
+	AlsoBlocks           bool
+}
 
 func b02DeltaSameRef(a, b model.Ref) bool {
 	aBranch, aErr := a.Branch.Canonical()
@@ -43,9 +46,9 @@ func b02RecordNewMixedConditions(t *testing.T, cli, root string) {
 			w.run("create-"+waiter.role, args...)
 		}
 		w.edges = []b02DeltaMixedEdge{
-			{"durable-child", "spawner", "parent-child", ""}, {"ephemeral-child", "spawner", "parent-child", ""},
-			{"durable-all", "spawner", "waits-for", "all-children"}, {"ephemeral-all", "spawner", "waits-for", "all-children"},
-			{"durable-any", "spawner", "waits-for", "any-children"}, {"ephemeral-any", "spawner", "waits-for", "any-children"},
+			{From: "durable-child", To: "spawner", Kind: "parent-child"}, {From: "ephemeral-child", To: "spawner", Kind: "parent-child"},
+			{From: "durable-all", To: "spawner", Kind: "waits-for", Gate: "all-children"}, {From: "ephemeral-all", To: "spawner", Kind: "waits-for", Gate: "all-children"},
+			{From: "durable-any", To: "spawner", Kind: "waits-for", Gate: "any-children"}, {From: "ephemeral-any", To: "spawner", Kind: "waits-for", Gate: "any-children"},
 		}
 		statuses := map[string]string{"spawner": "open", "durable-child": "open", "ephemeral-child": "open", "durable-all": "open", "ephemeral-all": "open", "durable-any": "open", "ephemeral-any": "open"}
 		bothOpen := map[string][]string{"durable-all": {"spawner"}, "ephemeral-all": {"spawner"}, "durable-any": {"spawner"}, "ephemeral-any": {"spawner"}}
@@ -82,8 +85,8 @@ func b02RecordNewMixedConditions(t *testing.T, cli, root string) {
 			w.run("create-"+role, "create", "--id", w.ids[role], "--title", "B02 "+role, "--type", "task", "--force", "--status", "open", "--ephemeral", "--json")
 		}
 		w.edges = []b02DeltaMixedEdge{
-			{"ephemeral-ordinary", "blocker", "blocks", ""}, {"ephemeral-conditional", "blocker", "conditional-blocks", ""},
-			{"durable-ordinary", "ephemeral-blocker", "blocks", ""}, {"durable-conditional", "ephemeral-blocker", "conditional-blocks", ""},
+			{From: "ephemeral-ordinary", To: "blocker", Kind: "blocks"}, {From: "ephemeral-conditional", To: "blocker", Kind: "conditional-blocks"},
+			{From: "durable-ordinary", To: "ephemeral-blocker", Kind: "blocks"}, {From: "durable-conditional", To: "ephemeral-blocker", Kind: "conditional-blocks"},
 		}
 		for _, edge := range w.edges {
 			w.run("edge-"+edge.From, "dep", "add", w.ids[edge.From], w.ids[edge.To], "--type", edge.Kind, "--json")

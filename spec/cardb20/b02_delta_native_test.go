@@ -134,6 +134,16 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 		}
 		w.metadata("cooked-metadata", "proto-waiter", "proto-spawner", "all-children")
 		w.metadata("cooked-any-metadata", "proto-waiter-any", "proto-spawner", "any-children")
+		// Independently fixed formula topology: three steps parented to the
+		// root and the two collapsed waits edges, before any pour or children.
+		w.edges = []b02DeltaMixedEdge{
+			{From: "proto-spawner", To: "proto-root", Kind: "parent-child"},
+			{From: "proto-waiter", To: "proto-root", Kind: "parent-child"},
+			{From: "proto-waiter-any", To: "proto-root", Kind: "parent-child"},
+			{From: "proto-waiter", To: "proto-spawner", Kind: "waits-for", Gate: "all-children", AlsoBlocks: true},
+			{From: "proto-waiter-any", To: "proto-spawner", Kind: "waits-for", Gate: "any-children", AlsoBlocks: true},
+		}
+		w.observe("public-cooked-childless-open", map[string][]string{"proto-waiter": {"proto-spawner"}, "proto-waiter-any": {"proto-spawner"}}, map[string]string{"proto-root": "open", "proto-spawner": "open", "proto-waiter": "open", "proto-waiter-any": "open"})
 		var poured struct {
 			NewEpicID         string            `json:"new_epic_id"`
 			IDMapping         map[string]string `json:"id_mapping"`
@@ -155,6 +165,13 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 		}
 		w.metadata("poured-metadata", "waiter", "spawner", "all-children")
 		w.metadata("poured-any-metadata", "waiter-any", "spawner", "any-children")
+		w.edges = append(w.edges,
+			b02DeltaMixedEdge{From: "spawner", To: "root", Kind: "parent-child"},
+			b02DeltaMixedEdge{From: "waiter", To: "root", Kind: "parent-child"},
+			b02DeltaMixedEdge{From: "waiter-any", To: "root", Kind: "parent-child"},
+			b02DeltaMixedEdge{From: "waiter", To: "spawner", Kind: "waits-for", Gate: "all-children", AlsoBlocks: true},
+			b02DeltaMixedEdge{From: "waiter-any", To: "spawner", Kind: "waits-for", Gate: "any-children", AlsoBlocks: true},
+		)
 		statuses := map[string]string{}
 		for role := range w.ids {
 			statuses[role] = "open"
@@ -175,6 +192,10 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 			statuses[role] = "open"
 			w.run("parent-"+role, "update", w.ids[role], "--parent", w.ids["spawner"], "--json")
 		}
+		w.edges = append(w.edges,
+			b02DeltaMixedEdge{From: "durable-child", To: "spawner", Kind: "parent-child"},
+			b02DeltaMixedEdge{From: "ephemeral-child", To: "spawner", Kind: "parent-child"},
+		)
 		w.observe("public-mixed-children-open", open, statuses)
 		w.run("close-durable-child", "close", w.ids["durable-child"], "--reason", "B02 also_blocks overrides any opening", "--json")
 		statuses["durable-child"] = "closed"
@@ -397,7 +418,7 @@ func (w *b02DeltaCLI) observe(label string, want map[string][]string, statuses m
 	before := w.rows(label+"-before-issues", "SELECT * FROM issues ORDER BY id")
 	deps := w.rows(label+"-before-dependencies", "SELECT * FROM dependencies ORDER BY issue_id,depends_on_issue_id")
 	var extra [2][]map[string]any
-	if len(w.ephemeral) != 0 {
+	if len(w.ephemeral) != 0 || w.edges != nil {
 		extra = b02DeltaMixedRows(w, label+"-before", deps)
 	}
 	if len(before)+len(extra[0]) != len(w.ids) || len(statuses) != len(w.ids) {
@@ -463,7 +484,7 @@ func (w *b02DeltaCLI) observe(label string, want map[string][]string, statuses m
 	if !reflect.DeepEqual(deps, afterDeps) {
 		w.t.Fatal("native read changed exact committed edges")
 	}
-	if len(w.ephemeral) != 0 && !reflect.DeepEqual(extra, b02DeltaMixedRows(w, label+"-reopened", afterDeps)) {
+	if (len(w.ephemeral) != 0 || w.edges != nil) && !reflect.DeepEqual(extra, b02DeltaMixedRows(w, label+"-reopened", afterDeps)) {
 		w.t.Fatal("native read changed exact committed mixed rows/edges/timestamps")
 	}
 	w.server.RequireDatabaseDir(w.t, "b02_new")
@@ -479,7 +500,7 @@ func b02DeltaMixedRows(w *b02DeltaCLI, label string, ordinaryDeps []map[string]a
 		w.rows(label+"-ephemeral-edges", "SELECT * FROM wisp_dependencies ORDER BY issue_id,depends_on_issue_id"),
 	}
 	if w.edges == nil {
-		return result
+		w.t.Fatal("complete independently authored physical edge inventory required")
 	}
 	want := map[string]b02DeltaMixedEdge{}
 	for _, edge := range w.edges {
@@ -519,6 +540,12 @@ func b02DeltaMixedRows(w *b02DeltaCLI, label string, ordinaryDeps []map[string]a
 			var expected map[string]any
 			if edge.Gate != "" {
 				expected = map[string]any{"gate": edge.Gate}
+			}
+			if edge.AlsoBlocks {
+				if expected == nil {
+					w.t.Fatal("collapsed ordinary blocking requires an explicit waits gate")
+				}
+				expected["also_blocks"] = true
 			}
 			if len(metadata) == 0 {
 				metadata = nil

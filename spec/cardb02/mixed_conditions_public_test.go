@@ -1,6 +1,7 @@
 package cardb02_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -66,6 +67,69 @@ func (f *blockedFixture) mixedWrite(method string, params map[string]any) {
 			t.Fatal("mixed mutation changed an original core receipt", label)
 		}
 	}
+	oldWorkflow, newWorkflow := before.Workflow(t), after.Workflow(t)
+	var oldItems, newItems, oldReceipts, newReceipts map[string]json.RawMessage
+	if json.Unmarshal(oldWorkflow["items"], &oldItems) != nil || json.Unmarshal(newWorkflow["items"], &newItems) != nil ||
+		json.Unmarshal(oldWorkflow["receipts"], &oldReceipts) != nil || json.Unmarshal(newWorkflow["receipts"], &newReceipts) != nil ||
+		oldItems == nil || newItems == nil || oldReceipts == nil || newReceipts == nil || len(oldItems) != len(newItems) {
+		t.Fatal("mixed mutation lost the original workflow item/receipt inventory")
+	}
+	// The request, rather than its returned results or observed poststate,
+	// independently identifies the only workflow endpoints allowed to change.
+	fields := []string{"id"}
+	if method == "bead.link" {
+		fields = []string{"from", "to"}
+	}
+	workflowChanged := map[string]bool{}
+	for _, field := range fields {
+		ref, ok := params[field].(model.Ref)
+		if !ok || !ref.IsID() {
+			t.Fatal("mixed mutation requires an authored endpoint reference", field)
+		}
+		if _, ephemeral := oldItems[ref.ID]; ephemeral {
+			workflowChanged[ref.ID] = true
+		}
+	}
+	for id, item := range oldItems {
+		next, exists := newItems[id]
+		if !exists || (!workflowChanged[id] && !bytes.Equal(item, next)) {
+			t.Fatal("mixed mutation rewrote an unaffected workflow item/body/generation", id)
+		}
+		if workflowChanged[id] {
+			var oldItem, newItem struct{ Generation uint64 }
+			if json.Unmarshal(item, &oldItem) != nil || json.Unmarshal(next, &newItem) != nil || newItem.Generation != oldItem.Generation+1 {
+				t.Fatal("mixed mutation did not advance only its workflow endpoint once", id)
+			}
+		}
+	}
+	for key, receipt := range oldReceipts {
+		if !bytes.Equal(receipt, newReceipts[key]) {
+			t.Fatal("mixed mutation changed an original workflow receipt", key)
+		}
+	}
+	if len(workflowChanged) == 0 {
+		if !reflect.DeepEqual(before.Checkpoints[proof.Namespace], after.Checkpoints[proof.Namespace]) {
+			t.Fatal("ordinary mutation changed the workflow checkpoint")
+		}
+	} else {
+		if len(workflowChanged) != 1 || len(newReceipts) != len(oldReceipts)+1 {
+			t.Fatal("mixed mutation must publish exactly its one workflow receipt")
+		}
+		for key, raw := range newReceipts {
+			if _, retained := oldReceipts[key]; retained {
+				continue
+			}
+			var receipt struct {
+				Method, Key, ItemID string
+				Result              model.Commit
+			}
+			if json.Unmarshal(raw, &receipt) != nil || receipt.Method != method || receipt.Key != f.h.Scopes[label].Key || !workflowChanged[receipt.ItemID] || !reflect.DeepEqual(receipt.Result, commit) {
+				t.Fatal("new workflow receipt differs from the authored request and exact commit")
+			}
+		}
+		proof.WorkflowNamespaceEffect(t, before, after)
+	}
+	proof.Save(t, f.h.Root, label+"-initial-workflow-conservation.json", map[string]any{"method": method, "request": params, "before": before.Checkpoints, "after": after.Checkpoints, "workflowEndpointsAllowedToChange": workflowChanged})
 	check := func() {
 		t.Helper()
 		reply := f.h.Call(method, label, params, "")

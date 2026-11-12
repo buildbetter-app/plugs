@@ -86,16 +86,28 @@ func (f *blockedFixture) write(method string, params map[string]any) model.Commi
 			}
 		}
 		if !found {
-			var receipts map[string]struct{ Result model.Commit }
+			// Invocation and lifecycle receipts have different result schemas.
+			// Decode only the exact requested lifecycle receipt as a Commit.
+			var receipts map[string]struct {
+				Method, Key string
+				Result      json.RawMessage
+			}
 			if json.Unmarshal(state.Workflow(f.h.T)["receipts"], &receipts) != nil {
 				f.h.T.Fatal("missing actual workflow receipts")
 			}
+			matches := 0
+			label := fmt.Sprintf("b02-%04d-%s", f.seq, method)
 			for _, receipt := range receipts {
-				if reflect.DeepEqual(receipt.Result, commit) {
-					found = true
+				if receipt.Method != method || receipt.Key != f.h.Scopes[label].Key {
+					continue
 				}
+				var recorded model.Commit
+				if json.Unmarshal(receipt.Result, &recorded) != nil || !reflect.DeepEqual(recorded, commit) {
+					f.h.T.Fatal("exact workflow receipt differs from the actual public commit")
+				}
+				matches++
 			}
-			if !found {
+			if matches != 1 {
 				f.h.T.Fatal("public result is absent from committed rows and workflow receipts")
 			}
 		}
@@ -297,7 +309,11 @@ func TestB02PublicBlockedNativeGateReasonsAndStaleFlags(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body})
+				graph := &conformance.FixtureGraphSource{}
+				if role == "all" {
+					graph.Links = []driver.SourceLink{{Kind: "waits-for", To: f.refs["spawner"]}}
+				}
+				changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body, Graph: graph})
 			}
 			if _, err := conformance.Seed(context.Background(), f.h.Runtime.Store, f.h.Runtime.Lease, driver.ChangesetHeader{Time: time.Date(2026, 11, 11, 17, 0, 0, 0, time.UTC)}, changes); err != nil {
 				t.Fatal(err)
@@ -466,18 +482,22 @@ func TestB02PublicBlockedUnresolvedReasonsAndSubjectCategories(t *testing.T) {
 					t.Fatal(err)
 				}
 				missing := model.RefByID("missing-b02-"+role, model.Natural64(0))
+				graph := &conformance.FixtureGraphSource{}
 				if role == "pinned-subject" {
 					doc.Fields["status"] = "pinned"
+					graph.Links = []driver.SourceLink{{Kind: "blocks", To: f.refs["root"]}}
 				} else if role == "dangling" {
 					doc.Links = []pipeline.Link{{To: missing, Kind: "blocks"}}
+					graph.Links = []driver.SourceLink{{Kind: "blocks", To: missing}}
 				} else {
 					doc.Parent = &missing
+					graph.Parent = &missing
 				}
 				body, err := json.Marshal(doc)
 				if err != nil {
 					t.Fatal(err)
 				}
-				changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body})
+				changes = append(changes, conformance.FixtureChange{Ref: ref, Kind: "bead", Op: model.OpPatch, Body: body, Graph: graph})
 			}
 			if _, err := conformance.Seed(context.Background(), f.h.Runtime.Store, f.h.Runtime.Lease, driver.ChangesetHeader{Time: time.Date(2026, 11, 11, 17, 10, 0, 0, time.UTC)}, changes); err != nil {
 				t.Fatal(err)
@@ -550,7 +570,7 @@ func TestB02PublicBlockedAuthorizationBeforePageAndHiddenReasons(t *testing.T) {
 			}
 			server := httptest.NewServer(app.Handler)
 			defer server.Close()
-			by := model.PrincipalRef{Kind: "user", ID: "b02-scoped-reader", Caveats: map[string]any{"refs": dependents[1:]}}
+			by := model.PrincipalRef{Kind: "user", ID: "user:b02-scoped-reader", Caveats: map[string]any{"refs": dependents[1:]}}
 			issued, err := keys.Issue(by, time.Now().Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
@@ -636,7 +656,7 @@ func TestB02PublicBlockedAuthorizationBeforePageAndHiddenReasons(t *testing.T) {
 			if mismatch.Error == nil || mismatch.Error.Data.Code != "cursor_invalid" {
 				t.Fatal("filter mismatch accepted")
 			}
-			another, err := keys.Issue(model.PrincipalRef{Kind: "user", ID: "b02-another-reader", Caveats: by.Caveats}, time.Now().Add(time.Hour))
+			another, err := keys.Issue(model.PrincipalRef{Kind: "user", ID: "user:b02-another-reader", Caveats: by.Caveats}, time.Now().Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}

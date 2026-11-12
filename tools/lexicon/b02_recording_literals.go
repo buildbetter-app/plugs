@@ -48,7 +48,7 @@ func b02RecordingLiteralOffsets(path string, content []byte) map[int]bool {
 // Formula, source-search and physical mixed-plane values remain bound to their
 // owning functions; copied diagnostics and adjacent tests gain no allowance.
 func b02DeltaRecordingLiteralOffsets(path string, content []byte) map[int]bool {
-	if path != b02DeltaNativeRecordingSource || protocolLiteralDigest(string(content)) != "40f4aa2ad5f18cfcd528bdaeaf47f19e061ea9d8a2af007b5cb127ab7feec47a" {
+	if path != b02DeltaNativeRecordingSource || protocolLiteralDigest(string(content)) != "2a3e03507c067e7506db394df752a12964b1409eac3e6a1f5fcc92f535ebaf7e" {
 		return nil
 	}
 	bindings := []struct {
@@ -57,7 +57,7 @@ func b02DeltaRecordingLiteralOffsets(path string, content []byte) map[int]bool {
 	}{
 		{
 			function: "TestB02NativeNewPublicWriterWIPAndReasonProvenance",
-			context:  "c6a409eaadc2c5f8f61c8b919b3ce174efd600c73727d6fb3a8c4566e9fc908d",
+			context:  "d4e8178e0c737cf4f6bb72f80072a2894db5bb8ef5e2ea25dbd9ab669085b785",
 			sites: []b02RecordingSite{
 				{4204, "86da248d8fbd3746cacae227ef682a5519db171eee81f0c7230e49c6bd81fafa"},
 				{4603, "3661141c121cbe5b082b9852343d1d595ee5b5e0320549aa99dffe51cf0ba36a"},
@@ -74,11 +74,11 @@ func b02DeltaRecordingLiteralOffsets(path string, content []byte) map[int]bool {
 		},
 		{
 			function: "b02DeltaMixedRows",
-			context:  "99b00f66de880167ddc86912399d936f66f44586882360afb4d88e1f4a793488",
+			context:  "c7992d7ea89370bf8bb66b3fccb776432230555178e50ce3f1a3d35748fdd948",
 			sites: []b02RecordingSite{
 				{186, "98976f802ca24d35949011c82f2c8791093021212b66bb35f84bb2080eabce8e"},
 				{257, "02d586bd63921f4fbd7213ced3ab6a14f2e611bf9a486398ccc8420523e46964"},
-				{1052, "7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72"},
+				{1116, "7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72"},
 			},
 		},
 	}
