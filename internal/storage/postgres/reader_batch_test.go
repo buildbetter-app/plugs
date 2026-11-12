@@ -6,11 +6,218 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type queryPageWork struct {
+	selectors, payloads, bytes atomic.Int64
+}
+
+func (w *queryPageWork) ObserveReadWork(kind driver.ReadWorkKind, amount int64) {
+	switch kind {
+	case driver.ReadSelectorKeys:
+		w.selectors.Add(amount)
+	case driver.ReadPayloadRecords:
+		w.payloads.Add(amount)
+	case driver.ReadPayloadBytes:
+		w.bytes.Add(amount)
+	}
+}
+
+// TestCurrentQueryKeysetSQLWorkBoundAcrossCorpusSizes records the SQL issued
+// by the real pgx driver while walking current-head pages. The corpus is
+// installed in one committed image so setup work cannot be mistaken for read
+// evidence; every page must execute one bounded ordered keyset statement for
+// all three corpus sizes and both supported head filters.
+func TestCurrentQueryKeysetSQLWorkBoundAcrossCorpusSizes(t *testing.T) {
+	for _, size := range []int{1000, 5000, 25000} {
+		t.Run(fmt.Sprintf("records_%d", size), func(t *testing.T) {
+			s, _ := openReaderQueryTest(t)
+			ctx := context.Background()
+			seedQueryCorpus(t, s, size)
+			reader := testRead(t, s, nil)
+			const limit = 997
+			for _, filter := range []map[string]any{nil, {"kind": "test"}} {
+				name := "unfiltered"
+				if filter != nil {
+					name = "kind"
+				}
+				t.Run(name, func(t *testing.T) {
+					var cursor *driver.Cursor
+					seen := 0
+					for pageNumber := 0; ; pageNumber++ {
+						capture := &readerQueryCapture{}
+						var work queryPageWork
+						readCtx := driver.WithReadWorkObserver(context.WithValue(ctx, readerQueryCaptureKey{}, capture), &work)
+						page, err := reader.Query(readCtx, driver.Query{Filter: filter, Limit: limit, Cursor: cursor})
+						if err != nil {
+							t.Fatalf("page %d: %v", pageNumber, err)
+						}
+						capture.mu.Lock()
+						events := append([]*readerQueryEvent(nil), capture.events...)
+						capture.mu.Unlock()
+						if len(events) != 1 || !events[0].completed || events[0].err != nil {
+							t.Fatalf("page %d SQL evidence=%+v", pageNumber, events)
+						}
+						sqlText := events[0].sql
+						if !strings.Contains(sqlText, "key > $1") || !strings.Contains(sqlText, "ORDER BY key LIMIT") {
+							t.Fatalf("page %d did not use ordered keyset SQL: %s", pageNumber, sqlText)
+						}
+						upperSQL := strings.ToUpper(sqlText)
+						if strings.Contains(upperSQL, "OFFSET") {
+							t.Fatalf("page %d used OFFSET: %s", pageNumber, sqlText)
+						}
+						for _, aggregate := range []string{"COUNT(", "SUM(", "AVG(", "MIN(", "MAX("} {
+							if strings.Contains(upperSQL, aggregate) {
+								t.Fatalf("page %d used a corpus aggregate: %s", pageNumber, sqlText)
+							}
+						}
+						expectedWork := int64(len(page.Items))
+						if page.NextCursor != nil {
+							expectedWork++
+						}
+						if work.selectors.Load() != expectedWork || work.payloads.Load() != expectedWork || work.bytes.Load() != expectedWork*int64(len(`{"value":"x"}`)) {
+							t.Fatalf("page %d materialized unbounded work: selectors=%d payloads=%d bytes=%d expected_rows=%d", pageNumber, work.selectors.Load(), work.payloads.Load(), work.bytes.Load(), expectedWork)
+						}
+						if len(page.Items) > limit {
+							t.Fatalf("page %d returned %d rows for limit %d", pageNumber, len(page.Items), limit)
+						}
+						for _, row := range page.Items {
+							wantID := fmt.Sprintf("query-%06d", seen)
+							if row.Ref.ID != wantID || row.Kind != "test" || string(row.Body) != `{"value":"x"}` {
+								t.Fatalf("page %d row %d=%+v want id=%s", pageNumber, seen, row, wantID)
+							}
+							seen++
+						}
+						if page.NextCursor == nil {
+							break
+						}
+						index, indexErr := page.NextCursor.Index.Uint64()
+						if len(page.Items) != limit || page.NextCursor.After == "" || indexErr != nil || index == 0 {
+							t.Fatalf("page %d cursor=%+v", pageNumber, page.NextCursor)
+						}
+						cursor = page.NextCursor
+					}
+					if seen != size {
+						t.Fatalf("returned %d rows, want %d", seen, size)
+					}
+				})
+			}
+		})
+	}
+}
+
+func seedQueryCorpus(t *testing.T, s *Store, size int) {
+	t.Helper()
+	ctx := context.Background()
+	keys := make([][]byte, size)
+	for i := range keys {
+		key, err := recordKey(testRef(fmt.Sprintf("query-%06d", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		keys[i] = []byte(key)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO plug_postgres.records(key,ref,kind,revision,body,deleted,version_count)
+SELECT key,
+       convert_to(json_build_object('id','query-' || lpad((ordinal-1)::text,6,'0'))::text,'UTF8'),
+       'test',1,convert_to('{"value":"x"}','UTF8'),false,1
+FROM unnest($1::bytea[]) WITH ORDINALITY AS rows(key,ordinal)`, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE plug_postgres.meta SET head=1 WHERE singleton`); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCurrentQueryEmptyPagesRemainEmpty(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openReaderQueryTest(t)
+	empty := testRead(t, s, nil)
+	page, err := empty.Query(ctx, driver.Query{Limit: 1})
+	if err != nil || len(page.Items) != 0 || page.NextCursor != nil {
+		t.Fatalf("empty store page=%+v err=%v", page, err)
+	}
+	if err := empty.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	seedQueryCorpus(t, s, 2)
+	r := testRead(t, s, nil).(*reader)
+	missing, err := r.Query(ctx, driver.Query{Filter: map[string]any{"kind": "missing"}, Limit: 1})
+	if err != nil || len(missing.Items) != 0 || missing.NextCursor != nil {
+		t.Fatalf("missing-kind page=%+v err=%v", missing, err)
+	}
+	full, err := r.Query(ctx, driver.Query{Limit: 2})
+	if err != nil || len(full.Items) != 2 {
+		t.Fatalf("exact-end fixture page=%+v err=%v", full, err)
+	}
+	filterDigest, err := digest(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastKey, err := recordKey(full.Items[len(full.Items)-1].Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exactEnd := r.nextQueryCursor(filterDigest, lastKey, uint64(len(full.Items)))
+	end, err := r.Query(ctx, driver.Query{Limit: 1, Cursor: exactEnd})
+	if err != nil || len(end.Items) != 0 || end.NextCursor != nil || end.AsOf.String() != full.AsOf.String() {
+		t.Fatalf("exact-end page=%+v err=%v", end, err)
+	}
+}
+
+func TestCurrentQueryIndexMigrationPreservesPopulatedRows(t *testing.T) {
+	ctx := context.Background()
+	dsn := freshDSN(t)
+	s := openTest(t, dsn)
+	seedQueryCorpus(t, s, 3)
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX plug_postgres.records_live_key`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX plug_postgres.records_live_kind_key`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, driver.Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	var indexes int
+	if err := reopened.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname='plug_postgres' AND indexname IN ('records_live_key','records_live_kind_key')`).Scan(&indexes); err != nil {
+		t.Fatal(err)
+	}
+	if indexes != 2 {
+		t.Fatalf("query keyset indexes after migration=%d want 2", indexes)
+	}
+	r := testRead(t, reopened, nil)
+	first, err := r.Query(ctx, driver.Query{Limit: 2})
+	if err != nil || len(first.Items) != 2 || first.NextCursor == nil || first.Items[0].Ref.ID != "query-000000" || first.Items[1].Ref.ID != "query-000001" {
+		t.Fatalf("migrated first page=%+v err=%v", first, err)
+	}
+	second, err := r.Query(ctx, driver.Query{Limit: 2, Cursor: first.NextCursor})
+	if err != nil || len(second.Items) != 1 || second.NextCursor != nil || second.Items[0].Ref.ID != "query-000002" {
+		t.Fatalf("migrated continuation=%+v err=%v", second, err)
+	}
+}
 
 func TestMissingRecordReadsDoNotProbeVersionHistory(t *testing.T) {
 	ctx := context.Background()
