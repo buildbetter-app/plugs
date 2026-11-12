@@ -178,8 +178,7 @@ func TestHistoricalQueryCursorBindingsReopenAndExactEnd(t *testing.T) {
 	for _, mutate := range []func(*driver.Cursor){
 		func(c *driver.Cursor) { c.Incarnation = "other" }, func(c *driver.Cursor) { c.Revision = meta.Head },
 		func(c *driver.Cursor) { c.FilterDigest = "other" }, func(c *driver.Cursor) { c.Method = "get" },
-		func(c *driver.Cursor) { c.Index = model.Natural64(999) }, func(c *driver.Cursor) { c.After = "" },
-		func(c *driver.Cursor) { c.After += "corrupt" }, func(c *driver.Cursor) { c.PrincipalDigest = "other" },
+		func(c *driver.Cursor) { c.Index = model.Natural64(999) }, func(c *driver.Cursor) { c.After += "corrupt" }, func(c *driver.Cursor) { c.PrincipalDigest = "other" },
 	} {
 		bad := *first.NextCursor
 		mutate(&bad)
@@ -286,7 +285,7 @@ func TestHistoricalQueryPageWorkAcrossCorpusSizesAndSparseFilters(t *testing.T) 
 						if payloads < int64(len(page.Items)) || payloads > int64(4*(limit+1)) || work.payloadBytes.Load() > payloads*128 {
 							t.Fatalf("unbounded historical work: payloads=%d bytes=%d", payloads, work.payloadBytes.Load())
 						}
-						if probe.calls.Load() > 5 || probe.rows.Load() > int64(limit+5) {
+						if probe.calls.Load() > 6 || probe.rows.Load() > int64(limit+5) {
 							t.Fatalf("unbounded historical SQL batch: calls=%d rows=%d", probe.calls.Load(), probe.rows.Load())
 						}
 						for _, statement := range probe.statementSnapshot() {
@@ -363,7 +362,7 @@ func TestHistoricalQueryPopulatedSchemaThreeBackfillPreservesVersionBytes(t *tes
 		return values
 	}
 	originalVersions := versions(s.db)
-	for _, name := range []string{"pending", "id", "key", "type", "project", "status"} {
+	for _, name := range []string{"pending", "id", "key", "type", "project", "status", "body_error"} {
 		if _, err := s.db.ExecContext(ctx, `DROP INDEX versions_query_`+name); err != nil {
 			t.Fatal(err)
 		}
@@ -393,5 +392,70 @@ func TestHistoricalQueryPopulatedSchemaThreeBackfillPreservesVersionBytes(t *tes
 	page, err := r2.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1, Filter: map[string]any{"project": "old"}})
 	if err != nil || !reflect.DeepEqual(page.Items, want) || page.NextCursor != nil || work.payloads.Load() != 1 {
 		t.Fatalf("backfilled historical page: %+v work=%d %v", page, work.payloads.Load(), err)
+	}
+}
+
+func TestHistoricalQueryContinuesCurrentCursorAtPinnedRevision(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "head-to-history.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	for _, id := range []string{"transition-a", "transition-b", "transition-c"} {
+		seedRecord(t, ctx, s, lease, id, `{ "project":"old", "status":"open" }`)
+	}
+	meta := getMeta(t, ctx, s)
+	at := meta.Head
+	filters := []map[string]any{nil, {"kind": "test"}, {"project": "old"}, {"kind": "test", "status": "open"}}
+	cursors := make([]*driver.Cursor, len(filters))
+	r := getReader(t, ctx, s, meta, nil)
+	for i, filter := range filters {
+		page, err := r.Query(ctx, driver.Query{Limit: 1, Filter: filter})
+		if err != nil || len(page.Items) != 1 || page.NextCursor == nil {
+			t.Fatalf("issued head cursor: %+v %v", page, err)
+		}
+		cursors[i] = page.NextCursor
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Shift live ranks and remove the old anchor at the new head. Neither may
+	// affect the cursor's original revision or its still-visible historical body.
+	if _, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: testRef("transition-0"), Kind: "test", Op: model.OpCreate, Body: []byte(`{"project":"new"}`)},
+		{Ref: testRef("transition-a"), Kind: "test", Op: model.OpDelete},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	historical := getReader(t, ctx, s, getMeta(t, ctx, s), &at)
+	for i, filter := range filters {
+		var work queryReadWork
+		page, err := historical.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1, Filter: filter, Cursor: cursors[i]})
+		if err != nil || len(page.Items) != 1 || page.Items[0].Ref.ID != "transition-b" || page.AsOf != at || page.NextCursor == nil || work.payloads.Load() > 8 {
+			t.Fatalf("head-to-history continuation filter=%v page=%+v work=%d err=%v", filter, page, work.payloads.Load(), err)
+		}
+	}
+}
+
+func TestHistoricalQueryPreservesBodyErrorsBeyondLookahead(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "historical-error.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	for _, row := range []struct{ id, body string }{{"error-a", `{"status":"open"}`}, {"error-b", `{"status":"open"}`}, {"error-z", `[1]`}} {
+		seedRecord(t, ctx, s, lease, row.id, row.body)
+	}
+	at := getMeta(t, ctx, s).Head
+	seedRecord(t, ctx, s, lease, "later", `{}`)
+	r := getReader(t, ctx, s, getMeta(t, ctx, s), &at).(*reader)
+	invalid, found, err := r.recordAt(ctx, func() string { key, _ := recordKey(testRef("error-z")); return key }())
+	if err != nil || !found {
+		t.Fatal(err)
+	}
+	_, wantErr := matches(invalid, map[string]any{"status": "open"})
+	if wantErr == nil {
+		t.Fatal("reference invalid body did not error")
+	}
+	var work queryReadWork
+	page, err := r.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1, Filter: map[string]any{"status": "open"}})
+	if err == nil || reflect.TypeOf(err) != reflect.TypeOf(wantErr) || err.Error() != wantErr.Error() || len(page.Items) != 0 || page.NextCursor != nil || work.payloads.Load() > 8 {
+		t.Fatalf("historical error changed beyond lookahead: page=%+v work=%d got=%v want=%v", page, work.payloads.Load(), err, wantErr)
 	}
 }

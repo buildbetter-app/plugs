@@ -1478,6 +1478,8 @@ internal/storage/sqlite/guard_descriptor_linux_test.go
 internal/storage/sqlite/guard_linux.go
 internal/storage/sqlite/guard_nonlinux.go
 internal/storage/sqlite/hierarchy_schema_test.go
+internal/storage/sqlite/historical_query.go
+internal/storage/sqlite/historical_query_test.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/lease_heartbeat.go
 internal/storage/sqlite/lease_heartbeat_test.go

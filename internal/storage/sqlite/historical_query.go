@@ -113,7 +113,8 @@ func ensureHistoricalQueryFields(ctx context.Context, c *sql.Conn) error {
 			return err
 		}
 	}
-	return nil
+	_, err := c.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS versions_query_body_error ON versions(key,rev) WHERE json_extract(query_fields,'$.body_error')=1`)
+	return err
 }
 
 const historicalQueryAfterPrefix = "sqh1."
@@ -135,13 +136,41 @@ func (r *reader) historicalQueryCursor(ctx context.Context, c *driver.Cursor, di
 	if c.After == "" && index == 0 {
 		return "", 0, nil
 	}
-	parts := strings.Split(strings.TrimPrefix(c.After, historicalQueryAfterPrefix), ".")
-	if !strings.HasPrefix(c.After, historicalQueryAfterPrefix) || len(parts) != 2 || index == 0 {
-		return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
-	}
-	key, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil || len(key) == 0 || r.historicalQueryAfter(string(key), digest, index) != c.After {
-		return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+	var key []byte
+	if strings.HasPrefix(c.After, historicalQueryAfterPrefix) {
+		parts := strings.Split(strings.TrimPrefix(c.After, historicalQueryAfterPrefix), ".")
+		if len(parts) != 2 || index == 0 {
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+		}
+		key, err = base64.RawURLEncoding.DecodeString(parts[0])
+		if err != nil || len(key) == 0 || r.historicalQueryAfter(string(key), digest, index) != c.After {
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+		}
+	} else {
+		// A cursor genuinely issued at head can become historical after a
+		// later commit. Nil/kind tokens carry the raw key, while other head
+		// filters carry only an ordinal. Resolve that legacy ordinal using
+		// compact metadata, never OFFSET or discarded-body reconstruction.
+		if index == 0 || index > uint64(1<<63-1) {
+			return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+		}
+		where, args := historicalQueryWhere(filter, "", r.at)
+		query := `WITH ranked AS (SELECT v.key,ROW_NUMBER() OVER (ORDER BY v.key) AS position
+ FROM versions AS v JOIN objects AS o ON o.key=v.key WHERE ` + strings.Join(where, " AND ") + `)
+ SELECT key FROM ranked WHERE position=?`
+		args = append(args, int64(index))
+		if c.After != "" {
+			query += ` AND key=?`
+			args = append(args, c.After)
+		}
+		var anchor string
+		if err := r.tx.QueryRowContext(ctx, query, args...).Scan(&anchor); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", 0, fmt.Errorf("sqlite: cursor binding mismatch")
+			}
+			return "", 0, err
+		}
+		key = []byte(anchor)
 	}
 	// Validate the anchor in this same pinned snapshot. Its one reconstructed
 	// payload is included in request-local work, just like head validation.
@@ -163,12 +192,10 @@ func (r *reader) historicalQueryCursor(ctx context.Context, c *driver.Cursor, di
 	return string(key), index, nil
 }
 
-// queryHistorical first selects revision-visible matching keys with a bounded
-// keyset LIMIT, then fetches the selected keys' nearest-base replay ranges in
-// one SQL batch. No historical body outside that page/lookahead is rebuilt.
-func (r *reader) queryHistorical(ctx context.Context, filter map[string]any, digest, after string, index uint64, limit int) (driver.Page[driver.Record], error) {
+// historicalQueryWhere filters compact metadata, before bounded payload replay.
+func historicalQueryWhere(filter map[string]any, after string, at uint64) ([]string, []any) {
 	where := []string{"v.key>?", "v.rev=(SELECT v2.rev FROM versions AS v2 WHERE v2.key=v.key AND v2.rev<=? ORDER BY v2.rev DESC LIMIT 1)", "json_extract(v.query_fields,'$.deleted')=0"}
-	args := []any{after, revKey(r.at)}
+	args := []any{after, revKey(at)}
 	predicates := []string{}
 	bodyFilter := false
 	for _, field := range []string{"kind", "id", "key", "type", "project", "status"} {
@@ -189,6 +216,54 @@ func (r *reader) queryHistorical(ctx context.Context, filter map[string]any, dig
 		}
 		where = append(where, "("+predicate+")")
 	}
+	return where, args
+}
+
+func (r *reader) historicalQueryBodyError(ctx context.Context, filter map[string]any) error {
+	bodyFilter := false
+	identity := map[string]any{}
+	for field, value := range filter {
+		if field == "kind" || field == "id" || field == "key" {
+			identity[field] = value
+		} else {
+			bodyFilter = true
+		}
+	}
+	if !bodyFilter {
+		return nil
+	}
+	where, args := historicalQueryWhere(identity, "", r.at)
+	where = append(where, "json_extract(v.query_fields,'$.body_error')=1")
+	var key string
+	err := r.tx.QueryRowContext(ctx, `SELECT v.key FROM versions AS v JOIN objects AS o ON o.key=v.key WHERE `+strings.Join(where, " AND ")+` ORDER BY v.key LIMIT 1`, args...).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	record, found, err := r.recordAt(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("sqlite: historical query projection mismatch")
+	}
+	_, err = matches(record, filter)
+	return err
+}
+
+// queryHistorical first selects revision-visible matching keys with a bounded
+// keyset LIMIT, then fetches the selected keys' nearest-base replay ranges in
+// one SQL batch. No historical body outside that page/lookahead is rebuilt.
+func (r *reader) queryHistorical(ctx context.Context, filter map[string]any, digest, after string, index uint64, limit int) (driver.Page[driver.Record], error) {
+	// The predecessor validates body decoding across the entire snapshot
+	// before slicing. Locate invalid-body metadata even past lookahead, and
+	// reproduce its original decoding error with at most one reconstruction.
+	if err := r.historicalQueryBodyError(ctx, filter); err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	where, args := historicalQueryWhere(filter, after, r.at)
 	args = append(args, limit+1)
 	rows, err := r.tx.QueryContext(ctx, `WITH selected AS MATERIALIZED (
  SELECT v.key,v.rev AS last_rev,v.data AS latest,o.kind,
