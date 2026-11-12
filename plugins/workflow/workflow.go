@@ -1310,30 +1310,56 @@ func (p *Provider) OrdinaryBlocked(ctx context.Context, by model.PrincipalRef, i
 // OrdinaryBlockerSnapshot also binds the decision to a host-owned checkpoint
 // expectation, so direct ordinary writes cannot race a mixed-plane edge edit.
 func (p *Provider) OrdinaryBlockerSnapshot(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta) (map[string]bool, driver.CheckpointExpectation, error) {
+	blocked, _, expectation, err := p.OrdinaryCloseSnapshot(ctx, by, ids, meta)
+	return blocked, expectation, err
+}
+
+// OrdinaryCloseSnapshot observes dependencies and open workflow children in
+// the same read-only checkpoint. The service combines child facts only for
+// actual close operations, leaving claim/readiness projections unchanged.
+func (p *Provider) OrdinaryCloseSnapshot(ctx context.Context, by model.PrincipalRef, ids []string, meta model.WriteMeta) (map[string]bool, map[string]bool, driver.CheckpointExpectation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// Without a declared workflow checkpoint capability or admitted binding,
 	// no active workflow facts can exist for this provider.
 	if !p.checkpointAvailable() && p.source == nil {
-		return map[string]bool{}, driver.CheckpointExpectation{}, nil
+		return map[string]bool{}, map[string]bool{}, driver.CheckpointExpectation{}, nil
 	}
 	// An ordinary pre-publication guard must never garbage collect or publish
 	// metadata on its own, including when the core write is later refused.
 	value, revision, err := p.readState(ctx)
 	if err != nil {
-		return nil, driver.CheckpointExpectation{}, err
+		return nil, nil, driver.CheckpointExpectation{}, err
 	}
 	host, ok := p.state.(interface {
 		PrepareCheckpointExpectation(context.Context, string, pluginapi.Revision) (driver.CheckpointExpectation, error)
 	})
 	if !ok {
-		return nil, driver.CheckpointExpectation{}, driver.ErrUnsupported
+		return nil, nil, driver.CheckpointExpectation{}, driver.ErrUnsupported
 	}
 	expectation, err := host.PrepareCheckpointExpectation(ctx, stateKey, revision)
 	if err != nil {
-		return nil, driver.CheckpointExpectation{}, err
+		return nil, nil, driver.CheckpointExpectation{}, err
 	}
-	return ordinaryBlocked(value, ids, meta), expectation, nil
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	children := map[string]bool{}
+	for _, item := range value.Items {
+		if item.Status == "closed" || meta.Project != "" && item.Project != meta.Project {
+			continue
+		}
+		if item.Parent != nil && item.Parent.IsID() && item.Parent.Branch.IsZero() && wanted[item.Parent.ID] {
+			children[item.Parent.ID] = true
+		}
+		for _, edge := range item.Links {
+			if edge.Kind == "parent-child" && edge.To.IsID() && edge.To.Branch.IsZero() && wanted[edge.To.ID] {
+				children[edge.To.ID] = true
+			}
+		}
+	}
+	return ordinaryBlocked(value, ids, meta), children, expectation, nil
 }
 
 // OrdinaryParentSnapshot projects the already-admitted typed mixed parents

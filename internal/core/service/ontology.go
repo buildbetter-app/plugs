@@ -530,6 +530,9 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 				return err
 			}
 			noChildren := o.noOpenChildren(doc, graph)
+			if operationMethod(proposal, change) == "bead.close" && workflowHasOpenChildren(ctx, doc.ID) {
+				noChildren = false
+			}
 			facts.NoOpenBlockers, facts.NoOpenChildren = &noBlockers, &noChildren
 			facts.Evidence = map[string]bool{}
 			for _, attachment := range doc.Attachments {

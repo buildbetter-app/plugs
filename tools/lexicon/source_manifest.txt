@@ -477,6 +477,7 @@ internal/core/service/types.go
 internal/core/service/waits_for_consumer_test.go
 internal/core/service/workflow_batch.go
 internal/core/service/workflow_bridge.go
+internal/core/service/workflow_close.go
 internal/core/service/workflow_delete.go
 internal/core/service/workflow_moves.go
 internal/core/service/workflow_permanent_test.go
@@ -1702,6 +1703,11 @@ spec/cardb07effects/state_test.go
 spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
+spec/cardb08/BUILD.bazel
+spec/cardb08/README.md
+spec/cardb08/native_test.go
+spec/cardb08/public_fixture_test.go
+spec/cardb08/public_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
@@ -2130,6 +2136,7 @@ tools/lexicon/policy.go
 tools/lexicon/rules.d/00-vocabulary.toml
 tools/lexicon/rules.d/b01-native.toml
 tools/lexicon/rules.d/b03-native.toml
+tools/lexicon/rules.d/b08-native.toml
 tools/lexicon/rules.d/b13-native.toml
 tools/lexicon/rules.d/b21-b24-native.toml
 tools/lexicon/rules.d/b25-b28-public.toml

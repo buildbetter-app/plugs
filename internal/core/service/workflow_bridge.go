@@ -219,10 +219,11 @@ func (s *Service) workflowWriteGuard(ctx context.Context, proposal port.Proposed
 		}
 		return expectation, nil
 	}
-	blocked, expectation, err := s.workflowProvider().OrdinaryBlockerSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
+	blocked, children, expectation, err := s.workflowProvider().OrdinaryCloseSnapshot(ctx, proposal.Principal, ids, proposal.Meta)
 	if err != nil {
 		return driver.CheckpointExpectation{}, err
 	}
+	setWorkflowCloseFacts(ctx, children)
 	for _, id := range ids {
 		if blocked[id] {
 			return driver.CheckpointExpectation{}, failure("ontology_guard_failed", "an active workflow dependency is not satisfied")

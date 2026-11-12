@@ -207,6 +207,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	}
 	jointDelete := method == "tx.apply" && s.workflowProvider() != nil && len(deletes) != 0 && !sourceDeleteBatchHasSourceEdits(source, cs, meta.Project)
 	if s.workflowProvider() != nil && (method == "bead.claim" || method == "bead.claimNext" || method == "bead.close" || method == "tx.apply") {
+		ctx = withWorkflowCloseFacts(ctx)
 		ctx = pipeline.WithWorkflowGuard(ctx, s.workflowWriteGuard)
 	}
 	if jointDelete {
