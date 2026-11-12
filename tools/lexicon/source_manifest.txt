@@ -1746,12 +1746,14 @@ spec/extended/paging_test.go
 spec/extended/time_test.go
 spec/fixture_test.go
 spec/parentedcreateflat/BUILD.bazel
+spec/parentedcreateflat/FOLLOW-UP.md
 spec/parentedcreateflat/README.md
 spec/parentedcreateflat/b04_ordinary_authority_test.go
 spec/parentedcreateflat/b04_ordinary_support_test.go
 spec/parentedcreateflat/child_semantics_test.go
 spec/parentedcreateflat/create_flat_test.go
 spec/parentedcreateflat/fixture_test.go
+spec/parentedcreateflat/initialization_test.go
 spec/pipeline_test.go
 spec/recorded/BUILD.bazel
 spec/recorded/README.md

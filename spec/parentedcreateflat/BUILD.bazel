@@ -9,6 +9,7 @@ go_test(
         "fixture_test.go",
         "create_flat_test.go",
         "child_semantics_test.go",
+        "initialization_test.go",
     ],
     args = ["-test.v"],
     deps = [

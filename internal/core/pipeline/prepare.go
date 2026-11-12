@@ -80,6 +80,7 @@ type prepared struct {
 	allocatorCounts   map[string]uint64
 	beads             []driver.Record
 	beadsLoaded       bool
+	createdBeadIDs    []string
 	maxHierarchyDepth int
 	hierarchyEdits    []hierarchyEdit
 	hierarchyDelta    *hierarchyDelta
@@ -299,6 +300,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
+			p.createdBeadIDs = append(p.createdBeadIDs, id)
 			if parent != nil {
 				current.setBy["parent"] = "request"
 			}
@@ -1056,9 +1058,10 @@ func (p *prepared) allocatorOccupied(ctx context.Context, id string) (bool, erro
 	return states[0].Present || !states[0].Revision.IsZero(), nil
 }
 
-// Child numbering consumes identity metadata, not the existing children's
-// documents. Keep the same graph predicate and staged-image rules as the
-// allocator scan, including numbers consumed by a create then delete in-batch.
+// Child numbering consumes identity metadata, not existing child documents.
+// Every previously live ID remains consumed even if deleted in this batch,
+// exactly as allocatorObservations' add-before-deleted check. Only new creates
+// can add an identity to that base set; read-only parents and field edits cannot.
 func (p *prepared) observedChildNumber(ctx context.Context, parent string) (uint64, error) {
 	reader, ok := p.snapshot.reader.(driver.NumericChildReader)
 	if !ok {
@@ -1068,19 +1071,12 @@ func (p *prepared) observedChildNumber(ctx context.Context, parent string) (uint
 	if _, err := p.snapshot.observe(ctx, []driver.LockKey{driver.GraphBlockingSentinelLock}); err != nil {
 		return 0, err
 	}
-	excluded := make([]model.Ref, 0, len(p.writes))
-	for _, pending := range p.writes {
-		excluded = append(excluded, pending.ref)
-	}
-	maximum, err := reader.MaxChildNumber(ctx, parent, excluded)
+	maximum, err := reader.MaxChildNumber(ctx, parent, nil)
 	if err != nil {
 		return 0, err
 	}
-	for id, pending := range p.writes {
+	for _, id := range p.createdBeadIDs {
 		driver.ReportReadWork(ctx, driver.ReadChildIDCandidates, 1)
-		if pending.kind != "bead" {
-			continue
-		}
 		n, err := driver.ChildNumber(parent, id)
 		if errors.Is(err, driver.ErrUnsupported) {
 			return 0, err

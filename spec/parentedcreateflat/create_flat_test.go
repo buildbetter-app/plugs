@@ -53,7 +53,7 @@ type expectedCreate struct {
 func (e expectedCreate) body(t *testing.T, at time.Time) []byte {
 	t.Helper()
 	doc := pipeline.Document{ID: e.ID, Type: "issue", Project: project, CreatedAt: &at,
-		Fields: map[string]any{"title": e.Title, "priority": e.Priority, "status": "todo"}}
+		Fields: map[string]any{"title": e.Title, "priority": e.Priority, "status": "todo", "template": false}}
 	if e.Parent != "" {
 		p := ref(e.Parent)
 		doc.Parent = &p
@@ -65,7 +65,7 @@ func (e expectedCreate) body(t *testing.T, at time.Time) []byte {
 	return raw
 }
 func (e expectedCreate) setBy() map[string]string {
-	s := map[string]string{"createdAt": "core", "fields.title": "request", "fields.priority": "request", "fields.status": "request"}
+	s := map[string]string{"createdAt": "core", "fields.title": "request", "fields.priority": "request", "fields.status": "request", "fields.template": "request"}
 	if e.Parent != "" {
 		s["parent"] = "request"
 	}
@@ -169,14 +169,15 @@ func snapshot(t *testing.T, o *ordinaryB04, full bool, expected map[string]expec
 }
 
 type createBatch struct {
-	End       int                           `json:"end"`
-	Size      int                           `json:"size"`
-	ElapsedMS float64                       `json:"elapsedMs"`
-	Attempts  int                           `json:"attempts"`
-	Retries   int                           `json:"retries"`
-	Completed bool                          `json:"completed"`
-	ReadWork  map[driver.ReadWorkKind]int64 `json:"readWork"`
-	Readback  durableReadback               `json:"readback"`
+	End        int                           `json:"end"`
+	Size       int                           `json:"size"`
+	ElapsedMS  float64                       `json:"elapsedMs"`
+	Attempts   int                           `json:"attempts"`
+	Retries    int                           `json:"retries"`
+	Completed  bool                          `json:"completed"`
+	ReadWork   map[driver.ReadWorkKind]int64 `json:"readWork"`
+	QueryPages []queryPageWork               `json:"queryPages"`
+	Readback   durableReadback               `json:"readback"`
 }
 type milestone struct {
 	End                      int
@@ -291,6 +292,8 @@ func runPublicControl(t *testing.T, backend, dsn, scenario string) (result contr
 		workflow.Transitions[0].Guards = append(workflow.Transitions[0].Guards, ontology.Guard{Kind: ontology.NoOpenChildren})
 		doc.Workflows["issue"] = workflow
 	})
+	census := &queryCensus{}
+	installQueryCensus(o, census)
 	result = controlResult{Backend: backend, Scenario: scenario}
 	defer func() { o.retain("control-result", result) }()
 	known := map[string]expectedCreate{}
@@ -300,6 +303,7 @@ func runPublicControl(t *testing.T, backend, dsn, scenario string) (result contr
 		known[e.ID] = e
 		o.seed("untimed-parent-anchor", ordinaryCreateOp(e.ID, project, map[string]any{"title": e.Title, "priority": e.Priority}, ""))
 		assertCommit(t, o.receipts["untimed-parent-anchor"].Commit, expectedCommit(t, 1, []expectedCreate{e}, o.f.clock.Now()))
+		assertGraphCertificate(t, o, false)
 	}
 	var attempts []map[string]any
 	o.seedAttemptReadback = func(label string, attempt int, phase string, raw []byte, status int, elapsed float64) {
@@ -311,13 +315,14 @@ func runPublicControl(t *testing.T, backend, dsn, scenario string) (result contr
 		label := fmt.Sprintf("public-seed-%04d", start)
 		params := map[string]any{"changeSet": model.ChangeSet{Ops: ops[start:end]}}
 		before := w.snapshot()
+		queryStart := len(census.snapshot())
 		raw := o.callSeedWithRetry(label, "tx.apply", owner, params)
 		after := w.snapshot()
 		delta := map[driver.ReadWorkKind]int64{}
 		for kind, n := range after {
 			delta[kind] = n - before[kind]
 		}
-		batch := createBatch{End: end, Size: end - start, ElapsedMS: o.lastSeedElapsedMS, Attempts: o.lastSeedAttempts, Retries: o.lastSeedRetries, ReadWork: delta}
+		batch := createBatch{End: end, Size: end - start, ElapsedMS: o.lastSeedElapsedMS, Attempts: o.lastSeedAttempts, Retries: o.lastSeedRetries, ReadWork: delta, QueryPages: census.snapshot()[queryStart:]}
 		var frame struct {
 			Error *model.Error `json:"error"`
 		}
@@ -346,11 +351,17 @@ func runPublicControl(t *testing.T, backend, dsn, scenario string) (result contr
 			t.Fatal("version conservation failed")
 		}
 		if scenario == "parented" {
+			assertGraphCertificate(t, o, true)
 			cap := int64(1275)
 			if backend == "memory" {
 				cap = 3200
 			}
-			if delta[driver.ReadChildIDCandidates] <= 0 || delta[driver.ReadChildIDCandidates] > cap || delta[driver.ReadQueryCalls] != 0 || delta[driver.ReadPayloadRecords] > 1000 {
+			wantQueries := 0
+			if end == 50 {
+				wantQueries = 1
+				assertOneCensus(t, backend, batch.QueryPages, 1)
+			}
+			if delta[driver.ReadChildIDCandidates] <= 0 || delta[driver.ReadChildIDCandidates] > cap || len(batch.QueryPages) != wantQueries || backend != "memory" && delta[driver.ReadQueryCalls] != int64(wantQueries) || delta[driver.ReadPayloadRecords] > 1000 {
 				t.Fatalf("fixed request-work cap failed (%s cap=%d): %v", backend, cap, delta)
 			}
 			if backend != "memory" && (delta[driver.ReadPayloadRecords] <= 0 || end > 50 && delta[driver.ReadSelectorKeys] <= 0) {

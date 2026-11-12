@@ -15,7 +15,7 @@ core DecodeDocument calls. The secondary guard collector selected existing
 siblings even when their parent's current status had no child guard. No new
 baseline or diagnosis is part of these regressions.
 
-## Frozen quantitative oracle, version 1
+## Frozen quantitative oracle, version 2 (root 09:51/09:56 clarification)
 
 Freeze this contract before executing changed code. For EACH engine, run the
 unchanged original 2004-create workload in batches of 50 (last batch four), then
@@ -49,9 +49,35 @@ For every parented 50-create batch, at every store size:
 
 | Engine | numeric_child_id_candidates maximum | payload_records_materialized maximum | general Query calls |
 | --- | ---: | ---: | ---: |
-| memory | 3200 | 1000 (where exposed) | 0 |
-| SQLite | 1275 | 1000 | 0 |
-| PostgreSQL | 1275 | 1000 | 0 |
+| memory | 3200 | 1000 (where exposed) | first batch 1; later 0 |
+| SQLite | 1275 | 1000 | first batch 1; later 0 |
+| PostgreSQL | 1275 | 1000 | first batch 1; later 0 |
+
+The unchanged root-only anchor publication does not establish a semantic graph
+certificate. The first parented batch therefore performs exactly one existing
+initialization census; its actual Query call, payloads, and time remain inside
+the measured first batch. Later batches must make zero actual general Query
+calls. The table describes the unchanged anchor-only scaling workload, so its
+first batch also retains the 1000-payload cap. Memory Query/payload observer
+events are absent; the real-reader wrapper counts actual calls/returned rows
+directly and reports materializations as NOT_EXPOSED, never as a proven zero.
+
+TestParentedCreateInitializationCensus separately compares 0 and 2000 unrelated
+ordinary flat creates before the same ordinary anchor and 50-child batches.
+No bootstrap or certificate publication path is added. Before the first child
+the certificate must be absent, and after real graph validation it must be
+current. One initialization census makes exactly 1 actual Reader.Query call
+at 0 unrelated items and exactly 3 at 2000 unrelated items plus the anchor:
+documents() uses Limit=1000 and follows NextCursor. Every page's actual calls,
+returned rows and exposed materializations are recorded separately; SQL events
+must be positive and reach the enclosing HTTP observer. The first large-store
+batch has an explicit payload-cap exemption: this one existing census can
+materialize the uncertified store, and its size-dependent cost is stated plainly.
+The later batch must have zero general Query calls and retain the steady work
+caps. SQL reopen is followed by another real 50-child batch; census recurrence
+is reported as observed, with complete page accounting if it recurs. No behavior
+is changed to force that observation. These are additional regressions, not a
+change to the original/flat/parented 2004/2500/2500 workloads or timing oracle.
 
 The new numeric candidate event is emitted at the owning loop: every memory AVL
 node visited (including navigation/rejected nodes), every SQL candidate returned
@@ -65,7 +91,10 @@ distinct identities; they do not measure repeated core document decoding or SQL
 executor visits.
 
 Source arithmetic: the core staged overlay contributes at most 0+1+...+49=1225
-candidate visits per 50 creates. Current SQL lookup seeks at most one committed
+candidate visits per 50 creates. Only genuinely created identities enter this
+overlay; a read-only parent or previously existing edited record cannot add a
+new identity. Existing live IDs still consume numbers when deleted in-batch,
+and created-then-deleted IDs remain consumed. Current SQL lookup seeks at most one committed
 candidate per allocation in these controls: 1225+50=1275. The immutable memory
 AVL has at most 2500 indexed child identities; a conservative height bound 18
 allows at most 36 navigation nodes per seek: 1225+50*36=3025 < 3200. No driver

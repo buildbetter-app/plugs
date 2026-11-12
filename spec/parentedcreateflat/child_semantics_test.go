@@ -74,9 +74,13 @@ func TestNumericChildIdentitySemantics(t *testing.T) {
 			lookup(nil, "unicode-父", nil, 10, false)
 			lookup(nil, "overflow", nil, 0, true)
 			lookup(nil, "limit", nil, ^uint64(0), false)
-			seed(conformance.FixtureChange{Ref: ref("p.10"), Kind: "bead", Op: model.OpDelete}, conformance.FixtureChange{Ref: ref("p.0010"), Kind: "bead", Op: model.OpDelete})
+			seed(image("p.30", "bead"))
+			seed(conformance.FixtureChange{Ref: ref("p.10"), Kind: "bead", Op: model.OpDelete}, conformance.FixtureChange{Ref: ref("p.0010"), Kind: "bead", Op: model.OpDelete}, conformance.FixtureChange{Ref: ref("p.30"), Kind: "bead", Op: model.OpDelete})
 			lookup(nil, "p", nil, 9, false)
 			lookup(&first.Revision, "p", nil, 10, false)
+			lookup(&first.Revision, "p", []model.Ref{ref("p.10")}, 10, false)
+			lookup(&first.Revision, "p", []model.Ref{ref("p.0010")}, 10, false)
+			lookup(&first.Revision, "p", []model.Ref{ref("p.10"), ref("p.0010")}, 9, false)
 
 			// The real WriteTx must suppress committed replacements, include its
 			// staged live IDs, and let caller exclusions override staged images.
@@ -119,6 +123,8 @@ type requestProofKey struct{}
 type queryProbe struct {
 	mu                        sync.Mutex
 	queryCalls, identityCalls int
+	contextMissing            bool
+	identityError             string
 }
 type noQueryStore struct {
 	driver.Store
@@ -151,13 +157,21 @@ func (r *noQueryReader) Query(ctx context.Context, q driver.Query) (driver.Page[
 	return driver.Page[driver.Record]{}, fmt.Errorf("ordinary create attempted a general Query")
 }
 func (r *noQueryReader) MaxChildNumber(ctx context.Context, parent string, excluded []model.Ref) (uint64, error) {
-	if ctx.Value(requestProofKey{}) != r.probe {
-		return 0, fmt.Errorf("request context did not reach real child capability")
-	}
 	r.probe.mu.Lock()
 	r.probe.identityCalls++
+	if ctx.Value(requestProofKey{}) != r.probe {
+		r.probe.contextMissing = true
+		r.probe.mu.Unlock()
+		return 0, fmt.Errorf("request context did not reach real child capability")
+	}
 	r.probe.mu.Unlock()
-	return r.NumericChildReader.MaxChildNumber(ctx, parent, excluded)
+	n, err := r.NumericChildReader.MaxChildNumber(ctx, parent, excluded)
+	if err != nil {
+		r.probe.mu.Lock()
+		r.probe.identityError = err.Error()
+		r.probe.mu.Unlock()
+	}
+	return n, err
 }
 
 func TestOrdinaryChildCreateUsesRealIdentityIndexWithoutQuery(t *testing.T) {
@@ -187,6 +201,20 @@ func TestOrdinaryChildCreateUsesRealIdentityIndexWithoutQuery(t *testing.T) {
 			if _, err := conformance.Seed(o.f.ctx, o.f.store, o.f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: ref("root.11"), Kind: "bead", Op: model.OpDelete, Graph: &conformance.FixtureGraphSource{}}}); err != nil {
 				t.Fatal(err)
 			}
+			// Direct storage fixtures intentionally invalidate the semantic graph
+			// certificate. A genuine ordinary reparent validates that seeded graph
+			// before this test refuses the general Query correctness fallback.
+			parent := ref("root")
+			o.commit("certify-seeded-graph", "tx.apply", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: ref("root.009"), Parent: &parent}}}}})
+			r, err := o.f.store.Read(o.f.ctx, driver.View{Incarnation: o.f.metaSnapshot().Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			states, err := r.Observe(o.f.ctx, []driver.LockKey{pipeline.GraphValidityLockKey(), driver.GraphBlockingSentinelLock})
+			r.Close()
+			if err != nil || len(states) != 2 || !states[0].Present || !states[1].Present || states[0].Revision != states[1].Revision {
+				t.Fatalf("seeded ordinary graph is not certified: %+v err=%v", states, err)
+			}
 			probe := &queryProbe{}
 			s := noQueryStore{Store: o.f.store, ResponseFinalizer: o.f.store.(driver.ResponseFinalizer), CheckpointStore: o.f.store.(driver.CheckpointStore), probe: probe}
 			o.server.Close()
@@ -200,15 +228,16 @@ func TestOrdinaryChildCreateUsesRealIdentityIndexWithoutQuery(t *testing.T) {
 			o.install()
 			ops := []model.Op{ordinaryCreateOp("first", project, map[string]any{"title": "first", "priority": 4}, "root"), ordinaryCreateOp("second", project, map[string]any{"title": "second", "priority": 4}, "root")}
 			raw := o.call("consume", "tx.apply", owner, map[string]any{"changeSet": model.ChangeSet{Ops: ops}})
+			probe.mu.Lock()
+			queryCalls, identityCalls := probe.queryCalls, probe.identityCalls
+			contextMissing, identityError := probe.contextMissing, probe.identityError
+			probe.mu.Unlock()
+			if queryCalls != 0 || identityCalls != 2 || contextMissing || identityError != "" {
+				t.Fatalf("real create query=%d identity=%d contextMissing=%t identityError=%s response=%s", queryCalls, identityCalls, contextMissing, identityError, raw)
+			}
 			commit := o.commitResponse("consume", "tx.apply", raw)
 			if len(commit.Results) != 2 || commit.Results[0].Ref.ID != "root.12" || commit.Results[1].Ref.ID != "root.13" {
 				t.Fatalf("stale counter/occupancy/staged-delete numbering changed: %+v", commit)
-			}
-			probe.mu.Lock()
-			queryCalls, identityCalls := probe.queryCalls, probe.identityCalls
-			probe.mu.Unlock()
-			if queryCalls != 0 || identityCalls != 2 {
-				t.Fatalf("real create query=%d identity=%d", queryCalls, identityCalls)
 			}
 			t.Logf("REAL_CHILD_CAPABILITY engine=%s calls=%d generalQuery=%d requestContext=true", backend, identityCalls, queryCalls)
 			// Deletion retains its existing general graph-validation path. Check

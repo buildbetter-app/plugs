@@ -34,7 +34,7 @@ CREATE INDEX IF NOT EXISTS records_numeric_child_live
  ON plug_postgres.records(plug_postgres.child_id_parent(key),plug_postgres.child_id_number(key) COLLATE "C" DESC,key)
  WHERE kind='bead' AND NOT deleted;
 CREATE INDEX IF NOT EXISTS records_numeric_child_history
- ON plug_postgres.records(plug_postgres.child_id_parent(key),plug_postgres.child_id_number(key) COLLATE "C" DESC,key)
+ ON plug_postgres.records(plug_postgres.child_id_parent(key),plug_postgres.child_id_number(key) COLLATE "C",key)
  WHERE kind='bead';
 `
 
@@ -64,8 +64,12 @@ func (r *reader) MaxChildNumber(ctx context.Context, parent string, excluded []m
 	}
 	query := currentChildIDSQL
 	head, _ := r.meta.Head.Uint64()
+	tieAfter := ">"
 	if r.at != head {
-		query = `SELECT key,plug_postgres.child_id_number(key) FROM plug_postgres.records WHERE kind='bead' AND plug_postgres.child_id_parent(key)=$1 AND plug_postgres.child_id_number(key)<>'' ORDER BY plug_postgres.child_id_number(key) COLLATE "C" DESC,key LIMIT 1`
+		// Reverse the historical index, including its equal-number key order.
+		// Its mixed ordering cannot compete with the live current lookup.
+		query = `SELECT key,plug_postgres.child_id_number(key) FROM plug_postgres.records WHERE kind='bead' AND plug_postgres.child_id_parent(key)=$1 AND plug_postgres.child_id_number(key)<>'' ORDER BY plug_postgres.child_id_number(key) COLLATE "C" DESC,key DESC LIMIT 1`
+		tieAfter = "<"
 	}
 	maximum := uint64(0)
 	args := []any{[]byte(parent)}
@@ -101,7 +105,7 @@ func (r *reader) MaxChildNumber(ctx context.Context, parent string, excluded []m
 			break
 		}
 		if len(args) == 1 {
-			query = strings.Replace(query, " ORDER BY", ` AND (plug_postgres.child_id_number(key) COLLATE "C"<$2 OR (plug_postgres.child_id_number(key) COLLATE "C"=$2 AND key>$3)) ORDER BY`, 1)
+			query = strings.Replace(query, " ORDER BY", ` AND (plug_postgres.child_id_number(key) COLLATE "C"<$2 OR (plug_postgres.child_id_number(key) COLLATE "C"=$2 AND key`+tieAfter+`$3)) ORDER BY`, 1)
 		}
 		args = []any{[]byte(parent), rank, raw}
 	}
@@ -129,7 +133,7 @@ func (r *reader) MaxChildNumber(ctx context.Context, parent string, excluded []m
 
 func (r *reader) childIDVisible(ctx context.Context, key string) (bool, error) {
 	var live bool
-	err := r.sql.QueryRowContext(ctx, `SELECT COALESCE((convert_from(value,'UTF8')::jsonb->>'Present')::boolean,false) FROM plug_postgres.states WHERE key=$1 AND revision<=$2::numeric ORDER BY revision DESC LIMIT 1`, []byte(key), decimal(r.at)).Scan(&live)
+	err := r.sql.QueryRowContext(ctx, `SELECT NOT COALESCE((convert_from(value,'UTF8')::jsonb->>'Deleted')::boolean,false) FROM plug_postgres.versions WHERE key=$1 AND revision<=$2::numeric ORDER BY revision DESC LIMIT 1`, []byte(key), decimal(r.at)).Scan(&live)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}

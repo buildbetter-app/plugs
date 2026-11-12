@@ -46,7 +46,8 @@ func TestNumericChildQueryUsesOrderedIndex(t *testing.T) {
 	}
 	rows.Close()
 	joined := strings.Join(plan, "\n")
-	if !strings.Contains(joined, "SEARCH r USING INDEX records_numeric_child") || strings.Contains(joined, "SCAN r") || strings.Contains(joined, "TEMP B-TREE") {
+	ordered := strings.Contains(joined, "SEARCH r USING INDEX records_numeric_child") || strings.Contains(joined, "SEARCH r USING COVERING INDEX records_numeric_child")
+	if !ordered || strings.Contains(joined, "SCAN r") || strings.Contains(joined, "TEMP B-TREE") {
 		t.Fatalf("unbounded child query plan: %s", joined)
 	}
 	t.Logf("NUMERIC_CHILD_QUERY_PLAN engine=sqlite children=2500 SQL=%s PLAN=%s", currentChildIDSQL, joined)
