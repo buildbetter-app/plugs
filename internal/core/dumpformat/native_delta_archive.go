@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -556,7 +557,9 @@ func (a *Archive) NativeSourceHistoriesChecked() ([]NativeHistory, error) {
 	return a.NativeSourceHistories(), nil
 }
 
-func (a *Archive) HasNativeSourceHistories() bool { return a != nil && len(a.nativeHistories) > 0 }
+func (a *Archive) HasNativeSourceHistories() bool {
+	return a != nil && (len(a.nativeHistories) > 0 || a.HasNativeCaptureCollection())
+}
 
 // NativeHistoryMetadata is the small detached source/census view. Querying
 // identities, coverage or schemas must not copy every historical table.
@@ -574,6 +577,22 @@ type NativeHistoryMetadata struct {
 func (a *Archive) NativeSourceHistoryMetadata() ([]NativeHistoryMetadata, error) {
 	result := []NativeHistoryMetadata{}
 	if a == nil {
+		return result, nil
+	}
+	if a.HasNativeCaptureCollection() {
+		if err := a.ChargeNativeDeltaJSON("detached_history_metadata", a.collection.metadata); err != nil {
+			return nil, err
+		}
+		if err := a.ChargeNativeDeltaJSON("detached_history_metadata_encoding", a.collection.metadata); err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(a.collection.metadata)
+		if err != nil {
+			return nil, err
+		}
+		if err := decodeJSON(raw, &result); err != nil {
+			return nil, err
+		}
 		return result, nil
 	}
 	for _, h := range a.nativeHistories {

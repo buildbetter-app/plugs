@@ -1,10 +1,11 @@
 package nativeprojection
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
-	"context"
+
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -51,9 +52,24 @@ func NativeHistoryAccounting(archive *dumpformat.Archive) ([]NativeHistoryReport
 	for _, scope := range scopes {
 		bounded = bounded || scope.HistoryCoverage != nil
 	}
-	if !bounded {
+	collection := archive.HasNativeCaptureCollection()
+	if !bounded && !collection {
 		// Preserve original complete-archive report/receipt bytes.
 		return nil, nil
+	}
+	if collection {
+		// These summaries become part of the actual publication and recovery
+		// evidence, including when both originals have complete histories.
+		// Admit the complete candidate before allocating its result slice.
+		for _, scope := range scopes {
+			if len(scope.Projects) != 1 {
+				return nil, fmt.Errorf("%w: ambiguous collection history owner", driver.ErrUnsupported)
+			}
+			report := NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]}, Complete: scope.Complete, VerifiedCommitCount: uint64(scope.ImageCount), Coverage: scope.HistoryCoverage}
+			if err := archive.ChargeNativeDeltaJSON("collection_native_history_reports", report); err != nil {
+				return nil, err
+			}
+		}
 	}
 	reports := make([]NativeHistoryReport, 0, len(scopes))
 	for _, scope := range scopes {
@@ -245,4 +261,3 @@ func NativeCurrentRecords(archive *dumpformat.Archive, when time.Time, contexts 
 	})
 	return rows, reports, nil
 }
-
