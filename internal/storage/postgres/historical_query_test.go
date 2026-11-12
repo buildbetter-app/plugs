@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -671,4 +672,83 @@ func TestHistoricalQueryBodyErrorDifferentialAtHeadAndPastRevision(t *testing.T)
 		}
 		check(t, r)
 	})
+}
+
+func TestHistoricalQueryLongValuesPublishBackfillAndReopen(t *testing.T) {
+	ctx := context.Background()
+	dsn := freshDSN(t)
+	s := openTest(t, dsn)
+	lease := testLease(t, s)
+	longString := func(label string, size int) string {
+		var out strings.Builder
+		for i := 0; out.Len() < size; i++ {
+			hash := sha256.Sum256([]byte(fmt.Sprintf("%s-%d", label, i)))
+			out.WriteString(base64.RawURLEncoding.EncodeToString(hash[:]))
+		}
+		return out.String()[:size]
+	}
+	longID := "z-" + longString("id", 1900)
+	longKey := "z-" + longString("key", 1900)
+	longValue := longString("body", 8192)
+	body := func(value string) []byte {
+		raw, err := json.Marshal(map[string]string{"type": value, "project": value, "status": value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	changes := []conformance.FixtureChange{
+		{Ref: testRef(longID), Kind: "test", Op: model.OpCreate, Body: body(longValue)},
+		{Ref: model.RefByKey(longKey), Kind: "test", Op: model.OpCreate, Body: body(longValue)},
+	}
+	// These earlier keys collide with all three projected body prefixes.
+	// Exact equality must discard them before page/lookahead selection.
+	for i := 0; i < 6; i++ {
+		changes = append(changes, conformance.FixtureChange{Ref: testRef(fmt.Sprintf("a-prefix-%d", i)), Kind: "test", Op: model.OpCreate, Body: body(longValue + fmt.Sprint(i))})
+	}
+	entry, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, changes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := entry.Revision
+	if _, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: testRef(longID), Kind: "test", Op: model.OpPatch, Body: []byte(`{"status":"later"}`), ChangedPaths: []string{"/status"}}}); err != nil {
+		t.Fatal(err)
+	}
+	filters := []map[string]any{
+		nil, {"id": longID}, {"key": longKey}, {"type": longValue}, {"project": longValue}, {"status": longValue},
+		{"id": longID, "type": longValue, "project": longValue, "status": longValue},
+		{"project": longValue + "missing"}, {"id": longID + "missing"}, {"key": longKey + "missing"},
+	}
+	check := func(t *testing.T, store *Store) {
+		t.Helper()
+		r := testRead(t, store, &at).(*reader)
+		defer r.Close()
+		for i, filter := range filters {
+			t.Run(fmt.Sprintf("filter_%d", i), func(t *testing.T) { assertHistoricalWalk(t, ctx, r, filter, 1) })
+		}
+		var work queryPageWork
+		page, err := r.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Filter: map[string]any{"project": longValue}, Limit: 1})
+		if err != nil || len(page.Items) != 1 || page.Items[0].Ref.ID != longID || page.NextCursor == nil || work.payloads.Load() != 2 {
+			t.Fatalf("prefix collisions consumed page/lookahead: page=%+v payloads=%d err=%v", page, work.payloads.Load(), err)
+		}
+	}
+	t.Run("published", func(t *testing.T) { check(t, s) })
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened := openTest(t, dsn)
+	t.Run("reopened", func(t *testing.T) { check(t, reopened) })
+	// Recreate a populated predecessor schema, retaining the exact long
+	// versions, so Open must backfill and index already admitted data too.
+	if _, err := reopened.db.ExecContext(ctx, `ALTER TABLE plug_postgres.versions DROP COLUMN query_fields`); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backfilled := openTest(t, dsn)
+	t.Run("backfilled", func(t *testing.T) { check(t, backfilled) })
 }

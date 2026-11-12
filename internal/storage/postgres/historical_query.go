@@ -68,6 +68,14 @@ func ensureHistoricalQueryFields(ctx context.Context, q querier) error {
 	if _, err := q.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS versions_query_pending ON plug_postgres.versions(key,revision) WHERE query_fields IS NULL`); err != nil {
 		return err
 	}
+	// Replace the initial full-value indexes before backfill. Previously
+	// admitted strings are unbounded, and duplicating their full projections
+	// beside a record key can exceed PostgreSQL's btree tuple limit.
+	for _, field := range []string{"id", "key", "type", "project", "status"} {
+		if _, err := q.ExecContext(ctx, `DROP INDEX IF EXISTS plug_postgres.versions_query_`+field); err != nil {
+			return err
+		}
+	}
 	for {
 		var key, raw []byte
 		var revision string
@@ -83,7 +91,7 @@ func ensureHistoricalQueryFields(ctx context.Context, q querier) error {
 		}
 	}
 	for _, field := range []string{"id", "key", "type", "project", "status"} {
-		if _, err := q.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS versions_query_`+field+` ON plug_postgres.versions((query_fields->>'`+field+`'),key,revision)`); err != nil {
+		if _, err := q.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS versions_query_prefix_`+field+` ON plug_postgres.versions((left(query_fields->>'`+field+`',64)),key,revision)`); err != nil {
 			return err
 		}
 	}
@@ -103,7 +111,10 @@ func historicalQueryWhere(filter map[string]any, after string, at uint64) ([]str
 				identity = append(identity, fmt.Sprintf("r.kind=$%d", pos))
 				args = append(args, value)
 			} else {
-				predicate := fmt.Sprintf("v.query_fields->>'%s'=$%d", field, pos)
+				// Prefixes bound index tuples even for long admitted strings.
+				// The full equality remains inside the selector, before LIMIT,
+				// so prefix collisions never consume the page or lookahead.
+				predicate := fmt.Sprintf("(left(v.query_fields->>'%s',64)=left($%d::text,64) AND v.query_fields->>'%s'=$%d)", field, pos, field, pos)
 				if field == "id" || field == "key" {
 					identity = append(identity, predicate)
 				} else {
