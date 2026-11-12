@@ -11,6 +11,8 @@ import (
 func safeSourceHistoryReason(reason string) string {
 	prefix, _, _ := strings.Cut(reason, ":")
 	switch prefix {
+	case "child-counter-parent-unresolved":
+		return "child_counter_parent_unresolved"
 	case "ancestry-unavailable":
 		return "ancestry_unavailable"
 	case "commit-ancestry-cycle":

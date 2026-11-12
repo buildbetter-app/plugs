@@ -18,6 +18,7 @@ func TestSafeUnavailableHistoryRetainsCauseAndExplicitUnknownCoordinates(t *test
 	for _, test := range []struct {
 		name, reason, boundaryReason, want string
 	}{
+		{"missing-counter-parent", "child-counter-parent-unresolved", "", "child_counter_parent_unresolved"},
 		{"", "commit-census-unavailable", "", "commit_census_unavailable"},
 		{"ghost_parent", "commit-census-unavailable", "ghost_parent", "ghost_parent"},
 		{"missing_root_chunk", "commit-census-unavailable", "missing_root_chunk", "missing_root_chunk"},

@@ -1002,6 +1002,12 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 	// selection is the point (a required-suite contract that checks it), and
 	// nothing leaves the lanes. Pinned to exactly these args.
 	extraRunVariants := map[string][]string{
+		// B01's new capture root uses the native fixture helpers whose original
+		// roots still run in full in their unchanged canonical targets.
+		"//cmd/plug-capture-sql-server:b01_complete_ready_capture_test": {
+			"-test.v",
+			"-test.run=^TestB01CompleteIndependentReadyCapture$$",
+		},
 		// The doc-freshness suite (also run by //scripts:shell_scripts_test) under
 		// -required-suite, as pr.yml's former Linux doc-freshness leg ran it.
 		"//scripts:doc_freshness_required_test": {

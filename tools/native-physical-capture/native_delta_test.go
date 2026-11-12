@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -917,4 +918,178 @@ func smallDeltaFixtureOpaqueHistory(t *testing.T, stream []byte, required map[st
 		}
 	}
 	return states
+}
+
+// A physical 72/28 store distinguishes valid cross-plane ancestry from a
+// genuinely missing parent. The CLI must publish only the former.
+func TestPublicNativeDeltaCrossPlaneCounterParent(t *testing.T) {
+	binary := diagnosticBinary(t)
+	for _, present := range []bool{true, false} {
+		t.Run(fmt.Sprintf("parent_present_%t", present), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+			defer cancel()
+			dataDir, home := diagnosticDir(t), diagnosticDir(t)
+			db, closeDriver, err := openPublicMigrationFixture(dataDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeDriver()
+			defer db.Close()
+			conn, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			ownVersionExec(t, ctx, conn, "CREATE DATABASE public_counter_parent")
+			ownVersionExec(t, ctx, conn, "USE public_counter_parent")
+			if _, err := schema.MigrateUpTo(ctx, conn, 72); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range ownVersionUnversioned {
+				ownVersionExec(t, ctx, conn, "INSERT INTO dolt_ignore (pattern,ignored) VALUES (?,true) ON DUPLICATE KEY UPDATE ignored=true", name)
+			}
+			ownVersionExec(t, ctx, conn, "CREATE TABLE IF NOT EXISTS ignored_schema_migrations (version INT PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, content_hash CHAR(64))")
+			for i, name := range ownVersionIgnoredMigrations {
+				query, err := schema.IgnoredMigrationSQL(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ownVersionExec(t, ctx, conn, query)
+				ownVersionExec(t, ctx, conn, "INSERT INTO ignored_schema_migrations(version,content_hash) VALUES (?,?)", i+1, fmt.Sprintf("%x", sha256.Sum256([]byte(query))))
+			}
+			ownVersionExec(t, ctx, conn, "INSERT INTO config (`key`,`value`) VALUES ('issue_prefix','public') ON DUPLICATE KEY UPDATE `value`='public'")
+			ownVersionExec(t, ctx, conn, "INSERT INTO issues (id,title,description,design,acceptance_criteria,notes,created_by) VALUES ('public-w1.3','durable child of active parent','','','','','public')")
+			if present {
+				ownVersionExec(t, ctx, conn, "INSERT INTO wisps (id,title,description,design,acceptance_criteria,notes,created_by) VALUES ('public-w1','active-only parent','','','','','public')")
+				ownVersionExec(t, ctx, conn, "INSERT INTO wisp_child_counters (parent_id,last_child) VALUES ('public-w1',17)")
+			}
+			head := ownVersionCommit(t, ctx, conn)
+			before, err := physicalcapture.ReadWorkingRoot(ctx, conn, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := closeDriver(); err != nil {
+				t.Fatal(err)
+			}
+			workspace, output := diagnosticDir(t), diagnosticDir(t)
+			beadsDir := filepath.Join(workspace, ".beads")
+			if err := os.Mkdir(beadsDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			environment := []string{}
+			for _, entry := range os.Environ() {
+				key, _, _ := strings.Cut(entry, "=")
+				if key == "HOME" || key == "DOLT_ROOT_PATH" || strings.HasPrefix(key, "BD_") || strings.HasPrefix(key, "BEADS_") || strings.HasPrefix(key, "XDG_") {
+					continue
+				}
+				environment = append(environment, entry)
+			}
+			environment = append(environment, "HOME="+home, "DOLT_ROOT_PATH="+home, "BEADS_DIR="+beadsDir, "XDG_CONFIG_HOME="+home, "BD_DISABLE_METRICS=1", "BD_DISABLE_EVENT_FLUSH=1")
+			command := exec.CommandContext(ctx, binary, "--disposable", "--native-delta", "--data-dir", dataDir, "--database", "public_counter_parent", "--beads-dir", beadsDir, "--output-dir", output)
+			command.Dir, command.Env = workspace, environment
+			var stdout, stderr bytes.Buffer
+			command.Stdout, command.Stderr = &stdout, &stderr
+			err = command.Run()
+			if present {
+				if err != nil {
+					t.Fatalf("valid active parent refused: %v stderr=%s", err, stderr.Bytes())
+				}
+				raw, err := os.ReadFile(filepath.Join(output, "capture-set/head.tar"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				manifest, err := plugdump.ValidateNativeDeltaHead(bytes.NewReader(raw))
+				if err != nil || len(manifest.Projects) != 1 || manifest.Projects[0].ChildCounters["public-w1"] != 17 {
+					t.Fatal("active counter changed", err)
+				}
+				var set plugdump.NativeCaptureSet
+				root, err := os.ReadFile(filepath.Join(output, "capture-set/capture-set.json"))
+				if err != nil || json.Unmarshal(root, &set) != nil || set.Head != head {
+					t.Fatal("native set absent or different", err)
+				}
+				if len(deltaFixtureStream(t, filepath.Join(output, "capture-set"), set)) == 0 {
+					t.Fatal("authenticated native delta stream missing")
+				}
+				var childExact, counterExact bool
+				reader := tar.NewReader(bytes.NewReader(raw))
+				for {
+					header, err := reader.Next()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.HasPrefix(header.Name, "records/") {
+						continue
+					}
+					decoder := json.NewDecoder(reader)
+					decoder.UseNumber()
+					for {
+						var record plugdump.Record
+						if err := decoder.Decode(&record); err == io.EOF {
+							break
+						} else if err != nil {
+							t.Fatal(err)
+						}
+						if record.Source.Table == "issues" {
+							childExact = record.ID == "public-w1.3" && record.Source.Fields["id"] == "public-w1.3"
+						}
+						if record.Source.Table == "wisp_child_counters" {
+							counterExact = record.Source.Fields["parent_id"] == "public-w1" && fmt.Sprint(record.Source.Fields["last_child"]) == "17"
+						}
+					}
+				}
+				if !childExact || !counterExact {
+					t.Fatal("physical child's ID or parent's raw counter changed")
+				}
+			} else {
+				if err == nil || stdout.Len() != 0 {
+					t.Fatal("missing parent published success")
+				}
+				scanner := bufio.NewScanner(bytes.NewReader(stderr.Bytes()))
+				var refusal safeCaptureReport
+				for scanner.Scan() {
+					if err := json.Unmarshal(scanner.Bytes(), &refusal); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if scanner.Err() != nil || refusal.ReasonSubcode == nil || *refusal.ReasonSubcode != "child_counter_parent_unresolved" || refusal.HistoryBoundaryReason != "" || refusal.CommitSchemaVersion == nil || *refusal.CommitSchemaVersion != 72 || refusal.CommitOrdinalFromHead == nil || *refusal.CommitOrdinalFromHead != 1 {
+					t.Fatalf("missing parent lost typed coordinates: %s", stderr.Bytes())
+				}
+				entries, err := os.ReadDir(output)
+				if err != nil || len(entries) != 0 {
+					t.Fatal("refusal left partial output", err)
+				}
+			}
+			reopened, closeReopened, err := physicalcapture.Open(dataDir, "public_counter_parent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeReopened()
+			defer reopened.Close()
+			readback, err := reopened.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer readback.Close()
+			after, err := physicalcapture.ReadWorkingRoot(ctx, readback, head)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("capture changed complete physical source on reopen", err)
+			}
+			facts, err := json.Marshal(map[string]any{"parent_present": present, "child": "public-w1.3", "parent_counter": 17, "before": before, "after": after, "stdout": stdout.String(), "stderr": stderr.String()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), fmt.Sprintf("public-cross-plane-counter-%t.json", present)), facts, 0600); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
