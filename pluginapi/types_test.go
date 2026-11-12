@@ -67,6 +67,30 @@ func TestWireDomains(t *testing.T) {
 	}
 }
 
+func TestCursorAfterIsOptionalAndRoundTrips(t *testing.T) {
+	legacy := Cursor{Incarnation: "inc", Revision: Natural64(7), Index: Natural64(3), Method: "query", FilterDigest: "digest"}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"after"`) {
+		t.Fatalf("empty cursor after changed legacy wire shape: %s", raw)
+	}
+	withAfter := legacy
+	withAfter.After = "opaque/key"
+	raw, err = json.Marshal(withAfter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Cursor
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.After != withAfter.After {
+		t.Fatalf("cursor after did not round-trip: got %q want %q", decoded.After, withAfter.After)
+	}
+}
+
 func TestFlatOp(t *testing.T) {
 	input := `{"kind":"patch","target":{"id":"pl-a"},"fields":{"priority":9007199254740993}}`
 	var op Op
