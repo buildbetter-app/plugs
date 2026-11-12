@@ -57,7 +57,7 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 	if plan.derivedDigest != p.DerivedDigest {
 		return p, fmt.Errorf("%w: history current image/derived verification failed", ErrRestoreUnavailable)
 	}
-	if archive.HasNativeDelta() {
+	if archive.HasNativeDelta() && p.HistoryMode == driver.RestoreHistoryModeFull {
 		digest, err := nativeReceivingStreamDigest(ctx, archive, p, when)
 		if err != nil {
 			return p, err
@@ -400,7 +400,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	if err != nil {
 		return driver.ErrConflict
 	}
-	if archive.HasNativeDelta() {
+	if archive.HasNativeDelta() && p.HistoryMode == driver.RestoreHistoryModeFull {
 		stream, err := historyverify.PrepareNativeArchive(ctx, archive, p, when)
 		if err != nil {
 			return nativeDeltaRecoveryError(err)
