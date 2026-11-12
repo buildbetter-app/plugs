@@ -451,6 +451,10 @@ func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest strin
 		if err := json.Unmarshal(data, &record); err != nil {
 			return "", 0, err
 		}
+		// Cursor validation materializes the anchor row inside the pinned
+		// snapshot; account for that actual work just like page rows.
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		driver.ReportReadPayload(ctx, record.Body)
 		if ok, err := matches(record, filter); err != nil || !ok {
 			if err != nil {
 				return "", 0, err
@@ -625,104 +629,102 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	return page, nil
 }
 
-// queryHead reads one current nil/kind page plus a lookahead row. The same
-// statement carries request-local totals for discarded-candidate accounting;
-// no persistent or connection-level counter is involved. After is the opaque
-// last returned key, and the SQL predicate/order uses the primary key or the
-// covering (kind,key) index. Index is emitted only as a marker for cursor
-// validation and native restore; it never positions a query.
+// queryHead reads one current nil/kind page plus a lookahead row. After is the
+// opaque last returned key, and the SQL predicate/order uses the primary key
+// or the covering (kind,key) index. Index is emitted only as a marker for
+// cursor validation and native restore; it never positions a query.
 func (r *reader) queryHead(ctx context.Context, filter map[string]any, kind any, hasKind, rankByKind bool, digest, after string, limit int) (driver.Page[driver.Record], error) {
 	empty := driver.Page[driver.Record]{}
 
+	from := ` FROM objects AS o JOIN records AS r ON o.key=r.key`
 	rankColumn := "o.query_order"
 	if rankByKind {
 		rankColumn = "o.query_kind_order"
 	}
 	where := []string{"o.key>?"}
-	args := []any{after}
+	baseArgs := make([]any, 0, 4)
+	baseArgs = append(baseArgs, after)
 	if hasKind {
 		where = append(where, "o.kind=?")
-		args = append(args, kind)
+		baseArgs = append(baseArgs, kind)
 	}
-	pageWhere := " WHERE " + strings.Join(where, " AND ")
-	// Read-work totals are computed for this request in the pinned snapshot,
-	// then carried alongside the bounded page rows. They preserve discarded
-	// candidate accounting without a persistent or connection-level counter.
-	bodyBytes := `CASE WHEN json_valid(data) AND json_extract(data,'$.Body') IS NOT NULL THEN
-			(length(json_extract(data,'$.Body')) / 4) * 3 -
-			CASE WHEN substr(json_extract(data,'$.Body'), -1)='=' THEN 1 ELSE 0 END -
-			CASE WHEN substr(json_extract(data,'$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
-			ELSE 0 END`
-	query := `WITH record_work AS (
-		SELECT data, ` + bodyBytes + ` AS body_bytes FROM records
-	), totals AS (
-		SELECT (SELECT COUNT(*) FROM objects) AS selector_keys,
-			(SELECT COUNT(*) FROM record_work) AS payloads,
-			(SELECT COALESCE(SUM(body_bytes),0) FROM record_work) AS payload_bytes
-	), page AS (
-		SELECT ` + rankColumn + ` AS rank,o.key,r.data
-		FROM objects AS o JOIN records AS r ON o.key=r.key` + pageWhere + ` ORDER BY o.key LIMIT ?
-	)
-	SELECT page.rank,page.key,page.data,totals.selector_keys,totals.payloads,totals.payload_bytes
-	FROM totals LEFT JOIN page ON 1=1`
-	args = append(args, limit+1)
+	// Ref identity is stored in the current JSON image. These two predicates
+	// keep exact id/key filters indexed by the keyset scan while body fields
+	// remain checked by the existing Go matcher below (Body is opaque bytes).
+	if want, ok := filter["id"]; ok {
+		where = append(where, `json_extract(r.data,'$.Ref.ID')=?`)
+		baseArgs = append(baseArgs, want)
+	}
+	if want, ok := filter["key"]; ok {
+		where = append(where, `json_extract(r.data,'$.Ref.Key')=?`)
+		baseArgs = append(baseArgs, want)
+	}
 	items := make([]driver.Record, 0, limit+1)
 	ranks := make([]uint64, 0, limit+1)
 	keys := make([]string, 0, limit+1)
-	rows, err := r.tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return empty, err
-	}
-	var selectorKeys, payloads, payloadBytes int64
-	sawTotals := false
-	for rows.Next() {
-		var rank sql.NullInt64
-		var key sql.NullString
-		var data []byte
-		if err = rows.Scan(&rank, &key, &data, &selectorKeys, &payloads, &payloadBytes); err != nil {
-			_ = rows.Close()
+	scanAfter := after
+	for len(items) <= limit {
+		args := make([]any, 0, len(baseArgs)+1)
+		args = append(args, scanAfter)
+		if len(baseArgs) > 1 {
+			args = append(args, baseArgs[1:]...)
+		}
+		args = append(args, limit+1)
+		rows, err := r.tx.QueryContext(ctx, `SELECT `+rankColumn+`,o.key,r.data`+from+` WHERE `+strings.Join(where, " AND ")+` ORDER BY o.key LIMIT ?`, args...)
+		if err != nil {
 			return empty, err
 		}
-		sawTotals = true
-		if !rank.Valid {
-			continue
+		scanned := 0
+		for rows.Next() {
+			var rank int64
+			var key string
+			var data []byte
+			var record driver.Record
+			if err = rows.Scan(&rank, &key, &data); err != nil {
+				_ = rows.Close()
+				return empty, err
+			}
+			scanned++
+			scanAfter = key
+			if rank <= 0 {
+				_ = rows.Close()
+				return empty, fmt.Errorf("sqlite: invalid query order rank")
+			}
+			if err = json.Unmarshal(data, &record); err != nil {
+				_ = rows.Close()
+				return empty, err
+			}
+			// Head read-work describes rows actually materialized by this page,
+			// including a lookahead or a discarded predicate candidate.
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+			driver.ReportReadPayload(ctx, record.Body)
+			match, matchErr := matches(record, filter)
+			if matchErr != nil {
+				_ = rows.Close()
+				return empty, matchErr
+			}
+			if match {
+				items = append(items, record)
+				ranks = append(ranks, uint64(rank))
+				keys = append(keys, key)
+			}
+			if len(items) > limit {
+				break
+			}
 		}
-		if rank.Int64 <= 0 {
-			_ = rows.Close()
-			return empty, fmt.Errorf("sqlite: invalid query order rank")
+		if err == nil {
+			err = rows.Err()
 		}
-		var record driver.Record
-		if err = json.Unmarshal(data, &record); err != nil {
-			_ = rows.Close()
+		closeErr := rows.Close()
+		if err != nil {
 			return empty, err
 		}
-		match, matchErr := matches(record, filter)
-		if matchErr != nil {
-			_ = rows.Close()
-			return empty, matchErr
+		if closeErr != nil {
+			return empty, closeErr
 		}
-		if match {
-			items = append(items, record)
-			ranks = append(ranks, uint64(rank.Int64))
-			keys = append(keys, key.String)
+		if len(items) > limit || scanned < limit+1 {
+			break
 		}
-	}
-	if err == nil {
-		err = rows.Err()
-	}
-	closeErr := rows.Close()
-	if err != nil {
-		return empty, err
-	}
-	if closeErr != nil {
-		return empty, closeErr
-	}
-	if sawTotals {
-		// Totals are request-local values returned by this statement. Do not
-		// report each page row again: that would double-count the same work.
-		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, selectorKeys)
-		driver.ReportReadWork(ctx, driver.ReadPayloadRecords, payloads)
-		driver.ReportReadWork(ctx, driver.ReadPayloadBytes, payloadBytes)
 	}
 	page := driver.Page[driver.Record]{Items: items, AsOf: model.Natural64(r.at)}
 	if len(items) > limit {
