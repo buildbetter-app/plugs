@@ -80,6 +80,7 @@ func VerifyNativeCaptureCollectionReadback(ctx context.Context, store driver.Sto
 		}
 	}
 	expected := map[string]collectionReadbackImage{}
+	defer func() { expected = nil }()
 	var sequence, completed uint64
 	compare := func(at model.Revision, current bool) error {
 		work, release := owner.NativeDeltaAccountingScope()
@@ -132,28 +133,9 @@ func VerifyNativeCaptureCollectionReadback(ctx context.Context, store driver.Sto
 			sequence = frame.Commit.Sequence
 		}
 		if table := frame.Table; table != nil {
-			work, release := owner.NativeDeltaAccountingScope()
-			defer release()
-			key, err := collectionReadbackKey(work, table.Ref)
-			if err != nil {
+			if err := applyCollectionReadbackDelta(owner, expected, *table); err != nil {
 				return err
 			}
-			old, present := expected[key]
-			if table.Before == nil && present || table.Before != nil && (!present || old.kind != table.Kind || old.bytes != table.Before.Bytes || old.hash != table.Before.SHA256) {
-				return fmt.Errorf("native collection historical readback preimage differs")
-			}
-			oldCharge := old.charged
-			if table.After == nil {
-				delete(expected, key)
-			} else {
-				n := uint64(len(key)+len(table.Kind)+len(table.After.SHA256)) + 256
-				if err := owner.ChargeNativeDeltaBytes("collection_readback_rolling_hash_index", n); err != nil {
-					return err
-				}
-				expected[strings.Clone(key)] = collectionReadbackImage{strings.Clone(table.Kind), strings.Clone(table.After.SHA256), table.After.Bytes, n}
-			}
-			old = collectionReadbackImage{}
-			owner.ReleaseNativeDeltaBytes("collection_readback_rolling_hash_index", oldCharge)
 		}
 		if frame.CommitEnd != nil {
 			if sequence != completed+1 {
@@ -173,4 +155,35 @@ func VerifyNativeCaptureCollectionReadback(ctx context.Context, store driver.Sto
 		return driver.ErrConflict
 	}
 	return compare(final, true)
+}
+
+// Replace one live compact expectation. Admission precedes the new strings;
+// old strings cease before their reservation is released. First insertion has
+// no old reservation, including when another record already occupies the map.
+func applyCollectionReadbackDelta(owner *dumpformat.Archive, expected map[string]collectionReadbackImage, table driver.OfflineHistoryStreamTable) error {
+	work, release := owner.NativeDeltaAccountingScope()
+	defer release()
+	key, err := collectionReadbackKey(work, table.Ref)
+	if err != nil {
+		return err
+	}
+	old, present := expected[key]
+	if table.Before == nil && present || table.Before != nil && (!present || old.kind != table.Kind || old.bytes != table.Before.Bytes || old.hash != table.Before.SHA256) {
+		return fmt.Errorf("native collection historical readback preimage differs")
+	}
+	oldCharge := old.charged
+	if table.After == nil {
+		delete(expected, key)
+	} else {
+		n := uint64(len(key)+len(table.Kind)+len(table.After.SHA256)) + 256
+		if err := owner.ChargeNativeDeltaBytes("collection_readback_rolling_hash_index", n); err != nil {
+			return err
+		}
+		expected[strings.Clone(key)] = collectionReadbackImage{strings.Clone(table.Kind), strings.Clone(table.After.SHA256), table.After.Bytes, n}
+	}
+	old = collectionReadbackImage{}
+	if present {
+		owner.ReleaseNativeDeltaBytes("collection_readback_rolling_hash_index", oldCharge)
+	}
+	return nil
 }

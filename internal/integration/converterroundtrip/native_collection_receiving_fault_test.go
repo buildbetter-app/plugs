@@ -447,3 +447,50 @@ func TestNativeCollectionRecoveryAndIndependentReadbackRefuseTamperedObservation
 		})
 	}
 }
+
+// This regression checks the ownership ledger against independently summed
+// LIVE expectations through first insertions, replacement and deletion. It is
+// a scalar/index control; physical receiving credit comes from the tests above.
+func TestNativeCollectionReadbackRollingIndexAccountsOnlyLiveEntries(t *testing.T) {
+	budget := dumpformat.NewNativeDeltaBudget(0)
+	ctx := dumpformat.WithNativeDeltaBudget(context.Background(), budget)
+	l := newJoinedOriginalLedger(t)
+	a, err := dumpformat.ReadNativeCaptureSetDirectory(ctx, l.directories[0], dumpformat.NativeCaptureSetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.DiscardNativeCaptureSet()
+	owner, release := a.NativeDeltaAccountingScope()
+	index := map[string]collectionReadbackImage{}
+	first := &driver.OfflineHistoryStreamImage{Bytes: 3, SHA256: strings.Repeat("a", 64)}
+	second := &driver.OfflineHistoryStreamImage{Bytes: 5, SHA256: strings.Repeat("b", 64)}
+	r1, r2 := model.RefByID("invented-readback-one", model.Natural64(0)), model.RefByID("invented-readback-two", model.Natural64(0))
+	for _, delta := range []driver.OfflineHistoryStreamTable{
+		{Ref: r1, Kind: "beads-archive", After: first},
+		{Ref: r2, Kind: "beads-archive", After: first},
+		{Ref: r1, Kind: "beads-archive", Before: first, After: second},
+		{Ref: r2, Kind: "beads-archive", Before: first},
+		{Ref: r1, Kind: "beads-archive", Before: second},
+	} {
+		if err = applyCollectionReadbackDelta(owner, index, delta); err != nil {
+			t.Fatal(err)
+		}
+		var bytes uint64
+		for _, entry := range index {
+			bytes += entry.charged
+		}
+		usage := budget.Usage()
+		if usage.CurrentCategories["collection_readback_rolling_hash_index"] != bytes || usage.CurrentCharges["collection_readback_rolling_hash_index"] != uint64(len(index)) {
+			t.Fatal("rolling ledger differs from live candidate census", usage, bytes, len(index))
+		}
+	}
+	if len(index) != 0 {
+		t.Fatal("deletion retained an expectation")
+	}
+	index = nil
+	release()
+	a.DiscardNativeCaptureSet()
+	if budget.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("closed rolling index retained reservations", budget.Usage())
+	}
+}
