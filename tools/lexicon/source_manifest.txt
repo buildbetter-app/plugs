@@ -169,6 +169,7 @@ internal/core/dumpformat/edge_extensions.go
 internal/core/dumpformat/edge_metadata.go
 internal/core/dumpformat/edge_tokens_test.go
 internal/core/dumpformat/edge_version_test.go
+internal/core/dumpformat/gate_default_test.go
 internal/core/dumpformat/history.go
 internal/core/dumpformat/history_test.go
 internal/core/dumpformat/identity.go
