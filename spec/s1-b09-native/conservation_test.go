@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -431,6 +432,104 @@ func b09SQLNumber(t *testing.T, value string) uint64 {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func b09SQLHasColumn(table b09SQLTable, name string) bool {
+	for _, column := range table.Columns {
+		if column == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SQLite's objects table carries dense query ranks, so publishing one record
+// legitimately rewrites those derived cells on every live row. The recorder
+// still binds the complete live identity set, kind, rank values, added-row
+// cardinality, and every non-rank cell; only the documented derived columns
+// are allowed to differ from the preimage.
+func assertB09SQLiteObjectMutation(t *testing.T, operation string, after b09ReplayStage, old, next b09SQLTable, added []string, keys map[string]bool, recordKey string, creating bool) {
+	t.Helper()
+	if !b09SQLHasColumn(next, "query_order") || !b09SQLHasColumn(next, "query_kind_order") {
+		t.Fatalf("%s SQLite objects schema lacks derived query-rank columns", operation)
+	}
+	if len(added) != boolB09(creating) {
+		t.Fatalf("%s SQLite objects exact add cardinality: got=%d want=%d", operation, len(added), boolB09(creating))
+	}
+	rowsByKey := func(table b09SQLTable) map[string]string {
+		rows := map[string]string{}
+		for _, row := range table.Rows {
+			key := b09SQLText(t, b09SQLColumn(t, table, row, "key"))
+			if _, exists := rows[key]; exists {
+				t.Fatalf("%s duplicate SQLite objects key %q", operation, key)
+			}
+			rows[key] = row
+		}
+		return rows
+	}
+	oldByKey, newByKey := rowsByKey(old), rowsByKey(next)
+	for _, row := range added {
+		key := b09SQLText(t, b09SQLColumn(t, next, row, "key"))
+		if !keys[key] || creating && key != recordKey {
+			t.Fatalf("%s unexpected added SQLite objects key %q", operation, key)
+		}
+	}
+
+	allKeys := make([]string, 0, len(after.Records))
+	byKind := map[string][]string{}
+	for key, record := range after.Records {
+		allKeys = append(allKeys, key)
+		byKind[record.Kind] = append(byKind[record.Kind], key)
+	}
+	sort.Strings(allKeys)
+	queryOrder := make(map[string]uint64, len(allKeys))
+	for i, key := range allKeys {
+		queryOrder[key] = uint64(i + 1)
+	}
+	queryKindOrder := make(map[string]uint64, len(allKeys))
+	for _, keys := range byKind {
+		sort.Strings(keys)
+		for i, key := range keys {
+			queryKindOrder[key] = uint64(i + 1)
+		}
+	}
+	for key, record := range after.Records {
+		row, ok := newByKey[key]
+		if !ok {
+			t.Fatalf("%s SQLite objects omitted live record key %q", operation, key)
+		}
+		if got := b09SQLText(t, b09SQLColumn(t, next, row, "kind")); got != record.Kind {
+			t.Fatalf("%s SQLite objects kind for %q: got=%q want=%q", operation, key, got, record.Kind)
+		}
+	}
+	for key, row := range newByKey {
+		wantOrder, live := queryOrder[key]
+		wantKindOrder := queryKindOrder[key]
+		if !live {
+			wantOrder, wantKindOrder = 0, 0
+		}
+		if got := b09SQLNumber(t, b09SQLColumn(t, next, row, "query_order")); got != wantOrder {
+			t.Fatalf("%s SQLite objects query_order for %q: got=%d want=%d", operation, key, got, wantOrder)
+		}
+		if got := b09SQLNumber(t, b09SQLColumn(t, next, row, "query_kind_order")); got != wantKindOrder {
+			t.Fatalf("%s SQLite objects query_kind_order for %q: got=%d want=%d", operation, key, got, wantKindOrder)
+		}
+	}
+	for key, oldRow := range oldByKey {
+		newRow, ok := newByKey[key]
+		if !ok {
+			t.Fatalf("%s removed SQLite objects key %q", operation, key)
+		}
+		oldCells, newCells := b09SQLCells(t, oldRow), b09SQLCells(t, newRow)
+		for i, column := range next.Columns {
+			if column == "query_order" || column == "query_kind_order" {
+				continue
+			}
+			if oldCells[i] != newCells[i] {
+				t.Fatalf("%s changed non-rank SQLite objects cell %s for %q", operation, column, key)
+			}
+		}
+	}
 }
 
 // These images are constructed from the archive/request or the expected
@@ -876,7 +975,20 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 				t.Fatal("SQL record cardinality delta")
 			}
 			assertB09SQLRecord(t, r.engine, next, append(added, updated...)[0], want, len(before.Versions[recordKey])+1)
-		case "objects", "locks":
+		case "objects":
+			if r.engine == "sqlite" && b09SQLHasColumn(next, "query_order") && b09SQLHasColumn(next, "query_kind_order") {
+				assertB09SQLiteObjectMutation(t, operation, after, old, next, added, keys, recordKey, creating)
+				break
+			}
+			if len(updated) != 0 {
+				t.Fatalf("%s mutated existing %s rows", operation, name)
+			}
+			for _, row := range added {
+				if !keys[columnText(row, "key")] {
+					t.Fatalf("%s unexpected physical %s key %q", operation, name, columnText(row, "key"))
+				}
+			}
+		case "locks":
 			if len(updated) != 0 {
 				t.Fatalf("%s mutated existing %s rows", operation, name)
 			}
