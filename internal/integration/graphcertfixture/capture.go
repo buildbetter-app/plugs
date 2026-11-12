@@ -232,7 +232,8 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 		Decode(t, b, &fields)
 		fields["id"] = id
 		fields["description"] = "authored scale row"
-		row.NormalizedJSON = base64.StdEncoding.EncodeToString(bytes.TrimSpace(JSON(t, fields)))
+		// The native row contract includes the canonical JSON line terminator.
+		row.NormalizedJSON = base64.StdEncoding.EncodeToString(JSON(t, fields))
 		tables["issues"] = append(tables["issues"], row)
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
