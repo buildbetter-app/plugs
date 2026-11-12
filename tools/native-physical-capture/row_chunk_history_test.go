@@ -883,22 +883,22 @@ func cp11InstallPresentEnumRefusal(t *testing.T, ctx context.Context, f cp11Publ
 	cp11Require(t, err, "actual ENUM row data before mutation")
 	rows, err := durable.ProllyMapFromIndex(index)
 	cp11Require(t, err, "actual ENUM primary map before mutation")
-	if len(rows.ValDesc().Types) != 1 || rows.ValDesc().Types[0].Enc != val.Uint16Enc {
-		t.Fatal("actual ENUM value descriptor is not the expected single uint16")
+	if len(rows.ValDesc().Types) != 1 || rows.ValDesc().Types[0].Enc != val.EnumEnc {
+		t.Fatal("actual ENUM value descriptor is not the expected single enum")
 	}
 	iter, err := rows.IterAll(ctx)
 	cp11Require(t, err, "actual ENUM primary row iterator")
 	key, original, err := iter.Next(ctx)
 	cp11Require(t, err, "actual ENUM primary row before mutation")
 	key, original = append(val.Tuple{}, key...), append(val.Tuple{}, original...)
-	if value, valid := rows.ValDesc().GetUint16(0, original); !valid || value != 1 {
+	if value, valid := rows.ValDesc().GetEnum(0, original); !valid || value != 1 {
 		t.Fatal("original persisted ENUM tuple does not contain the valid member")
 	}
 	if _, _, err := iter.Next(ctx); err != io.EOF {
 		t.Fatal("actual ENUM refusal donor does not have exactly one row")
 	}
 	builder := val.NewTupleBuilder(rows.ValDesc(), rows.NodeStore())
-	builder.PutUint16(0, 2)
+	builder.PutEnum(0, 2)
 	invalid, err := builder.Build(ctx, rows.NodeStore().Pool())
 	cp11Require(t, err, "pinned out-of-domain ENUM tuple serialization")
 	mutated := rows.Mutate()
@@ -963,7 +963,7 @@ func cp11InstallPresentEnumRefusal(t *testing.T, ctx context.Context, f cp11Publ
 	if !bytes.Equal(persistedKey, key) || !bytes.Equal(persistedValue, invalid) || rows.HashOf() == persistedRows.HashOf() {
 		t.Fatal("persisted ENUM control differs from its real serialized tuple mutation")
 	}
-	if value, valid := persistedRows.ValDesc().GetUint16(0, persistedValue); !valid || value != 2 {
+	if value, valid := persistedRows.ValDesc().GetEnum(0, persistedValue); !valid || value != 2 {
 		t.Fatal("persisted ENUM control did not retain the out-of-domain primitive")
 	}
 	cp11JSONArtifact(t, "public-cp11-present-enum-refusal-facts.json", map[string]any{
