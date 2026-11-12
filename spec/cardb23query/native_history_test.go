@@ -711,7 +711,7 @@ func b23RichAssertEvidence(t *testing.T, evidence driver.HistoryImportEvidence, 
 	}
 	for i, mapping := range evidence.Mapping {
 		image := scope.Images[i]
-		if mapping.SourceStoreID != scope.StoreID || mapping.Project != scope.Projects[0] || mapping.SourceSequence != image.Sequence || mapping.Sequence != uint64(i+1) || mapping.Revision != model.Natural64(i+1) || len(mapping.EventIDs) != 0 || len(mapping.CommitIDs) != 1 || mapping.CommitIDs[0] != image.CommitID {
+		if mapping.SourceStoreID != scope.StoreID || mapping.Project != scope.Projects[0] || mapping.SourceSequence != image.Sequence || mapping.Sequence != uint64(i+1) || mapping.Revision != model.Natural64(uint64(i+1)) || len(mapping.EventIDs) != 0 || len(mapping.CommitIDs) != 1 || mapping.CommitIDs[0] != image.CommitID {
 			t.Fatalf("native history mapping %d differs: %+v image=%+v", i+1, mapping, image)
 		}
 	}
@@ -848,7 +848,7 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			if err != nil {
 				t.Fatalf("restore actual rich native source import: %v", err)
 			}
-			if report.SourcePlanes == nil || report.Receipt == nil || report.Restored.Head != model.Natural64(len(scope.Images)+1) || report.Restored.StoreID != driver.StoreID(plan.SourceStoreID) || report.Restored.Incarnation == beforeRestore.Incarnation {
+			if report.SourcePlanes == nil || report.Receipt == nil || report.Restored.Head != model.Natural64(uint64(len(scope.Images)+1)) || report.Restored.StoreID != driver.StoreID(plan.SourceStoreID) || report.Restored.Incarnation == beforeRestore.Incarnation {
 				t.Fatalf("native import metadata/receipt=%+v", report)
 			}
 			evidence := b23RichHistoryEvidence(t, f.store, report.Restored)
@@ -931,7 +931,7 @@ func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
 			}
 			reopenedAt := viewops.AsOf{Revision: reopened.Head, Incarnation: reopened.Incarnation}
 			b23RichNativeCurrentExpectations(t, f.server, issues, labelRows, reopenedAt)
-			b23RichNativeReadyCount(t, f.server, ids, reopenedAt)
+			b23RichReadyCount(t, f.server, ids, reopenedAt)
 			for _, index := range []int{0, len(evidence.Mapping) / 2, len(evidence.Mapping) - 1} {
 				b23RichNativeWindowReadback(t, f.store, recovered.Restored, archive, scope, evidence.Mapping[index])
 			}
