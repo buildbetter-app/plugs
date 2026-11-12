@@ -116,7 +116,7 @@ func TestReadWorkConcurrentRequestsStayIsolated(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if observed.value().Queries != 4 || observed.value().Returned != 4 || observed.work().Payloads < 44 || untouched.value().Queries != 0 || untouched.work() != (executedReadWork{}) {
+			if observed.value().Queries != 4 || observed.value().Returned != 4 || (engine == "sqlite" && (observed.work().Payloads < observed.value().Returned || observed.work().Payloads > 4*(1+1))) || (engine == "postgres" && observed.work().Payloads < 44) || untouched.value().Queries != 0 || untouched.work() != (executedReadWork{}) {
 				t.Fatal("concurrent observer lost work or leaked across requests")
 			}
 			r := f.reader(t, nil)

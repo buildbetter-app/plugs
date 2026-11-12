@@ -135,10 +135,86 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 				if _, e := c.ExecContext(ctx, `UPDATE replays SET post=? WHERE finalized=1 AND (post IS NULL OR CAST(post AS TEXT)='null')`, []byte("[]")); e != nil {
 					return e
 				}
-				if _, e := c.ExecContext(ctx, `UPDATE meta SET schema_version=? WHERE singleton=1`, schemaVersion); e != nil {
+				if _, e := c.ExecContext(ctx, `UPDATE meta SET schema_version=2 WHERE singleton=1`); e != nil {
 					return e
 				}
-			} else if version != schemaVersion {
+				version = 2
+			}
+			if version == 2 {
+				var hasObjects bool
+				if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='objects')`).Scan(&hasObjects); e != nil {
+					return e
+				}
+				if hasObjects {
+					var hasOrderColumn, hasKindOrderColumn bool
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_order')`).Scan(&hasOrderColumn); e != nil {
+						return e
+					}
+					if !hasOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_kind_order')`).Scan(&hasKindOrderColumn); e != nil {
+						return e
+					}
+					if !hasKindOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_kind_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+				}
+				// Cursor continuation is now carried by the token's indexed sort
+				// value. Drop the old stateful table from the candidate schema.
+				if _, e := c.ExecContext(ctx, `DROP TABLE IF EXISTS query_cursor_keys`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `DROP INDEX IF EXISTS objects_kind_key`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `DROP INDEX IF EXISTS objects_query_order`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `DROP INDEX IF EXISTS objects_kind_query_order`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `DROP INDEX IF EXISTS objects_kind_query_order_key`); e != nil {
+					return e
+				}
+				if _, e := c.ExecContext(ctx, `UPDATE meta SET schema_version=3 WHERE singleton=1`); e != nil {
+					return e
+				}
+				version = 3
+			}
+			// A schema-3 database can have been created by the first stateless
+			// migration before the per-kind rank column was added. Repair that
+			// shape in place without inventing another public schema version.
+			if version == 3 {
+				var hasObjects bool
+				if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='objects')`).Scan(&hasObjects); e != nil {
+					return e
+				}
+				if hasObjects {
+					var hasOrderColumn, hasKindOrderColumn bool
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_order')`).Scan(&hasOrderColumn); e != nil {
+						return e
+					}
+					if !hasOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+					if e := c.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('objects') WHERE name='query_kind_order')`).Scan(&hasKindOrderColumn); e != nil {
+						return e
+					}
+					if !hasKindOrderColumn {
+						if _, e := c.ExecContext(ctx, `ALTER TABLE objects ADD COLUMN query_kind_order INTEGER NOT NULL DEFAULT 0`); e != nil {
+							return e
+						}
+					}
+				}
+			}
+			if version != schemaVersion {
 				return fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 			}
 		} else {
@@ -148,6 +224,20 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 			}
 			if tables != 0 {
 				return fmt.Errorf("%w: sqlite database is not an empty or Plug store", driver.ErrUnsupported)
+			}
+		}
+		// Remove the obsolete candidate read-work table and triggers. Head
+		// queries now report the rows they actually materialize, so no
+		// persistent aggregate state is needed.
+		for _, statement := range []string{
+			`DROP TRIGGER IF EXISTS query_read_work_objects_insert`,
+			`DROP TRIGGER IF EXISTS query_read_work_records_insert`,
+			`DROP TRIGGER IF EXISTS query_read_work_records_update`,
+			`DROP TRIGGER IF EXISTS query_read_work_records_delete`,
+			`DROP TABLE IF EXISTS query_read_work`,
+		} {
+			if _, e := c.ExecContext(ctx, statement); e != nil {
+				return e
 			}
 		}
 		_, e := c.ExecContext(ctx, schema)
@@ -160,6 +250,9 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 		}
 		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO active_lease VALUES(1,?,'','',0)`, revKey(0))
 		if e != nil {
+			return e
+		}
+		if e = rebuildQueryOrder(ctx, c); e != nil {
 			return e
 		}
 		_, e = readMeta(ctx, c)
@@ -194,6 +287,26 @@ func revKey(n uint64) string { return fmt.Sprintf("%020d", n) }
 func parseRev(text string) (model.Revision, error) {
 	n, err := strconv.ParseUint(text, 10, 64)
 	return model.Natural64(n), err
+}
+
+// rebuildQueryOrder assigns dense lexical ranks to live records. The rank is
+// an indexed sort value carried by stateless query cursors; tombstones retain
+// their object identity but receive rank zero and never enter a current page.
+// Writes perform this once per publication, while reads only use the indexes.
+func rebuildQueryOrder(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}) error {
+	_, err := q.ExecContext(ctx, `
+WITH ranked AS (
+ SELECT o.key AS key,
+        ROW_NUMBER() OVER (ORDER BY o.key) AS query_order,
+        ROW_NUMBER() OVER (PARTITION BY o.kind ORDER BY o.key) AS query_kind_order
+ FROM objects AS o JOIN records AS r ON r.key=o.key
+)
+UPDATE objects
+SET query_order=COALESCE((SELECT ranked.query_order FROM ranked WHERE ranked.key=objects.key), 0),
+    query_kind_order=COALESCE((SELECT ranked.query_kind_order FROM ranked WHERE ranked.key=objects.key), 0)`)
+	return err
 }
 func branchZero(b model.Branch) error {
 	if err := b.Validate(); err != nil {
