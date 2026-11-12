@@ -192,7 +192,7 @@ func (s *NativeArchiveStream) RecordRevision(ref model.Ref) model.Revision {
 // Seal accepts only the actual immutable receiving Plan built with the FINAL
 // full profile. Its entire current and auxiliary image becomes engine proof;
 // detached caller snapshots cannot replace any domain or confer authority.
-func (s *NativeArchiveStream) Seal(ctx context.Context, request driver.OfflineHistoryStreamRequest, plan nativeprojection.Plan) (Checkpoint, error) {
+func (s *NativeArchiveStream) Seal(ctx context.Context, request driver.OfflineHistoryStreamRequest, plan nativeprojection.Plan, currentGraphFacts ...driver.ReadFact) (Checkpoint, error) {
 	if ctx == nil {
 		return Checkpoint{}, ErrCheckpoint{"missing verification context"}
 	}
@@ -218,7 +218,7 @@ func (s *NativeArchiveStream) Seal(ctx context.Context, request driver.OfflineHi
 	if err != nil {
 		return Checkpoint{}, err
 	}
-	current, auxiliary, err := s.planRoots(request, image)
+	current, auxiliary, err := s.planRoots(request, image, currentGraphFacts...)
 	if err != nil {
 		return Checkpoint{}, err
 	}

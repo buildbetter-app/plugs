@@ -133,6 +133,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		next.blobs[hash] = blob{bytes: bytes.Clone(data), revision: head}
 	}
 	next.meta = plan.Meta
+	if err = t.publishSourceIndexes(next); err != nil {
+		return zero, err
+	}
 	next.log = plan.Entries
 	response := h.Response
 	if response.Results == nil {

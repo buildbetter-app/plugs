@@ -130,6 +130,10 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		if err = restoreEmpty(ctx, c); err != nil {
 			return err
 		}
+		sources, err := t.prepareImportedSources(ctx, c, s.binding.Meta)
+		if err != nil {
+			return err
+		}
 		if err = t.checkCheckpointGuards(ctx, c); err != nil {
 			return err
 		}
@@ -140,6 +144,9 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 			id, err := recordKey(row.Ref)
 			if err != nil {
 				return err
+			}
+			if source := sources.Records[id]; source != nil {
+				source.Revision = row.Revision
 			}
 			revision := revKey(mustUint(row.Revision))
 			if row.Deleted {
@@ -185,6 +192,9 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 			}
 			return publishKey(ctx, c, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref}, Revision: row.Revision, Present: !row.Deleted})
 		}); err != nil {
+			return err
+		}
+		if err = sources.PublishImport(ctx, c); err != nil {
 			return err
 		}
 		if err = rebuildQueryOrder(ctx, c); err != nil {

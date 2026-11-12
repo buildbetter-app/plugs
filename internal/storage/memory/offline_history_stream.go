@@ -186,6 +186,9 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		next.blobs[hash] = blob{bytes: bytes.Clone(data), revision: head}
 	}
 	next.meta = s.binding.Meta
+	if err = t.publishSourceIndexes(next); err != nil {
+		return zero, err
+	}
 	next.log = nil
 	var final model.Changeset
 	if err = s.private.Entries(ctx, func(_ model.Revision, image historystream.Image) error {

@@ -629,6 +629,8 @@ internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/b07_positive_source_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/external_target_test.go
+internal/integration/converterroundtrip/graph_certification.go
+internal/integration/converterroundtrip/graph_certification_test.go
 internal/integration/converterroundtrip/hierarchy_import_test.go
 internal/integration/converterroundtrip/history.go
 internal/integration/converterroundtrip/history_merge_test.go
@@ -795,6 +797,9 @@ internal/integration/graphacceptance/README.md
 internal/integration/graphacceptance/fixture_test.go
 internal/integration/graphacceptance/graph_test.go
 internal/integration/graphacceptance/unsupported_test.go
+internal/integration/graphcertfixture/BUILD.bazel
+internal/integration/graphcertfixture/capture.go
+internal/integration/graphcertfixture/plan.go
 internal/integration/heartbeads/BUILD.bazel
 internal/integration/heartbeads/fixture_test.go
 internal/integration/heartbeads/process_test.go
@@ -1494,6 +1499,7 @@ internal/storage/postgres/transaction.go
 internal/storage/sourceindex/BUILD.bazel
 internal/storage/sourceindex/backfill.go
 internal/storage/sourceindex/cycle_topology.go
+internal/storage/sourceindex/import.go
 internal/storage/sourceindex/publication.go
 internal/storage/sourceindex/reader.go
 internal/storage/sourceindex/source.go
@@ -2315,6 +2321,7 @@ tools/native-physical-restore/undo.go
 tools/native-receive/BUILD.bazel
 tools/native-receive/README.md
 tools/native-receive/capture_set.go
+tools/native-receive/graph_certification_test.go
 tools/native-receive/joined.go
 tools/native-receive/main.go
 tools/native-receive/native_collection.go

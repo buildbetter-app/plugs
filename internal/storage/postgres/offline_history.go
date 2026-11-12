@@ -75,6 +75,10 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	if err = t.fence(ctx); err != nil {
 		return zero, err
 	}
+	sources, err := t.prepareImportedSources(ctx, plan.Meta)
+	if err != nil {
+		return fail(err)
+	}
 	if err := t.checkCheckpointGuards(ctx); err != nil {
 		return fail(err)
 	}
@@ -85,6 +89,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	for i, row := range plan.Rows {
 		r := row.Record
 		id, _ := recordKey(r.Ref)
+		if source := sources.Records[id]; source != nil {
+			source.Revision = r.Revision
+		}
 		counts[id]++
 		ref, err := encode(r.Ref)
 		if err != nil {
@@ -108,6 +115,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		if err = t.writeState(ctx, id, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &r.Ref}, Revision: r.Revision, Present: !row.Deleted}); err != nil {
 			return fail(err)
 		}
+	}
+	if err = sources.PublishImport(ctx, t.sql); err != nil {
+		return fail(err)
 	}
 	for id, v := range t.derived {
 		v.Revision = plan.Meta.Head

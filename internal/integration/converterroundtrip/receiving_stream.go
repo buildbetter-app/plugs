@@ -9,6 +9,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
@@ -93,14 +94,30 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	if err != nil {
 		return report, err
 	}
+	tx, err := target.Write(ctx, lease)
+	if err != nil {
+		return report, err
+	}
+	defer func() { restoreErr = errors.Join(restoreErr, tx.Close()) }()
+	certifyGraph, err := prepareImportGraph(ctx, tx, image.Records, archive)
+	if err != nil {
+		return report, err
+	}
+	var facts []driver.ReadFact
+	if certifyGraph {
+		facts = []driver.ReadFact{pipeline.GraphValidityReadFact}
+	}
 	request := driver.OfflineHistoryStreamRequest{Current: meta, Profile: profile, Header: stream.Header(), When: when, Lifetime: capability.WorkflowCheckpointLifetime(), Limits: historyverify.NativeArchiveLimits()}
-	proof, err := stream.Seal(ctx, request, plan)
+	proof, err := stream.Seal(ctx, request, plan, facts...)
 	if err != nil {
 		return report, err
 	}
 	requests, err := stream.LockRequests(ctx, plan, archive)
 	if err != nil {
 		return report, err
+	}
+	if certifyGraph {
+		requests = importGraphLocks(requests)
 	}
 	// The detached image owns the borrowed bodies. These separate publication
 	// arrays also retain record/change/result/lock-key slots and per-record paths.
@@ -115,11 +132,6 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	for i, record := range image.Records {
 		revisions[i] = stream.RecordRevision(record.Ref)
 	}
-	tx, err := target.Write(ctx, lease)
-	if err != nil {
-		return report, err
-	}
-	defer func() { restoreErr = errors.Join(restoreErr, tx.Close()) }()
 	if _, err = tx.Lock(ctx, requests); err != nil {
 		return report, err
 	}
@@ -164,7 +176,7 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	changes := make([]model.ChangeRecord, 0, len(image.Records)+1)
 	results := make([]model.OpResult, 0, len(image.Records))
 	for i, record := range image.Records {
-		if err = tx.Put(ctx, record); err != nil {
+		if err = putImportRecord(ctx, tx, record, certifyGraph); err != nil {
 			return report, err
 		}
 		revision := model.Natural64(0)
@@ -230,6 +242,14 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	if err = tx.BumpSentinels(ctx, image.Sentinels); err != nil {
 		return report, err
 	}
+	if certifyGraph {
+		if err = tx.BumpSentinels(ctx, []driver.Sentinel{driver.SentinelGraphBlocking}); err != nil {
+			return report, err
+		}
+		if err = tx.BumpReadFacts(ctx, facts); err != nil {
+			return report, err
+		}
+	}
 	commit, err := prepared.Commit(ctx, driver.ChangesetHeader{Incarnation: restored.Incarnation, Kind: model.ChangesetRestore, Time: when, Principal: profile.Admission.Actor, Chain: []string{}, Method: profile.Method, AgentLabel: profile.AgentLabel(), IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash, Response: model.Commit{Revision: restored.Head, Results: results, Warnings: []model.Warning{}}, Changes: changes, LockKeys: lockKeys(requests)})
 	check := Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}
 	if err != nil {
@@ -248,6 +268,7 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 		return report, fmt.Errorf("restore commit did not retain the completed stream")
 	}
 	report.Restored = restored
+	report.GraphCertification = importGraphReport(certifyGraph, restored)
 	receiverView, err := receivePlan(archive, plan, nil)
 	if err != nil {
 		return report, err

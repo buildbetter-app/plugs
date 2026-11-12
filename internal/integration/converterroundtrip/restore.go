@@ -18,6 +18,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
 )
@@ -46,6 +47,7 @@ type Report struct {
 	NativeSchemas      []NativeSchemaReport               `json:",omitempty"`
 	NativeHistories    []NativeHistoryReport              `json:",omitempty"`
 	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence `json:",omitempty"`
+	GraphCertification *GraphCertification                `json:",omitempty"`
 	collection         *nativeCollectionReceiving
 }
 
@@ -325,6 +327,17 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, err
 	}
 	defer tx.Close()
+	graphRecords := make([]driver.Record, 0, len(plan.records))
+	for _, record := range plan.records {
+		graphRecords = append(graphRecords, driver.Record{Ref: record.ref, Kind: record.kind, Body: record.body})
+	}
+	certifyGraph, err := prepareImportGraph(ctx, tx, graphRecords, archive)
+	if err != nil {
+		return report, err
+	}
+	if certifyGraph {
+		requests = importGraphLocks(requests)
+	}
 	if _, err = tx.Lock(ctx, requests); err != nil {
 		return report, err
 	}
@@ -408,7 +421,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	changes := make([]model.ChangeRecord, 0, len(plan.records))
 	results := make([]model.OpResult, 0, len(plan.records))
 	for _, record := range plan.records {
-		if err = tx.Put(ctx, driver.Record{Ref: record.ref, Kind: record.kind, Body: record.body}); err != nil {
+		if err = putImportRecord(ctx, tx, driver.Record{Ref: record.ref, Kind: record.kind, Body: record.body}, certifyGraph); err != nil {
 			return report, err
 		}
 		changes = append(changes, model.ChangeRecord{Ref: record.ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}})
@@ -459,6 +472,14 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if err = tx.BumpSentinels(ctx, lockPlan.sentinels); err != nil {
 		return report, err
 	}
+	if certifyGraph {
+		if err = tx.BumpSentinels(ctx, []driver.Sentinel{driver.SentinelGraphBlocking}); err != nil {
+			return report, err
+		}
+		if err = tx.BumpReadFacts(ctx, []driver.ReadFact{pipeline.GraphValidityReadFact}); err != nil {
+			return report, err
+		}
+	}
 	principal := restorePrincipal
 	method := "offline.restore"
 	agentLabel := ""
@@ -500,6 +521,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		report.Restored, report.Recovered = recovered.Restored, true
 		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
+		report.GraphCertification = recovered.GraphCertification
 		report.NativeFamilies = recovered.NativeFamilies
 		report.NativeSchemas = recovered.NativeSchemas
 		report.NativeHistories = recovered.NativeHistories
@@ -509,6 +531,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, fmt.Errorf("restore commit did not retain its complete changeset")
 	}
 	report.Restored = restored
+	report.GraphCertification = importGraphReport(certifyGraph, restored)
 	if sourceLogical != nil {
 		evidence := &receivingEvidence{archive: archive, plan: &plan, history: history, logical: sourceLogical, requestHash: report.RequestHash}
 		recovered, recoverErr := recoverSourceImport(ctx, target, *profile, checks[0], evidence)
@@ -731,7 +754,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	if err != nil {
 		return Report{}, nativeDeltaRecoveryError(err)
 	}
-	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories, NativeDeltaHistory: policy}, nil
+	return Report{Restored: meta, IdempotencyKey: bound.IdempotencyKey, RequestHash: request, Recovered: true, Receipt: receipt, NativeFamilies: families, NativeSchemas: schemas, NativeHistories: histories, NativeDeltaHistory: policy, GraphCertification: recoveredImportGraphReport(ctx, r, receipt.Commit.Revision)}, nil
 }
 
 type restoreRecord struct {

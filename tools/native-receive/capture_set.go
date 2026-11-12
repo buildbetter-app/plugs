@@ -90,6 +90,12 @@ func receivingProcessMemory() receiverProcessMemory {
 // capture root digest, source identity, admission and every source disposition.
 // This route never treats the portable head attachment as the whole input.
 func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binaryHash, policyPath, bindingPath, profilePath string) (out receipt, runErr error) {
+	return runCaptureSetWithOpener(ctx, path, requestPath, engine, target, binaryHash, policyPath, bindingPath, profilePath, opener)
+}
+
+// Keep destination construction separate from the receiving algorithm. The
+// caller still owns the same disposable session, lease, reopen and readbacks.
+func runCaptureSetWithOpener(ctx context.Context, path, requestPath, engine, target, binaryHash, policyPath, bindingPath, profilePath string, openDestination func(context.Context, string, string) (func() (driver.Store, error), error)) (out receipt, runErr error) {
 	phase := "inputs"
 	var archive *dumpformat.Archive
 	defer func() {
@@ -182,7 +188,7 @@ func runCaptureSet(ctx context.Context, path, requestPath, engine, target, binar
 		return out, err
 	}
 	defer func() { runErr = errors.Join(runErr, session.close()) }()
-	open, err := opener(ctx, engine, actualTarget)
+	open, err := openDestination(ctx, engine, actualTarget)
 	if err != nil {
 		return out, err
 	}

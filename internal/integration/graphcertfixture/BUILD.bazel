@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "graphcertfixture",
+    testonly = True,
+    srcs = ["capture.go", "plan.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/integration/graphcertfixture",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/storage/driver", "//plugins/workflow"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
