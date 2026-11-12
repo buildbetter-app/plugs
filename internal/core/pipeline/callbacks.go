@@ -317,7 +317,24 @@ func (w *Writer) post(ctx context.Context, p *prepared, commit model.Commit) ([]
 			persisted.Add(1)
 			go func(id string) {
 				defer persisted.Done()
-				if err := w.deadLetterPost(ctx, view.Incarnation, commit.Revision, id); err != nil {
+				var failedAt time.Time
+				if w.cfg.postFailureObserver != nil {
+					failedAt = w.cfg.now().UTC()
+				}
+				err := w.deadLetterPost(ctx, view.Incarnation, commit.Revision, id)
+				if observer := w.cfg.postFailureObserver; observer != nil {
+					// Alert the observed failure even if metadata persistence failed.
+					// The bounded callback gets no graph handle, images or raw error.
+					// Panic/deadline isolation preserves the committed warning path.
+					notice := port.PostFailureNotice{Incarnation: view.Incarnation, Revision: commit.Revision, Binding: id, FailedAt: failedAt, Reason: "post_subscriber_failed", DeadLettered: err == nil}
+					alertCtx, cancelAlert := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Millisecond)
+					_, _ = invoke(alertCtx, 100*time.Millisecond, func(call context.Context) (struct{}, error) {
+						observer.NotifyPostFailure(call, notice)
+						return struct{}{}, nil
+					})
+					cancelAlert()
+				}
+				if err != nil {
 					failures <- err
 				}
 			}(binding.ID)

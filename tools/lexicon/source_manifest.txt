@@ -908,6 +908,10 @@ internal/integration/rpctx/BUILD.bazel
 internal/integration/rpctx/rpc_tx_test.go
 internal/integration/s1relations/BUILD.bazel
 internal/integration/s1relations/README.md
+internal/integration/s1relations/b28_alert_notice_test.go
+internal/integration/s1relations/b28_ordered_batch_test.go
+internal/integration/s1relations/b28_pipeline_acceptance_test.go
+internal/integration/s1relations/b28_rollback_test.go
 internal/integration/s1relations/converter_test.go
 internal/integration/s1relations/engine_test.go
 internal/integration/s1relations/fixture_test.go
@@ -1831,6 +1835,8 @@ spec/cardb28/reference/provenance.json
 spec/cardb28/reference/run-a.json
 spec/cardb28/reference/run-b.json
 spec/cardb28/reference_test.go
+spec/cardb28native/BUILD.bazel
+spec/cardb28native/structured_hooks_test.go
 spec/cli_test.go
 spec/extended/BUILD.bazel
 spec/extended/README.md
