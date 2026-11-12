@@ -52,11 +52,11 @@ type runtime struct {
 	closeErr  error
 }
 
-func newRuntime(t *testing.T, store driver.Store, live bool, id string) *runtime {
-	return newRuntimePolicy(t, store, live, id, false)
+func newRuntime(t *testing.T, store driver.Store, live bool, id string, additionalIDs ...string) *runtime {
+	return newRuntimePolicy(t, store, live, id, false, additionalIDs...)
 }
 
-func newRuntimePolicy(t *testing.T, store driver.Store, live bool, id string, installed bool) *runtime {
+func newRuntimePolicy(t *testing.T, store driver.Store, live bool, id string, installed bool, additionalIDs ...string) *runtime {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	lease, err := store.Lease(ctx, "cardb20-runtime", driver.LeaseTTL)
@@ -69,16 +69,18 @@ func newRuntimePolicy(t *testing.T, store driver.Store, live bool, id string, in
 		cancel()
 		t.Fatal(err)
 	}
-	issued := false
+	ids := append([]string{id}, additionalIDs...)
+	issued := 0
 	ontology := service.NewOntology(nil)
 	options := []pipeline.Option{
 		pipeline.WithOntology(ontology),
 		pipeline.WithIDGenerator(func() (string, error) {
-			if issued {
-				return "", fmt.Errorf("unexpected second ID request")
+			if issued == len(ids) {
+				return "", fmt.Errorf("unexpected ID request after %d fixture IDs", len(ids))
 			}
-			issued = true
-			return id, nil
+			value := ids[issued]
+			issued++
+			return value, nil
 		}),
 	}
 	authorization, policy, checker := installEventPolicy(t, ctx, store, lease, installed)

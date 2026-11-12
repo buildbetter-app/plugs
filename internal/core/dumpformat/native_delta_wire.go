@@ -16,17 +16,31 @@ import (
 const nativeDeltaTableHashPrefix = "beads-native-table/2\x00"
 
 const (
-	NativeDeltaFormat         = "beads-native-delta/2"
-	NativeCaptureSetFormat    = "beads-native-capture-set/2"
-	NativeDeltaPartFormat     = "beads-native-part/2"
-	NativeDeltaEvidenceFormat = "beads-physical-evidence/2"
-	NativeDeltaPartBytes      = 64 << 20
+	NativeDeltaFormat      = "beads-native-delta/2"
+	NativeCaptureSetFormat = "beads-native-capture-set/2"
+	// NativeJoinedInputsFormatV1 is the existing single-archive binding used
+	// by the rehearsal constructor. NativeJoinedInputsFormatV2 adds the
+	// source-qualified capture-file ledger without changing archive_sha256.
+	NativeJoinedInputsFormatV1 = "plug-native-joined-inputs/1"
+	NativeJoinedInputsFormatV2 = "plug-native-joined-inputs/2"
+	NativeDeltaPartFormat      = "beads-native-part/2"
+	NativeDeltaEvidenceFormat  = "beads-physical-evidence/2"
+	NativeDeltaPartBytes       = 64 << 20
 	// This is a PER-RECORD decoding bound, never a total stream/part-set bound.
 	// Records may cross part boundaries. Legacy portable bounds are unchanged.
 	NativeDeltaRecordBytes     = MaxArchiveBytes
 	NativeDeltaRootBytes       = 1 << 20
 	NativeDeltaPartHeaderBytes = 4096
 )
+
+// NativeCaptureFile is the detached, source-owned commitment for one file in
+// a native capture-set directory. Bytes is the complete file size; SHA256 is
+// the hash of those exact bytes. It intentionally carries no file contents.
+type NativeCaptureFile struct {
+	Name   string `json:"name"`
+	Bytes  uint64 `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
 
 // These structs define the complete v2 JSON wire. Fields without omitempty
 // are mandatory, including empty arrays and explicit null pointers. Unknown

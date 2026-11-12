@@ -102,7 +102,10 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	keepArchive := false
 	defer func() {
-		if owned && source.archive != nil {
+		if owned && !keepArchive && source.collection != nil {
+			_ = source.collection.close()
+			source.collection, source.archive, source.stream, source.plan, source.logical = nil, nil, nil, nil, nil
+		} else if owned && source.archive != nil && source.collection == nil {
 			source.archive.ClearNativeDeltaPreparation()
 			if !keepArchive {
 				source.archive.ReleaseNativeDecoded()
@@ -182,7 +185,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	if err != nil || initialImage.OriginSHA256 == "" || initialImage.OriginSHA256 != currentImage.OriginSHA256 {
 		return Report{}, nil, driver.ErrConflict
 	}
-	report.Archive, report.SourcePlanes = archive, &binding
+	report.Archive, report.SourcePlanes, report.collection = archive, &binding, source.collection
 	keepArchive = true
 	return report, current, nil
 }

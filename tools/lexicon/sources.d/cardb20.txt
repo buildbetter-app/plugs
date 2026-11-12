@@ -1,6 +1,7 @@
 spec/cardb20/B06-CYCLES.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/VOCABULARY.md
 spec/cardb20/b02_delta_native_test.go
 spec/cardb20/b02_mixed_delta_native_test.go
 spec/cardb20/b02_native_graph.md
@@ -8,8 +9,19 @@ spec/cardb20/b02_native_graph_test.go
 spec/cardb20/b02_native_recording_test.go
 spec/cardb20/b02_public_graph_test.go
 spec/cardb20/b02_tests.bzl
+spec/cardb20/b06_blocking_native_test.go
+spec/cardb20/b06_blocking_support_test.go
+spec/cardb20/b06_blocking_test.go
 spec/cardb20/b06_cases_test.go
+spec/cardb20/b06_mixed_faults_test.go
+spec/cardb20/b06_mixed_native_support_test.go
+spec/cardb20/b06_mixed_native_test.go
+spec/cardb20/b06_mixed_ordered_test.go
+spec/cardb20/b06_mixed_support_test.go
+spec/cardb20/b06_mixed_test.go
+spec/cardb20/b06_native_support_test.go
 spec/cardb20/b06_native_test.go
+spec/cardb20/b06_plug_support_test.go
 spec/cardb20/b06_plug_test.go
 spec/cardb20/b06_tests.bzl
 spec/cardb20/b13_memory_native_test.go
@@ -24,3 +36,7 @@ spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
 spec/cardb20/sql_rows_test.go
 spec/cardb20/test_common.bzl
+spec/cardb20/testdata/b06-blocking-native.json
+spec/cardb20/testdata/b06-blocking-native.provenance.md
+spec/cardb20/vocabulary_native_test.go
+spec/cardb20/vocabulary_test.go

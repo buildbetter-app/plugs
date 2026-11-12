@@ -79,6 +79,17 @@ func sourcePlaneError(reason string) error {
 	return fmt.Errorf("%w: source planes: %s", ErrUnsupported, reason)
 }
 
+// SourcePlanePlanEncodedSizeV1 measures through the SAME closed codec without
+// an encoded buffer or a string-to-byte clone. This grants no validation or
+// binding authority; NewSourcePlaneImportBindingV1 still validates the plan.
+func SourcePlanePlanEncodedSizeV1(plan SourcePlanePlanV1) (uint64, error) {
+	var out sourcePlaneEncodedSize
+	if err := encodeSourcePlaneValue(&out, reflect.ValueOf(plan)); err != nil {
+		return 0, err
+	}
+	return uint64(out.Len()), nil
+}
+
 func writeSourcePlaneBytes(out sourcePlaneEncoder, data []byte) error {
 	if len(data) > SourcePlaneMaxPlanBytes || out.Len() > SourcePlaneMaxPlanBytes-8-len(data) {
 		return sourcePlaneError("plan byte limit")

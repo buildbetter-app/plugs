@@ -58,3 +58,16 @@ def b20_tests():
         tags = ["local", "manual"],
         timeout = "eternal",
     )
+
+    # Complete closed native vocabulary, with independent three-engine callers.
+    go_test(
+        name = "record_vocabulary_test",
+        srcs = COMMON + ["native_build_test.go", "native_recording_test.go", "vocabulary_native_test.go"],
+        data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+        env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+        args = ["-test.v", "-test.run=^TestB20NativeMutationVocabularyTwins$$"],
+        deps = DEPS + ["//internal/publicnative"],
+        size = "enormous",
+        tags = ["local", "manual"],
+        timeout = "eternal",
+    )

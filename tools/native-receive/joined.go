@@ -31,11 +31,12 @@ func (p *archivePaths) Set(value string) error {
 // Every component is an external caller binding. Database and rehearsal labels
 // are authenticated host assertions, never guessed from IDs or merge metadata.
 type originalInput struct {
-	RehearsalProject string `json:"rehearsal_project"`
-	Database         string `json:"database"`
-	SourceStoreID    string `json:"source_store_id"`
-	SourceProject    string `json:"source_project"`
-	ArchiveSHA256    string `json:"archive_sha256"`
+	RehearsalProject string                         `json:"rehearsal_project"`
+	Database         string                         `json:"database"`
+	SourceStoreID    string                         `json:"source_store_id"`
+	SourceProject    string                         `json:"source_project"`
+	ArchiveSHA256    string                         `json:"archive_sha256"`
+	Files            []dumpformat.NativeCaptureFile `json:"files,omitempty"`
 }
 
 type joinedBinding struct {
@@ -196,18 +197,7 @@ func constructForInputs(ctx context.Context, originals [][]byte, policyBytes, bi
 	for _, scope := range a.NativeSourceHistories() {
 		sources = append(sources, dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]})
 	}
-	principal := model.PrincipalRef{Kind: "user", ID: "plug-restore-rehearsal"}
-	principalJSON, err := json.Marshal(principal)
-	if err != nil {
-		return nil, zero, err
-	}
-	policy := constructionPolicy{Format: "plug-native-receiving-policy/1", ArchiveSHA256: digest(joined), SourceStoreID: a.Manifest().StoreID, Projects: projects, Sources: sources,
-		Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: principal, Authority: "restore-admin", AdmissionDigest: key}, IdempotencyKey: key,
-		Principal:    driver.SourcePlanePrincipalV1{Key: "plug-restore-rehearsal", Source: rehearsalPolicySHA256, Authority: "restore-only-local/1", PrincipalJSON: principalJSON},
-		Provider:     driver.SourcePlaneProviderV1{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"},
-		EntityPolicy: "durable-bead-identity", TuplePolicy: "copy-observed-exact", StatusPolicy: "source-name-identity", TargetIDPolicy: "source-id", RoutePolicy: "active-first", UnmappedFields: "opaque-metadata", OtherRecords: "inert-origin", Sidecars: "retain-captured-origins", DependencyPolicy: "exact-typed",
-		FieldMappings: []driver.SourcePlaneStringPairV1{{From: "id", To: "id"}, {From: "title", To: "title"}, {From: "description", To: "description"}, {From: "priority", To: "priority"}, {From: "issue_type", To: "type"}, {From: "status", To: "status"}, {From: "metadata", To: "metadata"}, {From: "created_at", To: "created_at"}}}
-	encoded, err := json.Marshal(policy)
+	encoded, err := rehearsalConstructionPolicy(a.SHA256(), a.Manifest().StoreID, projects, sources, key, lifetime)
 	if err != nil {
 		return nil, zero, err
 	}
@@ -217,6 +207,21 @@ func constructForInputs(ctx context.Context, originals [][]byte, policyBytes, bi
 	}
 	r.PolicySHA256, r.OriginalInputs = rehearsalPolicySHA256, &binding
 	return joined, r, nil
+}
+
+func rehearsalConstructionPolicy(archiveSHA256, sourceStoreID string, projects []string, sources []dumpformat.SourceIdentity, key string, lifetime driver.CheckpointLifetime) ([]byte, error) {
+	principal := model.PrincipalRef{Kind: "user", ID: "plug-restore-rehearsal"}
+	principalJSON, err := json.Marshal(principal)
+	if err != nil {
+		return nil, err
+	}
+	policy := constructionPolicy{Format: "plug-native-receiving-policy/1", ArchiveSHA256: archiveSHA256, SourceStoreID: sourceStoreID, Projects: projects, Sources: sources,
+		Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: principal, Authority: "restore-admin", AdmissionDigest: key}, IdempotencyKey: key,
+		Principal:    driver.SourcePlanePrincipalV1{Key: "plug-restore-rehearsal", Source: rehearsalPolicySHA256, Authority: "restore-only-local/1", PrincipalJSON: principalJSON},
+		Provider:     driver.SourcePlaneProviderV1{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"},
+		EntityPolicy: "durable-bead-identity", TuplePolicy: "copy-observed-exact", StatusPolicy: "source-name-identity", TargetIDPolicy: "source-id", RoutePolicy: "active-first", UnmappedFields: "opaque-metadata", OtherRecords: "inert-origin", Sidecars: "retain-captured-origins", DependencyPolicy: "exact-typed",
+		FieldMappings: []driver.SourcePlaneStringPairV1{{From: "id", To: "id"}, {From: "title", To: "title"}, {From: "description", To: "description"}, {From: "priority", To: "priority"}, {From: "issue_type", To: "type"}, {From: "status", To: "status"}, {From: "metadata", To: "metadata"}, {From: "created_at", To: "created_at"}}}
+	return json.Marshal(policy)
 }
 
 func auxiliaryInputs(bindingPath, profilePath string) ([]byte, []byte, error) {
@@ -252,6 +257,11 @@ const rehearsalSessionLimit = 2 * time.Hour
 // Local references are resolved only by exact recorded ID and source project;
 // ambiguous same-ID candidates are refused rather than guessed or rekeyed.
 func appendExactRelation(plan *driver.SourcePlanePlanV1, archive *dumpformat.Archive, record driver.SourcePlaneRecordV1) error {
+	work, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	if err := work.ChargeNativeDeltaJSON("cli_relation_row", json.RawMessage(record.Raw)); err != nil {
+		return err
+	}
 	var row dumpformat.Record
 	if err := decode(record.Raw, &row); err != nil {
 		return err
@@ -298,19 +308,38 @@ func appendExactRelation(plan *driver.SourcePlanePlanV1, archive *dumpformat.Arc
 		}
 		relation.To = found
 	}
-	fields, err := fieldCommitments(record.Raw)
+	fields, err := fieldCommitmentsAccounted(archive, work, record.Raw)
 	if err != nil {
+		return err
+	}
+	if err := work.ChargeNativeDeltaJSON("cli_relation_metadata", row.Source.Fields["metadata"]); err != nil {
 		return err
 	}
 	metadata, err := dumpformat.SourceEdgeMetadata(archive.Manifest().EdgeVersion(), row.ID, relation.Kind, row.Source.Fields["metadata"])
 	if err != nil {
 		return err
 	}
+	n, err := dumpformat.NativeDeltaJSONSize(metadata)
+	if err != nil {
+		return err
+	}
+	if err := archive.ChargeNativeDeltaBytes("cli_relation_predicate", n-1); err != nil {
+		return err
+	}
 	relation.PredicateJSON, err = json.Marshal(metadata)
 	if err != nil {
 		return err
 	}
-	relation.Fields, relation.Origin = fields, driver.SourcePlaneBytesV1{Presence: "object", Size: uint64(len(record.Raw)), SHA256: digest(record.Raw)}
+	if err := work.ChargeNativeDeltaBytes("cli_relation_origin_hash", 64); err != nil {
+		return err
+	}
+	relation.Origin = driver.SourcePlaneBytesV1{Presence: "object", Size: uint64(len(record.Raw)), SHA256: digest(record.Raw)}
+	retained := relation
+	retained.PredicateJSON = nil // Its exact buffer has its own reservation.
+	if err := archive.ChargeNativeDeltaJSON("cli_mapper_relation", retained); err != nil {
+		return err
+	}
+	relation.Fields = fields
 	plan.Relations = append(plan.Relations, relation)
 	return nil
 }

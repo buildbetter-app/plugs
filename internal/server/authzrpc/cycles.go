@@ -6,6 +6,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // Cycles authorizes each member against the same current authority used for
@@ -32,10 +33,13 @@ func (s *GuardedService) Cycles(ctx context.Context, by model.PrincipalRef, req 
 	if err != nil {
 		return service.CyclesResult{}, hierarchyUnavailable()
 	}
-	if err := service.CheckCycleReportCapability(s.checker.store, req); err != nil {
-		return service.CyclesResult{}, err
-	}
 	readable := func(ctx context.Context, ref model.Ref) (bool, error) {
+		if workflowItemRef(ref) {
+			if s.sourceRuntimeInstalled() {
+				return s.sourceRead(ctx, caller, authority, ref, req.Project, "bead.cycles")
+			}
+			return s.checker.workflowRead(ctx, caller, authority, "bead.cycles", req.Project)
+		}
 		decisions, err := s.checker.chain.Check(ctx, authority, []authz.CheckRequest{{
 			Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.cycles",
 		}})
@@ -47,7 +51,14 @@ func (s *GuardedService) Cycles(ctx context.Context, by model.PrincipalRef, req 
 		}
 		return decisions[0].Effect == authz.Allow, nil
 	}
-	result, err := service.ReadCycles(ctx, content, req, readable)
+	var result service.CyclesResult
+	if producer, ok := s.delegate.(interface {
+		ReadCyclesFrom(context.Context, model.PrincipalRef, driver.Reader, service.CyclesRequest, func(context.Context, model.Ref) (bool, error)) (service.CyclesResult, error)
+	}); ok {
+		result, err = producer.ReadCyclesFrom(ctx, by, content, req, readable)
+	} else {
+		result, err = service.ReadCycles(ctx, content, req, readable)
+	}
 	if err != nil {
 		return service.CyclesResult{}, err
 	}

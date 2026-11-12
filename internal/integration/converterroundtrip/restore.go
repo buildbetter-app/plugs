@@ -19,6 +19,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
 )
 
 var (
@@ -45,6 +46,7 @@ type Report struct {
 	NativeSchemas      []NativeSchemaReport               `json:",omitempty"`
 	NativeHistories    []NativeHistoryReport              `json:",omitempty"`
 	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence `json:",omitempty"`
+	collection         *nativeCollectionReceiving
 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
@@ -65,6 +67,8 @@ type receivingEvidence struct {
 	history     *driver.OfflineHistory
 	logical     []byte
 	requestHash string
+	stream      *historyverify.NativeArchiveStream
+	collection  *nativeCollectionReceiving
 }
 
 // Restore validates the complete archive and restores it into an empty store.
@@ -687,19 +691,33 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		if readErr != nil || hashBytes(raw) != bound.ArchiveDigest {
 			return Report{}, driver.ErrConflict
 		}
-		archive, readErr := readRetainedImportArchive(ctx, r, raw, evidence)
+		archive, collection, readErr := readRetainedReceivingArchive(ctx, r, raw, evidence, bound)
 		if readErr != nil {
 			return Report{}, nativeDeltaRecoveryError(readErr)
 		}
 		if source == nil {
-			defer archive.ReleaseNativeDecoded()
+			if collection != nil {
+				defer collection.close()
+			} else {
+				defer archive.ReleaseNativeDecoded()
+			}
 			source = &receivingEvidence{archive: archive, requestHash: request}
 		} else {
 			source.archive = archive
 		}
+		if collection != nil {
+			source.collection, source.stream, source.logical = collection, collection.stream, collection.logical
+			view, planErr := receivePlan(archive, collection.plan, nil)
+			if planErr != nil {
+				_ = collection.close()
+				source.archive, source.collection = nil, nil
+				return Report{}, nativeDeltaRecoveryError(planErr)
+			}
+			source.plan = &view
+		}
 	}
 	if bound.HistoryDigest != "" {
-		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, source.archive, source.history); err != nil {
+		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, source.archive, source.history, source.stream); err != nil {
 			return Report{}, nativeDeltaRecoveryError(err)
 		}
 	}

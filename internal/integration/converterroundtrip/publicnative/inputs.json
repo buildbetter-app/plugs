@@ -1,0 +1,175 @@
+{
+  "format": "plug-public-native-proof-inputs/1",
+  "policy_sha256": "3afb19b934e69e90b9f8e966d5e4e4d1fab27a47686eacf38543e23d1c7542d9",
+  "scale_creation_script_sha256": "3f1dd4b169995fb3584d811cacf37faac65105055bc07c675e9751e059be6523",
+  "sources": [
+    {
+      "name": "small-ops",
+      "category": "small",
+      "source_store_id": "native/4e82a537fe9be19926346d31718a1634efb7dbc7b95895eb1be7fdf7351cc4ba",
+      "source_project": "ops",
+      "commits": 97,
+      "files": [
+        {
+          "name": "capture-set.json",
+          "bytes": 700,
+          "sha256": "ef55748be601e16ba8622ecef67df8b2ebd2e3d01ce07088bd990f358575832b"
+        },
+        {
+          "name": "head.tar",
+          "bytes": 200192,
+          "sha256": "a48d37135afe56aca95c6675385855c148ae5dbdc9327dbe44bf715b7a073a4e"
+        },
+        {
+          "name": "parts/00000000000000000001.part",
+          "bytes": 1914811,
+          "sha256": "1cf35b0abf24d69a53efe296a3b6e0163d3bcb4e88e7f8409101eef94b1d3adc"
+        }
+      ],
+      "provenance": {
+        "name": "creation-record.json",
+        "sha256": "2e0e02826753f83f9bf72c621a2863ea7312c16af8875bb685495fa7fdc9c0e6"
+      }
+    },
+    {
+      "name": "small-sv2",
+      "category": "small",
+      "source_store_id": "native/a2f4c4f96d240403fd7d745d35060527d8a4b398fcbbd02db5f354a9ed35f4c7",
+      "source_project": "sv2",
+      "commits": 97,
+      "files": [
+        {
+          "name": "capture-set.json",
+          "bytes": 700,
+          "sha256": "bb28503767bea91f023f96896dda995df149827b1bc40863ece8399566a4d626"
+        },
+        {
+          "name": "head.tar",
+          "bytes": 200192,
+          "sha256": "35af10f464d6c7b3140cc4c87e7ac0eee9761a32b4a0ecc8b9fe6f7195d323b3"
+        },
+        {
+          "name": "parts/00000000000000000001.part",
+          "bytes": 1914331,
+          "sha256": "972e3b0097d8fda9231475093f2754cdc7b5165f38b8a1aad6ff8bbaf16bf3d5"
+        }
+      ],
+      "provenance": {
+        "name": "creation-record.json",
+        "sha256": "2e0e02826753f83f9bf72c621a2863ea7312c16af8875bb685495fa7fdc9c0e6"
+      }
+    },
+    {
+      "name": "scale-ops",
+      "category": "scale",
+      "source_store_id": "native/8ea292bd3cf44f5ccf34b8d7f60fb85ebdb100b4391005b6607179994d9c2e73",
+      "source_project": "ops",
+      "commits": 1614,
+      "files": [
+        {
+          "name": "capture-set.json",
+          "bytes": 713,
+          "sha256": "d6a6beb4c9b731a61923798d66754808f21f9ba9cdd724e53915533177982242"
+        },
+        {
+          "name": "head.tar",
+          "bytes": 3488256,
+          "sha256": "ea7d66a69ba311b5756bf16afcbb346cd6a25b2cb79cc4252ba1ca2cd592ab05"
+        },
+        {
+          "name": "parts/00000000000000000001.part",
+          "bytes": 23077061,
+          "sha256": "eee14b8be95dc829df64633ea9a0e01fbeae50fd2d701654d1ee5a30e398357e"
+        }
+      ],
+      "provenance": {
+        "name": "PUBLIC-SCALE-PAIR-FROZEN-HANDOFF.json",
+        "sha256": "836fc8ec42a5a7a200b2be77f935c6c6dad1bdd8455ccb289aa9b683fd0d500f"
+      }
+    },
+    {
+      "name": "scale-sv2",
+      "category": "scale",
+      "source_store_id": "native/22864ba5dc9081b15d4772896073b580a2c2aa846d78abed36ccc99cdd5d9e97",
+      "source_project": "sv2",
+      "commits": 1614,
+      "files": [
+        {
+          "name": "capture-set.json",
+          "bytes": 713,
+          "sha256": "2cd6af3d4faf7a7e2c8b0943f89950b6492aa2e7bb3a1d0e46476ee1059bfca8"
+        },
+        {
+          "name": "head.tar",
+          "bytes": 3481600,
+          "sha256": "fc5364b32a754a4e814ee698ea2dba75e2a405614c0f56089ac5c69b63953c4f"
+        },
+        {
+          "name": "parts/00000000000000000001.part",
+          "bytes": 23061126,
+          "sha256": "518bf5e1aee427f50287c052a984921eb1bcd47c49942441238d7eee69e9f1d3"
+        }
+      ],
+      "provenance": {
+        "name": "PUBLIC-SCALE-PAIR-FROZEN-HANDOFF.json",
+        "sha256": "836fc8ec42a5a7a200b2be77f935c6c6dad1bdd8455ccb289aa9b683fd0d500f"
+      }
+    },
+    {
+      "name": "public1200-loose",
+      "category": "collision-negative",
+      "source_store_id": "native/c4f8f2c5f03e3f52cf5e4297e52601b71176410ace956e598e763004f2519c83",
+      "source_project": "publicv7",
+      "commits": 1200,
+      "files": [
+        {
+          "name": "capture-set.json",
+          "bytes": 720,
+          "sha256": "a2bd70f4779c5e4a586cbf2e6b5b91023fad7c69311d8f8489c38b1b73832e20"
+        },
+        {
+          "name": "head.tar",
+          "bytes": 7507456,
+          "sha256": "d29e0e699c6731e8c0fdb6dc50163e212f3f53afa822b446a1ece4a0eaa2d020"
+        },
+        {
+          "name": "parts/00000000000000000001.part",
+          "bytes": 32661956,
+          "sha256": "c95eb5f891957289af8e6bdfee3b21782a4c3c4a5cf330cc9528e1b9d5fd7929"
+        }
+      ],
+      "provenance": {
+        "name": "PUBLIC1200-EXISTING-ARTIFACT-SIZING-HANDOFF-85868673.json",
+        "sha256": "b13148063fe5932dcede019c17aa54c490c3f3fdfae42e1c55792eb35b4f2af2"
+      }
+    },
+    {
+      "name": "public1200-archived",
+      "category": "collision-negative",
+      "source_store_id": "native/de4af471957a31a29b555a94bdc9b690fe3ed74987cc5adfe9dfc06d59a4e411",
+      "source_project": "publicv7",
+      "commits": 1200,
+      "files": [
+        {
+          "name": "capture-set.json",
+          "bytes": 720,
+          "sha256": "2dd9befd5e7003a6daa8fe66b3fca25f03b250cb42fbb3bf78c99e03acf0e2ba"
+        },
+        {
+          "name": "head.tar",
+          "bytes": 7507968,
+          "sha256": "864fc8d02f9e62f85b35de82f41342c732c96f0a5ba34d01a106c82b4d5825d4"
+        },
+        {
+          "name": "parts/00000000000000000001.part",
+          "bytes": 32661956,
+          "sha256": "5cf25dc8ec815c2cddbe217572febb8d87fa8c9e0c7e378fe63457084f3ea4d6"
+        }
+      ],
+      "provenance": {
+        "name": "PUBLIC1200-EXISTING-ARTIFACT-SIZING-HANDOFF-85868673.json",
+        "sha256": "b13148063fe5932dcede019c17aa54c490c3f3fdfae42e1c55792eb35b4f2af2"
+      }
+    }
+  ]
+}

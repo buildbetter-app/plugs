@@ -50,6 +50,8 @@ func prepareRequest(ctx context.Context, args []string) (request, error) {
 	flags := flag.NewFlagSet("native-receive prepare-request", flag.ContinueOnError)
 	var paths archivePaths
 	flags.Var(&paths, "archive", "original native archive; repeat in declared order for joined rehearsal")
+	var captureSets archivePaths
+	flags.Var(&captureSets, "capture-set", "original native capture-set directory; supply exactly two in declared order")
 	policyPath := flags.String("policy", "", "explicit trusted construction policy")
 	bindingPath := flags.String("bindings", "", "external ordered original source/project/database/hash bindings")
 	profilePath := flags.String("profile", "", "exact mechanical source profile bytes")
@@ -58,7 +60,7 @@ func prepareRequest(ctx context.Context, args []string) (request, error) {
 	if err := flags.Parse(args); err != nil {
 		return zero, err
 	}
-	if flags.NArg() != 0 || len(paths) == 0 || *policyPath == "" {
+	if flags.NArg() != 0 || (len(paths) == 0) == (len(captureSets) == 0) || len(captureSets) > 0 && len(captureSets) != 2 || *policyPath == "" {
 		return zero, errors.New("archive and explicit policy required")
 	}
 	self, err := os.Executable()
@@ -82,6 +84,9 @@ func prepareRequest(ctx context.Context, args []string) (request, error) {
 		lifetime = driver.CheckpointLifetimeRestart
 	default:
 		return zero, errors.New("explicit receiving driver required")
+	}
+	if len(captureSets) == 2 {
+		return prepareNativeCaptureCollectionRequest(ctx, captureSets, *policyPath, *bindingPath, *profilePath, lifetime)
 	}
 	originals, err := loadOriginals(paths)
 	if err != nil {
@@ -118,14 +123,51 @@ func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lif
 	if err := strictNativeHistory(archive); err != nil {
 		return zero, err
 	}
+	result, err := constructArchiveRequest(ctx, archive, policyBytes, lifetime)
+	if err != nil {
+		return zero, err
+	}
+	profile := driver.RestoreImportProfile{Admission: result.Admission, SourceStoreID: driver.StoreID(result.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: result.IdempotencyKey, ArchiveDigest: result.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: time.Now().UTC().Format(time.RFC3339Nano)}
+	plan := result.SourcePlan
+	plan.Target.StoreID, plan.Target.Incarnation = "pending-new-target", "pending-new-target"
+	if _, err := converterroundtrip.BindSourceImport(ctx, bytes.NewReader(archiveBytes), profile, plan); err != nil {
+		return zero, err
+	}
+	return result, nil
+}
+
+// The existing explicit policy mapper is shared by both input shapes. This
+// function receives only an authenticated current Archive and never reads or
+// joins histories. Each caller validates its result through its issuing leaf.
+func constructArchiveRequest(ctx context.Context, archive *dumpformat.Archive, policyBytes []byte, lifetime driver.CheckpointLifetime) (request, error) {
+	var zero request
+	var policy constructionPolicy
+	if err := decode(policyBytes, &policy); err != nil {
+		return zero, err
+	}
+	if policy.Format != "plug-native-receiving-policy/1" || policy.EntityPolicy != "durable-bead-identity" || policy.TuplePolicy != "copy-observed-exact" || policy.StatusPolicy != "source-name-identity" || policy.TargetIDPolicy != "source-id" || policy.RoutePolicy != "active-first" || (policy.UnmappedFields != "origin-only" && policy.UnmappedFields != "opaque-metadata") || policy.OtherRecords != "inert-origin" || policy.Sidecars != "retain-captured-origins" || (policy.DependencyPolicy != "" && policy.DependencyPolicy != "exact-typed") {
+		return zero, fmt.Errorf("%w: unsupported or missing explicit construction policy", driver.ErrUnsupported)
+	}
+	if policy.Principal.Key == "" || policy.Principal.UnverifiedOriginOnly || policy.Provider.LogicalImageSHA256 != "" || policy.Provider.LogicalImageSize != 0 || policy.Provider.Lifetime != lifetime || lifetime.Validate() != nil {
+		return zero, fmt.Errorf("%w: explicit principal/provider/lifetime required", driver.ErrUnsupported)
+	}
+	scratch, releaseScratch := archive.NativeDeltaAccountingScope()
+	defer releaseScratch()
 	projects, sources := []string{}, []dumpformat.SourceIdentity{}
 	for _, project := range archive.Manifest().Projects {
 		projects = append(projects, project.Prefix)
 	}
-	for _, scope := range archive.NativeSourceHistories() {
+	metadata, err := archive.NativeSourceHistoryMetadata()
+	if err != nil {
+		return zero, err
+	}
+	for _, scope := range metadata {
+		if len(scope.Projects) != 1 {
+			return zero, driver.ErrUnsupported
+		}
 		sources = append(sources, dumpformat.SourceIdentity{StoreID: scope.StoreID, Project: scope.Projects[0]})
 	}
-	if len(sources) == 0 || policy.ArchiveSHA256 != digest(archiveBytes) || policy.SourceStoreID != archive.Manifest().StoreID || !reflect.DeepEqual(policy.Projects, projects) || !reflect.DeepEqual(policy.Sources, sources) {
+	if len(sources) == 0 || policy.ArchiveSHA256 != archive.SHA256() || policy.SourceStoreID != archive.Manifest().StoreID || !reflect.DeepEqual(policy.Projects, projects) || !reflect.DeepEqual(policy.Sources, sources) {
 		return zero, errors.New("policy external archive/source/project binding differs")
 	}
 	plan := driver.SourcePlanePlanV1{Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1, SourceStoreID: policy.SourceStoreID, ArchiveSHA256: policy.ArchiveSHA256, Target: driver.SourcePlaneTargetV1{StoreID: "pending-new-target", Incarnation: "pending-new-target", RequireEmpty: true, Lifetime: lifetime, RuntimeContract: driver.SourcePlaneRuntimeContractV1}, Principals: []driver.SourcePlanePrincipalV1{policy.Principal}, Providers: []driver.SourcePlaneProviderV1{policy.Provider}}
@@ -138,97 +180,139 @@ func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lif
 	}
 	dispositions := map[string]*driver.SourcePlaneDispositionV1{}
 	var edgeRows []driver.SourcePlaneRecordV1
-	records, err := archive.SourcePlaneRecords()
+	records, err := scratch.SourcePlaneRecords()
 	if err != nil {
 		return zero, err
 	}
 	for _, record := range records {
-		if err := ctx.Err(); err != nil {
-			return zero, err
-		}
-		var row dumpformat.Record
-		if err := decode(record.Raw, &row); err != nil {
-			return zero, err
-		}
-		fields, err := fieldCommitments(record.Raw)
-		if err != nil {
-			return zero, err
-		}
-		origin := driver.SourcePlaneBytesV1{Presence: "object", Size: uint64(len(record.Raw)), SHA256: digest(record.Raw)}
-		if row.Kind != "bead" {
+		if err := func() error {
+			work, release := scratch.NativeDeltaAccountingScope()
+			defer release()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := work.ChargeNativeDeltaJSON("cli_mapper_record", json.RawMessage(record.Raw)); err != nil {
+				return err
+			}
+			var row dumpformat.Record
+			if err := decode(record.Raw, &row); err != nil {
+				return err
+			}
 			if row.Kind == "edge" && policy.DependencyPolicy == "exact-typed" {
 				edgeRows = append(edgeRows, record)
-				continue
+				return nil
 			}
-			project := row.Project
-			if row.Source.Identity != nil {
-				project = row.Source.Identity.Project
+			fields, err := fieldCommitmentsAccounted(archive, work, record.Raw)
+			if err != nil {
+				return err
 			}
-			plan.Origins = append(plan.Origins, driver.SourcePlaneOriginV1{Project: project, Table: row.Source.Table, ID: row.ID, Action: policy.OtherRecords, Raw: origin, Fields: fields, Parsed: driver.SourcePlaneBytesV1{Presence: "absent"}})
-			continue
-		}
-		if row.Source.Table != dumpformat.DurableEntityTable || row.Project == "" {
-			return zero, fmt.Errorf("%w: durable source address unavailable", driver.ErrUnsupported)
-		}
-		typ, typeOK := row.Source.Fields["issue_type"].(string)
-		status, statusOK := row.Source.Fields["status"].(string)
-		storage, present := row.Source.Fields["storage_class"]
-		storageText := ""
-		if storage != nil {
-			var ok bool
-			storageText, ok = storage.(string)
-			if !ok || storageText == "" {
-				return zero, errors.New("source storage class must be present SQL NULL or nonempty text")
+			if err := work.ChargeNativeDeltaBytes("cli_mapper_origin_hash", 64); err != nil {
+				return err
 			}
-		}
-		ephemeral, err := exactFlag(row.Source.Fields["ephemeral"])
-		if err != nil {
+			origin := driver.SourcePlaneBytesV1{Presence: "object", Size: uint64(len(record.Raw)), SHA256: digest(record.Raw)}
+			if row.Kind != "bead" {
+				project := row.Project
+				if row.Source.Identity != nil {
+					project = row.Source.Identity.Project
+				}
+				candidate := driver.SourcePlaneOriginV1{Project: project, Table: row.Source.Table, ID: row.ID, Action: policy.OtherRecords, Raw: origin, Parsed: driver.SourcePlaneBytesV1{Presence: "absent"}}
+				if err := archive.ChargeNativeDeltaJSON("cli_mapper_origin", candidate); err != nil {
+					return err
+				}
+				candidate.Fields = fields
+				plan.Origins = append(plan.Origins, candidate)
+				return nil
+			}
+			if row.Source.Table != dumpformat.DurableEntityTable || row.Project == "" {
+				return fmt.Errorf("%w: durable source address unavailable", driver.ErrUnsupported)
+			}
+			typ, typeOK := row.Source.Fields["issue_type"].(string)
+			status, statusOK := row.Source.Fields["status"].(string)
+			storage, present := row.Source.Fields["storage_class"]
+			storageText := ""
+			if storage != nil {
+				var ok bool
+				storageText, ok = storage.(string)
+				if !ok || storageText == "" {
+					return errors.New("source storage class must be present SQL NULL or nonempty text")
+				}
+			}
+			ephemeral, err := exactFlag(row.Source.Fields["ephemeral"])
+			if err != nil {
+				return err
+			}
+			noHistory, err := exactFlag(row.Source.Fields["no_history"])
+			if err != nil {
+				return err
+			}
+			if !present || !typeOK || !statusOK || typ == "" || status == "" {
+				return errors.New("source type/status/storage tuple incomplete")
+			}
+			if err := work.ChargeNativeDeltaJSON("cli_mapper_tuple", []any{typ, storage, ephemeral, noHistory}); err != nil {
+				return err
+			}
+			tuple, err := json.Marshal([]any{typ, storage, ephemeral, noHistory})
+			if err != nil {
+				return err
+			}
+			if err := work.ChargeNativeDeltaBytes("cli_mapper_disposition_key", 73); err != nil {
+				return err
+			}
+			key := "observed/" + digest(tuple)
+			rules := []driver.SourcePlaneFieldRuleV1{}
+			usedMappings := map[string]bool{}
+			for _, field := range fields {
+				rule := driver.SourcePlaneFieldRuleV1{Source: field.Name, Disposition: policy.UnmappedFields}
+				if policy.UnmappedFields == "opaque-metadata" {
+					if err := work.ChargeNativeDeltaBytes("cli_mapper_rule_target", uint64(6+len(field.Name))); err != nil {
+						return err
+					}
+					rule.Target = "beads." + field.Name
+				}
+				if target, ok := mappings[field.Name]; ok {
+					rule.Target, rule.Disposition = target, "exact-map"
+					usedMappings[field.Name] = true
+				}
+				if err := work.ChargeNativeDeltaJSON("cli_mapper_candidate_rule", rule); err != nil {
+					return err
+				}
+				rules = append(rules, rule)
+			}
+			if len(usedMappings) != len(mappings) {
+				return errors.New("explicit mapped field absent from source schema")
+			}
+			d := dispositions[key]
+			if d == nil {
+				candidate := driver.SourcePlaneDispositionV1{Key: key, SourceType: typ, StorageClass: storageText, Ephemeral: ephemeral, NoHistory: noHistory, SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Fields: rules, RefusalPolicy: "exact-only"}
+				if err := archive.ChargeNativeDeltaJSON("cli_mapper_disposition", candidate); err != nil {
+					return err
+				}
+				d = &candidate
+				dispositions[key] = d
+			} else if !reflect.DeepEqual(d.Fields, rules) {
+				return errors.New("same observed tuple has differing field rules")
+			}
+			foundStatus := false
+			for _, pair := range d.Statuses {
+				foundStatus = foundStatus || pair.From == status
+			}
+			if !foundStatus {
+				if err := archive.ChargeNativeDeltaJSON("cli_mapper_status", driver.SourcePlaneStringPairV1{From: status, To: status}); err != nil {
+					return err
+				}
+				d.Statuses = append(d.Statuses, driver.SourcePlaneStringPairV1{From: status, To: status})
+			}
+			keySource := driver.SourceEntityKey{Project: row.Project, Plane: row.Source.Table, ID: row.ID}
+			candidate := driver.SourcePlaneEntityV1{Source: keySource, TargetKind: "bead", TargetID: row.ID, DispositionKey: key, PrincipalKey: policy.Principal.Key, Route: driver.SourcePlaneRouteV1{Project: row.Project, SourceID: row.ID, DurableTargetID: row.ID, Preference: policy.RoutePolicy}, Origin: origin}
+			if err := archive.ChargeNativeDeltaJSON("cli_mapper_entity", candidate); err != nil {
+				return err
+			}
+			candidate.Fields = fields
+			plan.Entities = append(plan.Entities, candidate)
+			return nil
+		}(); err != nil {
 			return zero, err
 		}
-		noHistory, err := exactFlag(row.Source.Fields["no_history"])
-		if err != nil {
-			return zero, err
-		}
-		if !present || !typeOK || !statusOK || typ == "" || status == "" {
-			return zero, errors.New("source type/status/storage tuple incomplete")
-		}
-		tuple, err := json.Marshal([]any{typ, storage, ephemeral, noHistory})
-		if err != nil {
-			return zero, err
-		}
-		key := "observed/" + digest(tuple)
-		rules := []driver.SourcePlaneFieldRuleV1{}
-		usedMappings := map[string]bool{}
-		for _, field := range fields {
-			rule := driver.SourcePlaneFieldRuleV1{Source: field.Name, Disposition: policy.UnmappedFields}
-			if policy.UnmappedFields == "opaque-metadata" {
-				rule.Target = "beads." + field.Name
-			}
-			if target, ok := mappings[field.Name]; ok {
-				rule.Target, rule.Disposition = target, "exact-map"
-				usedMappings[field.Name] = true
-			}
-			rules = append(rules, rule)
-		}
-		if len(usedMappings) != len(mappings) {
-			return zero, errors.New("explicit mapped field absent from source schema")
-		}
-		d := dispositions[key]
-		if d == nil {
-			d = &driver.SourcePlaneDispositionV1{Key: key, SourceType: typ, StorageClass: storageText, Ephemeral: ephemeral, NoHistory: noHistory, SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Fields: rules, RefusalPolicy: "exact-only"}
-			dispositions[key] = d
-		} else if !reflect.DeepEqual(d.Fields, rules) {
-			return zero, errors.New("same observed tuple has differing field rules")
-		}
-		foundStatus := false
-		for _, pair := range d.Statuses {
-			foundStatus = foundStatus || pair.From == status
-		}
-		if !foundStatus {
-			d.Statuses = append(d.Statuses, driver.SourcePlaneStringPairV1{From: status, To: status})
-		}
-		keySource := driver.SourceEntityKey{Project: row.Project, Plane: row.Source.Table, ID: row.ID}
-		plan.Entities = append(plan.Entities, driver.SourcePlaneEntityV1{Source: keySource, TargetKind: "bead", TargetID: row.ID, DispositionKey: key, PrincipalKey: policy.Principal.Key, Route: driver.SourcePlaneRouteV1{Project: row.Project, SourceID: row.ID, DurableTargetID: row.ID, Preference: policy.RoutePolicy}, Origin: origin, Fields: fields})
 	}
 	for _, record := range edgeRows {
 		if err := appendExactRelation(&plan, archive, record); err != nil {
@@ -268,13 +352,6 @@ func constructRequest(ctx context.Context, archiveBytes, policyBytes []byte, lif
 		}
 		return false
 	})
-	// Validate actual type/status/field/authority/origin policy without opening
-	// a destination. The receiving invocation recalculates byte commitments
-	// against its actual new target identity and bound restore clock.
-	profile := driver.RestoreImportProfile{Admission: policy.Admission, SourceStoreID: driver.StoreID(policy.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: policy.IdempotencyKey, ArchiveDigest: policy.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: time.Now().UTC().Format(time.RFC3339Nano)}
-	if _, err := converterroundtrip.BindSourceImport(ctx, bytes.NewReader(archiveBytes), profile, plan); err != nil {
-		return zero, err
-	}
 	plan.Target.StoreID, plan.Target.Incarnation = "", ""
 	return request{Format: "plug-native-receiving-request/1", PolicySHA256: digest(policyBytes), ArchiveSHA256: policy.ArchiveSHA256, SourceStoreID: policy.SourceStoreID, Projects: projects, Admission: policy.Admission, IdempotencyKey: policy.IdempotencyKey, SourcePlan: plan}, nil
 }
@@ -291,6 +368,10 @@ func exactFlag(value any) (bool, error) {
 }
 
 func fieldCommitments(raw []byte) ([]driver.SourcePlaneFieldV1, error) {
+	return fieldCommitmentsAccounted(nil, nil, raw)
+}
+
+func fieldCommitmentsAccounted(owner, work *dumpformat.Archive, raw []byte) ([]driver.SourcePlaneFieldV1, error) {
 	var wire struct {
 		Source struct {
 			Fields map[string]json.RawMessage `json:"fields"`
@@ -298,6 +379,11 @@ func fieldCommitments(raw []byte) ([]driver.SourcePlaneFieldV1, error) {
 	}
 	// This view selects only original raw field tokens; it does not reject the
 	// other already validated record fields or normalize embedded JSON text.
+	if work != nil {
+		if err := work.ChargeNativeDeltaJSON("cli_mapper_field_tokens", json.RawMessage(raw)); err != nil {
+			return nil, err
+		}
+	}
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return nil, err
 	}
@@ -311,6 +397,11 @@ func fieldCommitments(raw []byte) ([]driver.SourcePlaneFieldV1, error) {
 		switch value[0] {
 		case '"':
 			presence = "text"
+			if work != nil {
+				if err := work.ChargeNativeDeltaBytes("cli_mapper_text_token", uint64(len(token))); err != nil {
+					return nil, err
+				}
+			}
 			var text string
 			if err := json.Unmarshal(token, &text); err != nil {
 				return nil, err
@@ -325,7 +416,14 @@ func fieldCommitments(raw []byte) ([]driver.SourcePlaneFieldV1, error) {
 		case 't', 'f':
 			presence = "boolean"
 		}
-		result = append(result, driver.SourcePlaneFieldV1{Name: name, Value: driver.SourcePlaneBytesV1{Presence: presence, Size: uint64(len(token)), SHA256: digest(token)}})
+		candidate := driver.SourcePlaneFieldV1{Name: name, Value: driver.SourcePlaneBytesV1{Presence: presence, Size: uint64(len(token)), SHA256: "0000000000000000000000000000000000000000000000000000000000000000"}}
+		if owner != nil {
+			if err := owner.ChargeNativeDeltaJSON("cli_mapper_field", candidate); err != nil {
+				return nil, err
+			}
+		}
+		candidate.Value.SHA256 = digest(token)
+		result = append(result, candidate)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
 	return result, nil

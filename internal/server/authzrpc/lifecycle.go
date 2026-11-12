@@ -210,6 +210,23 @@ func validateLifecycleImage(before, after model.Record, by model.PrincipalRef, c
 			return forbidden("lifecycle deputy mutation is unsupported")
 		}
 	}
+	for _, body := range []map[string]any{before.Body, after.Body} {
+		if value, present := body["closeReason"]; present {
+			if _, ok := value.(string); !ok {
+				return forbidden("invalid lifecycle close reason")
+			}
+		}
+	}
+	beforeReason, beforeHasReason := before.Body["closeReason"]
+	afterReason, afterHasReason := after.Body["closeReason"]
+	// A first close may record an exact request reason, including an empty
+	// one. A later close cannot replace or clear an existing first identity.
+	if beforeHasReason && (!afterHasReason || beforeReason != afterReason) {
+		return forbidden("lifecycle first close reason changed")
+	}
+	if !beforeHasReason && afterHasReason && setters["closeReason"] != "request" {
+		return forbidden("invalid lifecycle close reason setter")
+	}
 	stableBefore, stableAfter := make(map[string]any), make(map[string]any)
 	for key, value := range before.Body {
 		stableBefore[key] = value
@@ -217,7 +234,7 @@ func validateLifecycleImage(before, after model.Record, by model.PrincipalRef, c
 	for key, value := range after.Body {
 		stableAfter[key] = value
 	}
-	for _, key := range []string{"fields", "comments", "lease", "startedAt", "closedAt"} {
+	for _, key := range []string{"fields", "comments", "lease", "startedAt", "closedAt", "closeReason"} {
 		delete(stableBefore, key)
 		delete(stableAfter, key)
 	}

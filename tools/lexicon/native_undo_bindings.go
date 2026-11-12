@@ -2,11 +2,34 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
+	"spec/cardb21/native_test.go": {
+		{name: "TestB21NativePublicBatchHTTP", kind: "func", contextSHA256: "e827740efb30bb0b611feac84bdf9a81418e95cb6c76c695149d22b603178ca9", literals: map[int]string{
+			5818: "1b33ef30c9997fefc19db8f8a8264323e582559a6225fbb08b82a21ae8696b37",
+		}},
+		{name: "start", kind: "func", contextSHA256: "31089c2c2a30b18de7fd0f5ca46145bdcd86e808a99d9bf99dfc7d7ea45b462c", literals: map[int]string{
+			670: "d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd",
+		}},
+	},
+	// Three exact B16 native SQL literals; every other byte still scans.
+	"spec/cardb16/native_reference_test.go": {
+		{name: "observedLabels", kind: "func", contextSHA256: "afe6ae92190472ede88d6589c461acf98ac883661a09b9f9db89d9748d9c6069", literals: map[int]string{
+			341: "2651723e5b0e7e98fb0a8d09ea1af6d358e7a54df1857e2111f158850c876356",
+		}},
+		{name: "TestB16CanonicalNativePublicLabels", kind: "func", contextSHA256: "b4a7de24d43a1997d2eafa60565b67cd915aca10f35ad4c9cf03aad16f51befe", literals: map[int]string{
+			3083: "fe007b32a755efce7035137332caa315deb0c1af4f11e7c6399ef4f0fa545ba4",
+			3221: "2648370bbc22de08c7e7dbdd1e7a78c76e85e8262a3bb5c8259ba8cc9e6544b2",
+		}},
+	},
 	// Canonical native refusal text at one exact B06 assertion site. The
 	// existing AST selector admits this node only, never the method body.
-	"spec/cardb20/b06_native_test.go": {
+	"spec/cardb20/b06_native_support_test.go": {
 		{name: "boundaries", kind: "func", contextSHA256: "bfb1380158269951ba46db01ae6a290f429637821dcecc2b7c9a8938706f57f4", literals: map[int]string{
 			832: "2b78b308b236a49d7c6bea2a94800e02cd3405ca23f917c0d0e503b557f55169",
+		}},
+	},
+	"spec/cardb20/b06_mixed_native_test.go": {
+		{name: "b06RecordMixedNative", kind: "func", contextSHA256: "cd53a8b288256af2e1f9d02bb88dddaf899833fe18ebb7d92f6ad58536d307cf", literals: map[int]string{
+			1601: "c8224c35f46d047833aed11fe2df067f13520c73945064daaf165395b9120153",
 		}},
 	},
 	"internal/integration/nightlyrestore/native_diff_test.go": {

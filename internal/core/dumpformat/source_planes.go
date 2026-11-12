@@ -179,6 +179,9 @@ func validateSourcePlaneRelations(m Manifest, rows map[string][]Record) error {
 			}
 			project, err := sourcePhysicalProject(owner, m.Projects)
 			if err != nil || !entities[driver.SourceEntityKey{Project: project, Plane: "wisps", ID: owner}] {
+				if table == EphemeralChildCounterTable && !entities[driver.SourceEntityKey{Project: project, Plane: "issues", ID: owner}] {
+					return &ChildCounterParentUnresolvedError{Project: project, Parent: owner}
+				}
 				return fmt.Errorf("dangling active auxiliary source owner")
 			}
 			id := stringValue(fields["id"])
@@ -230,7 +233,13 @@ func validateSourcePlaneRelations(m Manifest, rows map[string][]Record) error {
 			legacy[kind] = records
 		}
 	}
-	return validateRelationsForVersion(m.Projects, legacy, m.MainVersion, m.IgnoredVersion)
+	return validateRelationsWithActiveCounterParents(m.Projects, legacy, m.MainVersion, m.IgnoredVersion, func(id string) string {
+		project, err := sourcePhysicalProject(id, m.Projects)
+		if err == nil && entities[driver.SourceEntityKey{Project: project, Plane: "wisps", ID: id}] {
+			return project
+		}
+		return ""
+	})
 }
 
 func sourcePhysicalProject(id string, projects []Project) (string, error) {
