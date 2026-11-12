@@ -432,7 +432,7 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	var refusedKeys []string
 	for _, miss := range []struct{ field, canonical string }{
 		{"metadata." + literal, `null`}, {"metadata." + literal, `{"a":1,"b":3}`},
-		{"metadata.number", `"1"`}, {"metadata.large", `9007199254740992`},
+		{"metadata.number", `1`}, {"metadata.number", `"1"`}, {"metadata.large", `9007199254740992`},
 		{"metadata.array", `[2,1]`}, {"metadata.string", `1`}, {"metadata.missing", `null`},
 	} {
 		params := writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not publish"}, "expect": []model.Precondition{model.PreconditionByHash(ref, miss.field, metadataSHA(miss.canonical))}})
@@ -450,7 +450,7 @@ func TestB17MetadataCASRealSQLiteReceiptsAndReopen(t *testing.T) {
 	}
 	// Real HTTP service lowering uses the fixed metadata expectation seam.
 	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"description": "object matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777")}}))
-	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "number matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata.number", "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b")}}))
+	f.commit(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "number matched"}, "expect": []model.Precondition{model.PreconditionByHash(ref, "metadata.number", "d0ff5974b6aa52cf562bea5921840c032a860a91a3512f7fe8f768f6bbe005f6")}}))
 	before = metadataSQLiteGraph(t, f)
 	swap := model.ChangeSet{Ops: []model.Op{metadataSet(ref, literal, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+literal, metadataSHA(`{"a":1,"b":2}`))}}
 	if _, err := f.writer.ApplyWithOutcome(f.ctx, anonymous, swap, writeMeta(t)); err != nil {
