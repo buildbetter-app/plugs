@@ -582,6 +582,7 @@ func TestHistoricalQueryBodyErrorDifferentialAtHeadAndPastRevision(t *testing.T)
 						identity[field] = value
 					}
 				}
+				mixedBodyFilter := len(identity) > 0 && len(filter) > len(identity)
 				want := make([]driver.Record, 0)
 				var wantErr error
 				for _, record := range historicalQueryReference(t, ctx, r, identity) {
@@ -600,7 +601,7 @@ func TestHistoricalQueryBodyErrorDifferentialAtHeadAndPastRevision(t *testing.T)
 					}
 				} else {
 					var decodeErr *json.UnmarshalTypeError
-					if !errors.As(oldErr, &decodeErr) {
+					if (wantErr == nil && !mixedBodyFilter) || !errors.As(oldErr, &decodeErr) {
 						t.Fatalf("unexpected old-path error: %v", oldErr)
 					}
 				}
@@ -613,7 +614,7 @@ func TestHistoricalQueryBodyErrorDifferentialAtHeadAndPastRevision(t *testing.T)
 					// At head the unchanged matcher can visit a body predicate
 					// first, including on an identity-excluded array or scalar.
 					var decodeErr *json.UnmarshalTypeError
-					if r.at != mustUint(r.meta.Head) || !errors.As(err, &decodeErr) {
+					if r.at != mustUint(r.meta.Head) || !mixedBodyFilter || !errors.As(err, &decodeErr) {
 						t.Fatalf("excluded body produced a new error: %v", err)
 					}
 				} else if page.AsOf != at || page.NextCursor != nil || !reflect.DeepEqual(page.Items, want) {
