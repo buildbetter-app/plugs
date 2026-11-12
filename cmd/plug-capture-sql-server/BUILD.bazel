@@ -43,7 +43,7 @@ go_test(
     size = "enormous",
     timeout = "eternal",
     srcs = ["native_capture_test.go", "physical_capture_test.go", "b01_complete_ready_capture_test.go"],
-    args = ["-test.v", "-test.run=^TestB01CompleteIndependentReadyCapture$"],
+    args = ["-test.v", "-test.run=^TestB01CompleteIndependentReadyCapture$$"],
     data = [":plug-capture-sql-server", "//cmd/bd:bd", "//tools/native-physical-capture"],
     env = {
         "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
