@@ -29,6 +29,7 @@ type NativeFamilyEvidence struct {
 	Families    []NativeFamilyReport  `json:"families"`
 	Schemas     []NativeSchemaReport  `json:"source_schemas,omitempty"`
 	Histories   []NativeHistoryReport `json:"source_histories,omitempty"`
+	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence `json:"native_delta_history,omitempty"`
 }
 
 // NativeHistoryReport separates genuine source incompleteness from complete

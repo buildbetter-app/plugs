@@ -169,7 +169,8 @@ type RestoreImportProfile struct {
 	HistoryDigest string `json:"historyDigest,omitempty"`
 	// HistoryTime binds the actual restore time before historical imported
 	// comment images are lowered and hashed. It is never a source timestamp.
-	HistoryTime string `json:"historyTime,omitempty"`
+	HistoryTime        string                    `json:"historyTime,omitempty"`
+	NativeDeltaHistory *NativeDeltaHistoryPolicy `json:"nativeDeltaHistory,omitempty"`
 	// SourcePlanes is the single checked joint logical plan binding. Nil keeps
 	// the historical profile bytes and core-derived digest contract unchanged.
 	SourcePlanes *SourcePlaneImportBindingV1 `json:"sourcePlanes,omitempty"`
@@ -201,6 +202,14 @@ func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
 		return RestoreImportProfile{}, err
 	}
 	p.HistoryMode = historyMode
+	if p.NativeDeltaHistory != nil {
+		if err := p.NativeDeltaHistory.Validate(historyMode); err != nil {
+			return RestoreImportProfile{}, err
+		}
+		if p.SourcePlanes == nil {
+			return RestoreImportProfile{}, fmt.Errorf("native delta history selection requires a joint source plan")
+		}
+	}
 	if p.SourcePlanes != nil {
 		binding, err := p.SourcePlanes.Detached()
 		if err != nil {

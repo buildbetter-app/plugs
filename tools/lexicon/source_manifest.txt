@@ -195,6 +195,7 @@ internal/core/dumpformat/native_delta_cells_test.go
 internal/core/dumpformat/native_delta_dispositions_test.go
 internal/core/dumpformat/native_delta_frontier_test.go
 internal/core/dumpformat/native_delta_history.go
+internal/core/dumpformat/native_delta_history_point.go
 internal/core/dumpformat/native_delta_json.go
 internal/core/dumpformat/native_delta_parts.go
 internal/core/dumpformat/native_delta_parts_test.go
@@ -293,6 +294,7 @@ internal/core/nativeprojection/labels.go
 internal/core/nativeprojection/native_current.go
 internal/core/nativeprojection/native_delta.go
 internal/core/nativeprojection/native_delta_current.go
+internal/core/nativeprojection/native_delta_history_modes.go
 internal/core/nativeprojection/native_schema.go
 internal/core/nativeprojection/planner.go
 internal/core/nativeprojection/result.go
@@ -635,6 +637,8 @@ internal/integration/converterroundtrip/native_capture_set_cli_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
+internal/integration/converterroundtrip/native_delta_history_modes.go
+internal/integration/converterroundtrip/native_delta_history_modes_test.go
 internal/integration/converterroundtrip/native_delta_receiving_test.go
 internal/integration/converterroundtrip/native_delta_rows.go
 internal/integration/converterroundtrip/native_history_test.go
@@ -653,6 +657,7 @@ internal/integration/converterroundtrip/native_workflow_accounting_test.go
 internal/integration/converterroundtrip/planner_extraction_test.go
 internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go
+internal/integration/converterroundtrip/public_external_capture_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/receiving_pass_budget_test.go
 internal/integration/converterroundtrip/receiving_stream.go
@@ -1274,6 +1279,8 @@ internal/storage/driver/hierarchy.go
 internal/storage/driver/hierarchy_contract_test.go
 internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
+internal/storage/driver/native_delta_history.go
+internal/storage/driver/native_delta_history_test.go
 internal/storage/driver/offline_history.go
 internal/storage/driver/offline_history_stream.go
 internal/storage/driver/offline_history_stream_consume.go

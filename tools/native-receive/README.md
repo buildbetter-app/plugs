@@ -8,7 +8,7 @@ library APIs or declared counts alone do not count.
 This is a trusted local disposable receiving command. The caller supplies the
 authenticated external source-store/project binding and the complete explicit
 source-plane mapping. Admission is a trusted host input, not a network login.
-The command accepts only the existing native full-history import contract.
+The command defaults to the native full-history import contract.
 It never migrates a source or changes the input archive.
 
 Build target: `//tools/native-receive:native-receive`.
@@ -35,6 +35,19 @@ HEAD/current census, then closes and reopens persistent drivers, recovers the
 committed receipt and repeats byte readback. Memory reacquires the same store's
 lease. A fresh disposable destination is required; SQLite publishes its staged
 file only after all checks succeed.
+
+Capture requests may explicitly set `restore_mode` to `snapshot` or `partial`.
+Snapshot publishes authenticated HEAD/current only, with snapshot provenance
+and no source commit mappings. Partial also requires `restore_first_sequence`
+in the authenticated capture's source ordinal range, starting at one. It
+imports that verified suffix, uses the verified predecessor as a local floor
+when present, and records the omitted known prefix with reason
+`operator-selected-floor`. The original unavailable-prefix commitment remains
+separate; its unknown extent is never converted into invented commit counts.
+The chosen mode, floor, source commitments and bound restore time survive
+receipt recovery. Full remains the default when the mode is absent or empty.
+An ordinal is invalid for Full or Snapshot. These opt-ins apply only to native
+capture sets; portable archive receiving retains its full-history contract.
 
 Successful capture receipts include `capture_set_verification` and
 `capture_set_measurements`. Measurements contain decoded accounting, peak

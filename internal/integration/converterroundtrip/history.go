@@ -57,7 +57,7 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 	if plan.derivedDigest != p.DerivedDigest {
 		return p, fmt.Errorf("%w: history current image/derived verification failed", ErrRestoreUnavailable)
 	}
-	if archive.HasNativeDelta() {
+	if archive.HasNativeDelta() && p.HistoryMode == driver.RestoreHistoryModeFull {
 		digest, err := nativeReceivingStreamDigest(ctx, archive, p, when)
 		if err != nil {
 			return p, err
@@ -94,7 +94,7 @@ func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.
 	// A v2 attachment is exposed only after every graph/schema/table and both
 	// checkpoints have passed. Avoid copying all rows just to repeat this gate.
 	if a.HasNativeDelta() {
-		if mode != driver.RestoreHistoryModeFull {
+		if mode != driver.RestoreHistoryModeFull && mode != driver.RestoreHistoryModePartial && mode != driver.RestoreHistoryModeSnapshot {
 			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
 		return nil
@@ -400,7 +400,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	if err != nil {
 		return driver.ErrConflict
 	}
-	if archive.HasNativeDelta() {
+	if archive.HasNativeDelta() && p.HistoryMode == driver.RestoreHistoryModeFull {
 		stream, err := historyverify.PrepareNativeArchive(ctx, archive, p, when)
 		if err != nil {
 			return nativeDeltaRecoveryError(err)
@@ -449,6 +449,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	}
 	want := driver.HistoryImportEvidence{Source: history.Source, Mode: p.HistoryMode, Complete: history.Complete, First: history.First, Head: history.Head, Floor: model.Natural64(0), Gaps: append([]driver.SourceHistoryGap{}, history.Gaps...), Mapping: []driver.SourceImportRevision{}}
 	want.NativeBoundaries = append([]driver.NativeHistoryBoundary(nil), history.NativeBoundaries...)
+	want.NativeDeltaHistory = history.NativeDeltaHistory
 	var revision uint64
 	if history.First > 1 {
 		revision = 1
