@@ -358,7 +358,7 @@ func (b *b01ReadyCapture) physicalSet(want b01ReadyState) {
 		t.Fatal("native capture head commitment differs", err)
 	}
 	manifest, err := plugdump.ValidateNativeDeltaHead(bytes.NewReader(head))
-	if err != nil || manifest.SourcePlaneAddressContract != plugdump.SourcePlaneAddressContract || manifest.SourceFamilyContract != plugdump.SourceFamilyContract {
+	if err != nil || manifest.SourcePlaneAddressContract != plugdump.SourcePlaneAddressContract || manifest.SourceFamilyContract != plugdump.SourceFamilyContract || manifest.SourceFieldsContract != plugdump.IssueSourceFieldsContract {
 		t.Fatal("native head source/plane contract", err)
 	}
 	rows := map[string][]plugdump.Row{}
@@ -386,23 +386,21 @@ func (b *b01ReadyCapture) physicalSet(want b01ReadyState) {
 			rows[record.Source.Table] = append(rows[record.Source.Table], record.Source.Fields)
 		}
 	}
-	canonicalRows := func(rows []plugdump.Row) []string {
-		out := make([]string, 0, len(rows))
-		for _, row := range rows {
-			raw, err := json.Marshal(row)
-			if err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, string(raw))
-		}
-		sort.Strings(out)
-		return out
-	}
 	for _, family := range []string{"issues", "dependencies", "wisps", "wisp_dependencies", "wisp_labels", "wisp_comments", "wisp_events", "wisp_child_counters"} {
-		if len(want.Tables[family].Rows) == 0 || !reflect.DeepEqual(canonicalRows(rows[family]), canonicalRows(want.Tables[family].Rows)) {
-			t.Fatalf("complete native capture live family differs: %s SQL=%d head=%d", family, len(want.Tables[family].Rows), len(rows[family]))
+		if err := b01NativeSourceRowsMatch(family, rows[family], want.Tables[family].Rows); len(want.Tables[family].Rows) == 0 || err != nil {
+			t.Fatal("native head source rows differ under explicit source-fields contract", family, err)
 		}
 	}
+	b01NativeIssueOmissionControls(t, rows["issues"], want.Tables["issues"].Rows)
+	omissions := map[string]plugdump.Row{}
+	for _, row := range want.Tables["issues"].Rows {
+		id, ok := row["id"].(string)
+		if !ok || id == "" {
+			t.Fatal("physical durable omission lacks its original ID")
+		}
+		omissions[id] = plugdump.Row{"row_lock": row["row_lock"], "is_blocked": row["is_blocked"]}
+	}
+	b.json("durable-source-omissions.json", map[string]any{"source_fields_contract": plugdump.IssueSourceFieldsContract, "physical_cells": omissions, "source_fields_omitted": []string{"row_lock", "is_blocked"}, "full_original_rows": "states/final-before-capture.json"})
 	b.json("capture-binding.json", map[string]any{"format": "b01-complete-ready-capture-binding/1", "capture_set_sha256": fmt.Sprintf("%x", sha256.Sum256(rootBytes)), "head_sha256": root.HeadArchive.SHA256, "head_commit": root.Head, "part_count": root.PartCount, "totals": root.Totals, "SQL_current_and_all_active_families_equal_head": true, "full_stream_authentication": "consumer must use existing dumpformat.ReadNativeCaptureSet", "controlled_embedded_SQL": false, "clock_evidence": "live persistent companion observations bound before immutable capture"})
 }
 
@@ -633,4 +631,128 @@ func TestB01CompleteIndependentReadyCapture(t *testing.T) {
 	b.json("sort-contract.json", map[string]any{"public_default": "priority", "lower_level_empty_policy": "hybrid", "old_bucket_rank": 999, "native_stored_lag_seconds": 0, "plug_p74_max_lag_seconds": 60, "native_created_precision_ns": 1000000000, "native_go_input_tick_ns": 1, "native_SQL_tick_ns": 1000})
 	b.physicalSet(b.state("states/final-before-capture"))
 	b.pack()
+}
+
+// beads-issues-source-fields/1 omits exactly the transient lock and derived
+// blocking flag from durable Source.Fields. The full physical rows, including
+// both typed original cells, remain in the authenticated state/stream inputs.
+// Genuine wisp rows and every other family retain all their source fields.
+func b01NativeSourceRowsMatch(family string, actual, physical []plugdump.Row) error {
+	expected := make([]plugdump.Row, len(physical))
+	for i, row := range physical {
+		expected[i] = row
+		if family != "issues" {
+			continue
+		}
+		raw, err := json.Marshal(row)
+		if err != nil {
+			return err
+		}
+		var cells map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &cells); err != nil {
+			return err
+		}
+		lock, hasLock := cells["row_lock"]
+		blocked, hasBlocked := cells["is_blocked"]
+		if !hasLock || !hasBlocked {
+			return fmt.Errorf("original durable row lacks explicitly omitted physical cells")
+		}
+		lockValue, err := strconv.ParseInt(string(lock), 10, 64)
+		if err != nil || strconv.FormatInt(lockValue, 10) != string(lock) || string(blocked) != "0" && string(blocked) != "1" {
+			return fmt.Errorf("original durable omissions require int64 row_lock and numeric 0/1 is_blocked")
+		}
+		expected[i] = plugdump.Row{}
+		for column, value := range row {
+			if column != "row_lock" && column != "is_blocked" {
+				expected[i][column] = value
+			}
+		}
+	}
+	canonical := func(rows []plugdump.Row) ([]string, error) {
+		out := make([]string, len(rows))
+		for i, row := range rows {
+			raw, err := json.Marshal(row)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = string(raw)
+		}
+		sort.Strings(out)
+		return out, nil
+	}
+	got, err := canonical(actual)
+	if err != nil {
+		return err
+	}
+	want, err := canonical(expected)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("%s source rows differ in membership, presence, type or value outside the two explicit durable omissions", family)
+	}
+	return nil
+}
+
+// Controls perturb copies of the real delivered rows, never the authentic
+// input or the public consumer output used as the independent expectation.
+func b01NativeIssueOmissionControls(t *testing.T, actual, physical []plugdump.Row) {
+	t.Helper()
+	if len(actual) == 0 || len(physical) == 0 {
+		t.Fatal("omission controls require genuine nonempty native issue rows")
+	}
+	clone := func(rows []plugdump.Row) []plugdump.Row {
+		out := make([]plugdump.Row, len(rows))
+		for i, row := range rows {
+			out[i] = plugdump.Row{}
+			for name, value := range row {
+				out[i][name] = value
+			}
+		}
+		return out
+	}
+	beforeActual, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforePhysical, err := json.Marshal(physical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("exact-two-typed-durable-omissions", func(t *testing.T) {
+		if err := b01NativeSourceRowsMatch("issues", actual, physical); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, control := range []struct {
+		name   string
+		change func([]plugdump.Row, []plugdump.Row)
+	}{
+		{"row-lock-must-be-omitted", func(a, p []plugdump.Row) { a[0]["row_lock"] = p[0]["row_lock"] }},
+		{"derived-flag-must-be-omitted", func(a, p []plugdump.Row) { a[0]["is_blocked"] = p[0]["is_blocked"] }},
+		{"other-fields-must-remain-present", func(a, _ []plugdump.Row) { delete(a[0], "current_revision") }},
+		{"other-field-types-must-remain-exact", func(a, _ []plugdump.Row) { a[0]["priority"] = fmt.Sprint(a[0]["priority"]) }},
+		{"other-field-values-must-remain-exact", func(a, _ []plugdump.Row) { a[0]["title"] = "changed by omission negative control" }},
+		{"no-unexpected-columns", func(a, _ []plugdump.Row) { a[0]["unexpected_column"] = json.Number("1") }},
+		{"raw-lock-cell-must-remain-present", func(_, p []plugdump.Row) { delete(p[0], "row_lock") }},
+		{"raw-derived-cell-must-remain-present", func(_, p []plugdump.Row) { delete(p[0], "is_blocked") }},
+		{"raw-lock-cell-must-remain-numeric", func(_, p []plugdump.Row) { p[0]["row_lock"] = fmt.Sprint(p[0]["row_lock"]) }},
+		{"raw-derived-cell-must-remain-numeric", func(_, p []plugdump.Row) { p[0]["is_blocked"] = false }},
+	} {
+		t.Run(control.name, func(t *testing.T) {
+			a, p := clone(actual), clone(physical)
+			control.change(a, p)
+			if err := b01NativeSourceRowsMatch("issues", a, p); err == nil {
+				t.Fatal("durable source-fields contract accepted a real-row negative control")
+			}
+		})
+	}
+	afterActual, err := json.Marshal(actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterPhysical, err := json.Marshal(physical)
+	if err != nil || string(beforeActual) != string(afterActual) || string(beforePhysical) != string(afterPhysical) {
+		t.Fatal("negative controls changed authentic native source rows", err)
+	}
 }
