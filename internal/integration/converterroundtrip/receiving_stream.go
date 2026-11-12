@@ -21,14 +21,7 @@ func nativeReceivingStreamDigest(ctx context.Context,archive *dumpformat.Archive
  defer func(){err=errors.Join(err,stream.Close())}();return stream.Digest(),nil
 }
 func nativeReceivingRequestHash(archive *dumpformat.Archive,profile driver.RestoreImportProfile) (string,error) {
- owner,release:=archive.NativeDeltaAccountingScope();defer release()
- n,err:=dumpformat.NativeDeltaJSONSize(profile);if err!=nil{return "",err}
- raw:=uint64(0);if profile.SourcePlanes!=nil {raw=uint64(len(profile.SourcePlanes.CanonicalPlan))}
- if n>(^uint64(0)-4096)/32 || raw>(^uint64(0)-n*32-4096)/64 {return "",historyverify.ErrCheckpoint{Reason:"receiving profile accounting overflow"}}
- // RequestHash validates and decodes the canonical source plan as well as
- // serializing the profile. Admit those transient candidates before the call.
- if err=owner.ChargeNativeDeltaBytes("receiving_request_hash_workspace",n*32+raw*64+4096);err!=nil{return "",err}
- return profile.RequestHash()
+ return profile.RequestHashWithAccounting(nativeprojection.ProfileAccounting(archive))
 }
 func nativeReceivingStage(tx driver.WriteTx,proof historyverify.Checkpoint) (driver.OfflineHistoryStreamStage,error) {
  for _,newStage:=range []func(driver.WriteTx,historyverify.Checkpoint)(driver.OfflineHistoryStreamStage,error){memory.NewOfflineHistoryStreamStage,sqlite.NewOfflineHistoryStreamStage,postgres.NewOfflineHistoryStreamStage} {

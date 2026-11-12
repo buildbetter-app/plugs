@@ -63,45 +63,74 @@ func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile
 	if wantImage == "" {
 		plan.Providers[0].LogicalImageSHA256 = strings.Repeat("0", 64)
 	}
-	binding, err := driver.NewSourcePlaneImportBindingV1(plan)
+	binding, releaseInitialBinding, err := driver.NewSourcePlaneImportBindingWithAccounting(plan, nativeprojection.ProfileAccounting(archive))
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
+	defer func() {
+		if releaseInitialBinding != nil {
+			releaseInitialBinding()
+		}
+	}()
 	wantDerived := profile.DerivedDigest
 	if wantDerived == "" {
 		profile.DerivedDigest = strings.Repeat("0", 64)
 	}
 	profile.SourcePlanes = &binding
-	profile, err = nativeDetachedProfile(archive, profile)
+	profile, releaseScalar, err := profile.NormalizeWithAccounting(nativeprojection.ProfileAccounting(archive))
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
-	prepared, err := prepareSourceArchive(ctx, archive, profile, false)
+	defer releaseScalar()
+	imageHash, imageSize, err := sourceImageCommitment(ctx, archive, profile)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
-	image := prepared.LogicalImage()
-	if wantImage != "" && (wantImage != prepared.SHA256() || wantSize != uint64(len(image))) {
+	if wantImage != "" && (wantImage != imageHash || wantSize != imageSize) {
 		return driver.RestoreImportProfile{}, driver.ErrConflict
 	}
-	plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize = prepared.SHA256(), uint64(len(image))
-	binding, err = driver.NewSourcePlaneImportBindingV1(plan)
+	plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize = imageHash, imageSize
+	binding, releaseFinalBinding, err := driver.NewSourcePlaneImportBindingWithAccounting(plan, nativeprojection.ProfileAccounting(archive))
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
+	defer releaseFinalBinding()
 	profile.SourcePlanes = &binding
-	core, err := buildPlanWithProfile(archive, &profile, when, ctx)
+	releaseInitialBinding()
+	releaseInitialBinding = nil
+	derived, err := sourceDerivedCommitment(ctx, archive, &profile, when)
 	if err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
-	if wantDerived != "" && wantDerived != core.derivedDigest {
+	if wantDerived != "" && wantDerived != derived {
 		return driver.RestoreImportProfile{}, driver.ErrConflict
 	}
-	profile.DerivedDigest = core.derivedDigest
+	profile.DerivedDigest = derived
 	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
 		return bindHistoryArchive(ctx, archive, profile, when)
 	}
 	return nativeDetachedProfile(archive, profile)
+}
+
+// Both current and historical digest binding use the actual shared planner.
+// These helpers retain only commitments; images and all planner work end here.
+func sourceDerivedCommitment(ctx context.Context, archive *dumpformat.Archive, profile *driver.RestoreImportProfile, when time.Time) (string, error) {
+	work, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	plan, err := nativeprojection.BuildWithProfile(work, profile, when, work.WithNativeDeltaAccounting(ctx))
+	if err != nil {
+		return "", err
+	}
+	return plan.DerivedSHA256(), nil
+}
+func sourceImageCommitment(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile) (string, uint64, error) {
+	work, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	image, err := prepareSourceArchive(work.WithNativeDeltaAccounting(ctx), work, profile, false)
+	if err != nil {
+		return "", 0, err
+	}
+	return image.SHA256(), uint64(len(image.LogicalImage())), nil
 }
 
 // A source preparation makes exactly one admitted LogicalImage clone. Internal
@@ -207,21 +236,29 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 // Reverse publication owns detached lookup maps; core routing remains in
 // the same leaf implementation used by the deterministic receiving planner.
 type sourceCoreProjection struct {
-	projection nativeprojection.SourceCoreProjection
-	entities map[driver.SourceEntityKey]driver.SourcePlaneEntityV1
-	relations map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1
+	projection     nativeprojection.SourceCoreProjection
+	entities       map[driver.SourceEntityKey]driver.SourcePlaneEntityV1
+	relations      map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1
 	inertRelations map[driver.SourceEdgeKey]bool
 }
 
 func newSourceCoreProjection(profile *driver.RestoreImportProfile, archives ...*dumpformat.Archive) (sourceCoreProjection, error) {
 	p, err := nativeprojection.NewSourceCoreProjection(profile, archives...)
-	if err != nil { return sourceCoreProjection{}, err }
+	if err != nil {
+		return sourceCoreProjection{}, err
+	}
 	entities, err := p.Entities()
-	if err != nil { return sourceCoreProjection{}, err }
+	if err != nil {
+		return sourceCoreProjection{}, err
+	}
 	relations, err := p.Relations()
-	if err != nil { return sourceCoreProjection{}, err }
+	if err != nil {
+		return sourceCoreProjection{}, err
+	}
 	inert, err := p.InertRelations()
-	if err != nil { return sourceCoreProjection{}, err }
+	if err != nil {
+		return sourceCoreProjection{}, err
+	}
 	return sourceCoreProjection{projection: p, entities: entities, relations: relations, inertRelations: inert}, nil
 }
 

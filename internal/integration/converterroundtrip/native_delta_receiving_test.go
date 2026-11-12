@@ -156,6 +156,9 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			if err != nil {
 				t.Fatal("bind row-granular public capture", err)
 			}
+			// The bound profile remains live through receiving and readback;
+			// source/cache/scratch cleanup must conserve everything else.
+			baseline = receivingUsageWithProfile(t, baseline, profile)
 			report, err := RestoreNativeCaptureSetImportWithLease(op, archive, store, lease, profile)
 			if err != nil {
 				t.Fatal("receive row-granular public capture", err)

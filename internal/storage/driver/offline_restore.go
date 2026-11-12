@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -185,73 +184,24 @@ func importDigest(value string) bool {
 }
 
 func (p RestoreImportProfile) Detached() (RestoreImportProfile, error) {
-	if p.Method != "offline.restore.import" || len(p.IdempotencyKey) < 16 || ValidateCheckpointKey(p.IdempotencyKey) != nil || ValidateCheckpointKey(string(p.SourceStoreID)) != nil || !importDigest(p.ArchiveDigest) || !importDigest(p.DerivedDigest) || !importDigest(p.Admission.AdmissionDigest) {
-		return RestoreImportProfile{}, fmt.Errorf("invalid prepared import binding")
-	}
-	if p.HistoryDigest != "" && !importDigest(p.HistoryDigest) {
-		return RestoreImportProfile{}, fmt.Errorf("invalid history payload digest")
-	}
-	if p.HistoryTime != "" {
-		when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
-		if err != nil || when.IsZero() || when.UTC().Format(time.RFC3339Nano) != p.HistoryTime {
-			return RestoreImportProfile{}, fmt.Errorf("invalid canonical history restore time")
-		}
-	}
-	historyMode, err := ParseRestoreHistoryMode(string(p.HistoryMode))
-	if err != nil {
-		return RestoreImportProfile{}, err
-	}
-	p.HistoryMode = historyMode
-	if p.NativeDeltaHistory != nil {
-		if err := p.NativeDeltaHistory.Validate(historyMode); err != nil {
-			return RestoreImportProfile{}, err
-		}
-		if p.SourcePlanes == nil {
-			return RestoreImportProfile{}, fmt.Errorf("native delta history selection requires a joint source plan")
-		}
-	}
-	if p.SourcePlanes != nil {
-		binding, err := p.SourcePlanes.Detached()
-		if err != nil {
-			return RestoreImportProfile{}, err
-		}
-		plan, err := binding.Plan()
-		if err != nil || plan.SourceStoreID != string(p.SourceStoreID) || plan.ArchiveSHA256 != p.ArchiveDigest {
-			return RestoreImportProfile{}, sourcePlaneError("joint plan differs from import source/archive")
-		}
-		p.SourcePlanes = &binding
-	}
-	a := p.Admission
-	if (a.Mode == "authenticated" && a.Scope != "") || (a.Mode == "anonymous-local" && a.Scope != "" && ValidateCheckpointKey(a.Scope) != nil) {
-		return RestoreImportProfile{}, fmt.Errorf("import admission scope is not the normalized G4 agent label")
-	}
-	if !((a.Mode == "authenticated" && a.Authority == "restore-admin" && a.Actor.Kind == "user") || (a.Mode == "anonymous-local" && a.Authority == "trusted-human-presence" && a.Actor.Kind == "anonymous")) {
-		return RestoreImportProfile{}, fmt.Errorf("import admission mode/actor/authority mismatch")
-	}
-	data, err := json.Marshal(p)
-	if err != nil {
-		return RestoreImportProfile{}, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var detached RestoreImportProfile
-	if err = decoder.Decode(&detached); err != nil {
-		return RestoreImportProfile{}, err
-	}
-	return detached, nil
+	detached, _, err := p.detachedImportProfile(true, RestoreImportProfileAccounting{})
+	return detached, err
 }
 
 func (p RestoreImportProfile) RequestHash() (string, error) {
-	detached, err := p.Detached()
+	return p.RequestHashWithAccounting(RestoreImportProfileAccounting{})
+}
+
+// RequestHashWithAccounting keeps the complete validated request hash while
+// admitting each temporary wire candidate before it is allocated. Canonical
+// plan bytes are borrowed only for this synchronous call.
+func (p RestoreImportProfile) RequestHashWithAccounting(accounting RestoreImportProfileAccounting) (string, error) {
+	detached, release, err := p.detachedImportProfile(false, accounting)
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(detached)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:]), nil
+	defer release()
+	return hashRestoreImportProfile(detached, accounting)
 }
 
 // DetachedCoreOnly is the execution boundary for the historical importer.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -28,10 +29,15 @@ func BindNativeCaptureSetImport(ctx context.Context, archive *dumpformat.Archive
 	if !archive.HasNativeDelta() {
 		return driver.RestoreImportProfile{}, driver.ErrUnsupported
 	}
-	archive, release := archive.NativeDeltaAccountingScope()
+	work, release := archive.NativeDeltaAccountingScope()
 	defer release()
-	ctx = archive.WithNativeDeltaAccounting(ctx)
-	return bindSourceArchive(ctx, archive, profile, plan)
+	bound, err := bindSourceArchive(work.WithNativeDeltaAccounting(ctx), work, profile, plan)
+	if err != nil {
+		return driver.RestoreImportProfile{}, err
+	}
+	// The returned binding belongs to the retained archive, separately from
+	// the shorter preparation scope. Its final raw plan is copied once here.
+	return nativeDetachedProfile(archive, bound)
 }
 
 func RestoreNativeCaptureSetImportWithLease(ctx context.Context, archive *dumpformat.Archive, target driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile) (Report, error) {
@@ -135,34 +141,6 @@ func nativeHistoryDigest(archive *dumpformat.Archive, history driver.OfflineHist
 }
 
 func nativeDetachedProfile(archive *dumpformat.Archive, profile driver.RestoreImportProfile) (driver.RestoreImportProfile, error) {
-	work, release := archive.NativeDeltaAccountingScope()
-	defer release()
-	mode, err := driver.ParseRestoreHistoryMode(string(profile.HistoryMode))
-	if err != nil {
-		return driver.RestoreImportProfile{}, err
-	}
-	profile.HistoryMode = mode
-	n, err := dumpformat.NativeDeltaJSONSize(profile)
-	if err != nil {
-		return driver.RestoreImportProfile{}, err
-	}
-	if err := work.ChargeNativeDeltaBytes("restore_profile_json", n-1); err != nil {
-		return driver.RestoreImportProfile{}, err
-	}
-	if profile.SourcePlanes != nil {
-		n := uint64(len(profile.SourcePlanes.CanonicalPlan))
-		if err := work.ChargeNativeDeltaBytes("profile_source_plan_detach", n); err != nil {
-			return driver.RestoreImportProfile{}, err
-		}
-		if err := work.ChargeNativeDeltaBytes("profile_source_plan_decode", n); err != nil {
-			return driver.RestoreImportProfile{}, err
-		}
-		if err := work.ChargeNativeDeltaBytes("profile_source_plan_canonical_check", n); err != nil {
-			return driver.RestoreImportProfile{}, err
-		}
-	}
-	if err := archive.ChargeNativeDeltaJSON("detached_restore_profile", profile); err != nil {
-		return driver.RestoreImportProfile{}, err
-	}
-	return profile.Detached()
+	detached, _, err := nativeprojection.DetachedProfile(archive, profile)
+	return detached, err
 }
