@@ -1,0 +1,37 @@
+{
+  "schema": "b06-public-diagnostic-request/1",
+  "source_commit": "9d6fff760b7a314b476539198504d77ce0959656",
+  "durable_ids": ["b06-block-c", "b06-block-b", "b06-block-a"],
+  "ephemeral_ids": ["b06-z-block-z", "b06-z-block-y", "b06-z-block-v", "b06-z-block-w"],
+  "ordinary_edges": [
+    {"from":"b06-block-a","to":"b06-z-block-z","kind":"blocks"},
+    {"from":"b06-z-block-z","to":"b06-z-block-y","kind":"blocks"},
+    {"from":"b06-z-block-y","to":"b06-block-b","kind":"blocks"},
+    {"from":"b06-block-c","to":"b06-z-block-v","kind":"blocks"}
+  ],
+  "diagnostic_edges": [
+    {"from":"b06-block-b","to":"b06-block-a","kind":"blocks"},
+    {"from":"b06-z-block-v","to":"b06-block-c","kind":"blocks"}
+  ],
+  "parallel_edges": [
+    {"from":"b06-block-a","to":"b06-z-block-z","kind":"blocks"},
+    {"from":"b06-block-a","to":"b06-z-block-z","kind":"tracks"}
+  ],
+  "missing_id": "b06-z-block-z",
+  "expected_paths": [
+    ["b06-block-a","b06-z-block-z","b06-z-block-y","b06-block-b"],
+    ["b06-block-c","b06-z-block-v"]
+  ],
+  "missing_bridge_id": "b06-z-block-w",
+  "expected_missing_paths": [
+    ["b06-block-a","b06-z-block-w","b06-z-block-z","b06-z-block-y","b06-block-b"],
+    ["b06-block-c","b06-z-block-v"]
+  ],
+  "expected_missing_events": [
+    {"event_type":"created","old_value":"","new_value":"","comment":""},
+    {"event_type":"dependency_added","old_value":"","new_value":"Added dependency: b06-z-block-z blocks b06-z-block-y","comment":""}
+  ],
+  "expected_missing_count": 1,
+  "expected_cycle_count": 2,
+  "limit": 1
+}

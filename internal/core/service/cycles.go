@@ -14,6 +14,7 @@ import (
 
 type CyclesRequest struct {
 	Project          string
+	Agent            string
 	IncludeTracks    bool
 	IncludeEphemeral bool
 	Limit            int
@@ -56,7 +57,7 @@ func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesR
 	if s.authorizationInstalled != nil && s.authorizationInstalled() {
 		return CyclesResult{}, failure("authz_unavailable", "cycle read authorization is unavailable")
 	}
-	if err := CheckCycleReportCapability(s.store, req); err != nil {
+	if _, err := cycleLimit(req); err != nil {
 		return CyclesResult{}, err
 	}
 	r, err := s.reader(ctx, by, nil)
@@ -72,7 +73,7 @@ func (s *Service) Cycles(ctx context.Context, by model.PrincipalRef, req CyclesR
 		return r.Close()
 	}
 	defer closeContent()
-	result, err := ReadCycles(ctx, r, req, nil)
+	result, err := s.ReadCyclesFrom(ctx, by, r, req, nil)
 	if err != nil {
 		return CyclesResult{}, err
 	}
@@ -138,9 +139,18 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 	if req.IncludeEphemeral {
 		return CyclesResult{}, ephemeralCycleCapabilityFailure()
 	}
-	rows, err := scanBeads(ctx, reader)
+	graph, err := readCycleRows(ctx, reader)
 	if err != nil {
 		return CyclesResult{}, err
+	}
+	view := reader.Snapshot()
+	return readCycleGraph(ctx, graph, req, limit, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, readable)
+}
+
+func readCycleRows(ctx context.Context, reader driver.Reader) (map[string]cycleRow, error) {
+	rows, err := scanBeads(ctx, reader)
+	if err != nil {
+		return nil, err
 	}
 	graph := make(map[string]cycleRow, len(rows))
 	for id, row := range rows {
@@ -157,14 +167,14 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 		for {
 			page, err := topology.CycleTopology(ctx, cursor, 1000)
 			if err != nil {
-				return CyclesResult{}, mapped(err)
+				return nil, mapped(err)
 			}
 			if page.AsOf.String() != reader.Snapshot().At.String() {
-				return CyclesResult{}, failure("internal_error", "cycle topology snapshot mismatch")
+				return nil, failure("internal_error", "cycle topology snapshot mismatch")
 			}
 			for _, edge := range page.Items {
 				if driver.ValidateHierarchyRef(edge.From) != nil || driver.ValidateHierarchyRef(edge.To) != nil || edge.Kind == "" {
-					return CyclesResult{}, failure("internal_error", "invalid cycle topology edge")
+					return nil, failure("internal_error", "invalid cycle topology edge")
 				}
 				row, exists := graph[edge.From.ID]
 				if !exists {
@@ -182,13 +192,12 @@ func ReadCycles(ctx context.Context, reader driver.Reader, req CyclesRequest, re
 				previousOffset, _ = cursor.Index.Uint64()
 			}
 			if nextErr != nil || len(page.Items) == 0 || nextOffset <= previousOffset {
-				return CyclesResult{}, failure("internal_error", "non-advancing cycle topology page")
+				return nil, failure("internal_error", "non-advancing cycle topology page")
 			}
 			cursor = page.NextCursor
 		}
 	}
-	view := reader.Snapshot()
-	return readCycleGraph(ctx, graph, req, limit, AsOf{Revision: *view.At, Incarnation: view.Incarnation}, readable)
+	return graph, nil
 }
 
 func readCycleGraph(ctx context.Context, rows map[string]cycleRow, req CyclesRequest, limit int, asOf AsOf, readable func(context.Context, model.Ref) (bool, error)) (CyclesResult, error) {

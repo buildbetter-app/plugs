@@ -22,9 +22,14 @@ var undoLiteralBindings = map[string][]undoLiteralBinding{
 	},
 	// Canonical native refusal text at one exact B06 assertion site. The
 	// existing AST selector admits this node only, never the method body.
-	"spec/cardb20/b06_native_test.go": {
+	"spec/cardb20/b06_native_support_test.go": {
 		{name: "boundaries", kind: "func", contextSHA256: "bfb1380158269951ba46db01ae6a290f429637821dcecc2b7c9a8938706f57f4", literals: map[int]string{
 			832: "2b78b308b236a49d7c6bea2a94800e02cd3405ca23f917c0d0e503b557f55169",
+		}},
+	},
+	"spec/cardb20/b06_mixed_native_test.go": {
+		{name: "b06RecordMixedNative", kind: "func", contextSHA256: "cd53a8b288256af2e1f9d02bb88dddaf899833fe18ebb7d92f6ad58536d307cf", literals: map[int]string{
+			1601: "c8224c35f46d047833aed11fe2df067f13520c73945064daaf165395b9120153",
 		}},
 	},
 	"internal/integration/nightlyrestore/native_diff_test.go": {
