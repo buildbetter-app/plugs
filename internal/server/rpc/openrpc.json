@@ -4607,6 +4607,57 @@
           "to"
         ],
         "additionalProperties": false
+      },
+      "BlockedBead": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "bead",
+          "blockedBy",
+          "blockedByCount",
+          "hiddenBlockers"
+        ],
+        "properties": {
+          "bead": {
+            "$ref": "#/components/schemas/Bead"
+          },
+          "blockedBy": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Ref"
+            }
+          },
+          "blockedByCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "hiddenBlockers": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "BlockedPage": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockedBead"
+            }
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "asOf": {
+            "$ref": "#/components/schemas/AsOf"
+          }
+        },
+        "required": [
+          "items",
+          "asOf"
+        ],
+        "additionalProperties": false
       }
     },
     "errors": {

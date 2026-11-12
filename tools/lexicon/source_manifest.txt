@@ -436,6 +436,8 @@ internal/core/service/BUILD.bazel
 internal/core/service/audit.go
 internal/core/service/audit_test.go
 internal/core/service/await_members.go
+internal/core/service/blocked.go
+internal/core/service/blocked_read_test.go
 internal/core/service/canonical_claim_slot_audit_test.go
 internal/core/service/claim_recovery.go
 internal/core/service/claim_recovery_integration_test.go
@@ -588,6 +590,7 @@ internal/integration/batchsql/b01_close_ancestry_test.go
 internal/integration/batchsql/b01_legacy_hierarchy_test.go
 internal/integration/batchsql/b01_persisted_hierarchy_test.go
 internal/integration/batchsql/b01_public_hierarchy_test.go
+internal/integration/batchsql/b02_installed_categories_test.go
 internal/integration/batchsql/b02_public_dependency_helpers_test.go
 internal/integration/batchsql/b02_public_dependency_refusal_test.go
 internal/integration/batchsql/b02_public_graph_test.go
@@ -981,6 +984,7 @@ internal/server/authzrpc/authzrpc_test.go
 internal/server/authzrpc/b04_error_bounds_test.go
 internal/server/authzrpc/b15_comments_page_test.go
 internal/server/authzrpc/binding_test.go
+internal/server/authzrpc/blocked.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
 internal/server/authzrpc/claim_test.go
@@ -1133,6 +1137,7 @@ internal/server/pluginmanifest/native_test.go
 internal/server/pluginmanifest/source_test.go
 internal/server/rpc/BUILD.bazel
 internal/server/rpc/admin.go
+internal/server/rpc/blocked.go
 internal/server/rpc/cmd/openrpcgen/BUILD.bazel
 internal/server/rpc/cmd/openrpcgen/main.go
 internal/server/rpc/comments.go
@@ -1622,6 +1627,7 @@ plugins/plug/SKILL.md
 plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
 plugins/workflow/batch_operations.go
+plugins/workflow/blocked_graph.go
 plugins/workflow/listing.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go
@@ -1635,6 +1641,7 @@ plugins/workflow/source_restore.go
 plugins/workflow/workflow.go
 plugins/workflow/workflow_test.go
 scripts/ci/BUILD.bazel
+scripts/ci/b02-contract-generate.py
 scripts/ci/bazel-testlogs/BUILD.bazel
 scripts/ci/bazel-testlogs/archive.py
 scripts/ci/bazel-testlogs/archive_test.py
@@ -1682,6 +1689,9 @@ spec/cardb01/record_reference.py
 spec/cardb01/reference-run-1.json
 spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
+spec/cardb02/BUILD.bazel
+spec/cardb02/blocked_public_test.go
+spec/cardb02/mixed_conditions_public_test.go
 spec/cardb07/BUILD.bazel
 spec/cardb07/README.md
 spec/cardb07/cases_test.go

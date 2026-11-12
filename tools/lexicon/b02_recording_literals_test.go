@@ -1,10 +1,75 @@
 package lexicon
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestB02DeltaRecorderAdmitsOnlyItsEightActualLiteralNodes(t *testing.T) {
+	root := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if !filepath.IsAbs(root) {
+		t.Fatal("actual RunsOn source root required")
+	}
+	content, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(b02DeltaNativeRecordingSource)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := b02RecordingLiteralOffsets(b02DeltaNativeRecordingSource, content)
+	if len(selected) != 8 {
+		t.Fatalf("exact delta recorder needs eight distinct AST nodes: %v", selected)
+	}
+	counts := map[string]int{}
+	var first goStringLiteral
+	for _, literal := range goStringLiterals(b02DeltaNativeRecordingSource, content) {
+		if selected[literal.start] {
+			if literal.imported {
+				t.Fatal("a physical recording allowance selected an import")
+			}
+			counts[protocolLiteralDigest(literal.value)]++
+			if first.value == "" {
+				first = literal
+			}
+		}
+	}
+	want := map[string]int{
+		"86da248d8fbd3746cacae227ef682a5519db171eee81f0c7230e49c6bd81fafa": 1,
+		"3661141c121cbe5b082b9852343d1d595ee5b5e0320549aa99dffe51cf0ba36a": 1,
+		"26b967b81945b1f29e51ee6b66abd6fcaf05f7c245f3fa96efee020b6669dd38": 2,
+		"aa2de5dd0ae80783cec8fd6a7349dad46190fc48074f6f0fd34095e9ad5c0df2": 1,
+		"98976f802ca24d35949011c82f2c8791093021212b66bb35f84bb2080eabce8e": 1,
+		"02d586bd63921f4fbd7213ced3ab6a14f2e611bf9a486398ccc8420523e46964": 1,
+		"7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72": 1,
+	}
+	if !reflect.DeepEqual(counts, want) {
+		t.Fatal("delta recorder selected different literal values or multiplicities", counts)
+	}
+	cfg, _ := checkedInExternalProtocolConfig(t)
+	findings, err := CheckFiles(map[string][]byte{b02DeltaNativeRecordingSource: content}, cfg)
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("the complete actual delta recorder still has findings: %v %v", findings, err)
+	}
+	for _, path := range []string{"spec/cardb20/other_test.go", b02NativeRecordingSource, "./" + b02DeltaNativeRecordingSource} {
+		if offsets := b02RecordingLiteralOffsets(path, content); len(offsets) != 0 {
+			t.Fatal("delta literal allowance escaped its exact source path", path)
+		}
+	}
+	for name, changed := range map[string]string{
+		"value":          string(content[:first.start]) + strconv.Quote(first.value+" changed") + string(content[first.end:]),
+		"context":        strings.Replace(string(content), "func b02DeltaMixedRows(", "func otherMixedRows(", 1),
+		"copied-literal": string(content) + "\nvar copied = " + strconv.Quote(first.value) + "\n",
+		"copied-comment": string(content) + "\n// " + first.value + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if offsets := b02RecordingLiteralOffsets(b02DeltaNativeRecordingSource, []byte(changed)); len(offsets) != 0 {
+				t.Fatal("changed delta postimage acquired literal admission")
+			}
+		})
+	}
+}
 
 // This small parser fixture exercises selection independently of the frozen
 // recorder body. The production wrapper has its own immutable binding; its
