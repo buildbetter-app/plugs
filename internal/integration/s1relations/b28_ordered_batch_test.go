@@ -32,7 +32,11 @@ type b28BatchDelivery struct {
 func b28BatchDocument(id, title, description string) pipeline.Document {
 	return pipeline.Document{
 		ID: id, Type: "issue", Project: "s1", CreatedAt: &fixedTime,
-		Fields: map[string]any{"title": title, "description": description, "status": "todo"},
+		// The frozen ontology schema supplies these fixed kernel defaults.
+		Fields: map[string]any{
+			"title": title, "description": description, "status": "todo",
+			"priority": 2, "template": false,
+		},
 	}
 }
 
@@ -88,7 +92,10 @@ func TestB28PublicHeterogeneousBatchPreservesWholeChangeOrderAndSnapshots(t *tes
 		for i, doc := range before {
 			ids[i], refs[i] = doc.ID, ref(doc.ID)
 			seedOps[i] = model.Op{Kind: model.OpCreate, Create: &model.CreateOp{
-				Kind: model.OpCreate, Type: "issue", Fields: doc.Fields,
+				// Keep the original sparse request; the expected image includes defaults.
+				Kind: model.OpCreate, Type: "issue", Fields: map[string]any{
+					"title": doc.Fields["title"], "description": doc.Fields["description"], "status": doc.Fields["status"],
+				},
 			}}
 		}
 		f := newFixture(t, kind, ids)
