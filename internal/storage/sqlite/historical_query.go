@@ -196,26 +196,30 @@ func (r *reader) historicalQueryCursor(ctx context.Context, c *driver.Cursor, di
 func historicalQueryWhere(filter map[string]any, after string, at uint64) ([]string, []any) {
 	where := []string{"v.key>?", "v.rev=(SELECT v2.rev FROM versions AS v2 WHERE v2.key=v.key AND v2.rev<=? ORDER BY v2.rev DESC LIMIT 1)", "json_extract(v.query_fields,'$.deleted')=0"}
 	args := []any{after, revKey(at)}
-	predicates := []string{}
-	bodyFilter := false
+	identity := []string{}
+	body := []string{}
 	for _, field := range []string{"kind", "id", "key", "type", "project", "status"} {
 		if value, ok := filter[field]; ok {
 			if field == "kind" {
-				predicates = append(predicates, "o.kind=?")
+				identity = append(identity, "o.kind=?")
 			} else {
-				predicates = append(predicates, "json_extract(v.query_fields,'$."+field+"')=?")
-				bodyFilter = bodyFilter || field == "type" || field == "project" || field == "status"
+				predicate := "json_extract(v.query_fields,'$." + field + "')=?"
+				if field == "id" || field == "key" {
+					identity = append(identity, predicate)
+				} else {
+					body = append(body, predicate)
+				}
 			}
 			args = append(args, value)
 		}
 	}
-	if len(predicates) > 0 {
-		predicate := strings.Join(predicates, " AND ")
-		if bodyFilter {
-			predicate = "(" + predicate + ") OR json_extract(v.query_fields,'$.body_error')=1"
-		}
-		where = append(where, "("+predicate+")")
+	if len(identity) > 0 {
+		where = append(where, strings.Join(identity, " AND "))
 	}
+	if len(body) > 0 {
+		where = append(where, "(("+strings.Join(body, " AND ")+") OR json_extract(v.query_fields,'$.body_error')=1)")
+	}
+
 	return where, args
 }
 

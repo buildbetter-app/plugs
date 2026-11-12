@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -23,42 +24,50 @@ import (
 // and only then slice. recordAt is deliberately unchanged production code.
 func historicalQueryReference(t *testing.T, ctx context.Context, r *reader, filter map[string]any) []driver.Record {
 	t.Helper()
-	rows, err := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
+	out, err := historicalQueryReferenceResult(ctx, r, filter)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return out
+}
+
+func historicalQueryReferenceResult(ctx context.Context, r *reader, filter map[string]any) ([]driver.Record, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT key FROM objects ORDER BY key`)
+	if err != nil {
+		return nil, err
 	}
 	var keys []string
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	if err := rows.Close(); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	out := make([]driver.Record, 0)
 	for _, key := range keys {
 		record, found, err := r.recordAt(ctx, key)
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		if !found {
 			continue
 		}
 		ok, err := matches(record, filter)
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		if ok {
 			out = append(out, record)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func assertHistoricalWalk(t *testing.T, ctx context.Context, r *reader, filter map[string]any, limit int) {
@@ -239,8 +248,14 @@ func TestHistoricalQueryPageWorkAcrossCorpusSizesAndSparseFilters(t *testing.T) 
 					kind = "other"
 				}
 				body := []byte(fmt.Sprintf(`{"type":"issue","status":"open","project":"%s"}`, project))
-				raw, _ := json.Marshal(driver.Version{Ref: ref, Revision: model.Natural64(1), Base: true, Body: body})
-				fields, _ := json.Marshal(map[string]any{"deleted": false, "id": ref.ID, "key": ref.Key, "type": "issue", "status": "open", "project": project})
+				raw, err := json.Marshal(driver.Version{Ref: ref, Revision: model.Natural64(1), Base: true, Body: body, Principal: model.PrincipalRef{Kind: "system", ID: "historical-work-fixture"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				fields, err := json.Marshal(map[string]any{"deleted": false, "id": ref.ID, "key": ref.Key, "type": "issue", "status": "open", "project": project})
+				if err != nil {
+					t.Fatal(err)
+				}
 				if _, err = tx.ExecContext(ctx, `INSERT INTO objects(key,kind) VALUES(?,?)`, key, kind); err != nil {
 					t.Fatal(err)
 				}
@@ -453,9 +468,175 @@ func TestHistoricalQueryPreservesBodyErrorsBeyondLookahead(t *testing.T) {
 	if wantErr == nil {
 		t.Fatal("reference invalid body did not error")
 	}
-	var work queryReadWork
-	page, err := r.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1, Filter: map[string]any{"status": "open"}})
-	if err == nil || reflect.TypeOf(err) != reflect.TypeOf(wantErr) || err.Error() != wantErr.Error() || len(page.Items) != 0 || page.NextCursor != nil || work.payloads.Load() > 8 {
-		t.Fatalf("historical error changed beyond lookahead: page=%+v work=%d got=%v want=%v", page, work.payloads.Load(), err, wantErr)
+	for _, filter := range []map[string]any{{"status": "open"}, {"id": "error-z", "status": "open"}, {"kind": "test", "status": "open"}} {
+		var work queryReadWork
+		page, err := r.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1, Filter: filter})
+		if err == nil || reflect.TypeOf(err) != reflect.TypeOf(wantErr) || err.Error() != wantErr.Error() || len(page.Items) != 0 || page.NextCursor != nil || work.payloads.Load() > 8 {
+			t.Fatalf("historical error changed beyond lookahead: filter=%v page=%+v work=%d got=%v want=%v", filter, page, work.payloads.Load(), err, wantErr)
+		}
 	}
+}
+
+func TestHistoricalQueryMixedFiltersExcludeInvalidBodies(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "historical-mixed-errors.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	_, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: testRef("mixed-match"), Kind: "wanted", Op: model.OpCreate, Body: []byte(`{ "status":"open", "type":"issue", "project":"p" }`)},
+		{Ref: model.RefByKey("mixed-match-key"), Kind: "wanted", Op: model.OpCreate, Body: []byte(`{"status":"open","type":"issue","project":"p"}`)},
+		{Ref: testRef("mixed-array"), Kind: "other", Op: model.OpCreate, Body: []byte(`[1]`)},
+		{Ref: model.RefByKey("mixed-scalar"), Kind: "other", Op: model.OpCreate, Body: []byte(`17`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := getMeta(t, ctx, s).Head
+	seedRecord(t, ctx, s, lease, "later", `{}`)
+	r := getReader(t, ctx, s, getMeta(t, ctx, s), &at).(*reader)
+	filters := []map[string]any{
+		{"id": "mixed-match", "status": "open"},
+		{"key": "mixed-match-key", "project": "p"},
+		{"kind": "wanted", "type": "issue", "status": "open"},
+		{"kind": "wanted", "id": "mixed-match", "project": "p", "status": "open"},
+		{"id": "absent", "status": "open"},
+		{"key": "absent", "type": "issue"},
+		{"kind": "absent", "project": "p"},
+	}
+	for i, filter := range filters {
+		t.Run(fmt.Sprintf("filter_%d", i), func(t *testing.T) {
+			identity := map[string]any{}
+			for _, field := range []string{"kind", "id", "key"} {
+				if value, ok := filter[field]; ok {
+					identity[field] = value
+				}
+			}
+			// The predecessor iterates filter maps in unspecified order: an
+			// excluded array can be ignored or cause a decoding error, but can
+			// never cause a projection-mismatch error. Choose its identity-first
+			// outcome without making the differential depend on map iteration.
+			want := make([]driver.Record, 0)
+			for _, record := range historicalQueryReference(t, ctx, r, identity) {
+				ok, err := matches(record, filter)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ok {
+					want = append(want, record)
+				}
+			}
+			got := make([]driver.Record, 0)
+			var cursor *driver.Cursor
+			for pageNumber := 0; ; pageNumber++ {
+				if pageNumber > len(want)+1 {
+					t.Fatal("mixed-filter cursor did not terminate")
+				}
+				var work queryReadWork
+				page, err := r.Query(driver.WithReadWorkObserver(ctx, &work), driver.Query{Limit: 1, Filter: filter, Cursor: cursor})
+				if err != nil || work.payloads.Load() < int64(len(page.Items)) || work.payloads.Load() > 8 {
+					t.Fatalf("excluded invalid body affected page: filter=%v page=%+v work=%d err=%v", filter, page, work.payloads.Load(), err)
+				}
+				got = append(got, page.Items...)
+				if page.NextCursor == nil {
+					break
+				}
+				cursor = page.NextCursor
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("mixed-filter raw-record differential: got=%+v want=%+v", got, want)
+			}
+		})
+	}
+}
+
+func TestHistoricalQueryBodyErrorDifferentialAtHeadAndPastRevision(t *testing.T) {
+	ctx := testContext(t)
+	s := openStore(t, ctx, filepath.Join(t.TempDir(), "historical-error-differential.db"))
+	lease := getLease(t, ctx, s, driver.LeaseTTL)
+	_, err := conformance.Seed(ctx, s, lease, driver.ChangesetHeader{}, []conformance.FixtureChange{
+		{Ref: testRef("error-match"), Kind: "wanted", Op: model.OpCreate, Body: []byte(`{ "status":"open", "type":"issue", "project":"p" }`)},
+		{Ref: model.RefByKey("error-match-key"), Kind: "wanted", Op: model.OpCreate, Body: []byte(`{"status":"open","type":"issue","project":"p"}`)},
+		{Ref: testRef("error-array"), Kind: "other", Op: model.OpCreate, Body: []byte(`[1]`)},
+		{Ref: model.RefByKey("error-scalar"), Kind: "other", Op: model.OpCreate, Body: []byte(`17`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := getMeta(t, ctx, s).Head
+	check := func(t *testing.T, r *reader) {
+		t.Helper()
+		for i, filter := range []map[string]any{
+			nil, {"kind": "wanted"}, {"id": "error-match"},
+			{"kind": "wanted", "status": "open"},
+			{"id": "error-match", "status": "open"},
+			{"key": "error-match-key", "project": "p"},
+			{"status": "open"}, {"id": "error-array", "status": "open"},
+		} {
+			t.Run(fmt.Sprintf("filter_%d", i), func(t *testing.T) {
+				// Invoke the exact preserved enumerate/replay/matches algorithm.
+				// Its mixed-filter map order permits either exclusion or a typed
+				// decoding error; validate both permitted outcomes explicitly.
+				old, oldErr := historicalQueryReferenceResult(ctx, r, filter)
+				identity := map[string]any{}
+				for _, field := range []string{"kind", "id", "key"} {
+					if value, ok := filter[field]; ok {
+						identity[field] = value
+					}
+				}
+				want := make([]driver.Record, 0)
+				var wantErr error
+				for _, record := range historicalQueryReference(t, ctx, r, identity) {
+					ok, err := matches(record, filter)
+					if err != nil {
+						wantErr = err
+						break
+					}
+					if ok {
+						want = append(want, record)
+					}
+				}
+				if oldErr == nil {
+					if wantErr != nil || !reflect.DeepEqual(old, want) {
+						t.Fatalf("old path differs from identity-first outcome: got=%+v want=%+v err=%v", old, want, wantErr)
+					}
+				} else {
+					var decodeErr *json.UnmarshalTypeError
+					if !errors.As(oldErr, &decodeErr) {
+						t.Fatalf("unexpected old-path error: %v", oldErr)
+					}
+				}
+				page, err := r.Query(ctx, driver.Query{Limit: 8, Filter: filter})
+				if wantErr != nil {
+					if err == nil || reflect.TypeOf(err) != reflect.TypeOf(wantErr) || err.Error() != wantErr.Error() || len(page.Items) != 0 || page.NextCursor != nil {
+						t.Fatalf("decoding error differential: page=%+v got=%v want=%v", page, err, wantErr)
+					}
+				} else if err != nil {
+					// At head the unchanged matcher can visit a body predicate
+					// first, including on an identity-excluded array or scalar.
+					var decodeErr *json.UnmarshalTypeError
+					if r.at != mustUint(r.meta.Head) || !errors.As(err, &decodeErr) {
+						t.Fatalf("excluded body produced a new error: %v", err)
+					}
+				} else if page.AsOf != at || page.NextCursor != nil || !reflect.DeepEqual(page.Items, want) {
+					t.Fatalf("raw-record differential: page=%+v want=%+v", page, want)
+				}
+			})
+		}
+	}
+	t.Run("head", func(t *testing.T) {
+		r := getReader(t, ctx, s, getMeta(t, ctx, s), &at).(*reader)
+		defer r.Close()
+		if r.at != mustUint(r.meta.Head) {
+			t.Fatal("head control was not at head")
+		}
+		check(t, r)
+	})
+	seedRecord(t, ctx, s, lease, "later", `{}`)
+	t.Run("past", func(t *testing.T) {
+		r := getReader(t, ctx, s, getMeta(t, ctx, s), &at).(*reader)
+		defer r.Close()
+		if r.at >= mustUint(r.meta.Head) {
+			t.Fatal("past control was not below head")
+		}
+		check(t, r)
+	})
 }
