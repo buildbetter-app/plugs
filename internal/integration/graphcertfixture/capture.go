@@ -253,7 +253,8 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 		}
 	}
 	for i := range manifest.Sources {
-		if manifest.Sources[i].Family == "issues" {
+		switch manifest.Sources[i].Family {
+		case "issues", "issues.row_lock", "issues.is_blocked":
 			manifest.Sources[i].Rows = count
 		}
 	}
