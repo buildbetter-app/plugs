@@ -1,0 +1,72 @@
+{
+  "archive": {
+    "bytes": 2432512,
+    "sha256": "6bb282aa991fdf3f22527fa171808acfdef65b158b259c83c3badf3cdc153c8d"
+  },
+  "archive_members": {
+    "config/sources.json": {
+      "bytes": 71481,
+      "sha256": "51962d2fb1043787c03a44cc2d8343ea36b054353bc75b329d89be28b4369561"
+    },
+    "history/native-tables.json": {
+      "bytes": 2153649,
+      "sha256": "a501f2dd303cebc86fb682065fadfe85d604d694bbc9a8a0c807b252d6446200"
+    },
+    "history/source.json": {
+      "bytes": 68491,
+      "sha256": "25819a74e446424f4c168b2bd30a0bf8ea702140b9c031624ba342e9fe7daa5c"
+    },
+    "manifest.json": {
+      "bytes": 13837,
+      "sha256": "e94299d19acd61ee73ad68a8cced3175f9d9fa5faeed4bba1c6d63a7af938577"
+    },
+    "records/bead.ndjson": {
+      "bytes": 22562,
+      "sha256": "6920fd2deb96366296d7ff0880ba1f15a8cdeff308adcaab0afec0043ed727e1"
+    },
+    "records/edge.ndjson": {
+      "bytes": 4122,
+      "sha256": "95c74b2bc16d96514c9638e4cb6bb462feacebdd84b26bf21a4f1b30aa1121e4"
+    }
+  },
+  "oracle_files": {
+    "oracle/issues-current.table.json": {
+      "bytes": 15475,
+      "sha256": "e57128acae53ddc8c7c7a00e5958fc8e1cc39936d0900bc226e4bb9ebfae32b9"
+    },
+    "oracle/labels-current.table.json": {
+      "bytes": 2111,
+      "sha256": "8d14fb5b3d5e962edf26098cb7657a3e44328d9a3ca97bbfd294676e5279eb8a"
+    },
+    "oracle/source-commits.json": {
+      "bytes": 50780,
+      "sha256": "4d7d8c674b6b1f9d1d783c84146d85ef04a38c2defa7cfdfb7a826e83ec4824d"
+    },
+    "oracle/states.ndjson": {
+      "bytes": 23077,
+      "sha256": "5509589636877f276aa9984d9395c9cb64bea0a5d71a8b3ea5fb62ad6ed6d7b0"
+    },
+    "oracle/tables.ndjson": {
+      "bytes": 2650087,
+      "sha256": "8b7bc1025afcacab7d8631183ae064fe1f88d568b83be6e9985fc4787647a623"
+    }
+  },
+  "protected_classification": "local_metadata key names/counts only; values excluded per escalations.md:2607",
+  "qualification": "actual-native-source-table-evidence-and-imported-public-head; portable-old-asof-boundary-is-separate",
+  "schema": "b23-native-public-fixture/1",
+  "source": {
+    "anchor": "b1c03e196f277b6821610af983499d49ecc366c5",
+    "commit_count": 122,
+    "native_history": "history/native-tables.json",
+    "native_manifest": "/tmp/plug-swarm/reports/native-rich-relations-325dd-20261111/r4-native-originals/MANIFEST.json",
+    "portable_history_status": "available-unverified",
+    "producer_delivery": "/tmp/plug-swarm/reports/native-rich-relations-325dd-20261111/r4-handoff/DELIVERY.json",
+    "producer_head": "99021f543e57d57b27d7a8d0d6263eafa4d2b4cf",
+    "producer_parent": "0da51942d67d192a9a7a4db888b297d5d69ba94a",
+    "producer_tree": "6f3cb7e7fde39a8351c3071531ed69e7a7759cc0",
+    "project": "review-project",
+    "source_head": "i6vsgrmkbj53nknbu8no9n4hg3a4v0t7",
+    "store_id": "native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee"
+  },
+  "source_history_disposition": "native table history is inert source evidence; no public portable business rows are filled into source commit snapshots"
+}

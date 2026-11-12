@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_test")
 
 COMMON = ["fixture_test.go", "query_support_test.go"]
 DEPS = [
+    "//internal/core/dumpformat",
     "//internal/core/model",
     "//internal/core/ontology",
     "//internal/core/pipeline",
@@ -17,6 +18,7 @@ DEPS = [
     "//internal/testclock",
     "//internal/integration/b07positive",
     "//internal/integration/b07positive/public",
+    "//internal/integration/converterroundtrip",
     "//plugins/workflow",
 ]
 
@@ -36,6 +38,12 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+filegroup(
+    name = "b23_native_rich_fixture",
+    srcs = glob(["testdata/native-rich-review-project/**"]),
+    visibility = ["//visibility:public"],
+)
+
 # Generation runs only on RunsOn. Its output is applied before product gates;
 # this target is generation evidence, not a behavior test or whole substitute.
 sh_test(
@@ -51,10 +59,11 @@ sh_test(
 
 go_test(
     name = "native_query_test",
-    srcs = COMMON + ["native_query_test.go", "native_cap_test.go", "//spec/cardb20:native_build_support"],
+    srcs = COMMON + ["native_query_test.go", "native_cap_test.go", "native_history_test.go", "//spec/cardb20:native_build_support"],
     args = ["-test.v"],
-    data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+    data = [":b23_native_rich_fixture", "//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
     env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256"],
     size = "enormous",
     tags = ["local", "manual"],
     timeout = "eternal",
