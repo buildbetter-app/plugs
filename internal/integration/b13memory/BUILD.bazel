@@ -4,6 +4,7 @@ go_test(
     name = "b13memory_test",
     srcs = [
         "fixture_test.go",
+        "fullcard_controls_test.go",
         "lifecycle_test.go",
         "oracle_test.go",
         "postgres_test.go",
@@ -21,12 +22,14 @@ go_test(
         "//internal/core/restore",
         "//internal/core/service",
         "//internal/server/rpc",
+        "//internal/server/pluginhost",
         "//internal/server/transport/inprocess",
         "//internal/storage/conformance",
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//plugins/workflow",
     ],
 )
 

@@ -244,6 +244,14 @@ func (f *fixture) accept(method string, params map[string]any, key string, op mo
 		f.t.Fatalf("accepted write did not publish exactly one result/revision/log: %+v", commit)
 	}
 	item := commit.Results[0]
+	if method == "memory.save" {
+		wantReplaced := op != model.OpCreate
+		if item.Replaced == nil || *item.Replaced != wantReplaced {
+			f.t.Fatalf("memory.save replaced field: got=%v want=%t", item.Replaced, wantReplaced)
+		}
+	} else if item.Replaced != nil {
+		f.t.Fatal("other operations must omit replaced")
+	}
 	if item.Revision.String() != commit.Revision.String() || len(after.Versions[item.Ref.ID]) != len(before.Versions[item.Ref.ID])+1 {
 		f.t.Fatalf("accepted write did not publish exactly one version: %+v", commit)
 	}

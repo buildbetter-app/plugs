@@ -23,6 +23,9 @@ type OpResult struct {
 	Revision Revision          `json:"revision"`
 	Record   json.RawMessage   `json:"record,omitempty"`
 	SetBy    map[string]string `json:"setBy,omitempty"`
+	// Replaced is present only for memory.save, including false on creation.
+	// It is stored with the commit so replay retains the original observation.
+	Replaced *bool `json:"replaced,omitempty"`
 }
 type Warning struct {
 	Code    WarningCode    `json:"code"`
