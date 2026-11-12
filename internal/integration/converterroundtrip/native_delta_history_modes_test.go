@@ -16,36 +16,44 @@ import (
 )
 
 func TestNativeDeltaCaptureCLIMemoryPartial(t *testing.T) {
-	runNativeDeltaCaptureCLIHistoryMode(t, "memory", "partial")
+	runNativeDeltaCaptureCLIHistoryMode(t, "memory", "partial", 2)
 }
 
 func TestNativeDeltaCaptureCLIMemorySnapshot(t *testing.T) {
-	runNativeDeltaCaptureCLIHistoryMode(t, "memory", "snapshot")
+	runNativeDeltaCaptureCLIHistoryMode(t, "memory", "snapshot", 0)
 }
 
 func TestNativeDeltaCaptureCLISqlitePartial(t *testing.T) {
-	runNativeDeltaCaptureCLIHistoryMode(t, "sqlite", "partial")
+	runNativeDeltaCaptureCLIHistoryMode(t, "sqlite", "partial", 17) // Populated authenticated predecessor.
 }
 
 func TestNativeDeltaCaptureCLISqliteSnapshot(t *testing.T) {
-	runNativeDeltaCaptureCLIHistoryMode(t, "sqlite", "snapshot")
+	runNativeDeltaCaptureCLIHistoryMode(t, "sqlite", "snapshot", 0)
 }
 
 func TestNativeDeltaCaptureCLIPostgresPartial(t *testing.T) {
-	runNativeDeltaCaptureCLIHistoryMode(t, "postgres", "partial")
+	runNativeDeltaCaptureCLIHistoryMode(t, "postgres", "partial", 2)
 }
 
 func TestNativeDeltaCaptureCLIPostgresSnapshot(t *testing.T) {
-	runNativeDeltaCaptureCLIHistoryMode(t, "postgres", "snapshot")
+	runNativeDeltaCaptureCLIHistoryMode(t, "postgres", "snapshot", 0)
 }
 
-func runNativeDeltaCaptureCLIHistoryMode(t *testing.T, engine, mode string) {
+func TestNativeDeltaCaptureCLIMemoryPartialFirstSequence(t *testing.T) {
+	runNativeDeltaCaptureCLIHistoryMode(t, "memory", "partial", 1)
+}
+
+func TestNativeDeltaCaptureCLISqlitePartialFirstSequence(t *testing.T) {
+	runNativeDeltaCaptureCLIHistoryMode(t, "sqlite", "partial", 1)
+}
+
+func TestNativeDeltaCaptureCLIPostgresPartialFirstSequence(t *testing.T) {
+	runNativeDeltaCaptureCLIHistoryMode(t, "postgres", "partial", 1)
+}
+
+func runNativeDeltaCaptureCLIHistoryMode(t *testing.T, engine, mode string, first uint64) {
 	t.Helper()
 	binary, binaryHash := receivingBinary(t)
-	first := uint64(2)
-	if engine == "sqlite" {
-		first = 17 // Exercise a populated authenticated predecessor too.
-	}
 	archive := publicNativeDeltaArchive(t)
 	defer archive.ReleaseNativeDecoded()
 	capture := nativeCLISetDirectory(t)
@@ -92,8 +100,17 @@ func runNativeDeltaCaptureCLIHistoryMode(t *testing.T, engine, mode string) {
 		t.Fatal("typed source provenance missing")
 	}
 	if mode == "partial" {
-		if e.FirstSequence != first || e.BaselineSequence != first-1 || e.OmittedPrefix == nil || *e.OmittedPrefix != (driver.SourceHistoryGap{First: 1, Last: first - 1, Reason: "operator-selected-floor"}) || result.Verification.Mapped != int(33-first) || result.Report.Restored.HistoryFloor != model.Natural64(1) || result.Report.Restored.Head != model.Natural64(35-first) {
+		baseline, head, floor := uint64(0), uint64(33), model.Natural64(0)
+		var gap *driver.SourceHistoryGap
+		if first > 1 {
+			baseline, head, floor = first-1, 35-first, model.Natural64(1)
+			gap = &driver.SourceHistoryGap{First: 1, Last: first - 1, Reason: "operator-selected-floor"}
+		}
+		if e.FirstSequence != first || e.BaselineSequence != baseline || !reflect.DeepEqual(e.OmittedPrefix, gap) || result.Verification.Mapped != int(33-first) || result.Report.Restored.HistoryFloor != floor || result.Report.Restored.Head != model.Natural64(head) {
 			t.Fatal("partial source floor/gap/mappings differ", e)
+		}
+		if first == 1 && (e.BaselineCommitID != "" || e.BaselineRootSHA256 != "") {
+			t.Fatal("first source sequence fabricated a predecessor", e)
 		}
 	} else if e.FirstSequence != 0 || e.BaselineSequence != 0 || e.OmittedPrefix != nil || result.Verification.Mapped != 0 || result.Report.Restored.Head != model.Natural64(1) || result.Report.Restored.HistoryFloor != model.Natural64(1) {
 		t.Fatal("snapshot fabricated source history", e)
@@ -116,7 +133,7 @@ func runNativeDeltaCaptureCLIHistoryMode(t *testing.T, engine, mode string) {
 	if recovered.Archive != nil {
 		defer recovered.Archive.ReleaseNativeDecoded()
 	}
-	if err != nil || !found || profile.NativeDeltaHistory == nil || profile.HistoryMode != driver.RestoreHistoryMode(mode) || !reflect.DeepEqual(recovered.NativeDeltaHistory, e) || !reflect.DeepEqual(recovered.Receipt, result.Report.Receipt) {
+	if err != nil || !found || profile.NativeDeltaHistory == nil || profile.HistoryMode != driver.RestoreHistoryMode(mode) || !reflect.DeepEqual(recovered.NativeDeltaHistory, e) || !reflect.DeepEqual(recovered.Receipt, result.Report.Receipt) || recovered.Restored.HistoryFloor != result.Report.Restored.HistoryFloor || recovered.Restored.Head != result.Report.Restored.Head {
 		t.Fatal("mode lost across independent connection recovery", err)
 	}
 	if err := VerifyNativeCaptureSetReadback(context.Background(), store, archive, recovered); err != nil {
