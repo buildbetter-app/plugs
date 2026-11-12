@@ -1,6 +1,7 @@
 spec/cardb20/B06-CYCLES.md
 spec/cardb20/BUILD.bazel
 spec/cardb20/README.md
+spec/cardb20/VOCABULARY.md
 spec/cardb20/b02_delta_native_test.go
 spec/cardb20/b02_mixed_delta_native_test.go
 spec/cardb20/b02_native_graph.md
@@ -24,3 +25,5 @@ spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
 spec/cardb20/sql_rows_test.go
 spec/cardb20/test_common.bzl
+spec/cardb20/vocabulary_native_test.go
+spec/cardb20/vocabulary_test.go
