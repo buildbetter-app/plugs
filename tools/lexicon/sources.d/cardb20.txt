@@ -8,8 +8,12 @@ spec/cardb20/b02_native_graph_test.go
 spec/cardb20/b02_native_recording_test.go
 spec/cardb20/b02_public_graph_test.go
 spec/cardb20/b02_tests.bzl
+spec/cardb20/b06_blocking_native_test.go
+spec/cardb20/b06_blocking_support_test.go
+spec/cardb20/b06_blocking_test.go
 spec/cardb20/b06_cases_test.go
 spec/cardb20/b06_mixed_faults_test.go
+spec/cardb20/b06_mixed_native_support_test.go
 spec/cardb20/b06_mixed_native_test.go
 spec/cardb20/b06_mixed_ordered_test.go
 spec/cardb20/b06_mixed_support_test.go
@@ -31,3 +35,5 @@ spec/cardb20/postgres_test.go
 spec/cardb20/runtime_test.go
 spec/cardb20/sql_rows_test.go
 spec/cardb20/test_common.bzl
+spec/cardb20/testdata/b06-blocking-native.json
+spec/cardb20/testdata/b06-blocking-native.provenance.md

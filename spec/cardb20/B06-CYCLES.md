@@ -124,3 +124,23 @@ links retain their exact checkpoint-only commit and public readback. In line
 with the binding 17:14 ruling, memory proves the positive process-lifetime
 behavior with Persistent()==false; only SQLite and PostgreSQL promise restart
 survival. A provider missing both lifetime and persistence markers still refuses.
+
+## Default mixed blocking and absent workflow hydration continuation
+
+The additive `b06_mixed_blocking_cycles_test` and manual
+`b06_mixed_blocking_native_cycles_test` close an acceptance gap: prior mixed
+positive reports required tracks and their default report was empty. The new
+cases pin two default mixed blocking cycles, one with two workflow members;
+raw lowest-ID rotation, member count, total count and truncation are exact.
+Parallel facts leave both paths unchanged. A deliberately absent workflow
+hydration row keeps its topology and its unreadable position. Complete and
+partial state each survives physical SQL reopen without loss. Diagnostic setup
+is explicitly separate from ordinary scheduling admission.
+
+The native request and independent typed expectations are committed under
+`testdata/b06-blocking-native.json`, with adjacent provenance and exact digest
+authentication before execution through the existing source-build/recording
+port. No native capture/import or history claim is made. The new native target
+runs only the new missing cases, retaining both independent native originals
+and each engine's unmodified public results. Authored source and proposed gates
+are not runtime qualification.
