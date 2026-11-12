@@ -401,7 +401,11 @@ func TestB02PublicBlockedPagingFiltersAndWorkflowVisibility(t *testing.T) {
 					Bead workflow.ItemView
 				}
 				reply := f.call("bead.get", map[string]any{"id": f.refs["owned"]})
-				if json.Unmarshal(reply.Result, &got) != nil || got.Bead.ID != f.refs["owned"].ID || got.Bead.Fields["priority"] != float64(1) {
+				if err := json.Unmarshal(reply.Result, &got); err != nil {
+					t.Fatal("decode public workflow item", err)
+				}
+				// ItemView preserves JSON numbers through its custom decoder.
+				if got.Bead.ID != f.refs["owned"].ID || got.Bead.Fields["priority"] != json.Number("1") {
 					t.Fatal("public readback lost stored workflow priority", string(reply.Result))
 				}
 				proof.Same(t, before, f.h.Capture())
