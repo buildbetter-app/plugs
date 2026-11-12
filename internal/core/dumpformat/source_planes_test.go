@@ -487,3 +487,50 @@ func TestSourcePlaneMergeRetainsIndependentPhysicalEdgeIdentity(t *testing.T) {
 		t.Fatal("mixed cap/legacy merge accepted")
 	}
 }
+
+func TestSourcePlaneReaderRetainsTypedIdentityRefusalWithoutAcceptance(t *testing.T) {
+	for index, table := range []string{DurableDependencyTable, EphemeralDependencyTable} {
+		t.Run(table, func(t *testing.T) {
+			f := sourcePlaneReaderFixture(t, "pl")
+			edge := &f.records["edge"][index]
+			raw := map[string]any{"_plug_edge_id": edge.ID, "_plug_metadata": map[string]any{"n": json.Number("9007199254740993")}}
+			edge.Body["metadata"], edge.Source.Fields["metadata"] = raw, raw
+			valid := sourcePlaneReaderBytes(t, f)
+			archive, err := Read(bytes.NewReader(valid))
+			if err != nil || !bytes.Equal(archive.TarBytes(), valid) || !reflect.DeepEqual(archive.Records("edge")[index].Source.Fields["metadata"], raw) {
+				t.Fatalf("matching physical identity changed: %v", err)
+			}
+			for _, test := range []struct {
+				name    string
+				value   any
+				present bool
+			}{
+				{"mismatch", "edge-fixture", true},
+				{"absent", nil, false},
+				{"null", nil, true},
+				{"wide-number", json.Number("9007199254740993"), true},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					raw := map[string]any{"_plug_metadata": map[string]any{}}
+					if test.present {
+						raw["_plug_edge_id"] = test.value
+					}
+					edge.Body["metadata"], edge.Source.Fields["metadata"] = raw, raw
+					invalid := sourcePlaneReaderBytes(t, f)
+					archive, err := Read(bytes.NewReader(invalid))
+					var identity *EdgeMetadataIdentityError
+					if archive != nil || !errors.As(err, &identity) || err.Error() != "source plane dependency metadata: edge metadata envelope identity mismatch" {
+						t.Fatalf("invalid archive accepted or refusal changed: %v", err)
+					}
+					if identity.SourceTable != table || identity.EdgeID != edge.ID || identity.EnvelopePresent != test.present || !reflect.DeepEqual(identity.EnvelopeID, test.value) {
+						t.Fatalf("physical table/edge/envelope context changed: %+v", identity)
+					}
+					merged, err := Merge(bytes.NewReader(invalid), bytes.NewReader(valid))
+					if len(merged) != 0 || !errors.As(err, &identity) || identity.SourceTable != table {
+						t.Fatal("rejected archive acquired merged output or lost its typed refusal")
+					}
+				})
+			}
+		})
+	}
+}
