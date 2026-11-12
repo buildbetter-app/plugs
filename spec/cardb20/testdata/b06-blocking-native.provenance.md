@@ -54,7 +54,7 @@ constraint remains installed. `internal/storage/issueops/create.go` emits one
 created event for z. `internal/storage/issueops/dependencies.go` emits one
 dependency_added event for the successful ordinary z -> y blocks edge.
 `helpers.go:RecordEventInTable` stores its payload in new_value, with old_value
-empty; `derivedid.go:normalizeAuxEvent` stores unset wisp event values/comments
+empty; `derivedid.go:normalizeAuxEvent` stores unset ephemeral event values/comments
 as empty strings. The authored event signatures therefore require exactly one
 created row with empty old/new/comment and exactly one dependency_added row
 with empty old/comment and new_value
