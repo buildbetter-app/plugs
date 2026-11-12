@@ -187,6 +187,39 @@ func (in *b01CapturedReadyInput) commandOriginal(t *testing.T, name string) (b01
 	return receipt, stdout
 }
 
+// The original clock sidecar uses the producer's plugdump.Table wire shape,
+// whose exported Columns/Rows names differ from the native archive table wire.
+// Keep both original fields mandatory and preserve lexical SQL numbers.
+type b01CapturedClockSQLResult struct {
+	Columns []string         `json:"Columns"`
+	Rows    []dumpformat.Row `json:"Rows"`
+}
+
+func (result *b01CapturedClockSQLResult) UnmarshalJSON(raw []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if len(fields) != 2 {
+		return fmt.Errorf("native clock SQL result requires only original Columns and Rows")
+	}
+	for _, name := range []string{"Columns", "Rows"} {
+		value := bytes.TrimSpace(fields[name])
+		if len(value) == 0 || value[0] != '[' {
+			return fmt.Errorf("native clock SQL result requires original %s array", name)
+		}
+	}
+	type plain b01CapturedClockSQLResult
+	var decoded plain
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*result = b01CapturedClockSQLResult(decoded)
+	return nil
+}
+
 func (in *b01CapturedReadyInput) clock(t *testing.T, name string, goTime, sqlTime time.Time, wantSHA string) {
 	t.Helper()
 	clockBytes := in.Members["clocks/"+name+"/clock.json"]
@@ -203,13 +236,13 @@ func (in *b01CapturedReadyInput) clock(t *testing.T, name string, goTime, sqlTim
 	b01CaptureDecode(t, clockBytes, &input)
 	var observedClock struct {
 		Clock struct {
-			Input      clockInput             `json:"input"`
-			GoObserved time.Time              `json:"go_observed"`
-			GoTick     int64                  `json:"go_input_resolution_ns"`
-			SQLTick    int64                  `json:"sql_input_resolution_ns"`
-			DefaultSQL int64                  `json:"sql_default_utc_timestamp_resolution_ns"`
-			SQLResult  dumpformat.NativeTable `json:"sql_result"`
-			Columns    dumpformat.NativeTable `json:"column_precision"`
+			Input      clockInput                `json:"input"`
+			GoObserved time.Time                 `json:"go_observed"`
+			GoTick     int64                     `json:"go_input_resolution_ns"`
+			SQLTick    int64                     `json:"sql_input_resolution_ns"`
+			DefaultSQL int64                     `json:"sql_default_utc_timestamp_resolution_ns"`
+			SQLResult  b01CapturedClockSQLResult `json:"sql_result"`
+			Columns    b01CapturedClockSQLResult `json:"column_precision"`
 		} `json:"capture_clock"`
 	}
 	b01CaptureDecode(t, in.Members["clocks/"+name+"/actual-clock-sidecar.json"], &observedClock)
@@ -225,6 +258,76 @@ func (in *b01CapturedReadyInput) clock(t *testing.T, name string, goTime, sqlTim
 	b01CaptureDecode(t, in.Members["clocks/"+name+"/actual-sql.json"], &direct)
 	if direct["utc_timestamp_6"] != stamp || direct["utc_timestamp"] != stamp {
 		t.Fatal("direct native SQL clock differs", name)
+	}
+}
+
+func TestB01CapturedClockSQLResultWireContract(t *testing.T) {
+	in := b01ReadCapturedReady(t, b01CompleteReadyFixture, b01CompleteReadyFixtureSHA256)
+	var sidecar struct {
+		Clock map[string]json.RawMessage `json:"capture_clock"`
+	}
+	b01CaptureDecode(t, in.Members["clocks/create-old/actual-clock-sidecar.json"], &sidecar)
+	for _, sample := range []struct {
+		name    string
+		columns []string
+		rows    int
+	}{
+		{"sql_result", []string{"utc_microseconds", "utc_default", "session_time_zone", "server_version"}, 1},
+		{"column_precision", []string{"TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "DATETIME_PRECISION"}, 6},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			original := sidecar.Clock[sample.name]
+			var actual b01CapturedClockSQLResult
+			b01CaptureDecode(t, original, &actual)
+			if !reflect.DeepEqual(actual.Columns, sample.columns) || len(actual.Rows) != sample.rows {
+				t.Fatal("original clock SQL column/row census differs")
+			}
+			for _, row := range actual.Rows {
+				if len(row) != len(sample.columns) {
+					t.Fatal("original clock SQL row field census differs")
+				}
+				for _, column := range sample.columns {
+					if _, present := row[column]; !present {
+						t.Fatal("original clock SQL row field absent", column)
+					}
+				}
+				if sample.name == "column_precision" && row["DATETIME_PRECISION"] != json.Number("0") {
+					t.Fatal("original SQL datetime precision lost its lexical integer type/value")
+				}
+			}
+			for _, negative := range []struct {
+				name   string
+				mutate func(map[string]json.RawMessage)
+			}{
+				{"missing-columns", func(m map[string]json.RawMessage) { delete(m, "Columns") }},
+				{"missing-rows", func(m map[string]json.RawMessage) { delete(m, "Rows") }},
+				{"lowercase-columns", func(m map[string]json.RawMessage) { m["columns"] = m["Columns"]; delete(m, "Columns") }},
+				{"lowercase-rows", func(m map[string]json.RawMessage) { m["rows"] = m["Rows"]; delete(m, "Rows") }},
+				{"null-columns", func(m map[string]json.RawMessage) { m["Columns"] = json.RawMessage("null") }},
+				{"null-rows", func(m map[string]json.RawMessage) { m["Rows"] = json.RawMessage("null") }},
+				{"nonarray-columns", func(m map[string]json.RawMessage) { m["Columns"] = json.RawMessage("{}") }},
+				{"nonarray-rows", func(m map[string]json.RawMessage) { m["Rows"] = json.RawMessage("{}") }},
+				{"nontext-column", func(m map[string]json.RawMessage) { m["Columns"] = json.RawMessage("[1]") }},
+				{"extra-field", func(m map[string]json.RawMessage) { m["unexpected"] = json.RawMessage("true") }},
+			} {
+				t.Run(negative.name, func(t *testing.T) {
+					var fields map[string]json.RawMessage
+					b01CaptureDecode(t, original, &fields)
+					negative.mutate(fields)
+					raw, err := json.Marshal(fields)
+					if err != nil {
+						t.Fatal(err)
+					}
+					decoded := actual
+					if err := json.Unmarshal(raw, &decoded); err == nil {
+						t.Fatal("invalid clock SQL wire accepted")
+					}
+					if !reflect.DeepEqual(decoded, actual) {
+						t.Fatal("invalid clock SQL wire changed the retained original result")
+					}
+				})
+			}
+		})
 	}
 }
 
