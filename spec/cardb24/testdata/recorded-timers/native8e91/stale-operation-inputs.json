@@ -1,0 +1,10 @@
+{
+  "closed": "clockdefer-closed",
+  "comparison": "strict updated_at \u003c GoNow-24h",
+  "cutoff_age_hours": 24,
+  "deferred": "clockdefer-stale-deferred",
+  "open": "clockdefer-stale",
+  "sample_tick_ns": 1000000000,
+  "subsecond_cutoff_precision": "NOT_PROVED",
+  "updated_at": "2026-11-02T12:00:00Z"
+}

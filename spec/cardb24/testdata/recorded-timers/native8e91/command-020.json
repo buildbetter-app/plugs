@@ -1,0 +1,33 @@
+{
+  "argv": [
+    "stale",
+    "--days",
+    "0",
+    "--json"
+  ],
+  "cwd": "/tmp/bbt.61AhlL/tmp/TestPublicBehaviorDeferFixture3548776734/001",
+  "ended_at": "2026-11-11T17:42:13.566529126Z",
+  "executable": "/home/runner/.cache/bazel/_bazel_runner/d24860321d92de5b069c40600d91b65b/sandbox/linux-sandbox/2883/execroot/_main/bazel-out/k8-fastbuild/bin/cmd/plug-capture-sql-server/native_ready_defer_fixture_test_/native_ready_defer_fixture_test.runfiles/_main/cmd/bd/bd_/bd",
+  "exit_code": 1,
+  "fixture_environment": [
+    "HOME=/tmp/bbt.61AhlL/tmp/TestPublicBehaviorDeferFixture3548776734/002",
+    "TZ=UTC",
+    "XDG_CONFIG_HOME=/tmp/bbt.61AhlL/tmp/TestPublicBehaviorDeferFixture3548776734/002/.config",
+    "DOLT_ROOT_PATH=/tmp/bbt.61AhlL/tmp/TestPublicBehaviorDeferFixture3548776734/002",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_CONFIG_NOSYSTEM=1",
+    "BD_DISABLE_METRICS=1",
+    "BD_DISABLE_EVENT_FLUSH=1",
+    "BD_EVENTS_JOURNAL=false",
+    "BEADS_CAPTURE_CLOCK_FILE=/tmp/bbt.61AhlL/tmp/TestPublicBehaviorDeferFixture3548776734/003/clock.json",
+    "BEADS_CAPTURE_CLOCK_PUBLIC=1",
+    "BEADS_DOLT_AUTO_START=0",
+    "BEADS_DOLT_DATA_DIR=/tmp/bbt.61AhlL/tmp/TestPublicBehaviorDeferFixture3548776734/004",
+    "BEADS_DOLT_SERVER_MODE=1",
+    "BEADS_DOLT_SERVER_HOST=127.0.0.1",
+    "BEADS_DOLT_SERVER_PORT=32831"
+  ],
+  "started_at": "2026-11-11T17:42:13.475970318Z",
+  "stderr": "",
+  "stdout": "{\n  \"error\": \"--days must be at least 1\",\n  \"schema_version\": 1\n}\n"
+}

@@ -43,3 +43,75 @@ Plug preserves one ordered comment; native time wakes work while Plug requires
 explicit reopen; native past targets write and warn while Plug rejects `until`.
 Plug uses always-on ChangeSets. Native history-off version-row conservation
 proves no version writes and does not imply no internal version reads.
+
+The successor `timer_import_test` checks the actual public source's SQL NULL
+timer fields. The separate manual `canonical_timer_import_test` creates a
+canonical bead with due `2099-01-15` and defer `2099-06-15`, changes its title,
+and captures that actual database with the existing unchanged B09 `446dbb`
+capture-only executable. Both executables use B20's unchanged recipe and exact
+source archives. The exporter supplies evidence, not behavior expectations.
+The new native commands also check exact reason append, blank refusal, future
+exclusion and a deliberate past write followed by an actual history-off wake.
+
+Each new import uses the public converter API under explicit disposable
+test-host admission and then actual byte RPC. Exact timer values and the full
+source row remain metadata (`beads.source.due_at`, `beads.source.defer_until`,
+`beads.source_fields`) through unrelated and lifecycle writes. The application
+clock crosses the native timestamp before/at/after while the durable clock
+stays independent. Imported timers never create a Plug scheduler. Real SQL
+close/open and receipt recovery bind persistence; memory remains same-store.
+Complete logical and physical read conservation includes the snapshot floor,
+all retained versions/log entries, and every SQL application table.
+
+The actual `446dbb` portable timer capture declares the source-plane contract
+without native table histories. Its explicit snapshot admission uses the
+existing joint restore adapter, with one declared durable timer mapping and
+every captured record and sidecar retained by exact byte commitments. The plan
+uses the selected store's real checkpoint lifetime (`process` on memory,
+`restart` on SQL) and persistence marker, and recovery checks the original
+joint profile and receipt. Native table-history captures require their own
+full-history profile and are not flattened by this snapshot fixture.
+
+The unchanged public canonical CLI exposes neither the private Go stale cutoff
+nor the SQL wake predicate's evaluation instant. It also exposes no
+operation-bound `issue_versions` query trace. Exact native equality and no-load
+therefore remain `NOT_MEASURED`; actual no-mint and observed timestamps do not
+fill those missing cells. No clock shim, allocator/GMS edit or protected
+fixture is introduced.
+
+The new ordinary `recorded_timer_test` consumes unchanged public native
+originals instead of creating another capture. It compares the separately
+authored `a91` expectations with the reached `8e91` strict stale second-tick
+samples, nonpositive-age and blank-reason refusals, exact notes append, past
+warning/write, split Go/SQL wake before/at, and actual history-off version-row
+conservation. Each engine then executes new public byte-RPC controls with
+separate application/durable clocks, complete read/refusal images, ordinary
+ChangeSets, exact ordered comments and explicit reopen. SQLite and PostgreSQL
+actually close/open; memory remains same-store.
+
+The same target imports the saved canonical non-NULL due/defer archive from
+original `904` run `43067608625` through the existing finite joint snapshot
+caller. It runs field/readback/reopen controls in the ordinary whole suite
+without rebuilding or recapturing the native source. The input manifest binds
+all original bytes, source/run identities and native build/SQL/request
+receipts. The independent expectations precede this consumer; captured ready
+membership never supplies an oracle.
+
+This is a new consumer acceptance unit, not a completed native fixture result.
+The `8e91` original focus remains RED after its reached prefix. Native
+repeat-after and after-wake physical capture are `NOT_REACHED`; operation-bound
+version READ is `NOT_MEASURED`, and native subsecond stale precision is
+`NOT_PROVED`. Exact next-source focus/whole outcomes remain pending the
+controller's paced execution window and distinct review. The current producer
+confirmed no completed successor clock input; native-history capture import
+remains a separate receiver-owned Full-profile dependency.
+
+The retained `e1585fca` focus is RED: its six clock cells passed, while the
+non-NULL import cells and lexicon gate failed. The causal caller observes the
+selected driver's explicit workflow lifetime and optional stronger persistence
+capability before asserting them. An imported entity already in backlog must
+retain its exact typed defer refusal and unchanged state; explicit reopen
+prepares the subsequent positive defer. Raw fixture vocabulary is admitted
+only through the complete 68-path SHA-256 table. Changed bytes and unknown
+siblings remain refusals, and the consumer validator remains ordinary source.
+These source corrections carry no new runtime qualification.
