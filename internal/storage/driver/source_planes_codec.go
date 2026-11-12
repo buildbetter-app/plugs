@@ -72,7 +72,38 @@ func sourcePlaneError(reason string) error {
 	return fmt.Errorf("%w: source planes: %s", ErrUnsupported, reason)
 }
 
-func writeSourcePlaneBytes(out *bytes.Buffer, data []byte) error {
+type sourcePlaneWriter interface {
+	Write([]byte) (int, error)
+	WriteString(string) (int, error)
+	WriteByte(byte) error
+	Len() int
+}
+
+type sourcePlaneSizeWriter struct{ size int }
+
+func (w *sourcePlaneSizeWriter) Write(raw []byte) (int, error) {
+	w.size += len(raw)
+	return len(raw), nil
+}
+func (w *sourcePlaneSizeWriter) WriteString(raw string) (int, error) {
+	w.size += len(raw)
+	return len(raw), nil
+}
+func (w *sourcePlaneSizeWriter) WriteByte(byte) error { w.size++; return nil }
+func (w *sourcePlaneSizeWriter) Len() int             { return w.size }
+
+// SourcePlanePlanEncodedSizeV1 measures through the SAME closed codec without
+// an encoded buffer or a string-to-byte clone. This grants no validation or
+// binding authority; NewSourcePlaneImportBindingV1 still validates the plan.
+func SourcePlanePlanEncodedSizeV1(plan SourcePlanePlanV1) (uint64, error) {
+	var out sourcePlaneSizeWriter
+	if err := encodeSourcePlaneValue(&out, reflect.ValueOf(plan)); err != nil {
+		return 0, err
+	}
+	return uint64(out.Len()), nil
+}
+
+func writeSourcePlaneBytes(out sourcePlaneWriter, data []byte) error {
 	if len(data) > SourcePlaneMaxPlanBytes || out.Len() > SourcePlaneMaxPlanBytes-8-len(data) {
 		return sourcePlaneError("plan byte limit")
 	}
@@ -85,7 +116,7 @@ func writeSourcePlaneBytes(out *bytes.Buffer, data []byte) error {
 
 // Reflection is private and starts at one concrete, closed schema. No caller
 // can select a type, insert a map/interface, or change the field order.
-func encodeSourcePlaneValue(out *bytes.Buffer, v reflect.Value) error {
+func encodeSourcePlaneValue(out sourcePlaneWriter, v reflect.Value) error {
 	if out.Len() > SourcePlaneMaxPlanBytes-8 {
 		return sourcePlaneError("plan byte limit")
 	}
@@ -94,7 +125,15 @@ func encodeSourcePlaneValue(out *bytes.Buffer, v reflect.Value) error {
 		if !utf8.ValidString(v.String()) {
 			return sourcePlaneError("invalid UTF-8")
 		}
-		return writeSourcePlaneBytes(out, []byte(v.String()))
+		text := v.String()
+		if len(text) > SourcePlaneMaxPlanBytes || out.Len() > SourcePlaneMaxPlanBytes-8-len(text) {
+			return sourcePlaneError("plan byte limit")
+		}
+		var n [8]byte
+		binary.BigEndian.PutUint64(n[:], uint64(len(text)))
+		out.Write(n[:])
+		_, err := out.WriteString(text)
+		return err
 	case reflect.Uint64:
 		var n [8]byte
 		binary.BigEndian.PutUint64(n[:], v.Uint())

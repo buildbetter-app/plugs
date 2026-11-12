@@ -644,6 +644,9 @@ internal/integration/converterroundtrip/native_boundary_fixture_test.go
 internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_capture_set_cli_test.go
 internal/integration/converterroundtrip/native_collection.go
+internal/integration/converterroundtrip/native_collection_binding.go
+internal/integration/converterroundtrip/native_collection_binding_test.go
+internal/integration/converterroundtrip/native_collection_command_test.go
 internal/integration/converterroundtrip/native_collection_plan_test.go
 internal/integration/converterroundtrip/native_collection_readback.go
 internal/integration/converterroundtrip/native_collection_receiving_fault_test.go
@@ -2147,6 +2150,7 @@ tools/native-receive/README.md
 tools/native-receive/capture_set.go
 tools/native-receive/joined.go
 tools/native-receive/main.go
+tools/native-receive/native_collection.go
 tools/native-receive/policy.go
 tools/native-receive/session.go
 tools/native-receive/verify.go

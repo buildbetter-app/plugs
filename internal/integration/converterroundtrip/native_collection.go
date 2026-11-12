@@ -45,7 +45,7 @@ func (r *Report) Close() error {
 		return nil
 	}
 	owned := r.collection
-	r.collection, r.Archive, r.NativeFamilies, r.NativeSchemas, r.NativeHistories = nil, nil, nil, nil, nil
+	r.collection, r.Archive, r.NativeFamilies, r.NativeSchemas, r.NativeHistories, r.SourcePlanes = nil, nil, nil, nil, nil, nil
 	return owned.close()
 }
 
@@ -154,6 +154,10 @@ func RestoreNativeCaptureCollectionImportWithLease(ctx context.Context, binding 
 	if err != nil {
 		return report, err
 	}
+	return restorePreparedNativeCaptureCollection(ctx, p, target, lease)
+}
+
+func restorePreparedNativeCaptureCollection(ctx context.Context, p *nativeCollectionReceiving, target driver.Store, lease driver.ActiveLease) (report Report, err error) {
 	keep := false
 	defer func() {
 		if !keep {

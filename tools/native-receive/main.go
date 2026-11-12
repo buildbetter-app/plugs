@@ -28,15 +28,17 @@ import (
 )
 
 type request struct {
-	Format         string                        `json:"format"`
-	PolicySHA256   string                        `json:"policy_sha256,omitempty"`
-	OriginalInputs *joinedBinding                `json:"original_inputs,omitempty"`
-	ArchiveSHA256  string                        `json:"archive_sha256"`
-	SourceStoreID  string                        `json:"source_store_id"`
-	Projects       []string                      `json:"projects"`
-	Admission      driver.RestoreImportAdmission `json:"admission"`
-	IdempotencyKey string                        `json:"idempotency_key"`
-	SourcePlan     driver.SourcePlanePlanV1      `json:"source_plan"`
+	Format                       string                        `json:"format"`
+	PolicySHA256                 string                        `json:"policy_sha256,omitempty"`
+	OriginalInputs               *joinedBinding                `json:"original_inputs,omitempty"`
+	ArchiveSHA256                string                        `json:"archive_sha256"`
+	SourceStoreID                string                        `json:"source_store_id"`
+	Projects                     []string                      `json:"projects"`
+	Admission                    driver.RestoreImportAdmission `json:"admission"`
+	IdempotencyKey               string                        `json:"idempotency_key"`
+	SourcePlan                   driver.SourcePlanePlanV1      `json:"source_plan"`
+	CollectionSourcePreparations []int                         `json:"collection_source_preparations,omitempty"`
+	cleanup                      func() error
 }
 
 type verification struct {
@@ -51,21 +53,23 @@ type verification struct {
 }
 
 type receipt struct {
-	Format                   string                    `json:"format"`
-	PolicySHA256             string                    `json:"policy_sha256,omitempty"`
-	BinarySHA256             string                    `json:"binary_sha256"`
-	RequestSHA256            string                    `json:"request_sha256"`
-	ArchiveSHA256            string                    `json:"archive_sha256"`
-	Driver                   string                    `json:"driver"`
-	HistoryMode              string                    `json:"history_mode"`
-	RestoreTime              string                    `json:"restore_time"`
-	Verification             *verification             `json:"verification,omitempty"`
-	Report                   converterroundtrip.Report `json:"committed_report"`
-	OriginalInputs           *joinedBinding            `json:"original_inputs,omitempty"`
-	SessionCeilingSeconds    int64                     `json:"session_ceiling_seconds,omitempty"`
-	CrossProjectIDCollisions int                       `json:"cross_project_id_collisions"`
-	CaptureSetMeasurements   *captureSetMeasurements   `json:"capture_set_measurements,omitempty"`
-	CaptureSetVerification   *captureSetVerification   `json:"capture_set_verification,omitempty"`
+	Format                   string                        `json:"format"`
+	PolicySHA256             string                        `json:"policy_sha256,omitempty"`
+	BinarySHA256             string                        `json:"binary_sha256"`
+	RequestSHA256            string                        `json:"request_sha256"`
+	ArchiveSHA256            string                        `json:"archive_sha256"`
+	Driver                   string                        `json:"driver"`
+	HistoryMode              string                        `json:"history_mode"`
+	RestoreTime              string                        `json:"restore_time"`
+	Verification             *verification                 `json:"verification,omitempty"`
+	Report                   converterroundtrip.Report     `json:"committed_report"`
+	OriginalInputs           *joinedBinding                `json:"original_inputs,omitempty"`
+	SessionCeilingSeconds    int64                         `json:"session_ceiling_seconds,omitempty"`
+	CrossProjectIDCollisions int                           `json:"cross_project_id_collisions"`
+	CaptureSetMeasurements   *captureSetMeasurements       `json:"capture_set_measurements,omitempty"`
+	CaptureSetVerification   *captureSetVerification       `json:"capture_set_verification,omitempty"`
+	CollectionVerification   *nativeCollectionVerification `json:"native_collection_verification,omitempty"`
+	cleanup                  func() error
 }
 
 func digest(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
@@ -101,7 +105,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "native receiving refused:", err)
 		os.Exit(1)
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+	var cleanup func() error
+	if out, ok := result.(receipt); ok {
+		cleanup = out.cleanup
+	}
+	if input, ok := result.(request); ok {
+		cleanup = input.cleanup
+	}
+	writeErr := json.NewEncoder(os.Stdout).Encode(result)
+	result = nil // Drop response views before releasing their operation owner.
+	if cleanup != nil {
+		writeErr = errors.Join(writeErr, cleanup())
+	}
+	if err := writeErr; err != nil {
 		fmt.Fprintln(os.Stderr, "receiving receipt output failed:", err)
 		os.Exit(1)
 	}
@@ -116,7 +132,8 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	target := flags.String("target", "", "disposable SQLite path or PostgreSQL DSN; empty for memory")
 	var paths archivePaths
 	flags.Var(&paths, "archive", "original native archive; repeat in declared order for joined rehearsal")
-	captureSet := flags.String("capture-set", "", "native capture-set directory containing head and parts")
+	var captureSets archivePaths
+	flags.Var(&captureSets, "capture-set", "native capture-set directory; repeat in declared order for two-project policy v2")
 	requestPath := flags.String("request", "", "explicit trusted receiving request")
 	policyPath := flags.String("policy", "", "optional exact policy used to construct the request")
 	bindingPath := flags.String("bindings", "", "external ordered original source/project/database/hash bindings")
@@ -126,7 +143,7 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	if err := flags.Parse(args); err != nil {
 		return zero, err
 	}
-	if flags.NArg() != 0 || (len(paths) == 0) == (*captureSet == "") || *requestPath == "" || len(*expectedBinary) != 64 {
+	if flags.NArg() != 0 || (len(paths) == 0) == (len(captureSets) == 0) || len(captureSets) > 2 || *requestPath == "" || len(*expectedBinary) != 64 {
 		return zero, errors.New("exactly one archive input or capture-set directory, request and exact executable binding are required")
 	}
 	if *sessionLimit <= 0 || *sessionLimit > rehearsalSessionLimit {
@@ -149,8 +166,11 @@ func run(ctx context.Context, args []string) (out receipt, runErr error) {
 	if hashErr != nil || closeErr != nil || actualBinary != *expectedBinary {
 		return zero, errors.New("receiving executable binding differs")
 	}
-	if *captureSet != "" {
-		return runCaptureSet(ctx, *captureSet, *requestPath, *engine, *target, actualBinary, *policyPath, *bindingPath, *profilePath)
+	if len(captureSets) == 2 {
+		return runNativeCaptureCollection(ctx, captureSets, *requestPath, *engine, *target, actualBinary, *policyPath, *bindingPath, *profilePath)
+	}
+	if len(captureSets) == 1 {
+		return runCaptureSet(ctx, captureSets[0], *requestPath, *engine, *target, actualBinary, *policyPath, *bindingPath, *profilePath)
 	}
 	originals, err := loadOriginals(paths)
 	if err != nil {
