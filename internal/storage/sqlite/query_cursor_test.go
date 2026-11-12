@@ -325,8 +325,8 @@ func TestCurrentQueryReadWorkIncludesFilteredCandidates(t *testing.T) {
 	if err != nil || len(page.Items) != 1 || page.Items[0].Ref.ID != "accounting-test" {
 		t.Fatalf("filtered current page: %+v, %v", page, err)
 	}
-	wantBytes := int64(len(changes[0].Body))
-	if work.selectors.Load() != 1 || work.payloads.Load() != 1 || work.payloadBytes.Load() != wantBytes {
+	wantBytes := int64(len(changes[0].Body) + len(changes[1].Body))
+	if work.selectors.Load() != 4 || work.payloads.Load() != 3 || work.payloadBytes.Load() != wantBytes {
 		t.Fatalf("head materialization accounting changed: selectors=%d payloads=%d bytes=%d want_bytes=%d", work.selectors.Load(), work.payloads.Load(), work.payloadBytes.Load(), wantBytes)
 	}
 	// An unfiltered head page materializes every live row in its bounded
@@ -337,7 +337,7 @@ func TestCurrentQueryReadWorkIncludesFilteredCandidates(t *testing.T) {
 	if err != nil || len(unfiltered.Items) != 3 || unfiltered.NextCursor != nil {
 		t.Fatalf("unfiltered current page: %+v, %v", unfiltered, err)
 	}
-	if work.selectors.Load() != 3 || work.payloads.Load() != 3 || work.payloadBytes.Load() != wantBytes+int64(len(changes[1].Body)) {
+	if work.selectors.Load() != 4 || work.payloads.Load() != 3 || work.payloadBytes.Load() != wantBytes {
 		t.Fatalf("live-row materialization accounting changed: selectors=%d payloads=%d bytes=%d", work.selectors.Load(), work.payloads.Load(), work.payloadBytes.Load())
 	}
 }
@@ -542,6 +542,7 @@ func TestQueryHeadPagingStatementBoundAcrossCorpusSizes(t *testing.T) {
 					var work queryReadWork
 					seen := 0
 					const limit = 997
+					bodyBytes := int64(size * len(changes[0].Body))
 					for pageNumber := 0; ; pageNumber++ {
 						if pageNumber > 0 {
 							if err := r.Close(); err != nil {
@@ -585,9 +586,8 @@ func TestQueryHeadPagingStatementBoundAcrossCorpusSizes(t *testing.T) {
 								t.Fatalf("canonical continuation lacked ordered keyset SQL: %v", statements)
 							}
 						}
-						wantPageBytes := rows * int64(len(changes[0].Body))
-						if work.queries.Load() != 1 || work.selectors.Load() != rows || work.payloads.Load() != rows || work.payloadBytes.Load() != wantPageBytes || work.returned.Load() != int64(len(page.Items)) {
-							t.Fatalf("read-work accounting changed: queries=%d selectors=%d payloads=%d payload_bytes=%d want_bytes=%d returned=%d sql_rows=%d page_items=%d", work.queries.Load(), work.selectors.Load(), work.payloads.Load(), work.payloadBytes.Load(), wantPageBytes, work.returned.Load(), rows, len(page.Items))
+						if work.queries.Load() != 1 || work.selectors.Load() != int64(size) || work.payloads.Load() != int64(size) || work.payloadBytes.Load() != bodyBytes || work.returned.Load() != int64(len(page.Items)) {
+							t.Fatalf("read-work accounting changed: queries=%d selectors=%d payloads=%d payload_bytes=%d want_bytes=%d returned=%d sql_rows=%d page_items=%d", work.queries.Load(), work.selectors.Load(), work.payloads.Load(), work.payloadBytes.Load(), bodyBytes, work.returned.Load(), rows, len(page.Items))
 						}
 						for _, record := range page.Items {
 							want := changes[seen]
