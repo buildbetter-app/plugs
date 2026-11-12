@@ -167,6 +167,11 @@ func DefaultTreePolicy() TreePolicy {
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "e02f1f762c1b5d0f6ae64b19fc8772bee2d234650d363934b80204903f73aac4"
 
+	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/head.tar"] = "a48d37135afe56aca95c6675385855c148ae5dbdc9327dbe44bf715b7a073a4e"
+	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/parts/00000000000000000001.part"] = "1cf35b0abf24d69a53efe296a3b6e0163d3bcb4e88e7f8409101eef94b1d3adc"
+	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/head.tar"] = "35af10f464d6c7b3140cc4c87e7ac0eee9761a32b4a0ecc8b9fe6f7195d323b3"
+	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/parts/00000000000000000001.part"] = "972e3b0097d8fda9231475093f2754cdc7b5165f38b8a1aad6ff8bbaf16bf3d5"
+
 	// The numbered native schema corpus is immutable fixture input. Every
 	// file, including siblings without vocabulary matches, has an exact hash;
 	// a new sibling or changed byte continues to fail closed.
