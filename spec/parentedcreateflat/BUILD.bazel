@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Public ordinary-create regression copied from diagnostic 94ac7526; no B04 walk.
+go_test(
+    name = "parented_create_flat_test",
+    srcs = [
+        "b04_ordinary_authority_test.go",
+        "b04_ordinary_support_test.go",
+        "fixture_test.go",
+        "create_flat_test.go",
+        "child_semantics_test.go",
+        "initialization_test.go",
+    ],
+    args = ["-test.v"],
+    deps = [
+        "//internal/api/wire",
+        "//internal/core/authz",
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/service",
+        "//internal/integration/converterroundtrip",
+        "//internal/plugins/authnapikey",
+        "//internal/plugins/authzfixed",
+        "//internal/server/authn",
+        "//internal/server/authzrpc",
+        "//internal/server/rpc",
+        "//internal/server/transport/httpjson",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/conformance",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+        "//internal/testclock",
+        "@com_github_jackc_pgx_v5//stdlib:stdlib",
+    ],
+    tags = ["exclusive", "local", "requires-network"],
+    timeout = "long",
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

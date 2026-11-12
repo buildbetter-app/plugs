@@ -14,6 +14,44 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
+func TestIndexedGuardGraphOpenParentDoesNotEnumerateSiblings(t *testing.T) {
+	parent := guardRecord(t, "parent", "")
+	child := guardRecord(t, "new-child", "parent")
+	r := &indexedGuardReader{records: map[string]driver.Record{"parent": parent}}
+	for i := 0; i < 2500; i++ {
+		id := fmt.Sprintf("sibling-%04d", i)
+		r.records[id] = guardRecord(t, id, "parent")
+	}
+	proposal := port.ProposedChange{Changes: []port.Change{guardChange(t, driver.Record{}, child)}}
+	graph, complete, err := indexedGuardGraph(context.Background(), proposal, r, NewOntology(nil))
+	if err != nil || !complete || len(graph) != 2 || r.reads != 0 || r.gets != 1 || r.queries != 0 {
+		t.Fatalf("open parent graph=%d complete=%t selectors=%d gets=%d queries=%d err=%v", len(graph), complete, r.reads, r.gets, r.queries, err)
+	}
+}
+
+func TestIndexedGuardGraphRetainsOldParentCurrentStatusGuard(t *testing.T) {
+	oldParent := guardRecord(t, "old-parent", "")
+	var doc pipeline.Document
+	if err := json.Unmarshal(oldParent.Body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.Fields["status"] = "done"
+	oldParent.Body, _ = json.Marshal(doc)
+	newParent := guardRecord(t, "new-parent", "")
+	before, after := guardRecord(t, "moving", "old-parent"), guardRecord(t, "moving", "new-parent")
+	sibling := guardRecord(t, "remaining", "old-parent")
+	r := &indexedGuardReader{records: map[string]driver.Record{"old-parent": oldParent, "new-parent": newParent, "moving": before, "remaining": sibling}}
+	proposal := port.ProposedChange{Changes: []port.Change{guardChange(t, before, after)}}
+	o := NewOntology(nil)
+	graph, complete, err := indexedGuardGraph(context.Background(), proposal, r, o)
+	if err != nil || !complete || len(graph) != 4 || r.reads == 0 {
+		t.Fatalf("old guarded parent omitted: complete=%t graph=%d err=%v", complete, len(graph), err)
+	}
+	if err := o.validateHierarchyParents(proposal, graph); err == nil {
+		t.Fatal("old parent's unsatisfied current-status child guard was bypassed")
+	}
+}
+
 type indexedGuardReader struct {
 	port.SnapshotReader
 	records map[string]driver.Record

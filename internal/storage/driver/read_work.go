@@ -8,17 +8,20 @@ import "context"
 type ReadWorkKind string
 
 const (
-	ReadQueryCalls      ReadWorkKind = "query_calls"
-	ReadQueryReturned   ReadWorkKind = "query_rows_returned"
-	ReadGetCalls        ReadWorkKind = "get_calls"
-	ReadPayloadRecords  ReadWorkKind = "payload_records_materialized"
-	ReadPayloadBytes    ReadWorkKind = "payload_body_bytes_materialized"
-	ReadSelectorKeys    ReadWorkKind = "selector_keys_scanned"
-	ReadPrefixStates    ReadWorkKind = "prefix_metadata_states_decoded"
-	ReadPrefixBytes     ReadWorkKind = "prefix_metadata_state_bytes_decoded"
-	ReadAggregateInputs ReadWorkKind = "aggregate_input_visits"
-	ReadAggregateGroups ReadWorkKind = "aggregate_groups_constructed"
-	ReadItemProjections ReadWorkKind = "item_projections_constructed"
+	ReadQueryCalls     ReadWorkKind = "query_calls"
+	ReadQueryReturned  ReadWorkKind = "query_rows_returned"
+	ReadGetCalls       ReadWorkKind = "get_calls"
+	ReadPayloadRecords ReadWorkKind = "payload_records_materialized"
+	ReadPayloadBytes   ReadWorkKind = "payload_body_bytes_materialized"
+	// Numeric child identity candidates include rejected/staged identities and
+	// memory tree navigation nodes; SQL executor visits still need plan proof.
+	ReadChildIDCandidates ReadWorkKind = "numeric_child_id_candidates"
+	ReadSelectorKeys      ReadWorkKind = "selector_keys_scanned"
+	ReadPrefixStates      ReadWorkKind = "prefix_metadata_states_decoded"
+	ReadPrefixBytes       ReadWorkKind = "prefix_metadata_state_bytes_decoded"
+	ReadAggregateInputs   ReadWorkKind = "aggregate_input_visits"
+	ReadAggregateGroups   ReadWorkKind = "aggregate_groups_constructed"
+	ReadItemProjections   ReadWorkKind = "item_projections_constructed"
 )
 
 // ReadWorkObserver is optional request-local instrumentation. Implementations

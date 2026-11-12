@@ -80,6 +80,7 @@ type prepared struct {
 	allocatorCounts   map[string]uint64
 	beads             []driver.Record
 	beadsLoaded       bool
+	createdBeadIDs    []string
 	maxHierarchyDepth int
 	hierarchyEdits    []hierarchyEdit
 	hierarchyDelta    *hierarchyDelta
@@ -299,6 +300,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			current = &pending{ref: target, kind: "bead", doc: Document{ID: id, Type: c.Type, Project: project, Parent: parent, Fields: map[string]any{}, CreatedAt: &createdAt}, setBy: map[string]string{"createdAt": "core"}, allocatorPrefix: allocatorPrefix, allocatorExpected: allocatorExpected, allocatorChild: allocatorChild, allocatorHash: allocatorHash}
 			p.writes[id] = current
+			p.createdBeadIDs = append(p.createdBeadIDs, id)
 			if parent != nil {
 				current.setBy["parent"] = "request"
 			}
@@ -1085,6 +1087,36 @@ func (p *prepared) allocatorOccupied(ctx context.Context, id string) (bool, erro
 	return states[0].Present || !states[0].Revision.IsZero(), nil
 }
 
+// Child numbering consumes identity metadata, not existing child documents.
+// Every previously live ID remains consumed even if deleted in this batch,
+// exactly as allocatorObservations' add-before-deleted check. Only new creates
+// can add an identity to that base set; read-only parents and field edits cannot.
+func (p *prepared) observedChildNumber(ctx context.Context, parent string) (uint64, error) {
+	reader, ok := p.snapshot.reader.(driver.NumericChildReader)
+	if !ok {
+		_, _, maximum, err := p.allocatorObservations(ctx, "", parent)
+		return maximum, err
+	}
+	if _, err := p.snapshot.observe(ctx, []driver.LockKey{driver.GraphBlockingSentinelLock}); err != nil {
+		return 0, err
+	}
+	maximum, err := reader.MaxChildNumber(ctx, parent, nil)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range p.createdBeadIDs {
+		driver.ReportReadWork(ctx, driver.ReadChildIDCandidates, 1)
+		n, err := driver.ChildNumber(parent, id)
+		if errors.Is(err, driver.ErrUnsupported) {
+			return 0, err
+		}
+		if err == nil && n > maximum {
+			maximum = n
+		}
+	}
+	return maximum, nil
+}
+
 func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, error) {
 	incarnation := p.snapshot.Snapshot().Incarnation
 	key, err := driver.ParentCounterLock(incarnation, parent)
@@ -1104,7 +1136,7 @@ func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, 
 	} else if err != nil {
 		return "", err
 	}
-	_, _, observed, err := p.allocatorObservations(ctx, "", parent)
+	observed, err := p.observedChildNumber(ctx, parent)
 	if err != nil {
 		return "", err
 	}
@@ -1247,7 +1279,7 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 		}
 		return id, project, id, parent, nil
 	}
-	_, occupied, observed, err := p.allocatorObservations(ctx, project, parent)
+	observed, err := p.observedChildNumber(ctx, parent)
 	if err != nil {
 		return "", "", "", "", err
 	}
@@ -1261,12 +1293,9 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 	for current < ^uint64(0) {
 		current++
 		id := fmt.Sprintf("%s.%d", parent, current)
-		used := occupied[id]
-		if !used {
-			used, err = p.allocatorOccupied(ctx, id)
-			if err != nil {
-				return "", "", "", "", err
-			}
+		used, err := p.allocatorOccupied(ctx, id)
+		if err != nil {
+			return "", "", "", "", err
 		}
 		if !used {
 			return id, project, id, parent, nil
