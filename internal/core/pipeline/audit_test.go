@@ -194,7 +194,8 @@ func TestOrdinaryCloseReasonEvent(t *testing.T) {
 	if noop.Revision.String() != "3" || posts.Load() != 1 {
 		t.Fatalf("repeat close minted a change or post: %+v posts=%d", noop, posts.Load())
 	}
-	commented := apply(t, h.writer(), cs, slotMeta(5, "bead.close"))
+	freshReason := model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{}), {Kind: model.OpComment, Comment: &model.CommentOp{Target: ref, Body: "fresh reason"}}}}
+	commented := apply(t, h.writer(), freshReason, slotMeta(5, "bead.close"))
 	commentEntry := auditEntry(t, h, commented.Revision)
 	if commented.Revision.String() != "4" || len(commentEntry.Changes) != 1 || commentEntry.Changes[0].Op != model.OpComment || commentEntry.Events != nil {
 		t.Fatalf("same-status close changed legacy comment semantics: %+v", commentEntry)

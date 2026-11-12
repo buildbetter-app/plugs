@@ -436,12 +436,17 @@ func edgeRequireLinks(t *testing.T, s edgeContractState, ref model.Ref, want ...
 	}
 }
 
+type edgeExpectedClose struct {
+	At     *time.Time
+	Reason *string
+}
+
 // Pair this with the exact link-value assertion: every other member of the
 // source body must remain byte-value equivalent, except the explicitly named
-// field edits and an explicitly expected closedAt transition. Association or
+// field edits and an explicitly expected close time/reason transition. Association or
 // metadata writes cannot quietly change lifecycle times, status,
 // parent, comments, leases, labels or plugin metadata.
-func edgeRequireOnlyEdgeAndFields(t *testing.T, before, after edgeContractState, ref model.Ref, fields map[string]any, closedAt ...*time.Time) {
+func edgeRequireOnlyEdgeAndFields(t *testing.T, before, after edgeContractState, ref model.Ref, fields map[string]any, close ...edgeExpectedClose) {
 	t.Helper()
 	want := edgeJSONObject(t, before.Records[edgeRecordKey(ref)].Body)
 	got := edgeJSONObject(t, after.Records[edgeRecordKey(ref)].Body)
@@ -453,14 +458,19 @@ func edgeRequireOnlyEdgeAndFields(t *testing.T, before, after edgeContractState,
 	for name, value := range fields {
 		want["fields"].(map[string]any)[name] = value
 	}
-	if len(closedAt) > 1 {
-		t.Fatal("multiple expected closedAt edits")
+	if len(close) > 1 {
+		t.Fatal("multiple expected close identity edits")
 	}
-	if len(closedAt) == 1 {
-		if closedAt[0] == nil {
+	if len(close) == 1 {
+		if close[0].At == nil {
 			delete(want, "closedAt")
 		} else {
-			want["closedAt"] = closedAt[0].UTC().Format(time.RFC3339Nano)
+			want["closedAt"] = close[0].At.UTC().Format(time.RFC3339Nano)
+		}
+		if close[0].Reason == nil {
+			delete(want, "closeReason")
+		} else {
+			want["closeReason"] = *close[0].Reason
 		}
 	}
 	if !reflect.DeepEqual(got, want) {
