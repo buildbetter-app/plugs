@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
-	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
