@@ -176,6 +176,13 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 			}); err != nil {
 				return err
 			}
+			var versionData []byte
+			if err = c.QueryRowContext(ctx, `SELECT data FROM versions WHERE key=? AND rev=?`, id, revision).Scan(&versionData); err != nil {
+				return err
+			}
+			if err = populateHistoricalQueryFields(ctx, c, id, revision, versionData); err != nil {
+				return err
+			}
 			return publishKey(ctx, c, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref}, Revision: row.Revision, Present: !row.Deleted})
 		}); err != nil {
 			return err

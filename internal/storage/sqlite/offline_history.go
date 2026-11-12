@@ -107,6 +107,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 			if _, e = c.ExecContext(ctx, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,?,?)`, id, rev, v.Base, raw); e != nil {
 				return e
 			}
+			if e = populateHistoricalQueryFields(ctx, c, id, rev, raw); e != nil {
+				return e
+			}
 			state := driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &r.Ref}, Revision: r.Revision, Present: !row.Deleted}
 			if e = publishKey(ctx, c, state); e != nil {
 				return e
