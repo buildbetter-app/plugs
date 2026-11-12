@@ -12,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
 )
 
 // BindHistoryImport is a trusted-host preparation step after admission. It
@@ -55,6 +56,17 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 	}
 	if plan.derivedDigest != p.DerivedDigest {
 		return p, fmt.Errorf("%w: history current image/derived verification failed", ErrRestoreUnavailable)
+	}
+	if archive.HasNativeDelta() {
+		digest, err := nativeReceivingStreamDigest(ctx, archive, p, when)
+		if err != nil {
+			return p, err
+		}
+		if p.HistoryDigest != "" && p.HistoryDigest != digest {
+			return p, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
+		}
+		p.HistoryDigest = digest
+		return nativeDetachedProfile(archive, p)
 	}
 	h, err := lowerSourceHistory(archive, p, when, ctx)
 	if err != nil {
@@ -371,6 +383,16 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	archive, releaseArchive := archive.NativeDeltaAccountingScope()
 	defer releaseArchive()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
+	return validateHistoryRecoveryArchive(ctx, r, p, evidence, receipt, archive, nil)
+}
+
+// The same fixed reader's authenticated source is shared by all recovery
+// checks. A clean commit may additionally borrow its already validated history;
+// no target record can construct this operation-local value.
+func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *driver.OfflineHistory) error {
+	archive, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
 	if archive.SHA256() != p.ArchiveDigest {
 		return driver.ErrConflict
 	}
@@ -378,9 +400,40 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	if err != nil {
 		return driver.ErrConflict
 	}
-	history, err := lowerSourceHistory(archive, p, when, ctx)
-	if err != nil {
-		return nativeDeltaRecoveryError(err)
+	if archive.HasNativeDelta() {
+		stream, err := historyverify.PrepareNativeArchive(ctx, archive, p, when)
+		if err != nil {
+			return nativeDeltaRecoveryError(err)
+		}
+		defer stream.Close()
+		rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+		if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
+			return driver.ErrConflict
+		}
+		if err := stream.ValidateEvidence(ctx, p, rows[0].Body); err != nil {
+			return nativeDeltaRecoveryError(err)
+		}
+		header := stream.Header()
+		if header.First != 1 || header.Head == ^uint64(0) {
+			return driver.ErrConflict
+		}
+		revision := model.Natural64(header.Head + 1)
+		if receipt.Commit.Revision != revision || receipt.Changeset.Revision != revision {
+			return driver.ErrConflict
+		}
+		if err := stream.Close(); err != nil {
+			return nativeDeltaRecoveryError(err)
+		}
+		return nil
+	}
+	var history driver.OfflineHistory
+	if prepared != nil {
+		history = *prepared
+	} else {
+		history, err = lowerSourceHistory(archive, p, when, ctx)
+		if err != nil {
+			return nativeDeltaRecoveryError(err)
+		}
 	}
 	digest, err := nativeHistoryDigest(archive, history)
 	if err != nil || digest != p.HistoryDigest {

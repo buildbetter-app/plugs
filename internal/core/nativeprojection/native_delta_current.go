@@ -6,10 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"time"
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"sort"
+	"time"
 )
 
 func NativeDeltaNormalizedRow(row dumpformat.NativeDeltaRow) (dumpformat.Row, error) {
@@ -59,7 +59,11 @@ func NativeDeltaCurrentRecords(ctx context.Context, archive *dumpformat.Archive,
 	records := []driver.Record{}
 	reports := []NativeFamilyReport{}
 	seen := map[string]bool{}
-	err = archive.VisitNativeDeltaTableStates(ctx, func(state dumpformat.NativeDeltaTableState) error {
+	prepared, err := archive.PrepareNativeDelta(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	err = prepared.Visit(ctx, dumpformat.NativeDeltaVisitor{TableState: func(state dumpformat.NativeDeltaTableState) error {
 		if state.Kind == "commit" || state.Complete {
 			return nil
 		}
@@ -90,7 +94,7 @@ func NativeDeltaCurrentRecords(ctx context.Context, archive *dumpformat.Archive,
 			reports = append(reports, report)
 		}
 		return nil
-	})
+	}})
 	if err != nil {
 		return nil, nil, err
 	}

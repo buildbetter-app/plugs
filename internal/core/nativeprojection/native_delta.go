@@ -34,7 +34,11 @@ func retainNativeDeltaArchive(plan *restorePlan, archive *dumpformat.Archive, ad
 		}
 		plan.blobs[expected.SHA256] = data
 	}
-	if err := archive.VisitNativeCaptureFiles(context.Background(), func(name string, data []byte) error {
+	prepared, err := archive.PrepareNativeDelta(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := prepared.Visit(context.Background(), dumpformat.NativeDeltaVisitor{File: func(name string, data []byte) error {
 		file := dumpformat.File{SHA256: HashBytes(data), Size: int64(len(data))}
 		entry := struct {
 			Name string          `json:"name"`
@@ -45,7 +49,7 @@ func retainNativeDeltaArchive(plan *restorePlan, archive *dumpformat.Archive, ad
 		}
 		evidence.NativeCaptureFiles[name] = file
 		return nil
-	}); err != nil {
+	}}); err != nil {
 		return err
 	}
 	plan.nativeCapture = archive
@@ -90,4 +94,3 @@ func NativeSourcePlan(archive *dumpformat.Archive, binding driver.SourcePlaneImp
 	}
 	return binding.Plan()
 }
-
