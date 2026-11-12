@@ -170,6 +170,13 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		}); err != nil {
 			return err
 		}
+		var versionData []byte
+		if err = t.sql.QueryRowContext(ctx, `SELECT value FROM plug_postgres.versions WHERE key=$1 AND revision=$2`, []byte(id), row.Revision.String()).Scan(&versionData); err != nil {
+			return err
+		}
+		if err = populateHistoricalQueryFields(ctx, t.sql, id, row.Revision.String(), versionData); err != nil {
+			return err
+		}
 		return t.writeState(ctx, id, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref}, Revision: row.Revision, Present: !row.Deleted})
 	}); err != nil {
 		return fail(err)

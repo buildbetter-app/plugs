@@ -1466,6 +1466,8 @@ internal/storage/postgres/encoding.go
 internal/storage/postgres/engine_test.go
 internal/storage/postgres/fencing_test.go
 internal/storage/postgres/hierarchy_schema_test.go
+internal/storage/postgres/historical_query.go
+internal/storage/postgres/historical_query_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/lease_prepare_test.go
 internal/storage/postgres/lease_renewal_test.go
