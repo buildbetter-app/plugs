@@ -454,6 +454,9 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 								t.Fatal("effective source/core search leaked or lost a value")
 							}
 						}
+						b13ImportedLiteralSearch(t, want, func(query string) json.RawMessage {
+							return call("memory.list", map[string]any{"query": query, "limit": 100}, 0, "").Result
+						})
 						if !reflect.DeepEqual(before, snapshot()) {
 							t.Fatal("public projection changed durable state")
 						}
@@ -620,7 +623,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						params := map[string]any{"key": b13SourceKey, "content": b13SourceBody}
 						scopes = append(scopes, importedMemoryWriteScope{"memory.save", 671})
 						before := snapshot()
-						call("memory.save", params, 671, "")
+						b13ImportedReplacementResult(t, call("memory.save", params, 671, "").Result, true)
 						after := snapshot()
 						if !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Changes, after.Changes) || before.Meta != after.Meta {
 							t.Fatal("same-source-value save was not quiet")
@@ -631,6 +634,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 
 						before = snapshot()
 						first := call("memory.save", params, 672, "")
+						b13ImportedReplacementResult(t, first.Result, true)
 						after = snapshot()
 						var commit model.Commit
 						decode(t, first.Result, &commit)
@@ -664,7 +668,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 						scopes = append(scopes, importedMemoryWriteScope{"memory.save", 673})
 						before = snapshot()
-						call("memory.save", params, 673, "")
+						b13ImportedReplacementResult(t, call("memory.save", params, 673, "").Result, true)
 						after = snapshot()
 						if !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Changes, after.Changes) || before.Meta != after.Meta {
 							t.Fatal("overlay no-op changed value/time/history")
@@ -722,6 +726,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 					t.Run("imported-re-remember-new-lifetime-and-effective-reverse", func(t *testing.T) {
 						scopes = append(scopes, importedMemoryWriteScope{"memory.save", 677})
 						reply := call("memory.save", map[string]any{"key": b13SourceKey, "content": "Re-remembered Ω\n"}, 677, "")
+						b13ImportedReplacementResult(t, reply.Result, false)
 						var commit model.Commit
 						decode(t, reply.Result, &commit)
 						sourcePresent, sourceValue = true, "Re-remembered Ω\n"
@@ -746,6 +751,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 							scopes = append(scopes, importedMemoryWriteScope{"memory.save", key})
 							before := snapshot()
 							reply := call("memory.save", map[string]any{"key": "Core Ω", "content": content}, key, "")
+							b13ImportedReplacementResult(t, reply.Result, i != 0)
 							if i == 0 {
 								first = reply
 							}
@@ -760,7 +766,7 @@ func TestB13JointSourceCoreProjectionAndConservation(t *testing.T) {
 						}
 						scopes = append(scopes, importedMemoryWriteScope{"memory.save", 653})
 						before := snapshot()
-						call("memory.save", map[string]any{"key": "Core Ω", "content": "\tCore replaced Ω\n"}, 653, "")
+						b13ImportedReplacementResult(t, call("memory.save", map[string]any{"key": "Core Ω", "content": "\tCore replaced Ω\n"}, 653, "").Result, true)
 						after := snapshot()
 						if !reflect.DeepEqual(before.Records, after.Records) || !reflect.DeepEqual(before.Versions, after.Versions) || !reflect.DeepEqual(before.Changes, after.Changes) || before.Meta.Head != after.Meta.Head {
 							t.Fatal("same-value core save wrote history")

@@ -7,7 +7,7 @@ def b13_tests():
     # support. Existing B20 targets and helper bytes remain unchanged.
     go_test(
         name = "b13_memory_record_native_test",
-        srcs = COMMON + ["native_build_test.go", "native_recording_test.go", "b13_memory_native_test.go"],
+        srcs = COMMON + ["native_build_test.go", "native_recording_test.go", "b13_memory_native_test.go", "b13_fullcard_controls_test.go"],
         data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
         env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
         args = ["-test.v", "-test.run=^TestB13CanonicalPublicMemoryCounterparts$$"],

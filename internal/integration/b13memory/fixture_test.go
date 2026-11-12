@@ -45,20 +45,21 @@ type reply struct {
 }
 
 type fixture struct {
-	t             *testing.T
-	ctx           context.Context
-	engine, dsn   string
-	store, oracle driver.Store
-	db            *sql.DB
-	lease         driver.ActiveLease
-	stopRenewal   context.CancelFunc
-	renewed       chan error
-	server        *rpc.Server
-	nextID        int
-	request       int
-	scopes        map[scope]bool
-	frames        []frame
-	policyError   bool
+	t                *testing.T
+	ctx              context.Context
+	engine, dsn      string
+	store, oracle    driver.Store
+	db               *sql.DB
+	lease            driver.ActiveLease
+	stopRenewal      context.CancelFunc
+	renewed          chan error
+	server           *rpc.Server
+	nextID           int
+	request          int
+	scopes           map[scope]bool
+	frames           []frame
+	policyError      bool
+	fullcardWorkflow bool
 }
 
 func newFixture(t *testing.T, engine string) *fixture {
@@ -161,6 +162,9 @@ func (f *fixture) bind() {
 			}
 			return m.Key != "hidden", nil
 		})))
+	if f.fullcardWorkflow {
+		service.WithWorkflow(f.fullcardProvider())(domain)
+	}
 	registry, err := rpc.NewRegistry()
 	if err != nil {
 		f.t.Fatal(err)
