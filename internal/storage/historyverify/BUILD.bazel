@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "historyverify",
-    srcs = ["auxiliary.go", "checkpoint.go", "native.go", "native_frames.go", "native_evidence.go", "native_plan.go", "native_spool.go"],
+    srcs = ["auxiliary.go", "checkpoint.go", "native.go", "native_frames.go", "native_evidence.go", "native_plan.go", "native_spool.go", "native_collection.go", "native_collection_bind.go", "native_readback.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/historyverify",
     visibility = ["//:__subpackages__"],
     deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/core/nativeprojection", "//internal/storage/driver"],
@@ -10,8 +10,8 @@ go_library(
 
 go_test(
     name = "historyverify_test",
-    srcs = ["export_test.go", "engines_test.go", "planner_dependency_test.go", "native_test.go", "native_hash_test.go"],
-    data = ["//internal/integration/converterroundtrip:testdata/public-native-delta-small-0e4d5da4.tar.gz"],
+    srcs = ["export_test.go", "engines_test.go", "planner_dependency_test.go", "native_test.go", "native_hash_test.go", "native_collection_test.go"],
+    data = ["//internal/integration/converterroundtrip:testdata/public-native-delta-small-0e4d5da4.tar.gz", "//internal/core/dumpformat:native_joined_public_pair"],
     embed = [":historyverify"],
     size = "large",
     tags = ["exclusive", "local", "requires-network"],

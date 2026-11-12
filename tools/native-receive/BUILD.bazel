@@ -1,20 +1,31 @@
-load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+
+RECEIVE_SRCS = ["capture_set.go", "joined.go", "main.go", "native_collection.go", "policy.go", "session.go", "verify.go"]
+
+RECEIVE_DEPS = [
+    "//internal/core/dumpformat",
+    "//internal/core/model",
+    "//internal/integration/converterroundtrip",
+    "//internal/storage/driver",
+    "//internal/storage/historyverify",
+    "//internal/storage/memory",
+    "//internal/storage/postgres",
+    "//internal/storage/sqlite",
+    "@com_github_jackc_pgx_v5//:pgx",
+]
 
 go_binary(
     name = "native-receive",
-    srcs = ["capture_set.go", "joined.go", "main.go", "policy.go", "session.go", "verify.go"],
+    srcs = RECEIVE_SRCS,
     importpath = "github.com/buildbetter-app/plugs/tools/native-receive",
     visibility = ["//visibility:public"],
-    deps = [
-        "//internal/core/dumpformat",
-        "//internal/core/model",
-        "//internal/integration/converterroundtrip",
-        "//internal/storage/driver",
-        "//internal/storage/memory",
-        "//internal/storage/postgres",
-        "//internal/storage/sqlite",
-        "@com_github_jackc_pgx_v5//:pgx",
-    ],
+    deps = RECEIVE_DEPS,
+)
+
+go_test(
+    name = "native-receive_test",
+    srcs = RECEIVE_SRCS + ["native_collection_report_test.go"],
+    deps = RECEIVE_DEPS,
 )
 
 filegroup(

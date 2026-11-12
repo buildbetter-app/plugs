@@ -23,6 +23,10 @@ type OfflineHistoryStreamHeader struct {
 	Head             uint64 `json:"head"`
 	BaselineVerified bool   `json:"baselineVerified"`
 	NativeBoundaries uint64 `json:"nativeBoundaries"`
+	// The optional collection commitment admits explicit source ordinal order.
+	// Empty preserves the original single/lexically ordered stream contract.
+	NativeSourceCount       uint64 `json:"nativeSourceCount,omitempty"`
+	NativeSourceOrderSHA256 string `json:"nativeSourceOrderSha256,omitempty"`
 }
 
 // Limits bound EACH pull, not total history. Sources enforce both limits before
