@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_test")
 
 go_test(
     name = "s1relations_test",
-    srcs = glob(["*_test.go"], exclude = ["b28_alert_notice_test.go"]),
+    srcs = glob(["*_test.go"], exclude = [
+        "b28_alert_notice_test.go",
+        "b28_ordered_batch_test.go",
+    ]),
     size = "large",
     args = [
         "-archive=$(rlocationpath //internal/integration/converterroundtrip:testdata/synthetic-plug-dump-1.tar)",
@@ -36,6 +39,33 @@ go_test(
     name = "b28_alert_acceptance_test",
     srcs = [
         "b28_alert_notice_test.go",
+        "engine_test.go",
+        "fixture_test.go",
+    ],
+    size = "large",
+    args = ["-test.v"],
+    tags = ["local", "requires-network"],
+    deps = [
+        "//internal/core/model",
+        "//internal/core/ontology",
+        "//internal/core/pipeline",
+        "//internal/core/port",
+        "//internal/core/service",
+        "//internal/server/rpc",
+        "//internal/server/transport/inprocess",
+        "//internal/storage/driver",
+        "//internal/storage/memory",
+        "//internal/storage/postgres",
+        "//internal/storage/sqlite",
+    ],
+)
+
+# Only the newly missing heterogeneous public batch is selected by its focus.
+# The inherited public/native and alert targets retain all of their members.
+go_test(
+    name = "b28_ordered_batch_acceptance_test",
+    srcs = [
+        "b28_ordered_batch_test.go",
         "engine_test.go",
         "fixture_test.go",
     ],
