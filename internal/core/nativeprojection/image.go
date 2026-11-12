@@ -299,6 +299,47 @@ type ArchiveEvidence struct {
 }
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
+	if archive.HasNativeCaptureCollection() {
+		files, err := archive.NativeCollectionFiles()
+		if err != nil {
+			return err
+		}
+		usage, _ := archive.NativeDecodedUsage()
+		manifest := archive.Manifest()
+		evidence := ArchiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: derivedProfile(plan), SourceStore: manifest.StoreID, Members: manifest.Files, NativeCaptureFiles: files, NativeDecodedLimitBytes: usage.LimitBytes}
+		// The compact manifest omits its own digest. Recovery authenticates that
+		// exact member through the retained evidence, just as for a single set.
+		raw, ok, err := archive.MemberChecked("manifest.json")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("collection current manifest missing")
+		}
+		// One fixed path, digest and map slot; admit before retaining the entry.
+		if err := archive.ChargeNativeDeltaBytes("collection_retained_manifest_ledger", 256); err != nil {
+			return err
+		}
+		evidence.Members["manifest.json"] = dumpformat.File{SHA256: HashBytes(raw), Size: int64(len(raw))}
+		plan.blobs = map[string][]byte{}
+		commitment, err := archive.NativeCollectionCommitment()
+		if err != nil {
+			return err
+		}
+		plan.blobs[archive.SHA256()] = commitment
+		for name, expected := range manifest.Files {
+			raw, ok, err := archive.MemberChecked(name)
+			if err != nil {
+				return err
+			}
+			if !ok || HashBytes(raw) != expected.SHA256 || int64(len(raw)) != expected.Size {
+				return fmt.Errorf("collection current member differs")
+			}
+			plan.blobs[expected.SHA256] = raw
+		}
+		plan.nativeCapture = archive
+		return add(model.RefByID("restore/archive", model.Natural64(0)), "restore-archive", evidence)
+	}
 	if archive.HasNativeDelta() {
 		return retainNativeDeltaArchive(plan, archive, add)
 	}

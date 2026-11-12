@@ -100,9 +100,17 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	if err != nil || hashBytes(raw) != profile.ArchiveDigest {
 		return nil, nil, nil, nil, driver.ErrConflict
 	}
-	archive, err := readRetainedImportArchive(ctx, reader, raw, evidence)
+	archive, collection, err := readRetainedReceivingArchive(ctx, reader, raw, evidence, profile)
 	if err != nil {
 		return nil, nil, nil, nil, nativeDeltaRecoveryError(err)
+	}
+	if collection != nil {
+		defer collection.close()
+		plan, err := receivePlan(archive, collection.plan, nil)
+		if err != nil {
+			return nil, nil, nil, nil, nativeDeltaRecoveryError(err)
+		}
+		return recoverNativeFamiliesArchive(ctx, reader, profile, receipt, archive, &plan)
 	}
 	defer archive.ReleaseNativeDecoded()
 	return recoverNativeFamiliesArchive(ctx, reader, profile, receipt, archive, nil)
@@ -120,6 +128,9 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 		return nil, nil, nil, nil, driver.ErrConflict
 	}
 	if prepared == nil {
+		if archive.HasNativeCaptureCollection() {
+			return nil, nil, nil, nil, driver.ErrConflict
+		}
 		plan, planErr := buildPlanWithProfile(archive, &profile, when, ctx)
 		if planErr != nil {
 			return nil, nil, nil, nil, nativeDeltaRecoveryError(planErr)

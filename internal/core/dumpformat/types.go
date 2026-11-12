@@ -190,6 +190,7 @@ type Archive struct {
 	migration       *ImportMigration
 	delta           *nativeDeltaAttachment
 	nativeBudget    *NativeDeltaBudget
+	collection      *nativeCaptureCollection
 }
 
 // ImportMigration returns the admitted non-native head migration, when its
@@ -223,7 +224,9 @@ func (a *Archive) NativeMember(path string) ([]byte, bool) {
 	return append([]byte(nil), data...), ok
 }
 
-// SHA256 binds the exact validated tar bytes, including its manifest.
+// SHA256 binds the exact validated tar bytes, native set root JSON, or the
+// canonical ordered collection commitment. Each original set keeps its own
+// root-JSON digest in the collection's binding; that meaning never changes.
 func (a *Archive) SHA256() string { return a.sha256 }
 
 // TarBytes returns the exact validated source envelope, including tar headers

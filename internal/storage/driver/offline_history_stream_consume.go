@@ -151,6 +151,10 @@ func prepareStreamBinding(r OfflineHistoryStreamRequest, h OfflineHistoryStreamH
 		return OfflineHistoryStreamBinding{}, streamError("invalid verified range/profile/time")
 	}
 	partial, bounded := h.First > 1, h.NativeBoundaries > 0
+	ordered := h.NativeSourceOrderSHA256 != ""
+	if ordered && (h.Source != NativeTableHistorySource || p.SourcePlanes == nil || h.NativeSourceCount != 2 || !importDigest(h.NativeSourceOrderSHA256) || partial || h.BaselineVerified) || !ordered && h.NativeSourceCount != 0 {
+		return OfflineHistoryStreamBinding{}, streamError("invalid native collection source order")
+	}
 	if bounded && (h.Source != NativeTableHistorySource || p.SourcePlanes == nil || p.HistoryMode != RestoreHistoryModeFull || h.Complete || partial || h.BaselineVerified) {
 		return OfflineHistoryStreamBinding{}, streamError("invalid native source boundary policy")
 	}
@@ -278,6 +282,8 @@ type streamValidator struct {
 	imageSide    int
 	lastSource   string
 	lastSequence uint64
+	sourceOrder  hash.Hash
+	sourceSeen   map[string]bool
 
 	physicalName   string
 	physicalTables uint64
@@ -313,7 +319,7 @@ func (v *streamValidator) accept(f OfflineHistoryStreamFrame, raw []byte) error 
 		if b == nil || v.commit != nil || v.header.NativeBoundaries == 0 || v.boundaries == v.header.NativeBoundaries || !streamText(b.SourceStoreID) || !streamText(b.Project) || b.VerifiedCommitCount == 0 || !importDigest(b.BoundarySHA256) {
 			return streamError("invalid native source boundary")
 		}
-		if v.boundary != nil && (v.boundaryUsed != v.boundary.VerifiedCommitCount || streamSourceKey(b.SourceStoreID, b.Project) <= streamSourceKey(v.boundary.SourceStoreID, v.boundary.Project)) {
+		if v.boundary != nil && (v.boundaryUsed != v.boundary.VerifiedCommitCount || v.header.NativeSourceOrderSHA256 == "" && streamSourceKey(b.SourceStoreID, b.Project) <= streamSourceKey(v.boundary.SourceStoreID, v.boundary.Project)) {
 			return streamError("native boundary count/order differs from verified commits")
 		}
 		v.boundary, v.boundaryUsed = b, 0
@@ -388,6 +394,9 @@ func (v *streamValidator) accept(f OfflineHistoryStreamFrame, raw []byte) error 
 		}
 		v.commit, v.commitHash = nil, nil
 	case "end":
+		if v.header.NativeSourceOrderSHA256 != "" && (uint64(len(v.sourceSeen)) != v.header.NativeSourceCount || v.sourceOrder == nil || hex.EncodeToString(v.sourceOrder.Sum(nil)) != v.header.NativeSourceOrderSHA256) {
+			return streamError("native source ordinal commitment differs")
+		}
 		if f.End == nil || v.commit != nil || !v.started || v.stats.Commits != v.header.Head-v.header.First+1 || v.header.First > 1 && !v.baselineDone || v.boundaries != v.header.NativeBoundaries || v.boundary != nil && v.boundaryUsed != v.boundary.VerifiedCommitCount {
 			return streamError("terminal before complete range/boundaries")
 		}
@@ -426,7 +435,17 @@ func (v *streamValidator) beginCommit(c *OfflineHistoryStreamCommit) error {
 			}
 			key := streamSourceKey(c.SourceStoreID, c.Project)
 			if key != v.lastSource {
-				if key <= v.lastSource {
+				if v.header.NativeSourceOrderSHA256 != "" {
+					if v.sourceSeen == nil {
+						v.sourceSeen = map[string]bool{}
+						v.sourceOrder = nativeSourceOrderHasher()
+					}
+					if v.sourceSeen[key] || uint64(len(v.sourceSeen)) >= v.header.NativeSourceCount {
+						return streamError("native collection repeats or exceeds source blocks")
+					}
+					v.sourceSeen[key] = true
+					addNativeSourceOrder(v.sourceOrder, c.SourceStoreID, c.Project)
+				} else if key <= v.lastSource {
 					return streamError("native source blocks are not ordered")
 				}
 				v.lastSource, v.lastSequence = key, 0
@@ -441,10 +460,16 @@ func (v *streamValidator) beginCommit(c *OfflineHistoryStreamCommit) error {
 		}
 		if v.header.NativeBoundaries != 0 {
 			b := v.boundary
-			if b == nil || c.SourceStoreID != b.SourceStoreID || c.Project != b.Project || v.boundaryUsed == b.VerifiedCommitCount || c.SourceSequence != v.boundaryUsed+1 {
+			if b != nil && v.header.NativeSourceOrderSHA256 != "" && (c.SourceStoreID != b.SourceStoreID || c.Project != b.Project) && v.boundaryUsed == b.VerifiedCommitCount {
+				v.boundary = nil
+				b = nil
+			}
+			if b == nil && v.header.NativeSourceOrderSHA256 == "" || b != nil && (c.SourceStoreID != b.SourceStoreID || c.Project != b.Project || v.boundaryUsed == b.VerifiedCommitCount || c.SourceSequence != v.boundaryUsed+1) {
 				return streamError("commit differs from active native boundary")
 			}
-			v.boundaryUsed++
+			if b != nil {
+				v.boundaryUsed++
+			}
 		}
 		v.stats.Commits++
 	}

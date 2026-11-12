@@ -1,0 +1,812 @@
+{
+  "actual_originals_count": 101,
+  "actual_originals_freeze": {
+    "bytes": 30300,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ORIGINALS-FREEZE.json",
+    "sha256": "eb943d7097b14d10d3e28493be451a2e7f7ed7d7fbcb61c0bc5501bece68be9f"
+  },
+  "actual_start_load_1m": 26.5947265625,
+  "actual_terminal": {
+    "bytes": 54033,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/TERMINAL.json",
+    "sha256": "390f1038e4ce067f20787aa8ccbacb479ae9a971c219466068d6ae10d2846c16"
+  },
+  "authority_message_id": "ca26683b-20ca-4f0e-a3d9-93dc1f03f2d4",
+  "capture_step": {
+    "bytes": 9553,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PROCEDURE-CAPTURE-STEP-v11.py",
+    "sha256": "05b98ca04a86ab0b6e2b6345d06e643464330e5ccc8e924cc274dfdf78b84ac9"
+  },
+  "cleanup": {
+    "adopted_wait_receipts": [
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 79691776,
+        "pid": 3588608,
+        "raw_wait_status": 0,
+        "system_seconds": 0.070396,
+        "user_seconds": 0.051648,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 110624768,
+        "pid": 3588748,
+        "raw_wait_status": 0,
+        "system_seconds": 0.18396099999999999,
+        "user_seconds": 2.081809,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 190619648,
+        "pid": 3585103,
+        "raw_wait_status": 0,
+        "system_seconds": 0.49718399999999996,
+        "user_seconds": 4.713044,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 78905344,
+        "pid": 3594167,
+        "raw_wait_status": 0,
+        "system_seconds": 0.064342,
+        "user_seconds": 0.057296,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 111149056,
+        "pid": 3594490,
+        "raw_wait_status": 0,
+        "system_seconds": 0.152945,
+        "user_seconds": 1.391927,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 181145600,
+        "pid": 3590333,
+        "raw_wait_status": 0,
+        "system_seconds": 0.487096,
+        "user_seconds": 5.02599,
+        "wait_returned": true
+      }
+    ],
+    "children_started": 10,
+    "children_waited": 10,
+    "created": true,
+    "direct_pid_paths_absent": true,
+    "direct_wait_receipts": [
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 134885376,
+        "pid": 3584913,
+        "raw_wait_status": 0,
+        "system_seconds": 0.006561,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 134881280,
+        "pid": 3584935,
+        "raw_wait_status": 0,
+        "system_seconds": 0.008164,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 135467008,
+        "pid": 3585100,
+        "raw_wait_status": 0,
+        "system_seconds": 0.007738999999999999,
+        "user_seconds": 0.001934,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 135471104,
+        "pid": 3588607,
+        "raw_wait_status": 0,
+        "system_seconds": 0.005876999999999999,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 136482816,
+        "pid": 3588746,
+        "raw_wait_status": 0,
+        "system_seconds": 0.009942999999999999,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 137003008,
+        "pid": 3590083,
+        "raw_wait_status": 0,
+        "system_seconds": 0.006123,
+        "user_seconds": 0.0010199999999999999,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 137011200,
+        "pid": 3590092,
+        "raw_wait_status": 0,
+        "system_seconds": 0.008947,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 137011200,
+        "pid": 3590332,
+        "raw_wait_status": 0,
+        "system_seconds": 0.006372,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 136507392,
+        "pid": 3594149,
+        "raw_wait_status": 0,
+        "system_seconds": 0.009677,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      },
+      {
+        "exit_code": 0,
+        "max_rss_bytes": 137441280,
+        "pid": 3594488,
+        "raw_wait_status": 0,
+        "system_seconds": 0.00709,
+        "user_seconds": 0.0,
+        "wait_returned": true
+      }
+    ],
+    "guard": "EXACT_ALLOWLIST_CREATED_INODE_UID_OPEN_FD_OWNER_SYMLINK_SAFE_RMTREE",
+    "owned_descendants_remaining": 0,
+    "root_absent": true,
+    "seen_nested_pid_paths_absent": true
+  },
+  "created_utc": "2026-11-12T04:42:03.573167+00:00",
+  "creation_script": {
+    "bytes": 6752,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b.py",
+    "sha256": "974bbd9030d0e7adf4f233967f15d348fa10c3710f25000774f56e1903bd5a53"
+  },
+  "detached_launch": {
+    "bytes": 772,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b.LAUNCH.json",
+    "sha256": "6a1cfa19703c36e4bc76aaf42f8ce2127bdc9ba9f3944cb6dbec7b351134801f"
+  },
+  "invocation_difference": "The same landed8ce67aac executable now includes --native-delta; prior default mode emitted legacy capture.tar. Full mode excludes schema-only/history-probe-only. Timeout is capped1200s and clipped to one absolute owner deadline.",
+  "legacy_handoff_preserved": {
+    "bytes": 31484,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-PHYSICAL-PAIR-DESIGN-HANDOFF.json",
+    "sha256": "be4fcf4d11ab70e93a87deb805126eb6f712a0351bd94f7265a548139ce44626"
+  },
+  "limits": [
+    "These are actual unmodified public native capture-set files, not the older legacy capture.tar, and have not been repacked.",
+    "Future committed testdata only: no repository change/commit, receiver, joined constructor, private action or new export occurred.",
+    "Capture-set root/head/part chain, source evidence and publication counts are bound; receiver authentication/import/readback remain NOT_RUN for this pair.",
+    "P1 remains blocked pending the accepted joined product route. Earlier V10 refusal and all private1 counters/history remain literal.",
+    "The capture-stage successor is exercised publicly; the current private entry/configuration is unchanged and remains disabled. No independent564 combined review was woken."
+  ],
+  "one_shared_deadline": {
+    "deadline_monotonic_ns": 5494210716650671,
+    "started_monotonic_ns": 5487010716650671
+  },
+  "operational_state_unchanged": {
+    "bytes": 8660,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/launch-state.json",
+    "sha256": "9004781a9d801c7f0e1d59e3d3246cf2c863c58a0445c6bc86fb0ff3e2047a67"
+  },
+  "pair": [
+    {
+      "backup_manifest": {
+        "bytes": 556,
+        "mode": "0444",
+        "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/P1-PAIR-CREATION-2/ops-BACKUP-MANIFEST.json",
+        "sha256": "de6e68d19001b2e0fba93c289d322d4a1b80657edb472c878e31e39a7a183402"
+      },
+      "capture_set_directory": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/capture-set",
+      "contract": "beads-native-delta/2",
+      "database": "ops",
+      "head_native_history_contract": "beads-native-delta/2",
+      "inventory": {
+        "bytes": 8252,
+        "mode": "0444",
+        "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json",
+        "sha256": "a029865fe25d2cb0f142f6478f6dc55210042e3f5c8804adbb3ee1d944389e3e"
+      },
+      "inventory_sidecars": [
+        {
+          "bytes": 4115,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/beads-dir-config.json",
+          "sha256": "7c8d742506b983077cae28d221ccdd7b9f0f566a194e246eec7a967702bb9076"
+        },
+        {
+          "bytes": 146,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/beads-hooks.json",
+          "sha256": "586144d3d7f14f69d50f1c9694ef8c54fcf4276abcddceabbbbd089f6c25a29d"
+        },
+        {
+          "bytes": 39219,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-commit-graph.json",
+          "sha256": "dce20e75915e91cf8c4eb33856d4e330c708f38aced9817c95dae21f38356ffa"
+        },
+        {
+          "bytes": 97,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-conflicts.json",
+          "sha256": "26045dece73a9a7a8a843169ccfc66cd903da49733a166c7507ec749f3467ffb"
+        },
+        {
+          "bytes": 139,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-history-maintenance.json",
+          "sha256": "bd501d79a697513618b20d5d294936d6251d68f6af842c0cd725564d3a60f27a"
+        },
+        {
+          "bytes": 435,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-ignore.json",
+          "sha256": "4340ad9a0980e1c07f4961386ceb9e06ae76e3dbc130c1f8d131791a39f472c4"
+        },
+        {
+          "bytes": 127,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-nonlocal-tables.json",
+          "sha256": "c80b5f84187353f73b2e029b3a1143be4c18844e0676d8d5d18095911f21465c"
+        },
+        {
+          "bytes": 107,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-remotes.json",
+          "sha256": "e8fc6374e8c5c854a75738d9eeb6a272a3a112d58a15df34a1ce6b9352ca38df"
+        },
+        {
+          "bytes": 126,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/dolt-working-set.json",
+          "sha256": "fa9539b9e39ff98408b08786b862f12a38b7d2f731fd3d03405b5050b5be9d69"
+        },
+        {
+          "bytes": 487,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/environment-and-flags.json",
+          "sha256": "de8ab3364667ca9657115f3d9278dc93bfe50504328140f1e4b8f95ff1802774"
+        },
+        {
+          "bytes": 533,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/external-hook-managers.json",
+          "sha256": "2d732b2f63351d30605896b34f72ddfd8b33cebd8fbe0cf2968fd5c8ac223b16"
+        },
+        {
+          "bytes": 270,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/formula-search-paths.json",
+          "sha256": "23c56354e9c047c744f5e09eaf62e7537fdcca37b000ff4df44759d3c75c181d"
+        },
+        {
+          "bytes": 270,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/formulas.json",
+          "sha256": "23c56354e9c047c744f5e09eaf62e7537fdcca37b000ff4df44759d3c75c181d"
+        },
+        {
+          "bytes": 144,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/git-hooks.json",
+          "sha256": "4321edd10427f178b10c3735ce3c5f2518068d5dee8ce96837eaccd01a2737f2"
+        },
+        {
+          "bytes": 159,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/interactions-jsonl.json",
+          "sha256": "8bd88167c6b3e157f3109af8d36584af09087989cfe16c90ad8950fdb5da663d"
+        },
+        {
+          "bytes": 153,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/issues-jsonl.json",
+          "sha256": "2bd47f938e7ed20bc0fb79c7a1904f5121031891844dd5f70bdd625541cda6ae"
+        },
+        {
+          "bytes": 276,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/legacy-config-json.json",
+          "sha256": "837fe7c8bdf2d58704fd3f3d5427898442f8a8f7600c6947f05d325545486d2b"
+        },
+        {
+          "bytes": 269,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/legacy-hooks.json",
+          "sha256": "b609b4c0e96eec1714834cea8d93ac0fb90e99b1f255ebf11a1e299e10d780dc"
+        },
+        {
+          "bytes": 623,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/metadata-json.json",
+          "sha256": "55ee37bc07b7c25758b42002cf00d4064df714bad0bd677e1bf1217b7e6e4a11"
+        },
+        {
+          "bytes": 4115,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/project-config.json",
+          "sha256": "7c8d742506b983077cae28d221ccdd7b9f0f566a194e246eec7a967702bb9076"
+        },
+        {
+          "bytes": 158,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/project-local-config.json",
+          "sha256": "3c991164d189cd12a11af313a35ab825e68c98727b1b12cf552e06224600d38d"
+        },
+        {
+          "bytes": 153,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/routes-jsonl.json",
+          "sha256": "35726dbc16bf2ad0cf91009cf0d27e7f43e50098d9a967a3202bd640ce2d6a8b"
+        },
+        {
+          "bytes": 430,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/store-files-and-quiescence.json",
+          "sha256": "93ffad0552b113c124e3df537d5ae89040906fb75e1ef22d4a57ba53542da795"
+        },
+        {
+          "bytes": 143,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/user-legacy-config.json",
+          "sha256": "bb17f62c06f321a8141cc492f668c73a5909a06fb9a21e8f267ceb6e82bb2903"
+        },
+        {
+          "bytes": 147,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/user-native-config.json",
+          "sha256": "415ad6077f4a71827375864750aa24f8ccd32d146ee1214f746178f779a394e8"
+        },
+        {
+          "bytes": 147,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/inventory.json.sources/user-xdg-config.json",
+          "sha256": "415ad6077f4a71827375864750aa24f8ccd32d146ee1214f746178f779a394e8"
+        }
+      ],
+      "ordered_file_ledger": [
+        {
+          "bytes": 700,
+          "mode": "0444",
+          "name": "capture-set.json",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/capture-set/capture-set.json",
+          "sha256": "ef55748be601e16ba8622ecef67df8b2ebd2e3d01ce07088bd990f358575832b"
+        },
+        {
+          "bytes": 200192,
+          "mode": "0444",
+          "name": "head.tar",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/capture-set/head.tar",
+          "sha256": "a48d37135afe56aca95c6675385855c148ae5dbdc9327dbe44bf715b7a073a4e"
+        },
+        {
+          "bytes": 1914811,
+          "mode": "0444",
+          "name": "parts/00000000000000000001.part",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/capture-set/parts/00000000000000000001.part",
+          "sha256": "1cf35b0abf24d69a53efe296a3b6e0163d3bcb4e88e7f8409101eef94b1d3adc"
+        }
+      ],
+      "part_count": 1,
+      "physical_evidence": {
+        "bytes": 816,
+        "mode": "0444",
+        "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/ops-capture/physical-evidence.json",
+        "sha256": "f7bd592612cc9d875352167b6fef51f5666dc10bd435c0b36c2206a64844133e"
+      },
+      "rehearsal_project": "cody-ops",
+      "root_format": "beads-native-capture-set/2",
+      "schema": {
+        "ignored": 26,
+        "main": 66
+      },
+      "source_project": "ops",
+      "stream_bytes": 1914629,
+      "totals": {
+        "commits": 97,
+        "full_image_bytes": 1353567,
+        "reconstructed_cells": 26346,
+        "reconstructed_rows": 6368,
+        "row_operations": 453,
+        "schemas": 71,
+        "table_transactions": 1756
+      }
+    },
+    {
+      "backup_manifest": {
+        "bytes": 556,
+        "mode": "0444",
+        "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/P1-PAIR-CREATION-2/sv2-BACKUP-MANIFEST.json",
+        "sha256": "db42d019e5728d6f71baeffae02e44f96f2ea6b76a135ff4695997374f7ca951"
+      },
+      "capture_set_directory": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/capture-set",
+      "contract": "beads-native-delta/2",
+      "database": "sv2",
+      "head_native_history_contract": "beads-native-delta/2",
+      "inventory": {
+        "bytes": 8252,
+        "mode": "0444",
+        "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json",
+        "sha256": "06c790b24d9ca318b418698e404eaa167f427147e45a22ae506e3cf20a1942ed"
+      },
+      "inventory_sidecars": [
+        {
+          "bytes": 4115,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/beads-dir-config.json",
+          "sha256": "9742fa55e5922791d3dca4b45615df44b8d09a72e668363126fa49271958b5ae"
+        },
+        {
+          "bytes": 146,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/beads-hooks.json",
+          "sha256": "d31dd11176d1043b4e909df21ff09ee821fa21c9c9b2e50217ea27889f3de1a5"
+        },
+        {
+          "bytes": 39225,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-commit-graph.json",
+          "sha256": "b6fbb41ac1ecebfaaab11b862ecabcded26bce347f8b87fc509434aa233ce04b"
+        },
+        {
+          "bytes": 97,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-conflicts.json",
+          "sha256": "26045dece73a9a7a8a843169ccfc66cd903da49733a166c7507ec749f3467ffb"
+        },
+        {
+          "bytes": 139,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-history-maintenance.json",
+          "sha256": "746419290a11f8b033c8cfd551a4d0061381d8af61f92395813593923acb515e"
+        },
+        {
+          "bytes": 435,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-ignore.json",
+          "sha256": "4340ad9a0980e1c07f4961386ceb9e06ae76e3dbc130c1f8d131791a39f472c4"
+        },
+        {
+          "bytes": 127,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-nonlocal-tables.json",
+          "sha256": "c80b5f84187353f73b2e029b3a1143be4c18844e0676d8d5d18095911f21465c"
+        },
+        {
+          "bytes": 107,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-remotes.json",
+          "sha256": "e8fc6374e8c5c854a75738d9eeb6a272a3a112d58a15df34a1ce6b9352ca38df"
+        },
+        {
+          "bytes": 126,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/dolt-working-set.json",
+          "sha256": "fa9539b9e39ff98408b08786b862f12a38b7d2f731fd3d03405b5050b5be9d69"
+        },
+        {
+          "bytes": 487,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/environment-and-flags.json",
+          "sha256": "598e89b8e3a42dc3066fd50561e29cc16d1a44d759d145f49953dfb0ebf409df"
+        },
+        {
+          "bytes": 533,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/external-hook-managers.json",
+          "sha256": "b8ecac788b9979a987a98f4b94628f078671f77949809051f90ea23023351e79"
+        },
+        {
+          "bytes": 270,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/formula-search-paths.json",
+          "sha256": "87f6e3576f718cd9be2be978ae2a9982609d00ee4dad4774e4ebf2ad95fd6634"
+        },
+        {
+          "bytes": 270,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/formulas.json",
+          "sha256": "87f6e3576f718cd9be2be978ae2a9982609d00ee4dad4774e4ebf2ad95fd6634"
+        },
+        {
+          "bytes": 144,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/git-hooks.json",
+          "sha256": "7c807c2b63e6679ccf6f033cc120957f2b1a4f93210ca63dc5ee4fa9ab8c996c"
+        },
+        {
+          "bytes": 159,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/interactions-jsonl.json",
+          "sha256": "6d66022d74ee23a72e9d0693bc8c7bc277d70fcedd7df3fd0ec8e3e503be24f9"
+        },
+        {
+          "bytes": 153,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/issues-jsonl.json",
+          "sha256": "166bd67a1739154afa29692671ca3360d1677f87e1d47fe5f05951ce64689ce7"
+        },
+        {
+          "bytes": 276,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/legacy-config-json.json",
+          "sha256": "ccdf1be2fb3b4db9d765bbb1decbe125d1016900e6baeed403e54132e099d1ba"
+        },
+        {
+          "bytes": 269,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/legacy-hooks.json",
+          "sha256": "6c25da05eb39fc4f1b83a267e8159a1207076b908e7ccea8f0e52844b5f842e8"
+        },
+        {
+          "bytes": 623,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/metadata-json.json",
+          "sha256": "c5a69ee6f374a960380e889769101c595146a23bdccdca9adb236d061cc8b535"
+        },
+        {
+          "bytes": 4115,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/project-config.json",
+          "sha256": "9742fa55e5922791d3dca4b45615df44b8d09a72e668363126fa49271958b5ae"
+        },
+        {
+          "bytes": 158,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/project-local-config.json",
+          "sha256": "9645dbd63a82ea3973fc5ac230172ab433cbaf39fc9a5fe9f073402a8d1ca102"
+        },
+        {
+          "bytes": 153,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/routes-jsonl.json",
+          "sha256": "8e854ae917e5d03fdb3d39f64e92dceaa96da71278abcc0eac775b1b81b74b4f"
+        },
+        {
+          "bytes": 430,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/store-files-and-quiescence.json",
+          "sha256": "3e7b77de7836f2a5ef73508f475f75c36f4d222febf6a05615d36b78325aba61"
+        },
+        {
+          "bytes": 143,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/user-legacy-config.json",
+          "sha256": "bb17f62c06f321a8141cc492f668c73a5909a06fb9a21e8f267ceb6e82bb2903"
+        },
+        {
+          "bytes": 147,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/user-native-config.json",
+          "sha256": "415ad6077f4a71827375864750aa24f8ccd32d146ee1214f746178f779a394e8"
+        },
+        {
+          "bytes": 147,
+          "mode": "0444",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/inventory.json.sources/user-xdg-config.json",
+          "sha256": "415ad6077f4a71827375864750aa24f8ccd32d146ee1214f746178f779a394e8"
+        }
+      ],
+      "ordered_file_ledger": [
+        {
+          "bytes": 700,
+          "mode": "0444",
+          "name": "capture-set.json",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/capture-set/capture-set.json",
+          "sha256": "bb28503767bea91f023f96896dda995df149827b1bc40863ece8399566a4d626"
+        },
+        {
+          "bytes": 200192,
+          "mode": "0444",
+          "name": "head.tar",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/capture-set/head.tar",
+          "sha256": "35af10f464d6c7b3140cc4c87e7ac0eee9761a32b4a0ecc8b9fe6f7195d323b3"
+        },
+        {
+          "bytes": 1914331,
+          "mode": "0444",
+          "name": "parts/00000000000000000001.part",
+          "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/capture-set/parts/00000000000000000001.part",
+          "sha256": "972e3b0097d8fda9231475093f2754cdc7b5165f38b8a1aad6ff8bbaf16bf3d5"
+        }
+      ],
+      "part_count": 1,
+      "physical_evidence": {
+        "bytes": 816,
+        "mode": "0444",
+        "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PUBLIC-NATIVE-CAPTURE-PAIR-ca26683b/sv2-capture/physical-evidence.json",
+        "sha256": "ac5823900cadbe2412b68288412a1063eb77b8920e18ccbc255c214e88f32768"
+      },
+      "rehearsal_project": "signals-v2",
+      "root_format": "beads-native-capture-set/2",
+      "schema": {
+        "ignored": 26,
+        "main": 66
+      },
+      "source_project": "sv2",
+      "stream_bytes": 1914149,
+      "totals": {
+        "commits": 97,
+        "full_image_bytes": 1352469,
+        "reconstructed_cells": 26346,
+        "reconstructed_rows": 6368,
+        "row_operations": 453,
+        "schemas": 71,
+        "table_transactions": 1756
+      }
+    }
+  ],
+  "phase_wall_times": [
+    {
+      "completed_without_exception": true,
+      "phase": "shared-lock",
+      "project_ordinal": 1,
+      "wall_nanoseconds": 36468117
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "copy",
+      "project_ordinal": 1,
+      "wall_nanoseconds": 35290169
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "backup-copy",
+      "project_ordinal": 1,
+      "wall_nanoseconds": 79545289
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "restore",
+      "project_ordinal": 1,
+      "wall_nanoseconds": 4550628379
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "schema-probe",
+      "project_ordinal": 1,
+      "wall_nanoseconds": 109001962
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "capture",
+      "project_ordinal": 1,
+      "wall_nanoseconds": 1784232732
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "shared-lock",
+      "project_ordinal": 2,
+      "wall_nanoseconds": 34752285
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "copy",
+      "project_ordinal": 2,
+      "wall_nanoseconds": 34718852
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "backup-copy",
+      "project_ordinal": 2,
+      "wall_nanoseconds": 77992996
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "restore",
+      "project_ordinal": 2,
+      "wall_nanoseconds": 4803150412
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "schema-probe",
+      "project_ordinal": 2,
+      "wall_nanoseconds": 114924155
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "capture",
+      "project_ordinal": 2,
+      "wall_nanoseconds": 1167413708
+    },
+    {
+      "completed_without_exception": true,
+      "phase": "cleanup",
+      "project_ordinal": 0,
+      "wall_nanoseconds": 15721556
+    }
+  ],
+  "preparation_freeze": {
+    "bytes": 1240,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/NATIVE-CAPTURE-PAIR-PREPARATION-FREEZE-ca26683b.json",
+    "sha256": "428e08d59f76a0c55195131d614e93fa024cdfd05028b939d490dd5f19ddc2dd"
+  },
+  "private2_execution": "HARD_DISABLED_PENDING_NEW_EXPLICIT_62_GO",
+  "private_inputs_accessed_this_unit": false,
+  "private_paths_observed_this_unit": false,
+  "procedure": {
+    "bytes": 4110,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/PROCEDURE-REHEARSAL2-V11-CAPTURE-STEP.md",
+    "sha256": "b20d3680e9b5ed6c177a599be7e4693e8eef1e865256413f311194d6ad3d0890"
+  },
+  "procedure_source_freeze": {
+    "bytes": 2391,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/V11-CAPTURE-STEP-AND-PROPOSAL-FREEZE.json",
+    "sha256": "34981ad365af4829335ffde8ef883c13853c171d95aa5852665ea16612b3e278"
+  },
+  "producer_source_confirmation": {
+    "message_id": "e91fe8e1-a709-4c62-918e-32283df16967",
+    "packet": {
+      "bytes": 14752,
+      "mode": "0444",
+      "path": "/tmp/plug-swarm/reports/rehearsal2-capture-export-2f-20261112/LANDED85609-NATIVE-DELTA-MODE-SOURCE.json",
+      "sha256": "76e420158678dd4098086a94237d7827ba4118ad9a4dc6c286e0a39659f20225"
+    }
+  },
+  "public_backup_creation_provenance": {
+    "bytes": 60798,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/P1-PAIR-CREATION-ORIGINALS-FREEZE.json",
+    "sha256": "ffecae93e1a8283eab7c67c3afbe5c33f08dc49baee62a5018fb201e41f5c220"
+  },
+  "ready_for_go": false,
+  "recipient_author": "9837e5f2-f6f2-436e-a6d5-7f5ed74e327a",
+  "rehearsal2a_proposal": {
+    "bytes": 5038,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/REHEARSAL-2A-PROPOSAL-ca26683b.md",
+    "sha256": "0c63a3c1f1683e4dc0a6fdbd5a54a278c1d80e4e7661aca4c0149dfacc09083a"
+  },
+  "rehearsal2a_runtime": "NOT_RUN_PROPOSAL_ONLY",
+  "rehearsal2a_source_binding": {
+    "bytes": 3948,
+    "mode": "0444",
+    "path": "/tmp/plug-swarm/reports/real-rehearsal2-readiness-20261112/REHEARSAL-2A-SOURCE-BINDING-ca26683b.json",
+    "sha256": "46d2c4bd5143d86f94939b5c109824442aa4195cdd186f1dc4e0fa950a28fbaa"
+  },
+  "root_gone": true,
+  "schema": "public-native-capture-set-pair-handoff/1",
+  "source_tuple": {
+    "capture_commit": "85609b64d846cfb48eb9b3a6cdef8c4edc964935",
+    "capture_parent": "ef3f1566ccc2dddafc55d86cff44ce4200237eb8",
+    "capture_tree": "1c3e8d956fe943b508c7244c1b5551bc16555892",
+    "elf": {
+      "bytes": 117101352,
+      "mode": "0555",
+      "path": "/tmp/plug-swarm/reports/rehearsal2-capture-export-2f-20261112/native-physical-capture",
+      "sha256": "8ce67aacbad497a4e3acdffa7773b7186faaa7c1efc7a65166fc478f05d16c1e"
+    }
+  },
+  "status": "PUBLIC_NATIVE_CAPTURE_SET_PAIR_PUBLISHED_NO_IMPORT_CREDIT",
+  "wall_nanoseconds_including_load_wait": 74809928167
+}

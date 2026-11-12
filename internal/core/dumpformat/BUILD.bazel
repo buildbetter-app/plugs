@@ -15,7 +15,7 @@ go_library(
 
 go_test(
     name = "dumpformat_test",
-    data = glob(["testdata/*.tar", "testdata/*.json"]) + [
+    data = glob(["testdata/*.tar", "testdata/*.json", "testdata/native-joined-public-ca26683b/**"]) + [
         # Reuse the public capture through its existing public source group.
         "//internal/integration/converterroundtrip:lexicon_files",
     ],
@@ -35,3 +35,9 @@ filegroup(
 )
 
 exports_files(glob(["testdata/*.tar"]), visibility = ["//:__subpackages__"])
+
+filegroup(
+    name = "native_joined_public_pair",
+    srcs = glob(["testdata/native-joined-public-ca26683b/**"]),
+    visibility = ["//:__subpackages__"],
+)
