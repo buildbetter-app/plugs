@@ -301,6 +301,17 @@ func TestHistoricalQueryPageWorkAcrossCorpusSizesAndSparseFilters(t *testing.T) 
 								}
 							}
 						}
+						if size == 25000 && tc.name == "nil" && n == 0 {
+							// Capture the executed page's plan on the remote fixture.
+							// This diagnostic is outside Query and its work observer;
+							// all original walk and accounting assertions still run.
+							var plan string
+							event := events[len(events)-1]
+							if err := r.(*reader).sql.QueryRowContext(ctx, "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "+event.sql, event.args...).Scan(&plan); err != nil {
+								t.Fatal(err)
+							}
+							t.Logf("HISTORICAL_QUERY_PLAN %s", plan)
+						}
 						t.Logf("HISTORICAL_QUERY_WORK corpus=%d filter=%s page=%d calls=%d payloads=%d bytes=%d returned=%d", size, tc.name, n, len(events), work.payloads.Load(), work.bytes.Load(), len(page.Items))
 						for _, record := range page.Items {
 							key, err := recordKey(record.Ref)

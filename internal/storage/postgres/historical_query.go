@@ -210,22 +210,40 @@ func (r *reader) queryHistorical(ctx context.Context, filter map[string]any, dig
 		return driver.Page[driver.Record]{}, err
 	}
 	where, args := historicalQueryWhere(filter, after, r.at)
+	selectionFrom := `plug_postgres.versions AS v JOIN plug_postgres.records AS r ON r.key=v.key`
+	selectionKey := "v.key"
+	if len(filter) == 0 {
+		// With no selective predicate, advance ordered record keys and look
+		// up each latest visible version before fetching page payloads.
+		selectionFrom = `plug_postgres.records AS r JOIN LATERAL (
+ SELECT v.key,v.revision,v.query_fields FROM plug_postgres.versions AS v
+ WHERE v.key=r.key AND v.revision<=$2 ORDER BY v.revision DESC LIMIT 1
+) AS v ON true`
+		selectionKey = "r.key"
+		where = append(where, "r.key > $1")
+	}
 	args = append(args, limit+1)
 	// Keep the ordered history range lateral to each selected key. A flat
 	// outer join lets PostgreSQL join the complete versions relation before
 	// applying the page-dependent range, even when the current body is visible.
 	query := `WITH selected AS MATERIALIZED (
- SELECT v.key,v.revision AS last_revision
- FROM plug_postgres.versions AS v JOIN plug_postgres.records AS r ON r.key=v.key
- WHERE ` + strings.Join(where, " AND ") + fmt.Sprintf(` ORDER BY v.key LIMIT $%d
+ SELECT ` + selectionKey + `,v.revision AS last_revision
+ FROM ` + selectionFrom + `
+ WHERE ` + strings.Join(where, " AND ") + fmt.Sprintf(` ORDER BY `+selectionKey+` LIMIT $%d
 )
 SELECT s.key,r.kind,r.revision::text,r.revision<=$2,
        CASE WHEN r.revision<=$2 THEN r.ref END,
        CASE WHEN r.revision<=$2 THEN r.body END,
        v.value,h.is_base,h.value
 FROM selected AS s
-JOIN plug_postgres.records AS r ON r.key=s.key
-JOIN plug_postgres.versions AS v ON v.key=s.key AND v.revision=s.last_revision
+JOIN LATERAL (
+ SELECT r.kind,r.revision,r.ref,r.body FROM plug_postgres.records AS r
+ WHERE r.key=s.key LIMIT 1
+) AS r ON true
+JOIN LATERAL (
+ SELECT v.value FROM plug_postgres.versions AS v
+ WHERE v.key=s.key AND v.revision=s.last_revision LIMIT 1
+) AS v ON true
 LEFT JOIN LATERAL (
  SELECT b.revision AS first_revision FROM plug_postgres.versions AS b
  WHERE b.key=s.key AND b.revision<=s.last_revision AND b.is_base
