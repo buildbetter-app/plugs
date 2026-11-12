@@ -36,6 +36,18 @@ func b28BatchDocument(id, title, description string) pipeline.Document {
 	}
 }
 
+// Ref permits an omitted branch on the ID arm; the typed zero value is branch 0.
+// Assert the exact identity without requiring one optional zero-branch spelling.
+func b28BatchIDRef(t *testing.T, wantID string, got model.Ref) {
+	t.Helper()
+	if err := got.Validate(); err != nil {
+		t.Fatalf("invalid committed reference: %v", err)
+	}
+	if !got.IsID() || got.ID != wantID || got.Key != "" || got.Branch.String() != "0" {
+		t.Fatalf("reference=%+v want ID arm id=%q key=empty branch=0", got, wantID)
+	}
+}
+
 func b28BatchRows(t *testing.T, rows []driver.Record, want []pipeline.Document, revisions []string) {
 	t.Helper()
 	if len(rows) != len(want) || len(revisions) != len(want) {
@@ -53,7 +65,7 @@ func b28BatchRows(t *testing.T, rows []driver.Record, want []pipeline.Document, 
 		if !ok || row.Revision.String() != revisions[i] {
 			t.Fatalf("committed row %s: %+v want revision=%s", doc.ID, row, revisions[i])
 		}
-		equalJSON(t, ref(doc.ID), row.Ref)
+		b28BatchIDRef(t, doc.ID, row.Ref)
 		equalJSON(t, doc, json.RawMessage(row.Body))
 	}
 }
@@ -85,7 +97,7 @@ func TestB28PublicHeterogeneousBatchPreservesWholeChangeOrderAndSnapshots(t *tes
 			t.Fatalf("seed commit=%+v", seed)
 		}
 		for i, result := range seed.Results {
-			equalJSON(t, refs[i], result.Ref)
+			b28BatchIDRef(t, refs[i].ID, result.Ref)
 			if result.Revision.String() != "1" {
 				t.Fatalf("seed row revision=%s", result.Revision.String())
 			}
@@ -153,11 +165,14 @@ func TestB28PublicHeterogeneousBatchPreservesWholeChangeOrderAndSnapshots(t *tes
 			t.Fatalf("whole-batch delivery metadata=%+v", batch.Change.Meta)
 		}
 		for i, change := range batch.Change.Changes {
-			equalJSON(t, model.ResourceRef{Kind: "bead", Ref: refs[i]}, change.Resource)
+			if change.Resource.Kind != "bead" {
+				t.Fatalf("operation %d resource kind=%q want bead", i, change.Resource.Kind)
+			}
+			b28BatchIDRef(t, refs[i].ID, change.Resource.Ref)
 			equalJSON(t, ops[i], change.Op)
 			equalJSON(t, before[i], change.Before)
 			result := commit.Results[i]
-			equalJSON(t, refs[i], result.Ref)
+			b28BatchIDRef(t, refs[i].ID, result.Ref)
 			if result.Revision.String() != "2" {
 				t.Fatalf("operation %d result revision=%s", i, result.Revision.String())
 			}
@@ -224,7 +239,7 @@ func TestB28PublicHeterogeneousBatchPreservesWholeChangeOrderAndSnapshots(t *tes
 					if current.Bead.Links[j].From != doc.ID || current.Bead.Links[j].Kind != "relates-to" {
 						t.Fatalf("public current dependency=%s", got.Result)
 					}
-					equalJSON(t, link.To, current.Bead.Links[j].To)
+					b28BatchIDRef(t, link.To.ID, current.Bead.Links[j].To)
 				}
 			}
 			deleted := f.call("bead.get", label+"-deleted", map[string]any{"id": refs[3]})
@@ -238,7 +253,7 @@ func TestB28PublicHeterogeneousBatchPreservesWholeChangeOrderAndSnapshots(t *tes
 		if noop.Revision.String() != "2" || len(noop.Results) != 1 || noop.Results[0].Revision.String() != "2" || len(noop.Warnings) != 0 || len(observe()) != 1 || !bytes.Equal(image, f.image()) {
 			t.Fatalf("whole-batch same-value patch published/redelivered: %+v", noop)
 		}
-		equalJSON(t, refs[0], noop.Results[0].Ref)
+		b28BatchIDRef(t, refs[0].ID, noop.Results[0].Ref)
 		equalJSON(t, patched, noop.Results[0].Record)
 
 		later := f.write("bead.update", "b28-batch-later", map[string]any{"id": refs[4], "fields": map[string]any{"title": "target later value"}})
@@ -246,7 +261,7 @@ func TestB28PublicHeterogeneousBatchPreservesWholeChangeOrderAndSnapshots(t *tes
 			t.Fatalf("later independent commit=%+v", later)
 		}
 		live[3] = b28BatchDocument(ids[4], "target later value", "target description ε")
-		equalJSON(t, refs[4], later.Results[0].Ref)
+		b28BatchIDRef(t, refs[4].ID, later.Results[0].Ref)
 		equalJSON(t, live[3], later.Results[0].Record)
 		assertCurrent("later-current", live, []string{"2", "2", "2", "3"}, "3")
 		beforeReplay := f.image()
