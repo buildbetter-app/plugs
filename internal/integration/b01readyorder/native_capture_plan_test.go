@@ -12,6 +12,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
@@ -284,7 +285,33 @@ func b01MountCapturedWorkflow(t *testing.T, p *publicAcceptance, profile driver.
 	if report.SourcePlanes == nil || len(report.SourcePlanes.Providers) != 1 || report.Receipt == nil {
 		t.Fatal("genuine capture import lacks its joint receipt/provider binding")
 	}
-	p.onto = service.NewOntology(nil)
+	meta, err := p.store.Meta(p.ctx)
+	if err != nil {
+		t.Fatal("read captured store metadata for durable ontology", err)
+	}
+	at := meta.Head
+	reader, err := p.store.Read(p.ctx, driver.View{Incarnation: meta.Incarnation, At: &at})
+	if err != nil {
+		t.Fatal("read captured durable ontology snapshot", err)
+	}
+	ontologyRef := model.RefByID(converterroundtrip.ImportedOntologySourceID, model.Natural64(0))
+	rows, readErr := reader.Get(p.ctx, []model.Ref{ontologyRef})
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || len(rows) != 1 || rows[0].Kind != "ontology" || rows[0].Ref.ID != ontologyRef.ID || rows[0].Ref.Branch.String() != ontologyRef.Branch.String() || rows[0].Revision.Validate() != nil {
+		t.Fatalf("captured durable ontology contract is absent or malformed: rows=%v read=%v close=%v", rows, readErr, closeErr)
+	}
+	installed, err := service.DecodeOntologySource(rows[0].Body)
+	if err != nil {
+		t.Fatal("decode captured durable ontology contract", err)
+	}
+	snapshot, problems := ontology.Compile(installed.Base, installed.Overlays, installed.Plugins)
+	if len(problems) != 0 {
+		t.Fatalf("compile captured durable ontology contract: %+v", problems)
+	}
+	if _, ok := snapshot.Effective(b01CaptureProject).Status("open"); !ok {
+		t.Fatal("captured durable ontology contract omits native task/open status")
+	}
+	p.onto = service.NewOntology(snapshot.Effective)
 	writer := pipeline.New(p.store, p.lease, pipeline.WithOntology(p.onto), pipeline.WithClock(p.clock.Now))
 	p.svc = service.New(p.store, p.lease, writer, service.WithOntology(p.onto), service.WithClock(p.clock.Now))
 	capability, err := driver.RequireWorkflowCheckpointStore(p.store, p.lease)
