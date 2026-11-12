@@ -15,6 +15,11 @@ on:
         description: Bazel arguments, provided as one whitespace-separated string
         required: true
         type: string
+      ondemand:
+        description: Require an on-demand runner instead of the default spot runner
+        required: false
+        type: boolean
+        default: false
 
 run-name: remote-bazel ${{ inputs.label }} ${{ inputs.sha }}
 
@@ -24,7 +29,7 @@ permissions:
 jobs:
   remote-bazel:
     name: Remote Bazel
-    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16
+    runs-on: runs-on=${{ github.run_id }}/runner=bb-x64-16${{ inputs.ondemand && '/spot=false' || '' }}
     timeout-minutes: 180
     permissions:
       contents: read
@@ -87,7 +92,25 @@ jobs:
           set -euo pipefail
           mkdir -p "$REMOTE_BAZEL_EVIDENCE_DIR" "$PLUG_BAZEL_REPOSITORY_CACHE"
           printf '%s\n' "sha=${{ inputs.sha }}" "label=${{ inputs.label }}" \
-            "args=$ARGS_INPUT" > "$REMOTE_BAZEL_EVIDENCE_DIR/request.txt"
+            "args=$ARGS_INPUT" "ondemand=${{ inputs.ondemand }}" > "$REMOTE_BAZEL_EVIDENCE_DIR/request.txt"
+
+      - name: Verify runner lifecycle
+        env:
+          REQUIRE_ON_DEMAND: ${{ inputs.ondemand }}
+        run: |
+          set -euo pipefail
+          exec > >(tee "$REMOTE_BAZEL_EVIDENCE_DIR/instance-lifecycle.log") 2>&1
+          token=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --request PUT --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+            http://169.254.169.254/latest/api/token)
+          instance_lifecycle=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --header "X-aws-ec2-metadata-token: $token" \
+            http://169.254.169.254/latest/meta-data/instance-life-cycle)
+          echo "instance_lifecycle=$instance_lifecycle"
+          if [[ "$REQUIRE_ON_DEMAND" == "true" && "$instance_lifecycle" != "on-demand" ]]; then
+            echo "::error::instance_lifecycle=$instance_lifecycle, expected on-demand"
+            exit 1
+          fi
 
       - name: Prepare Beads integration prerequisites
         if: ${{ hashFiles('tools/bazel/go_test_offline.sh') != '' }}
@@ -346,6 +369,8 @@ jobs:
             ${{ runner.temp }}/remote-bazel-evidence/command.txt
             ${{ runner.temp }}/remote-bazel-evidence/exit_code
             ${{ runner.temp }}/remote-bazel-evidence/toolchain.txt
+            ${{ runner.temp }}/remote-bazel-evidence/request.txt
+            ${{ runner.temp }}/remote-bazel-evidence/instance-lifecycle.log
             ${{ runner.temp }}/remote-bazel-evidence/bazel-testlogs.tgz
             ${{ runner.temp }}/remote-bazel-evidence/public-bundle.json
             ${{ runner.temp }}/remote-bazel-evidence/public-bundle-helper-binding.txt

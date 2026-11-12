@@ -132,7 +132,7 @@ required_workflow = {
     "name: Plug Bazel",
     "pull_request:",
     "workflow_dispatch:",
-    "format('runs-on={0}/runner=bb-x64-16', github.run_id)",
+    "format('runs-on={0}/runner=bb-x64-16/spot=false', github.run_id)",
     "runs-on/action@",
     "RUNSON_TRUSTED",
     "actions/setup-node@",
@@ -396,6 +396,15 @@ if missing:
 remote_code = without_comments(remote_workflow)
 if "workflow_dispatch:" not in remote_code or "  push:" in remote_code or "  pull_request:" in remote_code:
     raise SystemExit("config: remote Bazel workflow must be dispatch-only")
+ondemand_input = re.findall(r"(?m)^      ondemand:\n((?:        .+\n)+)", remote_code)
+if len(ondemand_input) != 1 or not all(
+    line in ondemand_input[0].splitlines()
+    for line in ("        required: false", "        type: boolean", "        default: false")
+):
+    raise SystemExit("config: remote on-demand input must be an optional boolean defaulting to false")
+remote_labels = re.findall(r"(?m)^    runs-on: (.+)$", remote_code)
+if remote_labels != ["runs-on=${{ github.run_id }}/runner=bb-x64-16${{ inputs.ondemand && '/spot=false' || '' }}"]:
+    raise SystemExit("config: remote runner must preserve its default label and append /spot=false only on demand")
 for fragment in (
     "run-name: remote-bazel ${{ inputs.label }} ${{ inputs.sha }}",
     "sha:", "label:", "args:", "type: string",
@@ -406,11 +415,55 @@ for fragment in (
     "--ignore_all_rc_files", "--output_user_root", "--bazelrc",
     "remote-bazel-${{ inputs.label }}", "bazel.log", "exit_code",
     "toolchain.txt", "bazel-testlogs.tgz", "if: always()",
+    '"ondemand=${{ inputs.ondemand }}"', "remote-bazel-evidence/request.txt",
+    "remote-bazel-evidence/instance-lifecycle.log",
 ):
     if fragment not in remote_code:
         raise SystemExit("config: remote workflow is missing: " + fragment)
 if "eval " in remote_code or "set -x" in remote_code or "pull_request_target:" in remote_code:
     raise SystemExit("config: remote workflow contains an unsafe command or trigger")
+lifecycle_step = remote_code.split("- name: Verify runner lifecycle", 1)[1].split("- name:", 1)[0]
+require_fragments("remote lifecycle readback", lifecycle_step, (
+    "REQUIRE_ON_DEMAND: ${{ inputs.ondemand }}", "--request PUT",
+    "X-aws-ec2-metadata-token-ttl-seconds: 60", 'X-aws-ec2-metadata-token: $token',
+    "http://169.254.169.254/latest/api/token",
+    "http://169.254.169.254/latest/meta-data/instance-life-cycle",
+))
+if not (remote_code.index("- name: Prepare remote Bazel evidence")
+        < remote_code.index("- name: Verify runner lifecycle")
+        < remote_code.index("- name: Run remote Bazel command")):
+    raise SystemExit("config: lifecycle readback must run before Bazel after evidence setup")
+# Exercise the actual workflow shell. Synthetic metadata proves fail-closed
+# enforcement; real branch-ref dispatches separately prove EC2 placement.
+lifecycle_program = textwrap.dedent(lifecycle_step.split("run: |\n", 1)[1])
+metadata_fixture = r'''
+curl() {
+  case "${*: -1}" in
+    http://169.254.169.254/latest/api/token) printf '%s' fixture-token ;;
+    http://169.254.169.254/latest/meta-data/instance-life-cycle)
+      [[ "$*" == *"X-aws-ec2-metadata-token: fixture-token"* ]] || return 23
+      [[ "$FIXTURE_LIFECYCLE" != unavailable ]] || return 22
+      printf '%s' "$FIXTURE_LIFECYCLE" ;;
+    *) return 24 ;;
+  esac
+}
+'''
+for requested, actual, passes in (
+    ("true", "on-demand", True), ("true", "spot", False), ("true", "", False),
+    ("true", "unavailable", False), ("false", "spot", True),
+    ("false", "on-demand", True), ("false", "unavailable", False),
+):
+    with tempfile.TemporaryDirectory(prefix="plug-runner-lifecycle.") as temporary:
+        result = subprocess.run(["bash", "-c", metadata_fixture + lifecycle_program],
+                                text=True, capture_output=True,
+                                env=dict(os.environ, REMOTE_BAZEL_EVIDENCE_DIR=temporary,
+                                         REQUIRE_ON_DEMAND=requested, FIXTURE_LIFECYCLE=actual))
+        if (result.returncode == 0) != passes:
+            raise SystemExit(f"config: lifecycle request={requested} actual={actual!r}: {result.stdout}{result.stderr}")
+        evidence = Path(temporary, "instance-lifecycle.log").read_text()
+        if actual != "unavailable" and f"instance_lifecycle={actual}\n" not in evidence:
+            raise SystemExit("config: lifecycle metadata must survive in uploaded evidence")
+print("plug-runner-lifecycle: on-demand enforcement, spot default, metadata failure and evidence checks passed")
 helper_checkout = remote_code.split("- name: Checkout trusted CI helpers", 1)[1].split("- name:", 1)[0]
 require_fragments("trusted remote archive helper checkout", helper_checkout, (
     "if: always()", "ref: ${{ github.workflow_sha }}", "persist-credentials: false",
