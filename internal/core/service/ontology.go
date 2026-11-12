@@ -457,7 +457,7 @@ func (o *Ontology) validate(ctx context.Context, proposal port.ProposedChange, r
 		graph = prefix
 		if graph == nil {
 			var complete bool
-			graph, complete, err = indexedGuardGraph(ctx, proposal, reader)
+			graph, complete, err = indexedGuardGraph(ctx, proposal, reader, o)
 			if err != nil {
 				return err
 			}

@@ -7,6 +7,8 @@ import (
 	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -17,12 +19,17 @@ const indexedHierarchyLimit = 5000
 // Deletion retains the full scan because custom/association incoming links are
 // outside the inverse selector's closed domain. Unavailable or exhausted
 // membership also returns to that scan; it is never treated as absence.
-func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader) (map[string]storedBead, bool, error) {
+func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader port.SnapshotReader, ontologies ...*Ontology) (map[string]storedBead, bool, error) {
+	var o *Ontology
+	if len(ontologies) != 0 {
+		o = ontologies[0]
+	}
 	indexed, ok := reader.(port.HierarchySnapshotReader)
 	if !ok || len(proposal.Changes) == 0 || len(proposal.Changes) > driver.SourceLinkMaxExcluded {
 		return nil, false, nil
 	}
 	graph, overlay, childParents := map[string]storedBead{}, map[string]storedBead{}, map[string]bool{}
+	parents := map[string]bool{}
 	for _, change := range proposal.Changes {
 		if change.Resource.Kind != "bead" {
 			continue
@@ -34,8 +41,8 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 		if err != nil || doc.ID != change.Resource.Ref.ID || driver.ValidateHierarchyRef(change.Resource.Ref) != nil {
 			return nil, false, failure("ontology_guard_failed", "invalid indexed guard image")
 		}
-		overlay[doc.ID] = storedBead{doc: doc}
-		childParents[doc.ID] = true // NoOpenChildren on each changed bead.
+		// Both old and new parents remain guard subjects after a move. Their
+		// own current status decides whether children are required.
 		for _, raw := range [][]byte{change.Before, change.After} {
 			if !hasDocument(raw) {
 				continue
@@ -45,8 +52,12 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 				return nil, false, err
 			}
 			if image.Parent != nil {
-				childParents[image.Parent.ID] = true // unchanged-parent guard
+				parents[image.Parent.ID] = true
 			}
+		}
+		overlay[doc.ID] = storedBead{doc: doc}
+		if o.childGuardFactsNeeded(doc) {
+			childParents[doc.ID] = true
 		}
 	}
 	if len(overlay) == 0 || len(overlay) > driver.SourceLinkMaxExcluded {
@@ -77,7 +88,7 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 			return nil, false, nil
 		}
 	}
-	for id := range childParents {
+	for id := range parents {
 		if !enqueue(id) {
 			return nil, false, nil
 		}
@@ -145,6 +156,9 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 			row, exists := graph[id]
 			if !exists {
 				continue
+			}
+			if o.childGuardFactsNeeded(row.doc) {
+				childParents[id] = true
 			}
 			if row.doc.Parent != nil {
 				if !enqueue(row.doc.Parent.ID) {
@@ -231,4 +245,30 @@ func indexedGuardGraph(ctx context.Context, proposal port.ProposedChange, reader
 		}
 	}
 	return graph, true, nil
+}
+
+// validateHierarchyParents checks guards whose target is the parent's current
+// status. The same target-status set includes create/transition child guards.
+// An ordinary child added under an open parent must not enumerate siblings
+// merely because that workflow has a guard on a different (closed) status.
+func (o *Ontology) childGuardFactsNeeded(doc pipeline.Document) bool {
+	if o == nil {
+		return true // callers without ontology retain complete child facts
+	}
+	effective := o.effective(doc.Project).Document()
+	typ, ok := effective.Types[doc.Type]
+	if !ok {
+		return false // the ordinary ontology validator reports the missing type
+	}
+	for _, transition := range effective.Workflows[typ.Workflow].Transitions {
+		if transition.To != state(doc).Status {
+			continue
+		}
+		for _, guard := range transition.Guards {
+			if guard.Kind == ontology.NoOpenChildren {
+				return true
+			}
+		}
+	}
+	return false
 }

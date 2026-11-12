@@ -1056,6 +1056,42 @@ func (p *prepared) allocatorOccupied(ctx context.Context, id string) (bool, erro
 	return states[0].Present || !states[0].Revision.IsZero(), nil
 }
 
+// Child numbering consumes identity metadata, not the existing children's
+// documents. Keep the same graph predicate and staged-image rules as the
+// allocator scan, including numbers consumed by a create then delete in-batch.
+func (p *prepared) observedChildNumber(ctx context.Context, parent string) (uint64, error) {
+	reader, ok := p.snapshot.reader.(driver.NumericChildReader)
+	if !ok {
+		_, _, maximum, err := p.allocatorObservations(ctx, "", parent)
+		return maximum, err
+	}
+	if _, err := p.snapshot.observe(ctx, []driver.LockKey{driver.GraphBlockingSentinelLock}); err != nil {
+		return 0, err
+	}
+	excluded := make([]model.Ref, 0, len(p.writes))
+	for _, pending := range p.writes {
+		excluded = append(excluded, pending.ref)
+	}
+	maximum, err := reader.MaxChildNumber(ctx, parent, excluded)
+	if err != nil {
+		return 0, err
+	}
+	for id, pending := range p.writes {
+		driver.ReportReadWork(ctx, driver.ReadChildIDCandidates, 1)
+		if pending.kind != "bead" {
+			continue
+		}
+		n, err := driver.ChildNumber(parent, id)
+		if errors.Is(err, driver.ErrUnsupported) {
+			return 0, err
+		}
+		if err == nil && n > maximum {
+			maximum = n
+		}
+	}
+	return maximum, nil
+}
+
 func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, error) {
 	incarnation := p.snapshot.Snapshot().Incarnation
 	key, err := driver.ParentCounterLock(incarnation, parent)
@@ -1075,7 +1111,7 @@ func (p *prepared) fallbackChildID(ctx context.Context, parent string) (string, 
 	} else if err != nil {
 		return "", err
 	}
-	_, _, observed, err := p.allocatorObservations(ctx, "", parent)
+	observed, err := p.observedChildNumber(ctx, parent)
 	if err != nil {
 		return "", err
 	}
@@ -1218,7 +1254,7 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 		}
 		return id, project, id, parent, nil
 	}
-	_, occupied, observed, err := p.allocatorObservations(ctx, project, parent)
+	observed, err := p.observedChildNumber(ctx, parent)
 	if err != nil {
 		return "", "", "", "", err
 	}
@@ -1232,12 +1268,9 @@ func (p *prepared) nextChildAllocatorID(ctx context.Context, project, parent str
 	for current < ^uint64(0) {
 		current++
 		id := fmt.Sprintf("%s.%d", parent, current)
-		used := occupied[id]
-		if !used {
-			used, err = p.allocatorOccupied(ctx, id)
-			if err != nil {
-				return "", "", "", "", err
-			}
+		used, err := p.allocatorOccupied(ctx, id)
+		if err != nil {
+			return "", "", "", "", err
 		}
 		if !used {
 			return id, project, id, parent, nil

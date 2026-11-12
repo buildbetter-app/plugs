@@ -154,6 +154,9 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 		if e != nil {
 			return e
 		}
+		if _, e = c.ExecContext(ctx, childIDSchema); e != nil {
+			return e
+		}
 		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO meta VALUES(1,?,?,?,?,?)`, randomID(), randomID(), schemaVersion, revKey(0), revKey(0))
 		if e != nil {
 			return e
