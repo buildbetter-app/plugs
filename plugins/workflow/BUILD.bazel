@@ -6,6 +6,7 @@ go_library(
         "atomic.go",
         "batch_operations.go",
         "blocked_graph.go",
+        "cycle_snapshot.go",
 		"listing.go",
         "native.go",
         "ordinary_delete.go",

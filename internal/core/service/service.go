@@ -192,7 +192,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	}
 	source := s.source.Load()
 	deletes := ordinaryDeletes(cs)
-	ordinaryMixed := source == nil && method == "tx.apply" && len(deletes) == 0 && s.workflow.CanPrepareOrdinaryOperations() && ordinaryBatchUsesWorkflow(cs)
+	ordinaryMixed := source == nil && (method == "tx.apply" || method == "bead.link") && len(deletes) == 0 && s.workflow.CanPrepareOrdinaryOperations() && (ordinaryBatchUsesWorkflow(cs) || cycleLinkChanges(cs))
 	if ordinaryMixed {
 		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(nil, by, cs, meta), ordinaryWorkflowKind)
 	}
@@ -1094,6 +1094,9 @@ func (s *Service) LinkWithOutcome(ctx context.Context, by model.PrincipalRef, re
 		}
 		if err := validateWorkflowWrite(req.To, req.Expect, meta); err != nil && workflowRef(req.To) {
 			return port.WriteOutcome{}, err
+		}
+		if s.workflow.CanPrepareOrdinaryOperations() {
+			return s.linkWorkflowChecked(ctx, by, req, workflowReq, meta)
 		}
 		if err := s.validateWorkflowEndpoints(ctx, by, meta.Project, req.From, req.To); err != nil {
 			return port.WriteOutcome{}, err

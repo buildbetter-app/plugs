@@ -461,6 +461,8 @@ internal/core/service/comments_test.go
 internal/core/service/compact.go
 internal/core/service/cycles.go
 internal/core/service/cycles_test.go
+internal/core/service/cycles_workflow.go
+internal/core/service/cycles_workflow_write.go
 internal/core/service/direct_blockers.go
 internal/core/service/direct_blockers_test.go
 internal/core/service/external_target_test.go
@@ -1679,6 +1681,7 @@ plugins/workflow/BUILD.bazel
 plugins/workflow/atomic.go
 plugins/workflow/batch_operations.go
 plugins/workflow/blocked_graph.go
+plugins/workflow/cycle_snapshot.go
 plugins/workflow/listing.go
 plugins/workflow/manifest.json
 plugins/workflow/native.go

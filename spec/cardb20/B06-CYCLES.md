@@ -79,3 +79,68 @@ refusals, waits-for exclusion, exact raw order and report limit/count truncation
 Mixed durable/workflow topology remains OPEN: ReadySnapshot is filtered and
 cannot supply complete adjacency. The original combined-Ready owner must provide
 complete topology and membership from its same checkpoint/core snapshot.
+
+## Mixed-plane continuation from frozen train 1f77dd01
+
+The new reader uses the already installed host
+ReadWorkflowRuntimeCheckpoint/ReadSourceRuntimeCheckpoint port. The complete
+logical image supplies membership and directed outgoing/inbound facts; Ready
+eligibility never selects graph vertices. Both the core head and namespace
+expectation remain bound to the detached image. The consumer refuses missing
+capability or a different content head, retains hidden vertices in topology,
+and applies current policy only when disclosing each member. Existing durable
+DFS and optional shortest-return selection remain unchanged.
+
+The new mixed targets exercise public workflow invocation and standard bead
+links/cycle RPCs on memory, SQLite and PostgreSQL. They conserve the core archive,
+ordinary receipts and exact checkpoint payload/generation through reads and
+refusals, then physically reopen both SQL engines. Explicit disposable checkpoint
+damage supplies additional parallel endpoint facts. The native target reuses
+the canonical pinned source-build recipe in independent disposable databases.
+Raw native IDs and public workflow allocation IDs remain in their originals;
+role correspondence is explicitly bound to invocation labels and returned IDs.
+The native assertions independently pin raw path order, count, multiplicity and
+refusals before comparison. No official/history/full-card qualification follows
+from authored source; original execution and independent disposition are required.
+
+Direct active links use the installed detached participant and existing
+head-guarded checkpoint save, retaining checkpoint-only history. Ordered batch
+and ordinary links validate against their existing pinned core/staged provider
+image and retain the original Writer publication guards and sentinels. No
+concurrent claim, CAS fixture, receiver or Ready implementation is changed.
+
+The correction child retains the first candidate's original build failure and
+repairs the relocated helper import and exact AST literal bindings. Dynamic
+binding negatives still reject copied, changed or widened sites. Additional
+public controls refuse unsupported, mismatched and malformed joint snapshots
+without a report or state change; separate core and checkpoint reader-close
+failures publish no result. The coordinated host method joins read and close
+errors and clears every failed snapshot output.
+
+Ordered mixed transactions prove cycle, ancestor and self refusal after a
+preceding durable patch, exact successful operation revisions and endpoint
+readback, receipt replay without extra history, and SQL reopen. Direct active
+links retain their exact checkpoint-only commit and public readback. In line
+with the binding 17:14 ruling, memory proves the positive process-lifetime
+behavior with Persistent()==false; only SQLite and PostgreSQL promise restart
+survival. A provider missing both lifetime and persistence markers still refuses.
+
+## Default mixed blocking and absent workflow hydration continuation
+
+The additive `b06_mixed_blocking_cycles_test` and manual
+`b06_mixed_blocking_native_cycles_test` close an acceptance gap: prior mixed
+positive reports required tracks and their default report was empty. The new
+cases pin two default mixed blocking cycles, one with two workflow members;
+raw lowest-ID rotation, member count, total count and truncation are exact.
+Parallel facts leave both paths unchanged. A deliberately absent workflow
+hydration row keeps its topology and its unreadable position. Complete and
+partial state each survives physical SQL reopen without loss. Diagnostic setup
+is explicitly separate from ordinary scheduling admission.
+
+The native request and independent typed expectations are committed under
+`testdata/b06-blocking-native.json`, with adjacent provenance and exact digest
+authentication before execution through the existing source-build/recording
+port. No native capture/import or history claim is made. The new native target
+runs only the new missing cases, retaining both independent native originals
+and each engine's unmodified public results. Authored source and proposed gates
+are not runtime qualification.

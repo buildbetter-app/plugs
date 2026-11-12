@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_test")
 load(":test_common.bzl", "DEPS")
 
 # B06 owns these additive targets; the existing B20 recipe stays unchanged.
-B06_SRCS = ["b06_cases_test.go", "b06_plug_test.go", "postgres_test.go"]
+B06_SUPPORT = ["b06_cases_test.go", "b06_plug_support_test.go", "postgres_test.go"]
+B06_MIXED = ["b06_mixed_support_test.go", "b06_mixed_faults_test.go", "b06_mixed_ordered_test.go"]
+B06_BLOCKING = B06_SUPPORT + B06_MIXED + ["b06_blocking_support_test.go"]
+B06_SRCS = B06_SUPPORT + ["b06_plug_test.go"]
 B06_DEPS = DEPS + [
     "//internal/core/restore",
     "//internal/server/transport/httpjson",
@@ -23,11 +26,55 @@ def b06_tests():
 
     go_test(
         name = "b06_native_cycles_test",
-        srcs = B06_SRCS + [":native_build_support", "b06_native_test.go"],
+        srcs = B06_SRCS + [":native_build_support", "b06_native_support_test.go", "b06_native_test.go"],
         data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
         env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
         args = ["-test.v", "-test.run=^TestB06CanonicalNativeCycles$$"],
         deps = B06_DEPS + ["//internal/publicnative"],
+        size = "enormous",
+        tags = ["local", "manual"],
+        timeout = "eternal",
+    )
+
+    go_test(
+        name = "b06_mixed_cycles_test",
+        srcs = B06_SUPPORT + B06_MIXED + ["b06_mixed_test.go"],
+        args = ["-test.v"],
+        deps = B06_DEPS + ["//internal/server/pluginhost", "//pluginapi", "//plugins/workflow"],
+        size = "large",
+        tags = ["local", "requires-network"],
+        timeout = "long",
+    )
+
+    go_test(
+        name = "b06_mixed_native_cycles_test",
+        srcs = B06_SUPPORT + B06_MIXED + [":native_build_support", "b06_native_support_test.go", "b06_mixed_native_support_test.go", "b06_mixed_native_test.go"],
+        data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
+        env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+        args = ["-test.v"],
+        deps = B06_DEPS + ["//internal/publicnative", "//internal/server/pluginhost", "//pluginapi", "//plugins/workflow"],
+        size = "enormous",
+        tags = ["local", "manual"],
+        timeout = "eternal",
+    )
+
+    go_test(
+        name = "b06_mixed_blocking_cycles_test",
+        srcs = B06_BLOCKING + ["b06_blocking_test.go"],
+        args = ["-test.v"],
+        deps = B06_DEPS + ["//internal/server/pluginhost", "//pluginapi", "//plugins/workflow"],
+        size = "large",
+        tags = ["local", "requires-network"],
+        timeout = "long",
+    )
+
+    go_test(
+        name = "b06_mixed_blocking_native_cycles_test",
+        srcs = B06_BLOCKING + [":native_build_support", "b06_native_support_test.go", "b06_mixed_native_support_test.go", "b06_blocking_native_test.go"],
+        data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime", "testdata/b06-blocking-native.json", "testdata/b06-blocking-native.provenance.md"],
+        env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+        args = ["-test.v"],
+        deps = B06_DEPS + ["//internal/publicnative", "//internal/server/pluginhost", "//pluginapi", "//plugins/workflow"],
         size = "enormous",
         tags = ["local", "manual"],
         timeout = "eternal",
