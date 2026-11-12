@@ -29,7 +29,7 @@ jobs:
             github.actor != 'dependabot[bot]'
           )
         ) &&
-        format('runs-on={0}/runner=bb-x64-16', github.run_id) ||
+        format('runs-on={0}/runner=bb-x64-16/spot=false', github.run_id) ||
         'ubuntu-latest'
       }}
     # Keep the existing 45-minute envelope plus both 150-minute CP7 targets
