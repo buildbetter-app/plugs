@@ -252,7 +252,9 @@ func (f *b03Public) call(t *testing.T, method string, params map[string]any, wri
 	t.Helper()
 	if write {
 		f.sequence++
-		params["_meta"] = map[string]any{"project": "b03", "agent": "b03-public", "idempotencyKey": fmt.Sprintf("%032x", f.sequence)}
+		if _, supplied := params["_meta"]; !supplied {
+			params["_meta"] = map[string]any{"project": "b03", "agent": "b03-public", "idempotencyKey": fmt.Sprintf("%032x", f.sequence)}
+		}
 	}
 	req, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": fmt.Sprint(f.sequence), "method": method, "params": params})
 	if err != nil {

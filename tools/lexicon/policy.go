@@ -159,6 +159,8 @@ func DefaultTreePolicy() TreePolicy {
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz"] = "12ebe1d5a091f0878cfd7825ac84d33c07a233b4571d090cb79b1a3b47d04aa9"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27"
+	policy.BinarySHA256["internal/integration/b03publiccatalog/testdata/b03-rich-r4-inputs.tar.gz"] = "708cdbe19d28cd303146b91c9dab278f2fac0a37a6ed4f8b234896c59b1549f7"
+	policy.BinarySHA256["internal/integration/b03publiccatalog/testdata/b03-rich-r5-inputs.tar.gz"] = "112d9beaf34078be8fdfe0ba745c85a35f2d527944afba0d834f88b831f66a2e"
 	// Independent native table commitments retain exact producer vocabulary.
 	// Only these authenticated reference bytes receive that disposition.
 	policy.ReferencePrefixes = append(policy.ReferencePrefixes, "internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json")
