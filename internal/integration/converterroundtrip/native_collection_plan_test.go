@@ -48,6 +48,46 @@ func joinedPhysicalBinding(t *testing.T) dumpformat.NativeJoinedBinding {
 	return b
 }
 
+func assertJoinedPhysicalHistories(t *testing.T, reports []NativeHistoryReport, binding dumpformat.NativeJoinedBinding) {
+	t.Helper()
+	if len(reports) != 2 {
+		t.Fatal("complete physical histories omitted", reports)
+	}
+	want := map[dumpformat.SourceIdentity]bool{}
+	for _, source := range binding.Sources {
+		want[dumpformat.SourceIdentity{StoreID: source.SourceStoreID, Project: source.SourceProject}] = true
+	}
+	for _, report := range reports {
+		if !want[report.Source] || !report.Complete || report.VerifiedCommitCount != 97 || report.Coverage != nil {
+			t.Fatal("complete physical history identity/count/coverage differs", report)
+		}
+		delete(want, report.Source)
+	}
+	if len(want) != 0 {
+		t.Fatal("complete physical source history omitted", want)
+	}
+}
+
+func assertJoinedPhysicalPlanHistories(t *testing.T, image nativeprojection.Snapshot, binding dumpformat.NativeJoinedBinding) {
+	t.Helper()
+	assertJoinedPhysicalHistories(t, image.NativeHistories, binding)
+	n := 0
+	for _, row := range image.Records {
+		if row.Ref.ID != nativeprojection.NativeFamilyReportID {
+			continue
+		}
+		n++
+		var evidence nativeprojection.NativeFamilyEvidence
+		if err := json.Unmarshal(row.Body, &evidence); err != nil {
+			t.Fatal(err)
+		}
+		assertJoinedPhysicalHistories(t, evidence.Histories, binding)
+	}
+	if n != 1 {
+		t.Fatal("actual publication must retain one complete history evidence row", n)
+	}
+}
+
 // This explicit test intent is independent of the product constructor. The
 // frozen physical pair contains epic/task durable rows with present SQL NULL
 // storage, exact named statuses and flags. Other rows remain inert origins.
@@ -148,6 +188,12 @@ func TestNativeCollectionOneActualPlanAndFinalProfileSealPhysicalPair(t *testing
 	if err != nil {
 		t.Fatal("one final actual planner image", err)
 	}
+	image, err := actual.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJoinedPhysicalPlanHistories(t, image, fixture)
+	image = nativeprojection.Snapshot{}
 	request := driver.OfflineHistoryStreamRequest{Current: meta, Profile: profile, Header: stream.Header(), When: when, Lifetime: target.Lifetime, Limits: historyverify.NativeArchiveLimits()}
 	for _, attack := range []string{"derived", "actor", "key", "clock", "provider-image"} {
 		t.Run(attack, func(t *testing.T) {
@@ -220,6 +266,56 @@ func TestNativeCollectionOneActualPlanAndFinalProfileSealPhysicalPair(t *testing
 	}
 	if usage := budget.Usage(); usage.CurrentAccountedDecodedBytes != 0 || usage.PeakAccountedDecodedBytes > dumpformat.NativeDeltaDefaultDecodedLimit {
 		t.Fatal("final collection lifetime/cap differs", usage)
+	}
+}
+
+func TestNativeCollectionCompleteHistorySummariesAdmitBeforeResult(t *testing.T) {
+	budget := dumpformat.NewNativeDeltaBudget(0)
+	ctx := dumpformat.WithNativeDeltaBudget(context.Background(), budget)
+	store, lease, cleanup := openIdentityTarget(t, "memory")
+	defer cleanup()
+	l := newJoinedOriginalLedger(t)
+	issuer, _, _ := physicalCollectionIntent(t, ctx, l, store, lease)
+	defer issuer.Close()
+	owner := issuer.Owner()
+	metadata, err := owner.NativeSourceHistoryMetadata()
+	if err != nil || len(metadata) != 2 {
+		t.Fatal("physical source metadata", err)
+	}
+	metadataSize, err := dumpformat.NativeDeltaJSONSize(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := NativeHistoryReport{Source: dumpformat.SourceIdentity{StoreID: l.binding.Sources[0].SourceStoreID, Project: l.binding.Sources[0].SourceProject}, Complete: true, VerifiedCommitCount: 97}
+	reportSize, err := dumpformat.NativeDeltaJSONSize(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Permit the reader's detached metadata and its encoding, but leave one
+	// byte less than the first summary needs. No result slice may be returned.
+	usage := budget.Usage()
+	spare := 2*metadataSize + reportSize - 1
+	if usage.LimitBytes-usage.CurrentAccountedDecodedBytes <= spare {
+		t.Fatal("unexpected physical fixture reservation size", usage)
+	}
+	fill := budget.Scope()
+	defer fill.Release()
+	if err := fill.ChargeBytes("test_history_summary_boundary", usage.LimitBytes-usage.CurrentAccountedDecodedBytes-spare); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := nativeprojection.NativeHistoryAccounting(owner)
+	var limit *dumpformat.NativeDeltaDecodedLimitError
+	if reports != nil || !errors.As(err, &limit) || limit.Phase != "collection_native_history_reports" {
+		t.Fatal("history summary was not refused at its own admission", reports, err)
+	}
+	metadata, owner = nil, nil
+	fill.Release()
+	if err := issuer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	usage = budget.Usage()
+	if usage.CurrentAccountedDecodedBytes != 0 || len(usage.CurrentCategories) != 0 || len(usage.CurrentCharges) != 0 {
+		t.Fatal("history admission refusal retained reservations", usage)
 	}
 }
 

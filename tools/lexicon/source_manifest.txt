@@ -2157,6 +2157,7 @@ tools/native-receive/capture_set.go
 tools/native-receive/joined.go
 tools/native-receive/main.go
 tools/native-receive/native_collection.go
+tools/native-receive/native_collection_report_test.go
 tools/native-receive/policy.go
 tools/native-receive/session.go
 tools/native-receive/verify.go

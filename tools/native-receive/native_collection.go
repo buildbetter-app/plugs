@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"reflect"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
@@ -309,18 +311,147 @@ func prepareNativeCaptureCollectionRequest(ctx context.Context, paths archivePat
 
 // Preserve a compact commitment across dropping the first session. Recovery
 // must reproduce every report channel, rather than only its receipt.
-func nativeCollectionReportCommitment(owner *dumpformat.Archive, report converterroundtrip.Report) (string, error) {
-	work, release := owner.NativeDeltaAccountingScope()
-	defer release()
+func nativeCollectionReportCommitment(budget *dumpformat.NativeDeltaBudget, report converterroundtrip.Report) (string, error) {
+	work := budget.Scope()
+	defer work.Release()
 	channels := []any{report.Receipt, report.NativeFamilies, report.NativeSchemas, report.NativeHistories, report.SourcePlanes}
-	if err := work.ChargeNativeDeltaJSON("cli_collection_report_encoding", channels); err != nil {
+	// Only the accounting view unwraps the model's validating marshalers.
+	// The actual commitment below still encodes every original report field.
+	counted := []any{(*nativeCollectionReceiptJSON)(report.Receipt), report.NativeFamilies, report.NativeSchemas, report.NativeHistories, report.SourcePlanes}
+	if err := work.ChargeJSON("cli_collection_report_encoding", counted); err != nil {
 		return "", err
+	}
+	if report.Receipt != nil {
+		// Commit/Changeset marshal through their own aggregate buffer while
+		// the enclosing report encoder is live. Commit validation and nested
+		// OpResult encoding can also hold a descendant candidate. Each fits
+		// within the full receipt's wire size; admit both before either runs.
+		for _, phase := range []string{"cli_collection_receipt_encoding", "cli_collection_receipt_validation"} {
+			if err := work.ChargeJSON(phase, (*nativeCollectionReceiptJSON)(report.Receipt)); err != nil {
+				return "", err
+			}
+		}
 	}
 	h := sha256.New()
 	if err := json.NewEncoder(h).Encode(channels); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// The model marshalers validate and then encode these same wire fields. These
+// borrowed views count them without a detached receipt or aggregate encoding.
+// Unsupported custom values in open-ended details or event plans still refuse
+// through the ordinary counter; there is no shared accounting exception.
+type nativeCollectionReceiptJSON driver.IdempotencyRecord
+type nativeCollectionCommitJSON model.Commit
+type nativeCollectionChangesetJSON model.Changeset
+type nativeCollectionResultsJSON []model.OpResult
+type nativeCollectionWarningsJSON []model.Warning
+type nativeCollectionViolationsJSON []model.Violation
+type nativeCollectionChangesJSON []model.ChangeRecord
+
+func (r nativeCollectionReceiptJSON) NativeDeltaJSONSize() (uint64, error) {
+	return dumpformat.NativeDeltaJSONSize(struct {
+		RequestHash     string
+		Commit          nativeCollectionCommitJSON
+		Changeset       nativeCollectionChangesetJSON
+		ResponsePending bool
+	}{r.RequestHash, nativeCollectionCommitJSON(r.Commit), nativeCollectionChangesetJSON(r.Changeset), r.ResponsePending})
+}
+
+func (c nativeCollectionCommitJSON) NativeDeltaJSONSize() (uint64, error) {
+	return dumpformat.NativeDeltaJSONSize(struct {
+		Revision       model.Revision                 `json:"revision"`
+		Results        nativeCollectionResultsJSON    `json:"results"`
+		Warnings       nativeCollectionWarningsJSON   `json:"warnings"`
+		WouldCommit    bool                           `json:"wouldCommit,omitempty"`
+		Violations     nativeCollectionViolationsJSON `json:"violations,omitempty"`
+		LeaseExpiresAt *time.Time                     `json:"leaseExpiresAt,omitempty"`
+		LeaseTtlMs     *model.Natural                 `json:"leaseTtlMs,omitempty"`
+	}{c.Revision, nativeCollectionResultsJSON(c.Results), nativeCollectionWarningsJSON(c.Warnings), c.WouldCommit, nativeCollectionViolationsJSON(c.Violations), c.LeaseExpiresAt, c.LeaseTtlMs})
+}
+
+func (c nativeCollectionChangesetJSON) NativeDeltaJSONSize() (uint64, error) {
+	return dumpformat.NativeDeltaJSONSize(struct {
+		Revision       model.Revision              `json:"revision"`
+		Branch         model.Branch                `json:"branch"`
+		Incarnation    string                      `json:"incarnation"`
+		Kind           string                      `json:"kind"`
+		Time           time.Time                   `json:"time"`
+		Principal      model.PrincipalRef          `json:"principal"`
+		Chain          []string                    `json:"chain"`
+		IdempotencyKey string                      `json:"idempotencyKey,omitempty"`
+		Mutators       []string                    `json:"mutators,omitempty"`
+		Changes        nativeCollectionChangesJSON `json:"changes"`
+		Events         []model.EventDescriptor     `json:"events,omitempty"`
+	}{c.Revision, c.Branch, c.Incarnation, string(c.Kind), c.Time, c.Principal, c.Chain, c.IdempotencyKey, c.Mutators, nativeCollectionChangesJSON(c.Changes), c.Events})
+}
+
+// Each element size includes an LF. Remove it when adding the element to the
+// array, then account for the array's own terminal LF. No converted slice is
+// materialized, and checked addition preserves the shared overflow refusal.
+func nativeCollectionJSONArraySize[T any](values []T, size func(T) (uint64, error)) (uint64, error) {
+	if values == nil {
+		return 5, nil // null plus LF
+	}
+	n := uint64(3) // [] plus LF
+	for i, value := range values {
+		item, err := size(value)
+		if err != nil {
+			return 0, err
+		}
+		if item == 0 {
+			return 0, errors.New("empty collection report accounting domain")
+		}
+		item--
+		if i != 0 {
+			if item == math.MaxUint64 {
+				return 0, errors.New("collection report size integer overflow")
+			}
+			item++
+		}
+		if item > math.MaxUint64-n {
+			return 0, errors.New("collection report size integer overflow")
+		}
+		n += item
+	}
+	return n, nil
+}
+
+func (values nativeCollectionResultsJSON) NativeDeltaJSONSize() (uint64, error) {
+	return nativeCollectionJSONArraySize(values, func(value model.OpResult) (uint64, error) {
+		type wire model.OpResult
+		return dumpformat.NativeDeltaJSONSize(wire(value))
+	})
+}
+
+func (values nativeCollectionWarningsJSON) NativeDeltaJSONSize() (uint64, error) {
+	return nativeCollectionJSONArraySize(values, func(value model.Warning) (uint64, error) {
+		return dumpformat.NativeDeltaJSONSize(struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details,omitempty"`
+		}{string(value.Code), value.Message, value.Details})
+	})
+}
+
+func (values nativeCollectionViolationsJSON) NativeDeltaJSONSize() (uint64, error) {
+	return nativeCollectionJSONArraySize(values, func(value model.Violation) (uint64, error) {
+		type wire model.Violation
+		return dumpformat.NativeDeltaJSONSize(wire(value))
+	})
+}
+
+func (values nativeCollectionChangesJSON) NativeDeltaJSONSize() (uint64, error) {
+	return nativeCollectionJSONArraySize(values, func(value model.ChangeRecord) (uint64, error) {
+		return dumpformat.NativeDeltaJSONSize(struct {
+			Ref          model.Ref      `json:"ref"`
+			Op           string         `json:"op"`
+			FromRevision model.Revision `json:"fromRevision"`
+			ChangedPaths []string       `json:"changedPaths"`
+		}{value.Ref, string(value.Op), value.FromRevision, value.ChangedPaths})
+	})
 }
 
 func runNativeCaptureCollection(ctx context.Context, paths archivePaths, requestPath, engine, targetPath, binaryHash, policyPath, bindingPath, profilePath string) (out receipt, runErr error) {
@@ -434,7 +565,7 @@ func runNativeCaptureCollection(ctx context.Context, paths archivePaths, request
 	if err = converterroundtrip.VerifyNativeCaptureCollectionReadback(op, store, binding, nativeCollectionOpeners(paths, imported), profile, committed); err != nil {
 		return out, err
 	}
-	wantReport, err := nativeCollectionReportCommitment(committed.Archive, committed)
+	wantReport, err := nativeCollectionReportCommitment(budget, committed)
 	if err != nil {
 		return out, err
 	}
@@ -479,7 +610,7 @@ func runNativeCaptureCollection(ctx context.Context, paths archivePaths, request
 	if !found || recovered.Archive == nil || recovered.Archive.SHA256() != input.ArchiveSHA256 {
 		return out, driver.ErrConflict
 	}
-	gotReport, e := nativeCollectionReportCommitment(recovered.Archive, recovered)
+	gotReport, e := nativeCollectionReportCommitment(budget, recovered)
 	if e != nil || gotReport != wantReport {
 		return out, driver.ErrConflict
 	}

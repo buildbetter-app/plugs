@@ -86,6 +86,7 @@ func TestNativeCollectionPreparedHandleReceivesOnceAndReleasesOwner(t *testing.T
 		t.Fatal(err)
 	}
 	var evidence archiveEvidence
+	assertJoinedPhysicalPlanHistories(t, image, l.binding)
 	for _, row := range image.Records {
 		if row.Ref.ID == "restore/archive" {
 			if err := json.Unmarshal(row.Body, &evidence); err != nil {
@@ -107,6 +108,7 @@ func TestNativeCollectionPreparedHandleReceivesOnceAndReleasesOwner(t *testing.T
 		t.Fatal(err)
 	}
 	defer report.Close()
+	assertJoinedPhysicalHistories(t, report.NativeHistories, l.binding)
 	if observed.writes != 1 || report.Receipt == nil || report.Restored.Head != model.Natural64(195) {
 		t.Fatal("prepared receive changed session cardinality", observed.writes, report.Restored)
 	}

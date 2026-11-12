@@ -216,6 +216,7 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 				t.Fatal("actual two-native-set single row receiver", err)
 			}
 			defer report.Close()
+			assertJoinedPhysicalHistories(t, report.NativeHistories, l.binding)
 			if report.Receipt == nil || report.Restored.Head != model.Natural64(195) || report.Restored.HistoryFloor != model.Natural64(0) || observed.writes != 1 || len(report.NativeHistories) != 2 || report.SourcePlanes == nil || len(report.SourcePlanes.Providers) != 1 {
 				t.Fatal("two-project session/receipt/provider conservation", report.Restored, observed.writes, len(report.NativeHistories))
 			}
@@ -241,6 +242,7 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 			if err != nil || !reflect.DeepEqual(recovered.Receipt, report.Receipt) || observed.writes != writes || !reflect.DeepEqual(before, snapshot(t, store)) {
 				t.Fatal("same original key indeterminate recovery replayed or changed receipt", err)
 			}
+			assertJoinedPhysicalHistories(t, recovered.NativeHistories, l.binding)
 			l.assertTraversals(t, start, 0, true) // Retained store reads, no input opener.
 			l.assertRetainedTraversals(t, retainedStart, 2, false)
 			if len(l.retained) == retainedStart {
@@ -267,6 +269,7 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 				t.Fatal("real reopened collection receipt/recovery", found, err)
 			}
 			defer resumed.Close()
+			assertJoinedPhysicalHistories(t, resumed.NativeHistories, l.binding)
 			l.assertRetainedTraversals(t, retainedStart, 2, false)
 			if len(l.retained) == retainedStart {
 				t.Fatal("resume skipped retained-original authentication")

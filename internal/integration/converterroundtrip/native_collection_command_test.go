@@ -170,6 +170,7 @@ func TestNativeCollectionCommandConstructsAndReceivesPhysicalPair(t *testing.T) 
 			if err := decodeNativeSchemaFixture(stdout, &result); err != nil {
 				t.Fatal(err)
 			}
+			assertJoinedPhysicalHistories(t, result.Report.NativeHistories, binding)
 			if result.Report.Receipt == nil || result.Report.IdempotencyKey != request.IdempotencyKey || result.Report.Restored.Head != model.Natural64(195) || len(result.Report.NativeHistories) != 2 || len(result.Report.NativeSchemas) != 2 || result.Report.SourcePlanes == nil || len(result.Report.SourcePlanes.Providers) != 1 || result.Collection.SourceCount != 2 || !reflect.DeepEqual(result.Collection.MappedCommits, []int{97, 97}) || !result.Collection.ImportedReadback || !result.Collection.ReopenedReadback || result.ArchiveSHA256 != request.ArchiveSHA256 || result.RequestSHA256 != hashBytes(raw) || result.BinarySHA256 != binaryHash || result.PolicySHA256 != publicRehearsalPolicyHash || result.SessionCeilingSeconds != 7200 {
 				t.Fatal("committed two-source receipt/readback differs")
 			}
