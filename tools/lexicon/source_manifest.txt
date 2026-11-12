@@ -1676,6 +1676,16 @@ spec/cardb07/mixed_test.go
 spec/cardb07/native_test.go
 spec/cardb07/opaque_test.go
 spec/cardb07/public_test.go
+spec/cardb07effects/BUILD.bazel
+spec/cardb07effects/README.md
+spec/cardb07effects/effects_test.go
+spec/cardb07effects/fixture_test.go
+spec/cardb07effects/native_state_test.go
+spec/cardb07effects/native_test.go
+spec/cardb07effects/publication_test.go
+spec/cardb07effects/receipt_test.go
+spec/cardb07effects/scheduling_test.go
+spec/cardb07effects/state_test.go
 spec/cardb07positive/BUILD.bazel
 spec/cardb07positive/README.md
 spec/cardb07positive/ordinary_test.go
@@ -2083,6 +2093,8 @@ tools/lexicon/BUILD.bazel
 tools/lexicon/README.md
 tools/lexicon/b02_recording_literals.go
 tools/lexicon/b02_recording_literals_test.go
+tools/lexicon/b07_effect_literals.go
+tools/lexicon/b07_effect_literals_test.go
 tools/lexicon/b07_native_protocol_literals.go
 tools/lexicon/b07_native_protocol_literals_test.go
 tools/lexicon/b07_represented_literals.go

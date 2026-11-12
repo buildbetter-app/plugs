@@ -456,6 +456,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if e := model.ValidateLinkTarget(targetKind, to); e != nil {
 					return nil, failure("invalid_params", e.Error())
 				}
+				if op.Kind == model.OpLink && targetKind == model.LinkTargetExternal && kind == "parent-child" && strings.HasPrefix(to.ID, "external:") {
+					return nil, failure("invalid_params", "external capability dependencies cannot use parent-child edges")
+				}
 				op.Link.TargetKind = targetKind
 				if targetKind != model.LinkTargetExternal && to.ID == target.ID {
 					return nil, failure("ontology_guard_failed", "self-links are refused")
