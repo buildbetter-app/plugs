@@ -89,9 +89,9 @@ func pack(t *testing.T, files map[string][]byte) []byte {
 }
 
 // Capture retains all original current non-issue rows and adds isolated issues
-// to exactly count. It authors a one-commit COMPLETE history whose current and
-// head checkpoints carry the same exact rows. H is still later than its source
-// revision, allowing the test to distinguish [H,H] from historical coverage.
+// to exactly count. It authors a one-commit COMPLETE history whose issue rows
+// agree at current and head, preserving the source's separate schemas. H is
+// still later than its source revision, distinguishing [H,H] from history.
 func Capture(t *testing.T, original string, count int) (directory, parent string) {
 	t.Helper()
 	raw, err := os.ReadFile(original)
@@ -127,7 +127,7 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 	tables := map[string][]dumpformat.NativeDeltaRow{}
 	current := false
 	table := ""
-	var schema dumpformat.NativeDeltaSchema
+	var schema, headSchema dumpformat.NativeDeltaSchema
 	var header dumpformat.NativeDeltaHeader
 	for _, line := range bytes.Split(bytes.TrimSpace(payload), []byte{'\n'}) {
 		var tag struct {
@@ -141,6 +141,10 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 			var s dumpformat.NativeDeltaSchema
 			Decode(t, line, &s)
 			schemas[s.SchemaID] = s
+		case "head-checkpoint":
+			var c dumpformat.NativeDeltaCheckpoint
+			Decode(t, line, &c)
+			headSchema = schemas[c.SchemaID]
 		case "current":
 			var c dumpformat.NativeDeltaCheckpoint
 			Decode(t, line, &c)
@@ -163,8 +167,14 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 			current = false
 		}
 	}
-	if len(tables["issues"]) != 2 || count < 3 || len(schema.Tables) == 0 {
+	if len(tables["issues"]) != 2 || count < 3 || len(schema.Tables) == 0 || len(headSchema.Tables) == 0 {
 		t.Fatal("unexpected current fixture")
+	}
+	// The source head excludes its unversioned working-set families. Preserve
+	// that schema boundary while authoring the same changed issue rows at both.
+	headTables := map[string]dumpformat.NativeDeltaTableSchema{}
+	for _, table := range headSchema.Tables {
+		headTables[table.Name] = table
 	}
 	var records []dumpformat.Record
 	for _, line := range bytes.Split(bytes.TrimSpace(files["records/bead.ndjson"]), []byte{'\n'}) {
@@ -267,7 +277,8 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 	files["manifest.json"] = JSON(t, manifest)
 	head := pack(t, files)
 	digests := map[string]dumpformat.NativeDeltaTableDigest{}
-	image := dumpformat.NativeHistoryImage{Sequence: 1, CommitID: commitID, SchemaProfile: &schema.Profile, Tables: map[string]dumpformat.NativeTable{}}
+	image := dumpformat.NativeHistoryImage{Sequence: 1, CommitID: commitID, SchemaProfile: &headSchema.Profile, Tables: map[string]dumpformat.NativeTable{}}
+	headDigests := map[string]dumpformat.NativeDeltaTableDigest{}
 	for _, s := range schema.Tables {
 		rows := tables[s.Name]
 		sum, err := dumpformat.NativeDeltaTableSHA256(s, rows)
@@ -275,6 +286,14 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 			t.Fatal(err)
 		}
 		digests[s.Name] = dumpformat.NativeDeltaTableDigest{Rows: uint64(len(rows)), SHA256: sum}
+		headTable, versioned := headTables[s.Name]
+		if !versioned {
+			continue
+		}
+		if dumpformat.NativeDeltaTableSchemaID(headTable) != dumpformat.NativeDeltaTableSchemaID(s) {
+			t.Fatal("fixture head/current table schema differs", s.Name)
+		}
+		headDigests[s.Name] = digests[s.Name]
 		names := []string{}
 		for _, c := range s.Columns {
 			names = append(names, c.Name)
@@ -293,7 +312,14 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 		sort.Slice(tab.Rows, func(i, j int) bool { return bytes.Compare(JSON(t, tab.Rows[i]), JSON(t, tab.Rows[j])) < 0 })
 		image.Tables[s.Name] = tab
 	}
+	if len(headDigests) != len(headTables) {
+		t.Fatal("fixture current image lacks a source head table")
+	}
 	graphRoot, err := dumpformat.NativeDeltaRootSHA256(digests)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headRoot, err := dumpformat.NativeDeltaRootSHA256(headDigests)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,15 +329,23 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 	header.CommitCount = 1
 	header.HistoryCoverage = nil
 	write(header)
-	write(schema)
+	write(headSchema)
 	totals := dumpformat.NativeDeltaTotals{Schemas: 1, Commits: 1, FullImageBytes: uint64(len(JSON(t, image)))}
 	for _, kind := range []string{"commit", "head-checkpoint", "current"} {
-		if kind == "commit" {
-			write(dumpformat.NativeDeltaCommit{Type: kind, Sequence: 1, CommitID: commitID, Parents: []string{}, Metadata: metadata, SchemaID: schema.SchemaID, Mode: "snapshot", ExpectedRootSHA256: graphRoot})
-		} else {
-			write(dumpformat.NativeDeltaCheckpoint{Type: kind, CommitID: commitID, SchemaID: schema.SchemaID, ExpectedRootSHA256: graphRoot})
+		stateSchema, stateRoot := headSchema, headRoot
+		if kind == "current" {
+			stateSchema, stateRoot = schema, graphRoot
+			if schema.SchemaID != headSchema.SchemaID {
+				write(schema)
+				totals.Schemas++
+			}
 		}
-		for _, s := range schema.Tables {
+		if kind == "commit" {
+			write(dumpformat.NativeDeltaCommit{Type: kind, Sequence: 1, CommitID: commitID, Parents: []string{}, Metadata: metadata, SchemaID: stateSchema.SchemaID, Mode: "snapshot", ExpectedRootSHA256: stateRoot})
+		} else {
+			write(dumpformat.NativeDeltaCheckpoint{Type: kind, CommitID: commitID, SchemaID: stateSchema.SchemaID, ExpectedRootSHA256: stateRoot})
+		}
+		for _, s := range stateSchema.Tables {
 			d := digests[s.Name]
 			write(dumpformat.NativeDeltaTable{Type: "table", Name: s.Name, TableSchemaID: dumpformat.NativeDeltaTableSchemaID(s), Mode: "replace", ExpectedRows: d.Rows, ExpectedSHA256: d.SHA256})
 			for _, r := range tables[s.Name] {
@@ -324,12 +358,12 @@ func Capture(t *testing.T, original string, count int) (directory, parent string
 			totals.ReconstructedCells += d.Rows * uint64(len(s.Columns))
 		}
 		if kind == "commit" {
-			write(dumpformat.NativeDeltaEndCommit{Type: "end_commit", Sequence: 1, CommitID: commitID, TableCount: uint64(len(schema.Tables)), RootSHA256: graphRoot})
+			write(dumpformat.NativeDeltaEndCommit{Type: "end_commit", Sequence: 1, CommitID: commitID, TableCount: uint64(len(stateSchema.Tables)), RootSHA256: stateRoot})
 		} else {
-			write(dumpformat.NativeDeltaEndCheckpoint{Type: "end_" + kind, TableCount: uint64(len(schema.Tables)), RootSHA256: graphRoot})
+			write(dumpformat.NativeDeltaEndCheckpoint{Type: "end_" + kind, TableCount: uint64(len(stateSchema.Tables)), RootSHA256: stateRoot})
 		}
 	}
-	write(dumpformat.NativeDeltaEnd{Type: "end", Totals: totals, HeadRootSHA256: graphRoot, CurrentRootSHA256: graphRoot})
+	write(dumpformat.NativeDeltaEnd{Type: "end", Totals: totals, HeadRootSHA256: headRoot, CurrentRootSHA256: graphRoot})
 	directory = t.TempDir()
 	if err := os.Mkdir(filepath.Join(directory, "parts"), 0700); err != nil {
 		t.Fatal(err)
