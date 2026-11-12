@@ -166,25 +166,99 @@ func (in *b01CapturedReadyInput) nativeState(t *testing.T, name string) map[stri
 	return state
 }
 
-func (in *b01CapturedReadyInput) commandOriginal(t *testing.T, name string) (b01CapturedReadyCommand, []byte) {
-	t.Helper()
+// The producer records commands/%03d-<entire request name>.json. A suffix
+// match confuses a durable request with a distinct mixed-prefixed request.
+func b01CapturedCommandReceiptPath(members map[string][]byte, name string) (string, error) {
 	var paths []string
-	for filename := range in.Members {
-		if strings.HasPrefix(filename, "commands/") && strings.HasSuffix(filename, "-"+name+".json") {
+	for filename := range members {
+		if path.Dir(filename) != "commands" || path.Ext(filename) != ".json" {
+			continue
+		}
+		sequence, requestName, found := strings.Cut(strings.TrimSuffix(path.Base(filename), ".json"), "-")
+		number, err := strconv.ParseUint(sequence, 10, 64)
+		if found && err == nil && number > 0 && fmt.Sprintf("%03d", number) == sequence && requestName != "" && requestName == name {
 			paths = append(paths, filename)
 		}
 	}
 	if len(paths) != 1 {
-		t.Fatalf("native command %s has %d receipts", name, len(paths))
+		return "", fmt.Errorf("native command %s has %d receipts", name, len(paths))
+	}
+	return paths[0], nil
+}
+
+func (in *b01CapturedReadyInput) commandOriginal(t *testing.T, name string) (b01CapturedReadyCommand, []byte) {
+	t.Helper()
+	filename, err := b01CapturedCommandReceiptPath(in.Members, name)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var receipt b01CapturedReadyCommand
-	b01CaptureDecode(t, in.Members[paths[0]], &receipt)
-	stem := strings.TrimSuffix(paths[0], ".json")
+	b01CaptureDecode(t, in.Members[filename], &receipt)
+	stem := strings.TrimSuffix(filename, ".json")
 	stdout, stderr := in.Members[stem+".stdout"], in.Members[stem+".stderr"]
 	if receipt.Exit != 0 || len(receipt.Argv) < 2 || receipt.Stdout != b01CaptureHash(stdout) || receipt.Stderr != b01CaptureHash(stderr) {
 		t.Fatal("native command actual status/original bytes differ", name)
 	}
 	return receipt, stdout
+}
+
+func TestB01CapturedCommandReceiptIdentityContract(t *testing.T) {
+	in := b01ReadCapturedReady(t, b01CompleteReadyFixture, b01CompleteReadyFixtureSHA256)
+	memberCount := len(in.Members)
+	for _, sample := range []struct{ name, file string }{
+		{"60s-before-default-0", "commands/063-60s-before-default-0.json"},
+		{"mixed-60s-before-default-0", "commands/200-mixed-60s-before-default-0.json"},
+		{"60s-at-default-0", "commands/080-60s-at-default-0.json"},
+		{"mixed-60s-at-default-0", "commands/217-mixed-60s-at-default-0.json"},
+		{"60s-after-default-0", "commands/097-60s-after-default-0.json"},
+		{"mixed-60s-after-default-0", "commands/234-mixed-60s-after-default-0.json"},
+	} {
+		t.Run(sample.name, func(t *testing.T) {
+			filename, err := b01CapturedCommandReceiptPath(in.Members, sample.name)
+			if err != nil || filename != sample.file {
+				t.Fatal("full command name did not select its original receipt", filename, err)
+			}
+			receipt, stdout := in.commandOriginal(t, sample.name)
+			want := []string{"ready", "--json", "--limit", "0", "--label", "ready-clock"}
+			if strings.HasPrefix(sample.name, "mixed-") {
+				want = []string{"ready", "--json", "--limit", "0", "--include-ephemeral", "--label", "active-clock"}
+			}
+			if !reflect.DeepEqual(receipt.Argv[1:], want) || !bytes.Equal(stdout, in.Members[strings.TrimSuffix(sample.file, ".json")+".stdout"]) {
+				t.Fatal("original durable/mixed request identity or returned bytes differ")
+			}
+		})
+	}
+	name, original := "60s-before-default-0", "commands/063-60s-before-default-0.json"
+	for _, negative := range []struct {
+		name   string
+		mutate func(map[string][]byte)
+		count  int
+	}{
+		{"missing-exact-longer-suffix-retained", func(m map[string][]byte) { delete(m, original) }, 0},
+		{"second-exact-name", func(m map[string][]byte) { m["commands/999-"+name+".json"] = m[original] }, 2},
+		{"short-sequence", func(m map[string][]byte) { m["commands/63-"+name+".json"] = m[original]; delete(m, original) }, 0},
+		{"extra-zero-sequence", func(m map[string][]byte) { m["commands/0063-"+name+".json"] = m[original]; delete(m, original) }, 0},
+		{"zero-sequence", func(m map[string][]byte) { m["commands/000-"+name+".json"] = m[original]; delete(m, original) }, 0},
+		{"nonnumeric-sequence", func(m map[string][]byte) { m["commands/not-seq-"+name+".json"] = m[original]; delete(m, original) }, 0},
+		{"nested-path", func(m map[string][]byte) { m["commands/nested/063-"+name+".json"] = m[original]; delete(m, original) }, 0},
+		{"other-directory", func(m map[string][]byte) { m["other/063-"+name+".json"] = m[original]; delete(m, original) }, 0},
+		{"other-extension", func(m map[string][]byte) { m["commands/063-"+name+".json.extra"] = m[original]; delete(m, original) }, 0},
+	} {
+		t.Run(negative.name, func(t *testing.T) {
+			members := make(map[string][]byte, len(in.Members)+1)
+			for filename, data := range in.Members {
+				members[filename] = data
+			}
+			negative.mutate(members)
+			filename, err := b01CapturedCommandReceiptPath(members, name)
+			if filename != "" || err == nil || err.Error() != fmt.Sprintf("native command %s has %d receipts", name, negative.count) {
+				t.Fatal("invalid original command identity did not retain strict cardinality refusal", filename, err)
+			}
+		})
+	}
+	if len(in.Members) != memberCount || in.Members[original] == nil || in.Members["commands/200-mixed-60s-before-default-0.json"] == nil {
+		t.Fatal("receipt selection removed either authentic command record")
+	}
 }
 
 // The original clock sidecar uses the producer's plugdump.Table wire shape,
