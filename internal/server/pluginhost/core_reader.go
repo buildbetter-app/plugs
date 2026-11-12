@@ -48,7 +48,7 @@ func (r *coreReader) Query(ctx context.Context, q pluginapi.Query) (pluginapi.Pa
 		query.Limit = 1000
 	}
 	if q.Cursor != nil {
-		query.Cursor = &driver.Cursor{Incarnation: q.Cursor.Incarnation, Revision: model.Revision(q.Cursor.Revision), Index: model.Natural(q.Cursor.Index), Method: q.Cursor.Method, FilterDigest: q.Cursor.FilterDigest, PrincipalDigest: q.Cursor.PrincipalDigest, OntologyRevision: model.Revision(q.Cursor.OntologyRevision)}
+		query.Cursor = &driver.Cursor{Incarnation: q.Cursor.Incarnation, Revision: model.Revision(q.Cursor.Revision), Index: model.Natural(q.Cursor.Index), After: q.Cursor.After, Method: q.Cursor.Method, FilterDigest: q.Cursor.FilterDigest, PrincipalDigest: q.Cursor.PrincipalDigest, OntologyRevision: model.Revision(q.Cursor.OntologyRevision)}
 	}
 	page, err := r.reader.Query(ctx, query)
 	if err != nil {
@@ -67,7 +67,7 @@ func (r *coreReader) Query(ctx context.Context, q pluginapi.Query) (pluginapi.Pa
 	}
 	if page.NextCursor != nil {
 		c := page.NextCursor
-		out.NextCursor = &pluginapi.Cursor{Incarnation: c.Incarnation, Revision: pluginapi.Revision(c.Revision), Index: pluginapi.Natural(c.Index), Method: c.Method, FilterDigest: c.FilterDigest, PrincipalDigest: c.PrincipalDigest, OntologyRevision: pluginapi.Revision(c.OntologyRevision)}
+		out.NextCursor = &pluginapi.Cursor{Incarnation: c.Incarnation, Revision: pluginapi.Revision(c.Revision), Index: pluginapi.Natural(c.Index), After: c.After, Method: c.Method, FilterDigest: c.FilterDigest, PrincipalDigest: c.PrincipalDigest, OntologyRevision: pluginapi.Revision(c.OntologyRevision)}
 	}
 	return out, nil
 }
