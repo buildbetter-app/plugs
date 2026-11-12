@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/nativeprojection",
         "//internal/core/ontology",
         "//internal/core/pipeline",
         "//internal/core/reverseconverter",
@@ -23,6 +24,7 @@ go_test(
     srcs = glob(["*_test.go"]),
     data = [
         "testdata/native-built-in-statuses.json",
+        "testdata/planner-predecessor-53742cc.tar.gz",
         "testdata/real-store-import-policy-v2.md",
         "testdata/public-native-delta-small-0e4d5da4.tar.gz",
         "//internal/core/dumpformat:testdata/native-tables-synthetic.tar",
@@ -39,6 +41,7 @@ go_test(
     deps = [
         "//internal/core/dumpformat",
         "//internal/core/model",
+        "//internal/core/nativeprojection",
         "//internal/core/pipeline",
         "//internal/core/reverseconverter",
         "//internal/core/service",
