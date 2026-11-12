@@ -405,15 +405,10 @@ func b20VerifyVocabularyAuxiliary(t *testing.T, r *nativeRecorder, path string, 
 				if !ok || len(argv) != 5 || argv[1] != "--readonly" || argv[2] != "sql" || argv[3] != "SELECT * FROM "+family+" ORDER BY issue_id" || argv[4] != "--json" || command["exit"] != json.Number("0") || command["stdout_sha256"] != hashBytes(original) || hashes[family] != hashBytes(original) {
 					t.Fatal("saved auxiliary image is not bound to actual exact SQL receipt")
 				}
-				var saved []map[string]any
-				if rows[family] != nil {
-					array, ok := rows[family].([]any)
-					if !ok {
-						t.Fatal("saved auxiliary rows are not an array")
-					}
-					for _, row := range array {
-						saved = append(saved, b20VocabularyObject(t, row))
-					}
+				// Keep [] and null distinct, including zero-row checkpoints.
+				saved, err := nativeSQLRowsValue(rows[family])
+				if err != nil {
+					t.Fatal(err)
 				}
 				if err := verifyNativeSQLRows(original, saved); err != nil {
 					t.Fatal(err)
