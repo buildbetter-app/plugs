@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Only missing structured native hook observations are recorded here. The
+# retained cardb28 event/ID recordings and canonical builder stay unchanged.
+go_test(
+    name = "structured_hooks_test",
+    srcs = [
+        "structured_hooks_test.go",
+        "//spec/cardb20:native_build_support",
+    ],
+    data = [
+        "//internal/publicnative:dolt_runtime",
+        "//spec/s1-b09-native:lexicon_files",
+    ],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    env_inherit = [
+        "BAZEL_BIN",
+        "BAZEL_RC",
+        "BAZELISK_HOME",
+        "BAZELISK_VERIFY_SHA256",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_SHA",
+        "GITHUB_WORKFLOW_REF",
+    ],
+    args = ["-test.v"],
+    size = "enormous",
+    tags = ["local", "requires-network"],
+    timeout = "eternal",
+    deps = ["//internal/publicnative"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
