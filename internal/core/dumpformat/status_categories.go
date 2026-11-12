@@ -154,5 +154,9 @@ func nativeStatusDocument(statuses []ProjectStatus) ontology.Document {
 		workflow.Transitions = append(workflow.Transitions, rule)
 	}
 	doc.Workflows["issue"] = workflow
+	doc.Types[ontology.GateType] = ontology.Type{Name: "Gate", Workflow: "issue", Fields: map[string]ontology.Field{
+		"title": {Type: "string"}, "description": {Type: "string"},
+		"labels": {Type: "strings"}, "blocked": {Type: "boolean"},
+	}}
 	return doc
 }

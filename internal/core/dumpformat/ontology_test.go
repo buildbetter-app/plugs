@@ -121,13 +121,13 @@ func TestHistoricalTypePolicyCanBeAppliedWithoutUnusedHeadDirectives(t *testing.
 	if err := validateRecord(f.records["bead"][0], f.manifest.Projects, counts); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateIssueOntology(nil, f.records["bead"][:1], false); err == nil {
+	if err := validateIssueOntology(nil, f.manifest.Projects, f.records["bead"][:1], false); err == nil {
 		t.Fatal("historical custom type admitted without a directive")
 	}
-	if err := validateIssueOntology(f.manifest.Ontology, f.records["bead"][:1], false); err != nil {
+	if err := validateIssueOntology(f.manifest.Ontology, f.manifest.Projects, f.records["bead"][:1], false); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateIssueOntology(f.manifest.Ontology, f.records["bead"][1:], false); err != nil {
+	if err := validateIssueOntology(f.manifest.Ontology, f.manifest.Projects, f.records["bead"][1:], false); err != nil {
 		t.Fatal("a historical frame need not use every head directive")
 	}
 }

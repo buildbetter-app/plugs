@@ -615,7 +615,7 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 			return err
 		}
 	}
-	return validateIssueOntology(manifest.Ontology, beadRows, false)
+	return validateIssueOntology(manifest.Ontology, manifest.Projects, beadRows, false)
 }
 
 func sameRecordImage(a, b []Record) bool {
