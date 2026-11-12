@@ -49,6 +49,10 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 	// that final comment as the whole transition. Same-status comments retain
 	// the legacy path, and conditional notices still require the audit source.
 	ordinaryClose := p.proposal.Meta.Method == "bead.close" && len(p.proposal.Changes) == 2 && statusChanged(p.writes[p.proposal.Changes[0].Resource.Ref.ID])
+	attachment := false
+	for _, change := range p.proposal.Changes {
+		attachment = attachment || change.Op.Kind == model.OpAttach
+	}
 	overlay := false
 	if memoryMethod(p.proposal.Meta.Method) {
 		for id := range p.changed {
@@ -56,7 +60,7 @@ func (w *Writer) prepareAudit(ctx context.Context, p *prepared) error {
 			overlay = overlay || value.memory != nil && value.memory.Overlay != nil
 		}
 	}
-	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose && !overlay && len(p.closes) == 0) {
+	if len(p.changed) == 0 || (!w.cfg.auditSet && p.release == nil && !gate && !ordinaryClose && !attachment && !overlay && len(p.closes) == 0) {
 		return nil
 	}
 	coreRecovery := p.release != nil && p.release.reclaim
@@ -327,7 +331,7 @@ func (p *prepared) ordinaryEvent(pending *pending, op model.OpKind) (model.Durab
 		}
 		return "", fmt.Errorf("unsupported memory event operation %q", op)
 	}
-	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
+	event, ok := map[model.OpKind]model.DurableEventType{model.OpCreate: model.EventBeadCreated, model.OpPatch: model.EventBeadUpdated, model.OpSetMeta: model.EventBeadUpdated, model.OpReparent: model.EventBeadReparented, model.OpComment: model.EventBeadCommented, model.OpAttach: model.EventBeadAttached, model.OpLink: model.EventBeadLinked, model.OpUnlink: model.EventBeadUnlinked, model.OpDelete: model.EventBeadDeleted, model.OpClose: model.EventBeadCommented}[op]
 	if !ok {
 		return "", fmt.Errorf("unsupported ordinary event operation %q", op)
 	}

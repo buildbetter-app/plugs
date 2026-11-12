@@ -159,12 +159,17 @@ func TestUnsupportedCardRemainderRefusesWithoutWrites(t *testing.T) {
 	f.code(t, f.call(t, "bead.create", writeParams(t, map[string]any{"type": "issue", "fields": map[string]any{"title": "parented"}, "parent": model.RefByKey("unresolved-parent")})), "invalid_params")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "status": "done"}})), "ontology_use_slot_verb")
 	f.code(t, f.call(t, "bead.update", writeParams(t, map[string]any{"id": ref, "fields": map[string]any{"title": "must not land", "unrecognized": true}})), "ontology_unknown_field")
-	for _, op := range []model.Op{
-		{Kind: model.OpAttach, Attach: &model.AttachOp{Target: ref, Attachment: model.Attachment{Kind: "link", URI: "https://example.invalid/evidence", MediaType: "text/plain", Summary: "unsupported"}}},
-		{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: ref, Project: "other"}},
+	// URI attachments are supported; content-backed attachments still require
+	// the missing attachment content store and must roll back the earlier patch.
+	for _, tc := range []struct {
+		op   model.Op
+		code string
+	}{
+		{model.Op{Kind: model.OpAttach, Attach: &model.AttachOp{Target: ref, Attachment: model.Attachment{Kind: "blob", ContentRef: "sha256:unavailable-content", MediaType: "text/plain", Summary: "unsupported"}}}, "unsupported"},
+		{model.Op{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: ref, Project: "other"}}, "invalid_params"},
 	} {
-		_, err := f.writer.Apply(f.ctx, anonymous, model.ChangeSet{Ops: []model.Op{patchOp(ref, map[string]any{"title": "must not land"}), op}}, writeMeta(t))
-		domainCode(t, err, "invalid_params")
+		_, err := f.writer.Apply(f.ctx, anonymous, model.ChangeSet{Ops: []model.Op{patchOp(ref, map[string]any{"title": "must not land"}), tc.op}}, writeMeta(t))
+		domainCode(t, err, tc.code)
 	}
 	requireSameState(t, before, f.state(t))
 	t.Log("unbound public heartbeat/remaining-history/restore/view methods, missing B12 host capabilities, malformed named parents and unsupported attach/project-move/status/unknown-field writes explicitly refused")

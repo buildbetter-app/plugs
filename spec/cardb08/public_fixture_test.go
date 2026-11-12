@@ -123,7 +123,8 @@ func b08Catalog() ontology.Document {
 type b08Reply struct {
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Data struct {
+		Message string `json:"message"`
+		Data    struct {
 			Code    string         `json:"code"`
 			Details map[string]any `json:"details"`
 		} `json:"data"`
@@ -146,13 +147,14 @@ type b08Fixture struct {
 	calls                     []b08Call
 	seq                       int
 	permissionUnavailable     bool
+	writerOptions             []pipeline.Option
 }
 
-func newB08Fixture(t *testing.T, engine, root string, permissionUnavailable bool) *b08Fixture {
+func newB08Fixture(t *testing.T, engine, root string, permissionUnavailable bool, writerOptions ...pipeline.Option) *b08Fixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	t.Cleanup(cancel)
-	f := &b08Fixture{t: t, ctx: ctx, engine: engine, root: root, permissionUnavailable: permissionUnavailable, clock: testclock.New(t, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))}
+	f := &b08Fixture{t: t, ctx: ctx, engine: engine, root: root, permissionUnavailable: permissionUnavailable, writerOptions: writerOptions, clock: testclock.New(t, time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC))}
 	if engine == "sqlite" {
 		f.dsn = filepath.Join(t.TempDir(), "b08.sqlite")
 	}
@@ -220,14 +222,16 @@ func (f *b08Fixture) open(seed bool) {
 		options = append(options, service.WithTransitionPermissionObserver(nil))
 	}
 	o := service.NewOntology(compiled.Effective, options...)
-	w := pipeline.New(f.store, f.lease, pipeline.WithOntology(o), pipeline.WithClock(f.clock.Now), pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(b08CatalogRef))), pipeline.WithIDGenerator(func() (string, error) {
+	writerOptions := []pipeline.Option{pipeline.WithOntology(o), pipeline.WithClock(f.clock.Now), pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(b08CatalogRef))), pipeline.WithIDGenerator(func() (string, error) {
 		if f.nextID == "" {
 			return "", fmt.Errorf("missing declared B08 source ID")
 		}
 		id := f.nextID
 		f.nextID = ""
 		return id, nil
-	}))
+	})}
+	writerOptions = append(writerOptions, f.writerOptions...)
+	w := pipeline.New(f.store, f.lease, writerOptions...)
 	serviceOptions := []service.Option{service.WithOntology(o), service.WithClock(f.clock.Now)}
 	capability, err := driver.RequireWorkflowCheckpointStore(f.store, f.lease)
 	if err != nil {
