@@ -46,8 +46,12 @@ type censusReader struct {
 	driver.NumericChildReader
 	driver.HierarchyChildrenExcludingReader
 	driver.InverseSourceLinksReader
-	driver.DerivedPrefixReader
 	census *queryCensus
+}
+
+type prefixCensusReader struct {
+	*censusReader
+	driver.DerivedPrefixReader
 }
 
 func (s censusStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -55,7 +59,13 @@ func (s censusStore) Read(ctx context.Context, view driver.View) (driver.Reader,
 	if err != nil {
 		return nil, err
 	}
-	return &censusReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), ParentCounterReader: r.(driver.ParentCounterReader), NumericChildReader: r.(driver.NumericChildReader), HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader), InverseSourceLinksReader: r.(driver.InverseSourceLinksReader), DerivedPrefixReader: r.(driver.DerivedPrefixReader), census: s.census}, nil
+	wrapped := &censusReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), ParentCounterReader: r.(driver.ParentCounterReader), NumericChildReader: r.(driver.NumericChildReader), HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader), InverseSourceLinksReader: r.(driver.InverseSourceLinksReader), census: s.census}
+	// PostgreSQL retains the ordinary DerivedRows fallback. Advertising an
+	// absent optional capability would either panic here or change that path.
+	if prefix, ok := r.(driver.DerivedPrefixReader); ok {
+		return &prefixCensusReader{censusReader: wrapped, DerivedPrefixReader: prefix}, nil
+	}
+	return wrapped, nil
 }
 
 type forwardingReadWork struct {

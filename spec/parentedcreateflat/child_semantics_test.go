@@ -139,8 +139,12 @@ type noQueryReader struct {
 	driver.NumericChildReader
 	driver.HierarchyChildrenExcludingReader
 	driver.InverseSourceLinksReader
-	driver.DerivedPrefixReader
 	probe *queryProbe
+}
+
+type prefixNoQueryReader struct {
+	*noQueryReader
+	driver.DerivedPrefixReader
 }
 
 func (s noQueryStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
@@ -148,7 +152,11 @@ func (s noQueryStore) Read(ctx context.Context, view driver.View) (driver.Reader
 	if err != nil {
 		return nil, err
 	}
-	return &noQueryReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), ParentCounterReader: r.(driver.ParentCounterReader), NumericChildReader: r.(driver.NumericChildReader), HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader), InverseSourceLinksReader: r.(driver.InverseSourceLinksReader), DerivedPrefixReader: r.(driver.DerivedPrefixReader), probe: s.probe}, nil
+	wrapped := &noQueryReader{Reader: r, AllocatorReader: r.(driver.AllocatorReader), ParentCounterReader: r.(driver.ParentCounterReader), NumericChildReader: r.(driver.NumericChildReader), HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader), InverseSourceLinksReader: r.(driver.InverseSourceLinksReader), probe: s.probe}
+	if prefix, ok := r.(driver.DerivedPrefixReader); ok {
+		return &prefixNoQueryReader{noQueryReader: wrapped, DerivedPrefixReader: prefix}, nil
+	}
+	return wrapped, nil
 }
 func (r *noQueryReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
 	r.probe.mu.Lock()
@@ -172,6 +180,58 @@ func (r *noQueryReader) MaxChildNumber(ctx context.Context, parent string, exclu
 		r.probe.mu.Unlock()
 	}
 	return n, err
+}
+
+func TestOrdinaryChildCreatePostgresFlatAndFirstParented(t *testing.T) {
+	dsn := newPostgresHarness(t).dsn(t)
+	o := newOrdinaryB04(t, "postgres", dsn, []string{"regression-flat", "regression-parent"})
+	census := &queryCensus{}
+	view := driver.View{Incarnation: o.f.metaSnapshot().Incarnation}
+	plain, err := o.f.store.Read(o.f.ctx, view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wantPrefixes := plain.(driver.DerivedPrefixReader)
+	plain.Close()
+	// Call Read outside RPC recovery, so a missing-capability assertion is a
+	// literal test panic rather than an uninformative internal_error response.
+	stores := []driver.Store{
+		censusStore{Store: o.f.store, census: census},
+		noQueryStore{Store: o.f.store, probe: &queryProbe{}},
+	}
+	for _, store := range stores {
+		r, err := store.Read(o.f.ctx, view)
+		if err != nil {
+			t.Fatalf("instrumented PostgreSQL Read: %v", err)
+		}
+		_, gotPrefixes := r.(driver.DerivedPrefixReader)
+		r.Close()
+		if gotPrefixes != wantPrefixes {
+			t.Fatalf("wrapper changed optional prefix capability: got=%t want=%t", gotPrefixes, wantPrefixes)
+		}
+	}
+	installQueryCensus(o, census)
+	known := map[string]expectedCreate{}
+	for i, e := range []expectedCreate{
+		{ID: "regression-flat", Title: "plain flat create", Priority: 4},
+		{ID: "regression-parent", Title: "parent anchor", Priority: 4},
+		{ID: "regression-parent.1", Title: "first parented create", Parent: "regression-parent", Priority: 4},
+	} {
+		label := fmt.Sprintf("postgres-ordinary-%d", i)
+		o.seed(label, ordinaryCreateOp(label, project, map[string]any{"title": e.Title, "priority": e.Priority}, e.Parent))
+		assertCommit(t, o.receipts[label].Commit, expectedCommit(t, i+1, []expectedCreate{e}, o.f.clock.Now()))
+		if o.lastSeedAttempts != 1 || o.lastSeedRetries != 0 {
+			t.Fatal("ordinary PostgreSQL create required a retry")
+		}
+		known[e.ID] = e
+		got := snapshot(t, o, true, known)
+		if got.Head != model.Natural64(uint64(i+1)) || got.Records != i+1 || got.Versions == nil || *got.Versions != i+1 || got.Changesets != i+1 {
+			t.Fatalf("ordinary PostgreSQL create conservation: %+v", got)
+		}
+	}
+	assertOneCensus(t, "postgres", census.snapshot(), 2)
+	assertGraphCertificate(t, o, true)
+	t.Logf("POSTGRES_ORDINARY_CREATE flat=true firstParented=true optionalPrefixPreserved=%t actualQueryCalls=%d", !wantPrefixes, len(census.snapshot()))
 }
 
 func TestOrdinaryChildCreateUsesRealIdentityIndexWithoutQuery(t *testing.T) {
