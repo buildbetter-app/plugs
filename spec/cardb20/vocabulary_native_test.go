@@ -217,8 +217,10 @@ func (r *nativeRecorder) recordB20VocabularyTwin(binary, name string) b20Vocabul
 	if json.Unmarshal(version, &identity) != nil || identity.Commit != pinnedSource.Commit || identity.Build != "b20-public-fixture-"+pinnedSource.Commit {
 		t.Fatal("executed native identity differs")
 	}
-	r.command(w, "init", binary, []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b20_vocabulary", "--prefix", "b20", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, false)
-	server.RequireDatabaseDir(t, "b20_vocabulary")
+	// The unchanged family-discovery helper binds its metadata query to
+	// b20_current. Each twin owns a separate server and data root.
+	r.command(w, "init", binary, []string{"init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b20_current", "--prefix", "b20", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet"}, false)
+	server.RequireDatabaseDir(t, "b20_current")
 	for _, kv := range [][2]string{{"events-journal", "true"}, {"events-journal-auto-prune", "false"}} {
 		r.command(w, "config-set-"+kv[0], binary, []string{"config", "set", kv[0], kv[1], "--json"}, false)
 		got := r.command(w, "config-get-"+kv[0], binary, []string{"config", "get", kv[0], "--json"}, false)
