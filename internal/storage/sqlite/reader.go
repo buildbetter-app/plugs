@@ -389,9 +389,8 @@ func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest strin
 	if err := c.Index.Validate(); err != nil {
 		return "", 0, err
 	}
-	// Below-head and staged readers intentionally retain the predecessor's
-	// ordinal cursor and full materialization semantics. The opaque After
-	// marker is a current-head optimization only.
+	// Staged and non-keyset current-head readers retain the predecessor's
+	// ordinal cursor. Historical cursors are handled separately.
 	if !currentHead {
 		index, err := r.cursor(c, "query", digest)
 		return "", index, err
@@ -525,7 +524,7 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	}
 	// Current records already contain complete post-images. Nil and kind-only
 	// current-head queries can therefore select and decode a bounded keyset page
-	// directly. Staged overlays, historical snapshots and other filters retain
+	// directly. Staged overlays and other current-head filters retain
 	// the reference reconstruction below so their existing semantics remain
 	// unchanged.
 	kind, hasKind := q.Filter["kind"]
@@ -540,6 +539,13 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 			return driver.Page[driver.Record]{}, err
 		}
 		return r.queryHead(ctx, q.Filter, kind, hasKind, kindRank, digest, after, limit)
+	}
+	if r.owner == nil && r.at < mustUint(r.meta.Head) {
+		after, index, err := r.historicalQueryCursor(ctx, q.Cursor, digest, q.Filter)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		return r.queryHistorical(ctx, q.Filter, digest, after, index, limit)
 	}
 	_, start, err := r.queryCursor(ctx, q.Cursor, digest, q.Filter, kind, hasKind, false, false)
 	if err != nil {

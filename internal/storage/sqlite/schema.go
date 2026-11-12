@@ -31,6 +31,7 @@ CREATE INDEX IF NOT EXISTS objects_kind_key ON objects(kind, key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS versions (
  key TEXT NOT NULL, rev TEXT NOT NULL, base INTEGER NOT NULL, data BLOB NOT NULL,
+ query_fields TEXT,
  PRIMARY KEY(key, rev)
 );
 CREATE TABLE IF NOT EXISTS key_history (
