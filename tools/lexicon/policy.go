@@ -165,7 +165,7 @@ func DefaultTreePolicy() TreePolicy {
 		},
 	}
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
-	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "e02f1f762c1b5d0f6ae64b19fc8772bee2d234650d363934b80204903f73aac4"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27"
 
 	// The numbered native schema corpus is immutable fixture input. Every
 	// file, including siblings without vocabulary matches, has an exact hash;
