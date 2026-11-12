@@ -37,6 +37,28 @@ go_test(
         "@com_github_go_sql_driver_mysql//:mysql",
     ],
 )
+# B01 owns only this additive leaf. Existing fixture helpers and controls stay exact.
+go_test(
+    name = "b01_complete_ready_capture_test",
+    size = "enormous",
+    timeout = "eternal",
+    srcs = ["native_capture_test.go", "physical_capture_test.go", "b01_complete_ready_capture_test.go"],
+    args = ["-test.v", "-test.run=^TestB01CompleteIndependentReadyCapture$"],
+    data = [":plug-capture-sql-server", "//cmd/bd:bd", "//tools/native-physical-capture"],
+    env = {
+        "BEADS_CAPTURE_BD_BINARY": "$(rootpath //cmd/bd:bd)",
+        "BEADS_CAPTURE_SQL_BINARY": "$(rootpath :plug-capture-sql-server)",
+        "BEADS_PHYSICAL_CAPTURE_BINARY": "$(rootpath //tools/native-physical-capture)",
+    },
+    deps = [
+        "//internal/captureclock",
+        "//internal/plugdump",
+        "//internal/storage/physicalcapture",
+        "//internal/testutil/bazeltest",
+        "@com_github_go_sql_driver_mysql//:mysql",
+    ],
+)
+
 # Compatibility label for the supported route, now selected by //....
 alias(
     name = "native_physical_capture_test",
