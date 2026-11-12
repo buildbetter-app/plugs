@@ -10,6 +10,16 @@ var undoLiteralBindings = map[string][]undoLiteralBinding{
 			670: "d56ebf9119cfd53f6690d8ec4111275a19c16b5c1c89123d3ff99499b81586cd",
 		}},
 	},
+	// Three exact B16 native SQL literals; every other byte still scans.
+	"spec/cardb16/native_reference_test.go": {
+		{name: "observedLabels", kind: "func", contextSHA256: "afe6ae92190472ede88d6589c461acf98ac883661a09b9f9db89d9748d9c6069", literals: map[int]string{
+			341: "2651723e5b0e7e98fb0a8d09ea1af6d358e7a54df1857e2111f158850c876356",
+		}},
+		{name: "TestB16CanonicalNativePublicLabels", kind: "func", contextSHA256: "b4a7de24d43a1997d2eafa60565b67cd915aca10f35ad4c9cf03aad16f51befe", literals: map[int]string{
+			3083: "fe007b32a755efce7035137332caa315deb0c1af4f11e7c6399ef4f0fa545ba4",
+			3221: "2648370bbc22de08c7e7dbdd1e7a78c76e85e8262a3bb5c8259ba8cc9e6544b2",
+		}},
+	},
 	// Canonical native refusal text at one exact B06 assertion site. The
 	// existing AST selector admits this node only, never the method body.
 	"spec/cardb20/b06_native_test.go": {
