@@ -11,12 +11,30 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import stat
 import subprocess
 import time
 
 
 POLICY_SHA256 = "3afb19b934e69e90b9f8e966d5e4e4d1fab27a47686eacf38543e23d1c7542d9"
+_interrupted = False
+
+
+def install_signal_handlers():
+    def interrupted(_number, _frame):
+        # Do not raise between fork/exec and retaining the Popen handle.
+        # invoke observes this flag with its child fully under supervision.
+        global _interrupted
+        _interrupted = True
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, interrupted)
+
+
+def check_interrupted():
+    if _interrupted:
+        raise InterruptedError("public proof interrupted")
 
 
 def digest(path):
@@ -55,6 +73,7 @@ def stop(process):
 
 
 def invoke(output, label, argv, deadline):
+    check_interrupted()
     directory = output / label
     directory.mkdir(mode=0o700)
     write(directory / "argv.json", argv)
@@ -62,7 +81,16 @@ def invoke(output, label, argv, deadline):
     with (directory / "stdout.json").open("xb") as stdout, (directory / "stderr.txt").open("xb") as stderr:
         process = subprocess.Popen(argv, stdout=stdout, stderr=stderr, start_new_session=True)
         try:
-            status = process.wait(timeout=max(0, deadline - time.monotonic()))
+            while True:
+                check_interrupted()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, 7200)
+                try:
+                    status = process.wait(timeout=min(1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         except subprocess.TimeoutExpired:
             stop(process)
             status = 124
@@ -163,6 +191,7 @@ def execute(args, output):
 
 
 def main():
+    install_signal_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", choices=("source", "collision", "positive"), required=True)
     parser.add_argument("--source", action="append", required=True)
@@ -180,6 +209,7 @@ def main():
     args.output.mkdir(mode=0o700)
     try:
         result = execute(args, args.output)
+        check_interrupted()
         exact_executable(args.proof_binary, args.proof_sha256)
         if args.case == "positive":
             exact_executable(args.receiver_binary, args.receiver_sha256)

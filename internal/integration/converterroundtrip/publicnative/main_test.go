@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -124,8 +126,15 @@ func TestPublicNativeInputPinsOrderAndScaleBoundaries(t *testing.T) {
 			t.Fatal("public input identity/count/layout differs", i)
 		}
 	}
-	if r.Sources[2].StoreID == r.Sources[3].StoreID || r.Sources[4].StoreID == r.Sources[5].StoreID || r.Sources[4].Files[2] != r.Sources[5].Files[2] {
-		t.Fatal("distinct positive and same-history negative identities differ")
+	if r.Sources[2].StoreID == r.Sources[3].StoreID || r.Sources[4].StoreID == r.Sources[5].StoreID {
+		t.Fatal("separate public sources lost distinct store identities")
+	}
+	// The public1200 histories share logical commit/row metadata. Their
+	// original part encodings have the same length but distinct authentic
+	// hashes; logical equality must never substitute one original for another.
+	loosePart, archivedPart := r.Sources[4].Files[2], r.Sources[5].Files[2]
+	if loosePart.Bytes != 32661956 || archivedPart.Bytes != 32661956 || loosePart.SHA256 != "c95eb5f891957289af8e6bdfee3b21782a4c3c4a5cf330cc9528e1b9d5fd7929" || archivedPart.SHA256 != "5cf25dc8ec815c2cddbe217572febb8d87fa8c9e0c7e378fe63457084f3ea4d6" {
+		t.Fatal("same-history negative original-file commitments differ")
 	}
 	for _, names := range [][]string{{"small-ops", "small-sv2"}, {"scale-ops", "scale-sv2"}} {
 		out := filepath.Join(t.TempDir(), "inputs")
@@ -215,6 +224,85 @@ func retainProofFile(t *testing.T, source, dest string, mode os.FileMode) {
 	}
 }
 
+// Give Python time to terminate and wait for its separately sessioned child
+// and retain the wait receipt. CommandContext's default SIGKILL skips that.
+func proofPythonCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "python3", args...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 30 * time.Second
+	return cmd
+}
+
+func TestPublicNativeRunnerCancellationReapsChildGroup(t *testing.T) {
+	script, err := filepath.Abs("run-public-proof.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if undeclared := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"); undeclared != "" {
+		root = filepath.Join(undeclared, "public-native-cancel")
+		if err := os.Mkdir(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := filepath.Join(root, "child-started.pid")
+	// This child is a timeout probe, with no source, mapper or store. It
+	// records its actual PID before waiting, so cancellation is deterministic.
+	probe := `import os,runpy,sys,time
+from pathlib import Path
+os.umask(0o077)
+runner=runpy.run_path(sys.argv[1],run_name="public_native_probe")
+runner["install_signal_handlers"]()
+runner["invoke"](Path(sys.argv[2]),"cancelled-child",[sys.executable,"-c","import os,sys,time; from pathlib import Path; Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(600)",sys.argv[3]],time.monotonic()+7200)
+`
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := proofPythonCommand(ctx, "-c", probe, script, root, ready)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var child int
+	until := time.Now().Add(15 * time.Second)
+	for time.Now().Before(until) {
+		raw, err := os.ReadFile(ready)
+		if err == nil {
+			child, err = strconv.Atoi(string(raw))
+			if err == nil && child > 0 {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	err = cmd.Wait()
+	for name, raw := range map[string][]byte{"supervisor-stdout.txt": stdout.Bytes(), "supervisor-stderr.txt": stderr.Bytes()} {
+		if writeErr := os.WriteFile(filepath.Join(root, name), raw, 0600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if child == 0 || err == nil {
+		t.Fatal("cancellation probe did not start and refuse", child, err, stderr.String())
+	}
+	if err := syscall.Kill(child, 0); err != syscall.ESRCH {
+		// Keep even a failed oracle from leaving its probe running.
+		_ = syscall.Kill(-child, syscall.SIGKILL)
+		t.Fatal("runner left an unreaped active child", child, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "cancelled-child", "wait.json"))
+	if err != nil {
+		t.Fatal("interrupted command lost its wait original", err)
+	}
+	var wait struct {
+		Exit        int  `json:"exit"`
+		Interrupted bool `json:"interrupted"`
+	}
+	if err := json.Unmarshal(raw, &wait); err != nil || !wait.Interrupted || wait.Exit >= 0 {
+		t.Fatal("interrupted child was not terminated and waited", wait, err)
+	}
+}
+
 func TestPublicNativeRunnerExercisesActualSmallJoinedReceiver(t *testing.T) {
 	r := testRegistry(t)
 	_, ops := smallSource(t, r, "small-ops")
@@ -251,7 +339,7 @@ func TestPublicNativeRunnerExercisesActualSmallJoinedReceiver(t *testing.T) {
 	args := []string{script, "--case", "positive", "--source", "small-ops", "--source", "small-sv2", "--directory", ops, "--directory", sv2, "--proof-binary", proofBinary, "--proof-sha256", proofHash, "--receiver-binary", receiver, "--receiver-sha256", receiverHash, "--policy", policy, "--output", filepath.Join(root, "small-memory")}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "python3", args...)
+	cmd := proofPythonCommand(ctx, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()

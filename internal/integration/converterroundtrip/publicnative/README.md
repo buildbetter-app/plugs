@@ -15,6 +15,8 @@ negative, never a distinct-project positive.
 The remote `publicnative_test` authenticates both small sources, corrupts a
 separate staged part to check refusal cleanup, checks input order and pins,
 and executes the Python runner against the actual small memory receiver.
+An explicit cancellation probe checks that the outer test signals the runner,
+which terminates and waits for its active child group and retains that wait.
 Regular temporary copies accommodate Bazel runfiles without weakening the
 reader's directory or symlink guards. Test outputs retain both exact remotely
 built executables, this script, the policy, input registry and command
