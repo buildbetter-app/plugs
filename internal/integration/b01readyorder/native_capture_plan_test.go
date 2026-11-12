@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"testing"
 	"time"
@@ -327,8 +328,66 @@ func b01MountCapturedWorkflow(t *testing.T, p *publicAcceptance, profile driver.
 
 func b01CaptureProfile(archive *dumpformat.Archive, when time.Time) driver.RestoreImportProfile {
 	return driver.RestoreImportProfile{
-		Admission:     driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, Authority: "restore-admin", AdmissionDigest: b01CaptureHash([]byte("B01 public native ready capture host admission/1"))},
+		Admission:     driver.RestoreImportAdmission{Mode: "anonymous-local", Actor: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, Authority: "trusted-human-presence", AdmissionDigest: b01CaptureHash([]byte("B01 public native ready capture host admission/1"))},
 		SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: fixtureKey("b01-captured-import"), ArchiveDigest: archive.SHA256(),
 		HistoryMode: driver.RestoreHistoryModeSnapshot, HistoryTime: when.UTC().Format(time.RFC3339Nano), NativeDeltaHistory: &driver.NativeDeltaHistoryPolicy{Format: driver.NativeDeltaHistoryPolicyFormat},
+	}
+}
+
+// The disposable host and its public workflow use the anonymous principal.
+// Its explicit local admission must not claim an authenticated restore-admin
+// actor. Structural binding here does not establish host authentication.
+func TestB01CapturedImportAdmissionContract(t *testing.T) {
+	in := b01ReadCapturedReady(t, b01CompleteReadyFixture, b01CompleteReadyFixtureSHA256)
+	p := newPublicAcceptance(t, "memory", false)
+	plan := b01CapturePlan(t, p, in.Archive)
+	profile := b01CaptureProfile(in.Archive, p.clock.Now())
+	want := driver.RestoreImportAdmission{
+		Mode: "anonymous-local", Actor: model.PrincipalRef{Kind: "anonymous", ID: "anonymous"},
+		Authority: "trusted-human-presence", AdmissionDigest: b01CaptureHash([]byte("B01 public native ready capture host admission/1")),
+	}
+	before := p.state(t)
+	t.Run("authentic-capture-local-anonymous-binding", func(t *testing.T) {
+		bound, err := converterroundtrip.BindNativeCaptureSetImport(p.ctx, in.Archive, profile, plan)
+		if err != nil || !reflect.DeepEqual(bound.Admission, want) || bound.SourcePlanes == nil || bound.DerivedDigest == "" || bound.ArchiveDigest != profile.ArchiveDigest {
+			t.Fatal("authentic capture lost its explicit local admission or checked source binding", err)
+		}
+		if request, err := bound.RequestHash(); err != nil || len(request) != 64 || bound.AgentLabel() != "" {
+			t.Fatal("checked local admission lost request/scope binding", err)
+		}
+	})
+	for _, negative := range []struct {
+		name   string
+		mutate func(*driver.RestoreImportAdmission)
+		want   string
+	}{
+		{"original-authenticated-anonymous-mismatch", func(a *driver.RestoreImportAdmission) { a.Mode, a.Authority = "authenticated", "restore-admin" }, "import admission mode/actor/authority mismatch"},
+		{"local-restore-admin-authority", func(a *driver.RestoreImportAdmission) { a.Authority = "restore-admin" }, "import admission mode/actor/authority mismatch"},
+		{"local-user-actor", func(a *driver.RestoreImportAdmission) {
+			a.Actor = model.PrincipalRef{Kind: "user", ID: "restore-admin"}
+		}, "import admission mode/actor/authority mismatch"},
+		{"authenticated-local-authority", func(a *driver.RestoreImportAdmission) {
+			a.Mode = "authenticated"
+			a.Actor = model.PrincipalRef{Kind: "user", ID: "restore-admin"}
+		}, "import admission mode/actor/authority mismatch"},
+		{"unknown-mode", func(a *driver.RestoreImportAdmission) { a.Mode = "unknown" }, "import admission mode/actor/authority mismatch"},
+		{"missing-authority", func(a *driver.RestoreImportAdmission) { a.Authority = "" }, "import admission mode/actor/authority mismatch"},
+		{"invalid-local-scope", func(a *driver.RestoreImportAdmission) { a.Scope = " noncanonical-scope" }, "import admission scope is not the normalized G4 agent label"},
+		{"missing-admission-digest", func(a *driver.RestoreImportAdmission) { a.AdmissionDigest = "" }, "invalid prepared import binding"},
+	} {
+		t.Run(negative.name, func(t *testing.T) {
+			bad := profile
+			negative.mutate(&bad.Admission)
+			bound, err := converterroundtrip.BindNativeCaptureSetImport(p.ctx, in.Archive, bad, plan)
+			if err == nil || err.Error() != negative.want || !reflect.DeepEqual(bound, driver.RestoreImportProfile{}) {
+				t.Fatal("invalid admission did not refuse atomically", bound.Admission, err)
+			}
+			if !reflect.DeepEqual(before, p.state(t)) || !reflect.DeepEqual(profile.Admission, want) {
+				t.Fatal("refused admission mutated target state or the original host request")
+			}
+		})
+	}
+	if !reflect.DeepEqual(before, p.state(t)) {
+		t.Fatal("admission preparation wrote the public target before import")
 	}
 }
