@@ -75,10 +75,15 @@ func sameJSON(t *testing.T, a, b []byte) bool {
 	t.Helper()
 	return reflect.DeepEqual(decodeObject(t, a), decodeObject(t, b))
 }
+func sameRef(a, b model.Ref) bool {
+	return a.Validate() == nil && b.Validate() == nil && a.IsID() == b.IsID() && a.ID == b.ID && a.Key == b.Key && a.Branch.String() == b.Branch.String()
+}
 func expectedCommit(t *testing.T, revision int, expected []expectedCreate, at time.Time) model.Commit {
 	c := model.Commit{Revision: model.Natural64(uint64(revision)), Results: []model.OpResult{}, Warnings: []model.Warning{}}
 	for _, e := range expected {
-		c.Results = append(c.Results, model.OpResult{Ref: ref(e.ID), Revision: c.Revision, Record: e.body(t, at), SetBy: e.setBy()})
+		// Ordinary create constructs an ID ref with its zero Go branch, so the
+		// result omits branch on the wire. Request refs may spell branch:0.
+		c.Results = append(c.Results, model.OpResult{Ref: model.RefByID(e.ID, ""), Revision: c.Revision, Record: e.body(t, at), SetBy: e.setBy()})
 	}
 	return c
 }
@@ -89,8 +94,8 @@ func assertCommit(t *testing.T, actual, expected model.Commit) {
 	}
 	for i, want := range expected.Results {
 		got := actual.Results[i]
-		if got.Ref != want.Ref || got.Revision != want.Revision || !reflect.DeepEqual(got.SetBy, want.SetBy) || !sameJSON(t, got.Record, want.Record) {
-			t.Fatalf("result[%d] got=%+v body=%s want=%+v body=%s", i, got, got.Record, want, want.Record)
+		if !sameRef(got.Ref, want.Ref) || got.Revision != want.Revision || !reflect.DeepEqual(got.SetBy, want.SetBy) || !sameJSON(t, got.Record, want.Record) {
+			t.Fatalf("result[%d] refEqual=%t branchRaw=%q/%q revisionEqual=%t setByEqual=%t bodyEqual=%t got=%+v body=%s want=%+v body=%s", i, sameRef(got.Ref, want.Ref), string(got.Ref.Branch), string(want.Ref.Branch), got.Revision == want.Revision, reflect.DeepEqual(got.SetBy, want.SetBy), sameJSON(t, got.Record, want.Record), got, got.Record, want, want.Record)
 		}
 	}
 }
@@ -131,7 +136,7 @@ func snapshot(t *testing.T, o *ordinaryB04, full bool, expected map[string]expec
 					t.Fatalf("versions for %s: %+v err=%v", record.Ref.ID, v, err)
 				}
 				version := v.Items[0]
-				if version.Ref != record.Ref || version.Revision != record.Revision || !version.Base || version.Deleted || !version.CreatedAt.Equal(f.clock.Now()) || !reflect.DeepEqual(version.Principal, o.principal()) || !sameJSON(t, version.Body, e.body(t, f.clock.Now())) {
+				if !sameRef(version.Ref, record.Ref) || version.Revision != record.Revision || !version.Base || version.Deleted || !version.CreatedAt.Equal(f.clock.Now()) || !reflect.DeepEqual(version.Principal, o.principal()) || !sameJSON(t, version.Body, e.body(t, f.clock.Now())) {
 					t.Fatalf("independent version expectation failed: %+v", version)
 				}
 				versions += len(v.Items)

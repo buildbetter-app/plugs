@@ -181,13 +181,17 @@ func TestOrdinaryChildCreateUsesRealIdentityIndexWithoutQuery(t *testing.T) {
 			if backend == "postgres" {
 				dsn = newPostgresHarness(t).dsn(t)
 			}
-			o := newOrdinaryB04(t, backend, dsn, []string{"root"})
+			o := newOrdinaryB04(t, backend, dsn, []string{"root", "root.009"})
 			o.seed("anchor", ordinaryCreateOp("root", project, map[string]any{"title": "root", "priority": 4}, ""))
+			// A genuine ordinary root publication supplies its required ancestor
+			// rows. Direct Seed is reserved for the occupancy/tombstone vectors;
+			// it deliberately does not backfill semantic ancestor closures.
+			o.seed("leading-zero-root", ordinaryCreateOp("leading-zero", project, map[string]any{"title": "root.009", "priority": 4}, ""))
 			var changes []conformance.FixtureChange
 			for _, v := range []struct {
 				id, kind string
 				op       model.OpKind
-			}{{"root.009", "bead", model.OpCreate}, {"root.10", "memory", model.OpCreate}, {"root.11", "bead", model.OpCreate}} {
+			}{{"root.10", "memory", model.OpCreate}, {"root.11", "bead", model.OpCreate}} {
 				body, _ := json.Marshal(pipeline.Document{ID: v.id, Type: "issue", Project: project, Fields: map[string]any{"title": v.id, "status": "todo"}})
 				change := conformance.FixtureChange{Ref: ref(v.id), Kind: v.kind, Op: v.op, Body: body}
 				if v.kind == "bead" {
