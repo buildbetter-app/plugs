@@ -46,8 +46,8 @@ Both raw originals are retained, and explicit invocation-role correspondence
 connects them without rewriting either result.
 
 The exact native deletion oracle is independently derived from the pinned
-source, not observed output. The ignored migration
-`internal/storage/schema/migrations/ignored/0004_add_wisp_aux_fks.up.sql`
+source, not observed output. Ignored migration 0004 in
+`internal/storage/schema/migrations/ignored/`
 adds `wisp_events.issue_id -> wisps.id ON DELETE CASCADE`; dependency constraints
 are separately removed by the existing diagnostic fixture, and the event
 constraint remains installed. `internal/storage/issueops/create.go` emits one
