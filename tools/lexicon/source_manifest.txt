@@ -643,7 +643,11 @@ internal/integration/converterroundtrip/memory_reverse.go
 internal/integration/converterroundtrip/native_boundary_fixture_test.go
 internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_capture_set_cli_test.go
+internal/integration/converterroundtrip/native_collection.go
 internal/integration/converterroundtrip/native_collection_plan_test.go
+internal/integration/converterroundtrip/native_collection_readback.go
+internal/integration/converterroundtrip/native_collection_receiving_fault_test.go
+internal/integration/converterroundtrip/native_collection_receiving_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
@@ -1331,6 +1335,7 @@ internal/storage/historyverify/native_collection_test.go
 internal/storage/historyverify/native_evidence.go
 internal/storage/historyverify/native_frames.go
 internal/storage/historyverify/native_plan.go
+internal/storage/historyverify/native_readback.go
 internal/storage/historyverify/native_spool.go
 internal/storage/historyverify/native_test.go
 internal/storage/historyverify/planner_dependency_test.go

@@ -375,21 +375,27 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
 		return driver.ErrConflict
 	}
-	archive, err := readRetainedImportArchive(ctx, r, raw, evidence)
+	archive, collection, err := readRetainedReceivingArchive(ctx, r, raw, evidence, p)
 	if err != nil {
 		return nativeDeltaRecoveryError(err)
 	}
-	defer archive.ReleaseNativeDecoded()
+	var stream *historyverify.NativeArchiveStream
+	if collection != nil {
+		defer collection.close()
+		stream = collection.stream
+	} else {
+		defer archive.ReleaseNativeDecoded()
+	}
 	archive, releaseArchive := archive.NativeDeltaAccountingScope()
 	defer releaseArchive()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
-	return validateHistoryRecoveryArchive(ctx, r, p, evidence, receipt, archive, nil)
+	return validateHistoryRecoveryArchive(ctx, r, p, evidence, receipt, archive, nil, stream)
 }
 
 // The same fixed reader's authenticated source is shared by all recovery
 // checks. A clean commit may additionally borrow its already validated history;
 // no target record can construct this operation-local value.
-func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *driver.OfflineHistory) error {
+func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *driver.OfflineHistory, streams ...*historyverify.NativeArchiveStream) error {
 	archive, release := archive.NativeDeltaAccountingScope()
 	defer release()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
@@ -400,12 +406,23 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	if err != nil {
 		return driver.ErrConflict
 	}
-	if archive.HasNativeDelta() {
-		stream, err := historyverify.PrepareNativeArchive(ctx, archive, p, when)
-		if err != nil {
-			return nativeDeltaRecoveryError(err)
+	if archive.HasNativeDelta() || archive.HasNativeCaptureCollection() {
+		var stream *historyverify.NativeArchiveStream
+		owned := false
+		if len(streams) != 0 {
+			stream = streams[0]
 		}
-		defer stream.Close()
+		if stream == nil {
+			if archive.HasNativeCaptureCollection() {
+				return driver.ErrConflict
+			}
+			stream, err = historyverify.PrepareNativeArchive(ctx, archive, p, when)
+			if err != nil {
+				return nativeDeltaRecoveryError(err)
+			}
+			owned = true
+			defer stream.Close()
+		}
 		rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
 		if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
 			return driver.ErrConflict
@@ -421,8 +438,10 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 		if receipt.Commit.Revision != revision || receipt.Changeset.Revision != revision {
 			return driver.ErrConflict
 		}
-		if err := stream.Close(); err != nil {
-			return nativeDeltaRecoveryError(err)
+		if owned {
+			if err := stream.Close(); err != nil {
+				return nativeDeltaRecoveryError(err)
+			}
 		}
 		return nil
 	}
