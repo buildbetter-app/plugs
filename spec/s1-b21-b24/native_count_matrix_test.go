@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -195,6 +196,20 @@ func TestNativeB23CountMatrix(t *testing.T) {
 		t.Fatal("explicit independent native_recording required")
 	}
 	root := nativeMakeRecordingRoot(t)
+	request := os.Getenv("PLUG_B23_REQUEST_SHA")
+	source := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if len(request) != 40 || strings.Trim(request, "0123456789abcdef") != "" || !filepath.IsAbs(source) {
+		t.Fatal("native B23 matrix requires its exact request SHA and declared source root")
+	}
+	cmd := exec.CommandContext(t.Context(), "/usr/bin/git", "-C", source, "show", "-s", "--format=%H%n%T%n%P", "HEAD")
+	cmd.Env = []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/local/bin:/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	raw, err := cmd.Output()
+	tuple := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if err != nil || len(tuple) != 3 || tuple[0] != request {
+		t.Fatalf("native B23 matrix request/source mismatch: %q %v", raw, err)
+	}
+	nativeWriteJSON(t, filepath.Join(root, "request-binding.json"), map[string]any{"request_sha": request, "head": tuple[0], "tree": tuple[1], "ordered_parents": strings.Fields(tuple[2]), "recording": *nativeRecordingID, "target": os.Getenv("TEST_TARGET")})
+	t.Logf("NATIVE_B23_REQUEST head=%s tree=%s parents=%s recording=%s", tuple[0], tuple[1], tuple[2], *nativeRecordingID)
 	t.Logf("NATIVE_B23_OUTPUT %s", root)
 	var profile nativeRecordingProfile
 	var protocol nativeRecordingFixture

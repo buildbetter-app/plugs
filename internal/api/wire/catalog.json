@@ -373,7 +373,7 @@
     {
       "name": "bead.ready",
       "summary": "List ready beads from a live cursor.",
-      "description": "List ready beads from a live cursor.",
+      "description": "List ready beads from a live cursor. With countOnly=true, return the complete blocker-aware ready count under current read authority as {items:[],asOf,count}, including zero and without nextCursor. A supplied cursor refuses invalid_params. Valid limit is still validated but cannot truncate the total. Absent/false preserves existing ready paging.",
       "tags": [
         {
           "name": "core"
@@ -381,6 +381,13 @@
       ],
       "paramStructure": "by-name",
       "params": [
+        {
+          "name": "countOnly",
+          "schema": {
+            "type": "boolean"
+          },
+          "description": "With countOnly=true, return the complete blocker-aware ready count under current read authority as {items:[],asOf,count}, including zero and without nextCursor. A supplied cursor refuses invalid_params. Valid limit is still validated but cannot truncate the total. Absent/false preserves existing ready paging."
+        },
         {
           "name": "viewId",
           "schema": {
@@ -419,7 +426,36 @@
         "name": "result",
         "description": "Result",
         "schema": {
-          "$ref": "#/components/schemas/BeadPage"
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/BeadPage"
+            },
+            {
+              "type": "object",
+              "required": [
+                "items",
+                "asOf",
+                "count"
+              ],
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Bead"
+                  },
+                  "maxItems": 0
+                },
+                "asOf": {
+                  "$ref": "#/components/schemas/AsOf"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "errors": [
@@ -14338,7 +14374,7 @@
     "methodCount": 87,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "50abe444c30fbc487fbcb43271eceebfc686c4c2b8b563d45d0b7e859f52d6e6",
-    "descriptorSha256": "3a9b91a11f09248639402ae823a73feb1069503a208fb204d08ff8ebe6370a62",
+    "descriptorSha256": "8c68b35da090f7c3f8c9de8aa8c2a6259e2694cf7b4acd3b54435ce553fae627",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -15739,6 +15775,13 @@
         "agentCore": true,
         "params": [
           {
+            "name": "countOnly",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "With countOnly=true, return the complete blocker-aware ready count under current read authority as {items:[],asOf,count}, including zero and without nextCursor. A supplied cursor refuses invalid_params. Valid limit is still validated but cannot truncate the total. Absent/false preserves existing ready paging."
+          },
+          {
             "name": "viewId",
             "schema": {
               "type": "string"
@@ -15773,7 +15816,36 @@
           }
         ],
         "resultSchema": {
-          "$ref": "#/components/schemas/BeadPage"
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/BeadPage"
+            },
+            {
+              "type": "object",
+              "required": [
+                "items",
+                "asOf",
+                "count"
+              ],
+              "properties": {
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Bead"
+                  },
+                  "maxItems": 0
+                },
+                "asOf": {
+                  "$ref": "#/components/schemas/AsOf"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
         },
         "errors": [
           "#/components/errors/AuthzPostfilterCap",
