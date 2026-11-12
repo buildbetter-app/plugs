@@ -53,49 +53,6 @@ func RestoreNativeCaptureSetImportWithLease(ctx context.Context, archive *dumpfo
 	return report, err
 }
 
-func retainNativeDeltaArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {
-	manifest := archive.Manifest()
-	evidence := archiveEvidence{ArchiveSHA256: archive.SHA256(), DerivedSHA256: plan.derivedDigest, Profile: derivedProfile(plan), SourceStore: manifest.StoreID, Members: manifest.Files, NativeCaptureFiles: map[string]dumpformat.File{}}
-	if proof, ok := archive.NativeDeltaVerification(); ok {
-		evidence.NativeDecodedLimitBytes = proof.Usage.LimitBytes
-	}
-	raw, ok, err := archive.MemberChecked("manifest.json")
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("native delta manifest missing")
-	}
-	evidence.Members["manifest.json"] = dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
-	plan.blobs = map[string][]byte{}
-	for name, expected := range evidence.Members {
-		data, ok, err := archive.MemberChecked(name)
-		if err != nil {
-			return err
-		}
-		if !ok || hashBytes(data) != expected.SHA256 || int64(len(data)) != expected.Size {
-			return fmt.Errorf("native delta head member changed")
-		}
-		plan.blobs[expected.SHA256] = data
-	}
-	if err := archive.VisitNativeCaptureFiles(context.Background(), func(name string, data []byte) error {
-		file := dumpformat.File{SHA256: hashBytes(data), Size: int64(len(data))}
-		entry := struct {
-			Name string          `json:"name"`
-			File dumpformat.File `json:"file"`
-		}{name, file}
-		if err := archive.ChargeNativeDeltaJSON("retained_capture_ledger", entry); err != nil {
-			return err
-		}
-		evidence.NativeCaptureFiles[name] = file
-		return nil
-	}); err != nil {
-		return err
-	}
-	plan.nativeCapture = archive
-	return add(model.RefByID("restore/archive", model.Natural64(0)), "restore-archive", evidence)
-}
-
 func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []byte, evidence archiveEvidence) (*dumpformat.Archive, error) {
 	var format struct {
 		Format string `json:"format"`
@@ -132,26 +89,6 @@ func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []
 		}
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained recovery option"})
-}
-
-func nativeOperationContext(contexts []context.Context) context.Context {
-	if len(contexts) > 0 && contexts[0] != nil {
-		return contexts[0]
-	}
-	return context.Background()
-}
-
-// marshalNativePayload admits the exact canonical byte candidate before the
-// standard serializer allocates it. The owning archive scope releases it.
-func marshalNativePayload(archive *dumpformat.Archive, phase string, value any) ([]byte, error) {
-	n, err := dumpformat.NativeDeltaJSONSize(value)
-	if err != nil {
-		return nil, err
-	}
-	if err := archive.ChargeNativeDeltaBytes(phase, n-1); err != nil {
-		return nil, err
-	}
-	return json.Marshal(value)
 }
 
 // historyDelta's two indexes retain one driver ordering string per input Ref.
@@ -195,25 +132,6 @@ func nativeHistoryDigest(archive *dumpformat.Archive, history driver.OfflineHist
 		return "", err
 	}
 	return driver.OfflineHistoryDigest(history)
-}
-
-// The unchanged plan codec validates a detached binary buffer and a decoded
-// candidate while checking its canonical re-encoding. The caller retains only
-// the resulting plan; both validation buffers end at this boundary.
-func nativeSourcePlan(archive *dumpformat.Archive, binding driver.SourcePlaneImportBindingV1) (driver.SourcePlanePlanV1, error) {
-	work, release := archive.NativeDeltaAccountingScope()
-	defer release()
-	n := uint64(len(binding.CanonicalPlan))
-	if err := work.ChargeNativeDeltaBytes("source_plan_binary_detach", n); err != nil {
-		return driver.SourcePlanePlanV1{}, err
-	}
-	if err := work.ChargeNativeDeltaBytes("source_plan_canonical_check", n); err != nil {
-		return driver.SourcePlanePlanV1{}, err
-	}
-	if err := archive.ChargeNativeDeltaBytes("source_plan_decoded", n); err != nil {
-		return driver.SourcePlanePlanV1{}, err
-	}
-	return binding.Plan()
 }
 
 func nativeDetachedProfile(archive *dumpformat.Archive, profile driver.RestoreImportProfile) (driver.RestoreImportProfile, error) {

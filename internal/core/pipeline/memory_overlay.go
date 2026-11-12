@@ -9,10 +9,10 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/recordimage"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -20,15 +20,7 @@ import (
 // bytes are pinned by the Writer, never supplied as request metadata. A logical
 // generation changes only on re-remember after forget, delimiting history even
 // though the durable tombstone must remain to suppress the immutable source.
-type MemoryOverlay struct {
-	Source         model.Ref          `json:"source"`
-	SourceRevision model.Revision     `json:"sourceRevision"`
-	SourceSHA256   string             `json:"sourceSha256"`
-	Principal      model.PrincipalRef `json:"principal"`
-	Time           time.Time          `json:"time"`
-	Generation     uint64             `json:"generation"`
-	Deleted        bool               `json:"deleted"`
-}
+type MemoryOverlay = recordimage.MemoryOverlay
 
 func MemoryOverlayRef(source model.Ref) model.Ref {
 	digest := sha256.Sum256([]byte(source.ID))

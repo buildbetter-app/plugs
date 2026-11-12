@@ -7,28 +7,6 @@ import (
 	"time"
 )
 
-// CreationTime returns the immutable host-supplied creation instant. A legacy
-// body without createdAt has no known instant: neither its latest version time
-// nor the time of a read or later edit is evidence of creation.
-func (d Document) CreationTime() (time.Time, bool) {
-	if d.CreatedAt == nil || d.CreatedAt.IsZero() {
-		return time.Time{}, false
-	}
-	return d.CreatedAt.UTC(), true
-}
-
-func (d Document) validateLifecycleTimes() error {
-	for _, value := range []struct {
-		name string
-		at   *time.Time
-	}{{"createdAt", d.CreatedAt}, {"startedAt", d.StartedAt}, {"closedAt", d.ClosedAt}} {
-		if value.at != nil && value.at.IsZero() {
-			return fmt.Errorf("invalid bead %s", value.name)
-		}
-	}
-	return nil
-}
-
 func validateLifecycleTimeMembers(body []byte) error {
 	var members struct {
 		CreatedAt json.RawMessage `json:"createdAt"`
