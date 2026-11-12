@@ -778,7 +778,7 @@ func scanFile(path string, content []byte, cfg Config, provenance bool) []Findin
 	b07Offsets := b07RepresentedLiteralOffsets(path, content)
 	b07ProtocolOffsets := b07NativeProtocolLiteralOffsets(path, content)
 	b07EffectOffsets := b07EffectLiteralOffsets(path, content)
-	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || len(undoLiteralBindings[path]) != 0 || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 || len(b07EffectOffsets) != 0 || path == b02NativeRecordingSource {
+	if path == externalProtocolSource && len(cfg.ExternalProtocolString.PhysicalValues) != 0 || path == nativeManifestProtocolSource && len(cfg.NativeManifestStrings.Values) != 0 || path == b01NativeGoSource || path == b01NativeJSONSource || path == b03CatalogJSONSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || path == sourcePlaneProtocolSource || path == sourcePlaneFixtureSource || len(undoLiteralBindings[path]) != 0 || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 || len(b07EffectOffsets) != 0 || path == b02NativeRecordingSource || len(b02Offsets) != 0 {
 		masked := append([]byte(nil), content...)
 		sourceLiterals := goStringLiterals(path, content)
 		if path == b01NativeJSONSource || path == b03CatalogJSONSource {
@@ -940,7 +940,7 @@ func scanGoIdentifiers(path string, content []byte, term Term, cfg Config) []Fin
 				if !imports[n.Pos()] && (undoOffsets[fset.Position(n.Pos()).Offset] || b02Offsets[fset.Position(n.Pos()).Offset]) {
 					return true
 				}
-				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 || len(b07EffectOffsets) != 0 {
+				if path == externalProtocolSource || path == nativeManifestProtocolSource || path == b01NativeGoSource || path == b03CatalogGoSource || path == nativeHTTPDomainSource || hasNativeControlAllowance(path, cfg) || len(b02Offsets) != 0 || len(b07Offsets) != 0 || len(b07ProtocolOffsets) != 0 || len(b07EffectOffsets) != 0 {
 					if !imports[n.Pos()] && (fieldOffsets[fset.Position(n.Pos()).Offset] || b03Offsets[fset.Position(n.Pos()).Offset] || b07Offsets[fset.Position(n.Pos()).Offset] || b07ProtocolOffsets[fset.Position(n.Pos()).Offset] || b07EffectOffsets[fset.Position(n.Pos()).Offset] || path == externalProtocolSource && allowance.Path == path && decoded == allowance.Value && protocolLiteralDigest(decoded) == externalEnvironmentDigest || allowsPhysicalProtocolString(path, decoded, allowance) || allowsNativeManifestString(path, decoded, cfg.NativeManifestStrings) || allowsNativeControlLiteral(path, decoded, cfg)) {
 						return true
 					}
