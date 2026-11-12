@@ -226,6 +226,20 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 				return fmt.Errorf("%w: sqlite database is not an empty or Plug store", driver.ErrUnsupported)
 			}
 		}
+		// Remove the obsolete candidate read-work table and triggers. Head
+		// queries now report the rows they actually materialize, so no
+		// persistent aggregate state is needed.
+		for _, statement := range []string{
+			`DROP TRIGGER IF EXISTS query_read_work_objects_insert`,
+			`DROP TRIGGER IF EXISTS query_read_work_records_insert`,
+			`DROP TRIGGER IF EXISTS query_read_work_records_update`,
+			`DROP TRIGGER IF EXISTS query_read_work_records_delete`,
+			`DROP TABLE IF EXISTS query_read_work`,
+		} {
+			if _, e := c.ExecContext(ctx, statement); e != nil {
+				return e
+			}
+		}
 		_, e := c.ExecContext(ctx, schema)
 		if e != nil {
 			return e
@@ -235,20 +249,6 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 			return e
 		}
 		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO active_lease VALUES(1,?,'','',0)`, revKey(0))
-		if e != nil {
-			return e
-		}
-		// Populate the additive read-work row exactly once for an existing
-		// database. New writes are then kept current by the schema triggers.
-		_, e = c.ExecContext(ctx, `INSERT OR IGNORE INTO query_read_work(singleton,selector_keys,payloads,payload_bytes)
-SELECT 1,
-       (SELECT COUNT(*) FROM objects),
-       (SELECT COUNT(*) FROM records),
-       COALESCE((SELECT SUM(CASE WHEN json_valid(data) AND json_extract(data, '$.Body') IS NOT NULL
-                                  THEN (length(json_extract(data, '$.Body'))/4)*3
-                                    - CASE WHEN substr(json_extract(data, '$.Body'), -1)='=' THEN 1 ELSE 0 END
-                                    - CASE WHEN substr(json_extract(data, '$.Body'), -2, 1)='=' THEN 1 ELSE 0 END
-                                  ELSE 0 END) FROM records), 0)`)
 		if e != nil {
 			return e
 		}

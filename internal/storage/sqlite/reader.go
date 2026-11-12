@@ -30,12 +30,6 @@ type reader struct {
 	owner          *transaction
 }
 
-type queryAccounting struct {
-	selectorKeys int64
-	payloads     int64
-	payloadBytes int64
-}
-
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
 	if err := s.check(ctx); err != nil {
 		return nil, err
@@ -369,8 +363,8 @@ func (r *reader) cursor(c *driver.Cursor, method, digest string) (uint64, error)
 }
 
 // queryCursor validates the stateless query cursor and returns its opaque
-// last-key witness. Index is retained as a result witness for native restore;
-// it never positions a query. A nonzero legacy offset with no After witness is
+// last-key marker. Index is retained as a result marker for native restore;
+// it never positions a query. A nonzero legacy offset with no After marker is
 // refused rather than translated through OFFSET.
 func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest string, filter map[string]any, kind any, hasKind, currentHead, rankByKind bool) (string, uint64, error) {
 	if c == nil {
@@ -397,7 +391,7 @@ func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest strin
 	}
 	// Below-head and staged readers intentionally retain the predecessor's
 	// ordinal cursor and full materialization semantics. The opaque After
-	// witness is a current-head optimization only.
+	// marker is a current-head optimization only.
 	if !currentHead {
 		index, err := r.cursor(c, "query", digest)
 		return "", index, err
@@ -457,6 +451,10 @@ func (r *reader) queryCursor(ctx context.Context, c *driver.Cursor, digest strin
 		if err := json.Unmarshal(data, &record); err != nil {
 			return "", 0, err
 		}
+		// Cursor validation materializes the anchor row inside the pinned
+		// snapshot; account for that actual work just like page rows.
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		driver.ReportReadPayload(ctx, record.Body)
 		if ok, err := matches(record, filter); err != nil || !ok {
 			if err != nil {
 				return "", 0, err
@@ -633,22 +631,10 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 
 // queryHead reads one current nil/kind page plus a lookahead row. After is the
 // opaque last returned key, and the SQL predicate/order uses the primary key
-// or the covering (kind,key) index. Index is emitted only as a witness for
+// or the covering (kind,key) index. Index is emitted only as a marker for
 // cursor validation and native restore; it never positions a query.
 func (r *reader) queryHead(ctx context.Context, filter map[string]any, kind any, hasKind, rankByKind bool, digest, after string, limit int) (driver.Page[driver.Record], error) {
 	empty := driver.Page[driver.Record]{}
-
-	// The row is maintained transactionally by SQLite triggers. It preserves
-	// the original discarded-candidate accounting without a full-corpus query
-	// on every page or any lifecycle-sensitive reader cache.
-	var accounting queryAccounting
-	err := r.tx.QueryRowContext(ctx, `SELECT selector_keys,payloads,payload_bytes FROM query_read_work WHERE singleton=1`).Scan(&accounting.selectorKeys, &accounting.payloads, &accounting.payloadBytes)
-	if err != nil {
-		return empty, err
-	}
-	driver.ReportReadWork(ctx, driver.ReadSelectorKeys, accounting.selectorKeys)
-	driver.ReportReadWork(ctx, driver.ReadPayloadRecords, accounting.payloads)
-	driver.ReportReadWork(ctx, driver.ReadPayloadBytes, accounting.payloadBytes)
 
 	from := ` FROM objects AS o JOIN records AS r ON o.key=r.key`
 	rankColumn := "o.query_order"
@@ -708,6 +694,10 @@ func (r *reader) queryHead(ctx context.Context, filter map[string]any, kind any,
 				_ = rows.Close()
 				return empty, err
 			}
+			// Head read-work describes rows actually materialized by this page,
+			// including a lookahead or a discarded predicate candidate.
+			driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+			driver.ReportReadPayload(ctx, record.Body)
 			match, matchErr := matches(record, filter)
 			if matchErr != nil {
 				_ = rows.Close()
