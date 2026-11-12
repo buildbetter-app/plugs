@@ -110,12 +110,13 @@ filegroup(
 go_test(
     name = "b04_ordinary_public",
     srcs = [
+        "b04_ordinary_empty_replay_test.go",
         "b04_ordinary_support_test.go",
         "b04_ordinary_test.go",
         "fixture_test.go",
         "manifest_test.go",
     ],
-    embedsrcs = ["manifest.json", "run-1.json"],
+    embedsrcs = ["b04_ordinary_empty_replay_inputs.json", "manifest.json", "run-1.json"],
     args = ["-test.v"],
     deps = [
         "//internal/api/wire",

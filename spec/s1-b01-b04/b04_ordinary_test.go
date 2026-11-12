@@ -21,6 +21,7 @@ func TestB04OrdinaryPublicHTTPAcrossStores(t *testing.T) {
 			o.seed("create-public",ordinaryCreateOp("decoy",project,map[string]any{"title":"unselected decoy","priority":0},""),ordinaryCreateOp("direct",project,map[string]any{"title":"ordinary hydrated row","description":"preserve description","labels":[]string{"ordinary","public"},"priority":2},""),ordinaryCreateOp("active",project,map[string]any{"title":"native category active","status":"awaiting_review","priority":3},""),ordinaryCreateOp("wip",project,map[string]any{"title":"native category wip","status":"qa_testing","priority":1},""))
 			o.commit("public-comment","bead.comment",map[string]any{"id":ref("b04-direct"),"body":"hydration retains this comment"})
 			o.reopen("before-claim")
+			o.replayNeverPopulatedEmpty("after-arrival-and-reopen")
 			direct:=o.win("direct","bead.claim","b04-direct","todo",map[string]any{"id":ref("b04-direct")})
 			// Retain the complete public projection of the independently checked
 			// winning row before closing either SQL store, including its comment.
@@ -37,6 +38,7 @@ func TestB04OrdinaryPublicHTTPAcrossStores(t *testing.T) {
 			o.empty("empty-selected",map[string]any{"filter":map[string]any{"resources":[]string{"b04-active","b04-wip"}}})
 			if o.f.document("b04-decoy").Lease!=nil { t.Fatal("selected empty front claimed decoy") }
 			o.reopen("after-claim-noop-refusal-empty")
+			o.replayNeverPopulatedEmpty("after-final-reopen")
 			// Exercise public reads through the reconstructed HTTP service too.
 			get:=o.call("reopened-get","bead.get",owner,map[string]any{"id":ref("b04-direct")})
 			if got:=result(t,get);!reflect.DeepEqual(got,decodeObject(t,getWantJSON)) {t.Fatalf("public get differs from retained complete expected row: got=%s want=%s",get,getWantJSON)}

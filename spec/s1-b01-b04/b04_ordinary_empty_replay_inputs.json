@@ -1,0 +1,59 @@
+{
+  "format": "plug.s1.b04.ordinary-empty-replay-inputs/1",
+  "provenance": {
+    "kind": "independently-authored-public-fixture",
+    "sources": [
+      {
+        "path": "engdocs/design/plug/spec/behaviors/work.md",
+        "head": "ef00aa8f68ab99fed80da550669074d08e2957a0",
+        "sha256": "adc5f9a337639b3cac059dba13fccaf5243747cd1b2bd6efa4276b1e951c80ea",
+        "lines": "100-137"
+      },
+      {
+        "path": "engdocs/design/plug/design.md",
+        "head": "ef00aa8f68ab99fed80da550669074d08e2957a0",
+        "sha256": "9f94b853933f3451d3d3b76ad6c7bc91a86baa1f4629eaf3c33c77abb2b7902b",
+        "lines": "315,334"
+      },
+      {
+        "path": "spec/s1-b01-b04/b04_ordinary_test.go",
+        "head": "ef00aa8f68ab99fed80da550669074d08e2957a0",
+        "sha256": "30ab2cdeb1c6254a2d0e9adf2a82884865c1787a06c54a379236ae4942f5bbe0",
+        "lines": "14-43"
+      }
+    ],
+    "qualification": "Authored input and oracle only; execution and import/native qualifications remain separate."
+  },
+  "receiptLabel": "never-populated",
+  "method": "bead.claimNext",
+  "agent": "s1-owner",
+  "params": {},
+  "liveReadyFilter": {
+    "resources": [
+      "b04-decoy"
+    ]
+  },
+  "liveReadyIDs": [
+    "b04-decoy"
+  ],
+  "expected": {
+    "result": null,
+    "replayed": true,
+    "headDelta": 0,
+    "changesetDelta": 0,
+    "domainVersionDelta": 0,
+    "receiptDelta": 0
+  },
+  "stateConservation": [
+    "complete bead rows",
+    "head and store metadata",
+    "complete changesets",
+    "all bead versions",
+    "all retained successful receipts"
+  ],
+  "replayStages": [
+    "after-arrival-and-reopen",
+    "after-final-reopen"
+  ],
+  "nativeBoundary": "The native CLI has no Plug idempotency envelope. Its independently recorded empty-front success remains a separate observation; it does not supply this expected public replay."
+}
