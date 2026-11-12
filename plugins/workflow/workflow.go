@@ -1731,6 +1731,21 @@ func (p *Provider) Update(ctx context.Context, by model.PrincipalRef, id model.R
 	if err != nil {
 		return model.Commit{}, err
 	}
+	// An equal labels-only proposal is a semantic no-op. Retain its scoped
+	// replay receipt so a later replay cannot undo an intervening label edit,
+	// but leave the item revision and lifecycle audit unchanged.
+	if len(fields) == 1 {
+		if _, labelsOnly := fields["labels"]; labelsOnly && slices.Equal(item.Labels, next.Labels) {
+			commit := workflowCommit(item.ID, item.Generation)
+			if _, err := p.storeReceipt(value, by, meta, request, commit, item.RunID, item.ID); err != nil {
+				return model.Commit{}, err
+			}
+			if err := p.mapSaveError(p.save(ctx, value, revision)); err != nil {
+				return model.Commit{}, err
+			}
+			return commit, nil
+		}
+	}
 	if err := p.applyAuxiliary(&value, item, next); err != nil {
 		return model.Commit{}, err
 	}
