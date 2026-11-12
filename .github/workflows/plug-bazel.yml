@@ -104,7 +104,7 @@ jobs:
           set -euo pipefail
           bazel_version="$(tr -d '[:space:]' < .bazelversion)"
           [[ "$bazel_version" == 9.3.0 ]] || { echo "unsupported Bazel pin: $bazel_version" >&2; exit 1; }
-          mkdir -p "$RUNNER_TEMP/plug-bazelisk-home" "$PLUG_BAZEL_REPOSITORY_CACHE"
+          mkdir -p "$RUNNER_TEMP/plug-bazelisk-home" "$PLUG_BAZEL_REPOSITORY_CACHE" "$RUNNER_TEMP/bin"
           curl --fail --silent --show-error --location --retry 3 --max-time 120 \
             --output "$RUNNER_TEMP/plug-bazelisk" \
             https://github.com/bazelbuild/bazelisk/releases/download/v1.29.0/bazelisk-linux-amd64
@@ -122,10 +122,18 @@ jobs:
           test --test_timeout=900,900,900,9000
           test --test_env=PLUG_SOURCE_MODULE_ROOT=$GITHUB_WORKSPACE
           EOF
+          cat > "$RUNNER_TEMP/bin/bazel" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec "$RUNNER_TEMP/plug-bazelisk" --nosystem_rc --nohome_rc --noworkspace_rc \
+            --bazelrc="$RUNNER_TEMP/plug.bazelrc" "\$@"
+          EOF
+          chmod 755 "$RUNNER_TEMP/bin/bazel"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
           export BAZELISK_HOME="$RUNNER_TEMP/plug-bazelisk-home"
           export BAZELISK_VERIFY_SHA256="$BAZEL_SHA256"
           {
-            echo "BAZEL_BIN=$RUNNER_TEMP/plug-bazelisk"
+            echo "BAZEL_BIN=$RUNNER_TEMP/bin/bazel"
             echo "BAZEL_RC=$RUNNER_TEMP/plug.bazelrc"
             echo "BAZELISK_HOME=$BAZELISK_HOME"
             echo "BAZELISK_VERIFY_SHA256=$BAZELISK_VERIFY_SHA256"

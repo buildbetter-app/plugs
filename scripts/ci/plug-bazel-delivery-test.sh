@@ -8,6 +8,7 @@ import hashlib
 import ast
 from pathlib import Path
 import shutil
+import shlex
 from urllib.parse import unquote, urlparse
 import subprocess
 import sys
@@ -80,6 +81,17 @@ config = json.loads((root / "control.json").read_text())
 args = sys.argv[1:]
 assert not any(k in os.environ for k in ("GH_TOKEN", "DATABASE_URL", "ACTIONS_RUNTIME_TOKEN"))
 assert "PLUG_PUBLIC_BEADS_EXTRA" not in os.environ
+# Exercise Capture.command's real child environment and the trusted wrapper.
+# These values are synthetic; existing credential exclusions stay mandatory.
+expected_binding = {
+    "BAZEL_BIN": str(root / "bazel-wrapper"), "BAZEL_RC": str(root / "fixture.bazelrc"),
+    "GITHUB_RUN_ID": "123456", "GITHUB_RUN_ATTEMPT": "2",
+    "GITHUB_SHA": "4" * 40,
+    "GITHUB_WORKFLOW_REF": "buildbetter-app/plugs/.github/workflows/plug-bazel.yml@refs/heads/main",
+}
+assert {key: os.environ.get(key) for key in expected_binding} == expected_binding
+assert args[:4] == ["--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
+                    "--bazelrc=" + expected_binding["BAZEL_RC"]], args
 with (root / "calls.jsonl").open("a") as out:
     out.write(json.dumps(args) + "\n")
 # Bazel accepts the standalone launcher --version form only before startup
@@ -253,8 +265,17 @@ else:
     raise AssertionError(args)
 ''')
     fake.chmod(0o755)
+    (fixture / "fixture.bazelrc").write_text("# synthetic trusted runner rc\n")
+    wrapper = fixture / "bazel-wrapper"
+    wrapper.write_text("#!/bin/sh\nset -eu\nexec " + shlex.quote(str(fake))
+                       + " --nosystem_rc --nohome_rc --noworkspace_rc --bazelrc="
+                       + shlex.quote(str(fixture / "fixture.bazelrc")) + ' "$@"\n')
+    wrapper.chmod(0o755)
+    env.update(BAZEL_RC=str(fixture / "fixture.bazelrc"),
+               GITHUB_RUN_ID="123456", GITHUB_RUN_ATTEMPT="2", GITHUB_SHA="4" * 40,
+               GITHUB_WORKFLOW_REF="buildbetter-app/plugs/.github/workflows/plug-bazel.yml@refs/heads/main")
     # Marker values are fake and must never reach a child process or artifacts.
-    env.update(BAZEL_BIN=str(fake), GH_TOKEN="fixture-secret-marker",
+    env.update(BAZEL_BIN=str(wrapper), GH_TOKEN="fixture-secret-marker",
                DATABASE_URL="fixture-dsn-marker", ACTIONS_RUNTIME_TOKEN="fixture-capability-marker",
                PLUG_PUBLIC_BEADS_EXTRA="fixture-extra-marker")
     collector = repo / "scripts/ci/plug-bazel-delivery.py"
