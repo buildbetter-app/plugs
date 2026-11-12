@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -54,7 +55,7 @@ func TestPublicNativeExternalHarnessBuild(t *testing.T) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("public_external_harness_elf_sha256=%s bytes=%d production_head=be2f70b562c94e197da42d366928d624599a3dd6", hex.EncodeToString(h.Sum(nil)), n)
+	t.Logf("public_external_harness_elf_sha256=%s bytes=%d source_binding=export-receipt", hex.EncodeToString(h.Sum(nil)), n)
 }
 
 type publicProofRequest struct {
@@ -526,6 +527,7 @@ func publicProofJSON(t *testing.T, path string, value any) {
 
 func publicProofError(t *testing.T, stage string, err error) {
 	t.Helper()
+	publicProofLogLeaseFence(t, stage, err)
 	if err == nil {
 		return
 	}
@@ -582,6 +584,26 @@ func publicProofLedger(t *testing.T, req publicProofRequest) []publicProofTable 
 	return out
 }
 
+// publicProofPhaseClock observes the existing harness boundaries only. The final
+// boundary runs before testing cleanup; direct wait4 supplies total process time.
+// A boundary is timing evidence and never an import or equality verdict.
+func publicProofPhaseClock(t *testing.T) func(string) {
+	t.Helper()
+	start := time.Now()
+	previous := start
+	phase := "request-and-ledger"
+	t.Logf("public_external_phase_begin phase=%s elapsed_seconds=0", phase)
+	return func(next string) {
+		t.Helper()
+		now := time.Now()
+		t.Logf("public_external_phase_end phase=%s elapsed_seconds=%.9f cumulative_seconds=%.9f next=%s failed_at_observation=%t", phase, now.Sub(previous).Seconds(), now.Sub(start).Seconds(), next, t.Failed())
+		if next != "test-return" {
+			t.Logf("public_external_phase_begin phase=%s elapsed_seconds=%.9f", next, now.Sub(start).Seconds())
+		}
+		phase, previous = next, now
+	}
+}
+
 func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	publicProofGuard(t)
 	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_RUN")
@@ -601,6 +623,8 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 // durable mapping and inert origins. Binding still checks the complete plan.
 func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProofHostPlanAdapter, continuation publicProofContinuation, afterReopen ...publicProofContinuation) {
 	t.Helper()
+	phase := publicProofPhaseClock(t)
+	defer phase("test-return")
 	publicProofGuard(t)
 	if len(afterReopen) > 1 {
 		t.Fatal("at most one post-reopen assertion is supported")
@@ -656,6 +680,7 @@ func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProo
 	}
 	publicProofJSON(t, filepath.Join(output, "claimed-request.json"), req)
 	ledger := publicProofLedger(t, req)
+	phase("admission")
 	archive, err := dumpformat.ReadNativeCaptureSetDirectory(context.Background(), req.Capture, dumpformat.NativeCaptureSetOptions{})
 	publicProofError(t, "authenticate", err)
 	defer archive.ReleaseNativeDecoded()
@@ -672,12 +697,14 @@ func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProo
 		usage, _ := archive.NativeDecodedUsage()
 		publicProofJSON(t, filepath.Join(output, "final-measurements.json"), map[string]any{"driver": engine, "elf_sha256": elfSHA, "capture_sha256": req.CaptureSHA256, "baseline": baseline, "decoded": usage, "process_memory": nativeTestProcessMemory(), "uncharged_sites": nativeRehearsalRSSSites(), "scope": "receiver/converter-controlled payloads; harness and engine included in process memory; full accounting required before switch"})
 	}()
+	phase("target-and-lease")
 	store, lease, reopen := openIdentityTarget(t, engine)
 	publicProofError(t, "release-initial-lease", lease.Release(ctx))
-	op, lease, release, err := HoldRestoreLease(ctx, store, "native-receive")
+	op, lease, release, err := publicProofHoldObservedLease(t, ctx, store, "native-receive", output)
 	publicProofError(t, "renewed-lease", err)
 	release = sync.OnceValue(release)
 	defer func() { publicProofError(t, "release", release()) }()
+	phase("host-plan")
 	plan := func() driver.SourcePlanePlanV1 {
 		work, done := archive.NativeDeltaAccountingScope()
 		defer done()
@@ -688,16 +715,26 @@ func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProo
 	publicProofError(t, "host-plan", err)
 	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(req.Source.StoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: archive.SHA256(), HistoryMode: mode, HistoryTime: when.UTC().Format(time.RFC3339Nano), NativeDeltaHistory: selection}
 	publicProofJSON(t, filepath.Join(output, "host-plan.json"), plan)
+	phase("bind")
 	profile, err = publicProofBindCapture(op, archive, profile, plan)
 	publicProofError(t, "bind", err)
+	// Preserve the source-only baseline and independently add only the two
+	// caller-owned profile outputs. Cache, staging and recovery scratch must
+	// still disappear exactly; taking a new usage snapshot here would hide it.
+	expectedFinal := receivingUsageWithProfile(t, baseline, profile)
 	publicProofJSON(t, filepath.Join(output, "bound-profile.json"), profile)
+	phase("import-with-automatic-recovery")
 	report, err := RestoreNativeCaptureSetImportWithLease(op, archive, store, lease, profile)
 	publicProofError(t, "import", err)
+	phase("production-readback")
 	publicProofError(t, "production-readback", VerifyNativeCaptureSetReadback(op, store, archive, report))
+	phase("independent-imported-readback")
 	publicProofIndependentReadback(t, ctx, store, report, req, ledger, output, "imported")
 	publicProofJSON(t, filepath.Join(output, "committed-report.json"), report)
+	phase("release-and-reopen")
 	publicProofError(t, "release-before-reopen", release())
 	store, lease = reopen()
+	phase("explicit-recovery")
 	recoveredProfile, recovered, found, err := RecoverBoundSourceImport(ctx, store)
 	if recovered.Archive != nil {
 		defer recovered.Archive.ReleaseNativeDecoded()
@@ -709,7 +746,9 @@ func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProo
 	if recoveredProfile.HistoryMode != profile.HistoryMode || recoveredProfile.HistoryTime != profile.HistoryTime || !reflect.DeepEqual(recoveredProfile.NativeDeltaHistory, profile.NativeDeltaHistory) || !reflect.DeepEqual(recovered.NativeDeltaHistory, report.NativeDeltaHistory) {
 		t.Fatal("reopened selected mode, source floor or provenance differs")
 	}
+	phase("reopened-production-readback")
 	publicProofError(t, "reopened-production-readback", VerifyNativeCaptureSetReadback(ctx, store, archive, recovered))
+	phase("independent-reopened-readback")
 	publicProofIndependentReadback(t, ctx, store, recovered, req, ledger, output, "reopened")
 	publicProofJSON(t, filepath.Join(output, "recovered-report.json"), recovered)
 	store, lease, err = publicProofRunContinuationPhases(t, ctx, store, lease, profile, recovered, continuation, assertion, reopen)
@@ -726,18 +765,27 @@ func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProo
 		publicProofError(t, "post-continuation-meta", err)
 		publicProofJSON(t, filepath.Join(output, "post-continuation-reopen.json"), map[string]any{"driver": engine, "restore_mode": mode, "completed": true, "imported_target": recovered.Restored, "current_target": current, "lifecycle": map[bool]string{true: "same-store-memory-lease-refresh", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "phase": "after-writer-scope-release-and-second-reopen-before-cleanup"})
 	}
+	phase("final-accounting-and-proof")
 	if recovered.Archive != nil {
 		recovered.Archive.ReleaseNativeDecoded()
 	}
 	usage, _ := archive.NativeDecodedUsage()
-	if usage.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usage.CurrentCategories, baseline.CurrentCategories) || !reflect.DeepEqual(usage.CurrentCharges, baseline.CurrentCharges) {
+	if usage.CurrentAccountedDecodedBytes != expectedFinal.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usage.CurrentCategories, expectedFinal.CurrentCategories) || !reflect.DeepEqual(usage.CurrentCharges, expectedFinal.CurrentCharges) {
 		t.Fatal("conversion or recovery temporary ownership leak")
 	}
 	proof, ok := archive.NativeDeltaVerification()
 	if !ok || proof.Totals.Commits != uint64(req.Commits) {
 		t.Fatal("source commit count differs")
 	}
-	success := map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "restore_mode": mode, "continuation_completed": continuation != nil, "full_accounting_or_switch_credit": false}
+	publicProofJSON(t, filepath.Join(output, "pre-release-measurements.json"), map[string]any{"baseline": baseline, "expected": expectedFinal, "decoded": usage, "scope": "source baseline plus exactly the live bound-profile outputs"})
+	runtime.KeepAlive(profile)
+	archive.ReleaseNativeDecoded()
+	released, _ := archive.NativeDecodedUsage()
+	if released.CurrentAccountedDecodedBytes != 0 || len(released.CurrentCategories) != 0 || len(released.CurrentCharges) != 0 {
+		t.Fatal("final archive release left decoded ownership")
+	}
+	publicProofJSON(t, filepath.Join(output, "post-release-measurements.json"), map[string]any{"decoded": released, "scope": "after explicit archive release; bytes, categories and counts zero"})
+	success := map[string]any{"driver": engine, "capture_sha256": req.CaptureSHA256, "elf_sha256": elfSHA, "commits": req.Commits, "reopen": map[bool]string{true: "same-process-memory-lease-reacquired", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "per_table_exact_bytes": true, "restore_mode": mode, "continuation_completed": continuation != nil, "ledger_after_release_bytes": released.CurrentAccountedDecodedBytes, "ledger_after_release_categories": len(released.CurrentCategories), "ledger_after_release_counts": len(released.CurrentCharges), "full_accounting_or_switch_credit": false}
 	if assertion != nil {
 		success["post_continuation_reopen_asserted"] = true
 	}

@@ -10,14 +10,15 @@ import (
 )
 
 func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamRequest,image nativeprojection.Snapshot) (Root,Root,error) {
- usage,ok:=s.archive.NativeDecodedUsage();if !ok {return Root{},Root{},ErrCheckpoint{"missing verifier admission ceiling"}}
+ owner,releaseOwner:=s.archive.NativeDeltaAccountingScope();defer releaseOwner()
+ usage,ok:=owner.NativeDecodedUsage();if !ok {return Root{},Root{},ErrCheckpoint{"missing verifier admission ceiling"}}
  if image.DerivedDigest!=request.Profile.DerivedDigest {return Root{},Root{},ErrCheckpoint{"actual rebuilt derived image differs"}}
  // Indexes contain only the actual one current image, not historical bodies.
  n:=len(image.Records)+len(image.Derived)+len(image.Allocators)+len(image.Blobs)+len(image.Sentinels)
- if err:=s.archive.ChargeNativeDeltaBytes("verifier_plan_projection_indexes",uint64(n)*512);err!=nil {return Root{},Root{},err}
+ if err:=owner.ChargeNativeDeltaBytes("verifier_plan_projection_indexes",uint64(n)*512);err!=nil {return Root{},Root{},err}
  current:=map[string]checkpointRecord{};nativeSeen:=0;ledgerSeen:=false
  for _,record:=range image.Records {
-  validation,release:=s.archive.NativeDeltaAccountingScope()
+  validation,release:=owner.NativeDeltaAccountingScope()
   if err:=validation.ChargeNativeDeltaBytes("verifier_current_record_validation",uint64(len(record.Body))*8+1024);err!=nil {release();return Root{},Root{},err}
   err:=request.Profile.ValidateRecord(record,request.When);release();if err!=nil{return Root{},Root{},err}
   if record.Ref.ID==driver.SourcePlaneCommitRecordID {return Root{},Root{},ErrCheckpoint{"receiving plan contains an engine-time publication record"}}
@@ -53,7 +54,7 @@ func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamReque
  }
  for digest,data:=range image.Blobs {auxiliary.Blobs[driver.Hash(digest)]=data}
  currentRoot,err:=convertedRoot(current);if err!=nil {return Root{},Root{},err}
- work,release:=s.archive.NativeDeltaAccountingScope();defer release()
+ work,release:=owner.NativeDeltaAccountingScope();defer release()
  if err=work.ChargeNativeDeltaJSON("verifier_auxiliary_preimage",auxiliary);err!=nil{return Root{},Root{},err}
  auxiliaryRoot,err:=auxiliaryRoot(auxiliary,s.files);if err!=nil {return Root{},Root{},err};return currentRoot,auxiliaryRoot,nil
 }

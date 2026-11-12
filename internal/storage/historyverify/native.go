@@ -57,19 +57,10 @@ func convertedRoot(records map[string]checkpointRecord) (Root,error) {
  keys:=make([]string,0,len(records));for key:=range records {keys=append(keys,key)};sort.Strings(keys)
  h:=NewRootHasher();for _,key:=range keys { r:=records[key];if err:=h.Add(r.ref,r.kind,r.bytes,r.hash);err!=nil {return Root{},err} };return h.Root(),nil
 }
-func nativeReserveProfile(owner *dumpformat.Archive,phase string,p driver.RestoreImportProfile) error {
- n,err:=dumpformat.NativeDeltaJSONSize(p);if err!=nil{return err}
- raw:=uint64(0);if p.SourcePlanes!=nil {raw=uint64(len(p.SourcePlanes.CanonicalPlan))}
- if n>(^uint64(0)-4096)/32 || raw>(^uint64(0)-n*32-4096)/64 {return ErrCheckpoint{"profile accounting overflow"}}
- // Detached/RequestHash validate and decode the canonical source plan several
- // times. Reserve both wire preimages and their decoded candidates up front.
- return owner.ChargeNativeDeltaBytes(phase,n*32+raw*64+4096)
-}
 func nativePreparationHash(owner *dumpformat.Archive,p driver.RestoreImportProfile) (string,error) {
- if err:=nativeReserveProfile(owner,"verifier_profile_hash",p);err!=nil{return "",err}
  // Only HistoryDigest is an output. Every other admission/source/target/clock
  // field is fixed before preparation. The final Plan binds the full profile.
- p.HistoryDigest="";return p.RequestHash()
+ p.HistoryDigest="";return p.RequestHashWithAccounting(nativeprojection.ProfileAccounting(owner))
 }
 
 // PrepareNativeArchive produces every frame itself, including ordered parent
@@ -81,9 +72,10 @@ func PrepareNativeArchive(ctx context.Context,archive *dumpformat.Archive,profil
  owner,release:=archive.NativeDeltaAccountingScope()
  s:=&NativeArchiveStream{archive:owner,release:release,when:when,files:map[string]dumpformat.File{},nativeCurrent:map[string]checkpointRecord{},revisions:map[string]model.Revision{}}
  defer func(){if err!=nil {err=errors.Join(err,s.Close())}}()
- if err=nativeReserveProfile(owner,"verifier_profile_detach",profile);err!=nil{return nil,err}
- p,err:=profile.Detached();if err!=nil {return nil,err}
+ profileOwner,releaseProfileOwner:=owner.NativeDeltaAccountingScope();defer releaseProfileOwner()
+ p,releaseProfile,err:=nativeprojection.DetachedProfile(profileOwner,profile);if err!=nil {return nil,err};defer releaseProfile()
  if p.SourcePlanes==nil || p.HistoryMode!=driver.RestoreHistoryModeFull || when.IsZero() || p.HistoryTime!=when.UTC().Format(time.RFC3339Nano) {return nil,ErrCheckpoint{"native admitted request is incomplete"}}
+ if err=owner.ChargeNativeDeltaBytes("verifier_preparation_hash",64);err!=nil{return nil,err}
  s.profileHash,err=nativePreparationHash(owner,p);if err!=nil {return nil,err}
  s.file,err=os.CreateTemp("","plug-native-history-*.frames");if err!=nil {return nil,err};s.path=s.file.Name()
  b,err:=newNativeFrames(ctx,s);if err!=nil {return nil,err}
@@ -113,15 +105,25 @@ func (s *NativeArchiveStream) Seal(ctx context.Context,request driver.OfflineHis
  if s==nil || s.closed || s.sealed || s.digest=="" || !plan.Built() {return Checkpoint{},ErrCheckpoint{"missing or consumed verified native transcript"}}
  hash,err:=nativePreparationHash(s.archive,request.Profile);if err!=nil {return Checkpoint{},errors.Join(ErrCheckpoint{"invalid final admitted request"},err)}
  if hash!=s.profileHash || request.Profile.HistoryDigest!=s.digest || request.Header!=s.header || !request.When.Equal(s.when) || plan.ArchiveSHA256()!=s.archive.SHA256() || plan.ArchiveSHA256()!=request.Profile.ArchiveDigest || plan.DerivedSHA256()!=request.Profile.DerivedDigest || request.Limits.MaxFrameBytes<s.peakFrame || request.Limits.MaxChunkBytes<s.peakChunk {return Checkpoint{},ErrCheckpoint{"archive, transcript, clock or receiving plan binding differs"}}
- if err:=nativeReserveProfile(s.archive,"verifier_final_request_checks",request.Profile);err!=nil{return Checkpoint{},err}
- bound,clock,ok,err:=plan.RequestBinding();if err!=nil {return Checkpoint{},err}
- want,err:=request.Profile.RequestHash();if err!=nil {return Checkpoint{},err};got,err:=bound.RequestHash()
- if err!=nil || !ok || got!=want || !clock.Equal(request.When) {return Checkpoint{},ErrCheckpoint{"receiving plan does not bind the final full request"}}
- // Refuse target/lifetime policy before engine scratch creation. Begin repeats
- // this check against the actual locked writer.
- if _,err=driver.PrepareSourcePlaneHistoryProfile(request.Profile,request.Current,request.Lifetime);err!=nil {return Checkpoint{},err}
- image,err:=plan.Snapshot();if err!=nil {return Checkpoint{},err};current,auxiliary,err:=s.planRoots(request,image);if err!=nil {return Checkpoint{},err}
- if err=ctx.Err();err!=nil {return Checkpoint{},err};if err=nativeReserveProfile(s.archive,"verifier_checkpoint_request_hash",request.Profile);err!=nil{return Checkpoint{},err};proof,err:=mint(request,s.head,current,auxiliary,true);if err!=nil {return Checkpoint{},err};s.sealed=true;return proof,nil
+ if err=nativeFinalRequestChecks(s.archive,request,plan);err!=nil{return Checkpoint{},err}
+ work,release:=s.archive.NativeDeltaAccountingScope();defer release()
+ image,err:=plan.SnapshotWithAccounting(work);if err!=nil {return Checkpoint{},err};current,auxiliary,err:=s.planRoots(request,image);if err!=nil {return Checkpoint{},err}
+ if err=ctx.Err();err!=nil {return Checkpoint{},err};proof,err:=mintWithAccounting(request,s.head,current,auxiliary,true,nativeprojection.ProfileAccounting(work));if err!=nil {return Checkpoint{},err};s.sealed=true;return proof,nil
+}
+
+// These detached candidates are needed only while comparing the actual final
+// Plan and applying the existing target/lifetime policy. None enter the stream.
+func nativeFinalRequestChecks(owner *dumpformat.Archive,request driver.OfflineHistoryStreamRequest,plan nativeprojection.Plan) error {
+ work,release:=owner.NativeDeltaAccountingScope();defer release()
+ bound,clock,ok,releaseBound,err:=plan.RequestBindingWithAccounting(work);if err!=nil{return err};defer releaseBound()
+ if err=work.ChargeNativeDeltaBytes("verifier_final_request_hash",64);err!=nil{return err}
+ want,err:=request.Profile.RequestHashWithAccounting(nativeprojection.ProfileAccounting(work));if err!=nil{return err}
+ if err=work.ChargeNativeDeltaBytes("verifier_final_plan_hash",64);err!=nil{return err}
+ got,err:=bound.RequestHashWithAccounting(nativeprojection.ProfileAccounting(work))
+ if err!=nil || !ok || got!=want || !clock.Equal(request.When) {return ErrCheckpoint{"receiving plan does not bind the final full request"}}
+ // Begin repeats this policy check against the actual locked writer.
+ _,releasePolicy,err:=driver.PrepareSourcePlaneHistoryProfileWithAccounting(request.Profile,request.Current,request.Lifetime,nativeprojection.ProfileAccounting(work));if err!=nil{return err};defer releasePolicy()
+ return nil
 }
 
 // Close is independent of cancellation and has no store/receipt handle. It

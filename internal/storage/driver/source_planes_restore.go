@@ -44,31 +44,49 @@ func PrepareSourcePlaneHistoryProfile(profile RestoreImportProfile, current Meta
 }
 
 func prepareSourcePlaneProfile(profile RestoreImportProfile, current Meta, lifetime CheckpointLifetime, history bool) (RestoreImportProfile, error) {
-	p, err := profile.Detached()
+	p, _, err := prepareSourcePlaneProfileWithAccounting(profile, current, lifetime, history, RestoreImportProfileAccounting{})
+	return p, err
+}
+
+// PrepareSourcePlaneHistoryProfileWithAccounting preserves joint history
+// admission and transfers only the detached output; validation scratch is local.
+func PrepareSourcePlaneHistoryProfileWithAccounting(profile RestoreImportProfile, current Meta, lifetime CheckpointLifetime, accounting RestoreImportProfileAccounting) (RestoreImportProfile, func(), error) {
+	return prepareSourcePlaneProfileWithAccounting(profile, current, lifetime, true, accounting)
+}
+func prepareSourcePlaneProfileWithAccounting(profile RestoreImportProfile, current Meta, lifetime CheckpointLifetime, history bool, accounting RestoreImportProfileAccounting) (RestoreImportProfile, func(), error) {
+	p, release, err := profile.DetachedWithAccounting(accounting)
 	if err != nil {
-		return RestoreImportProfile{}, err
+		return RestoreImportProfile{}, nil, err
 	}
+	success := false
+	defer func() {
+		if !success {
+			release()
+		}
+	}()
 	if p.SourcePlanes == nil {
-		return RestoreImportProfile{}, sourcePlaneError("joint import requires the complete source plan")
+		return RestoreImportProfile{}, nil, sourcePlaneError("joint import requires the complete source plan")
 	}
 	if history {
 		if p.HistoryMode != RestoreHistoryModeFull && !(p.HistoryMode == RestoreHistoryModePartial && p.NativeDeltaHistory != nil) || p.HistoryDigest == "" || p.HistoryTime == "" {
-			return RestoreImportProfile{}, sourcePlaneError("joint history requires full verified replay binding")
+			return RestoreImportProfile{}, nil, sourcePlaneError("joint history requires full verified replay binding")
 		}
 	} else if p.HistoryMode != RestoreHistoryModeSnapshot || p.HistoryDigest != "" || p.HistoryTime != "" && p.NativeDeltaHistory == nil || p.NativeDeltaHistory != nil && p.HistoryTime == "" {
-		return RestoreImportProfile{}, sourcePlaneError("joint snapshot requires explicit snapshot policy")
+		return RestoreImportProfile{}, nil, sourcePlaneError("joint snapshot requires explicit snapshot policy")
 	}
-	plan, err := p.SourcePlanes.Plan()
+	plan, releasePlan, err := p.SourcePlanes.PlanWithAccounting(accounting)
 	if err != nil {
-		return RestoreImportProfile{}, err
+		return RestoreImportProfile{}, nil, err
 	}
+	defer releasePlan()
 	if err := validateSourcePlaneRestoreProviders(plan); err != nil {
-		return RestoreImportProfile{}, err
+		return RestoreImportProfile{}, nil, err
 	}
 	if plan.Target.StoreID != string(current.StoreID) || plan.Target.Incarnation != current.Incarnation || plan.Target.Head != 0 || !current.Head.IsZero() || !current.HistoryFloor.IsZero() || !plan.Target.RequireEmpty || plan.Target.Lifetime != lifetime {
-		return RestoreImportProfile{}, ErrConflict
+		return RestoreImportProfile{}, nil, ErrConflict
 	}
-	return p, nil
+	success = true
+	return p, release, nil
 }
 
 // SourcePlaneImportPublication is transaction-local, detached preparation.
