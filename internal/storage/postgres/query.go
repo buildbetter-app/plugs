@@ -1,12 +1,17 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -45,6 +50,97 @@ func (r *reader) cursor(c *driver.Cursor, method, filter string) (uint64, error)
 		return 0, fmt.Errorf("postgres: cursor snapshot mismatch")
 	}
 	return c.Index.Uint64()
+}
+
+// queryAfter binds the opaque keyset marker to the query snapshot and filter.
+// The key is encoded rather than exposed directly so clients cannot infer a
+// storage identity from the cursor's public representation. The checksum is a
+// corruption/tampering marker; the existing digest, incarnation and snapshot
+// checks remain the authoritative cursor bindings.
+const queryAfterPrefix = "pgq1."
+
+func encodeQueryAfter(key, filter string, at, index uint64) string {
+	data := []byte(key + "\x00" + filter + "\x00" + decimal(at) + "\x00" + decimal(index))
+	hash := sha256.Sum256(data)
+	return queryAfterPrefix + base64.RawURLEncoding.EncodeToString([]byte(key)) + "." + hex.EncodeToString(hash[:])
+}
+
+func decodeQueryAfter(value, filter string, at, index uint64) (string, error) {
+	if !strings.HasPrefix(value, queryAfterPrefix) {
+		return "", fmt.Errorf("postgres: cursor binding mismatch")
+	}
+	parts := strings.Split(value[len(queryAfterPrefix):], ".")
+	if len(parts) != 2 || parts[0] == "" || len(parts[1]) != sha256.Size*2 {
+		return "", fmt.Errorf("postgres: cursor binding mismatch")
+	}
+	key, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil || len(key) == 0 {
+		return "", fmt.Errorf("postgres: cursor binding mismatch")
+	}
+	hash := sha256.Sum256([]byte(string(key) + "\x00" + filter + "\x00" + decimal(at) + "\x00" + decimal(index)))
+	got, err := hex.DecodeString(parts[1])
+	if err != nil || len(got) != len(hash) || string(got) != string(hash[:]) {
+		return "", fmt.Errorf("postgres: cursor binding mismatch")
+	}
+	return string(key), nil
+}
+
+// queryCursor preserves the predecessor ordinal cursor below head. Current
+// head pages use only the stateless After marker; a nonzero Index without it
+// is an old offset cursor and is refused rather than translated through an
+// OFFSET query.
+func (r *reader) queryCursor(c *driver.Cursor, filter string, currentHead bool) (string, uint64, error) {
+	if c == nil {
+		return "", 0, nil
+	}
+	if c.Incarnation != r.meta.Incarnation {
+		return "", 0, driver.ErrIncarnationChanged{From: c.Incarnation, To: r.meta.Incarnation}
+	}
+	if c.Method != "query" || c.FilterDigest != filter || c.PrincipalDigest != "" || c.OntologyRevision.Validate() != nil || !c.OntologyRevision.IsZero() {
+		return "", 0, fmt.Errorf("postgres: cursor binding mismatch")
+	}
+	revision, err := c.Revision.Uint64()
+	if err != nil {
+		return "", 0, err
+	}
+	if revision != r.at {
+		return "", 0, fmt.Errorf("postgres: cursor snapshot mismatch")
+	}
+	if err := c.Index.Validate(); err != nil {
+		return "", 0, err
+	}
+	if !currentHead {
+		index, err := r.cursor(c, "query", filter)
+		return "", index, err
+	}
+	if c.After == "" {
+		if !c.Index.IsZero() {
+			return "", 0, fmt.Errorf("postgres: cursor binding mismatch")
+		}
+		return "", 0, nil
+	}
+	// Index remains a contiguous progress marker for callers that guard against
+	// a non-advancing page. It never positions the SQL query; After does that.
+	index, err := c.Index.Uint64()
+	if err != nil || index == 0 {
+		return "", 0, fmt.Errorf("postgres: cursor binding mismatch")
+	}
+	after, err := decodeQueryAfter(c.After, filter, r.at, index)
+	if err != nil {
+		return "", 0, err
+	}
+	return after, index, nil
+}
+
+func (r *reader) nextQueryCursor(filter, key string, index uint64) *driver.Cursor {
+	return &driver.Cursor{
+		Incarnation:  r.meta.Incarnation,
+		Revision:     model.Natural64(r.at),
+		Index:        model.Natural64(index),
+		After:        encodeQueryAfter(key, filter, r.at, index),
+		Method:       "query",
+		FilterDigest: filter,
+	}
 }
 func (r *reader) next(method, filter string, index uint64) *driver.Cursor {
 	return &driver.Cursor{Incarnation: r.meta.Incarnation, Revision: model.Natural64(r.at), Index: model.Natural64(index), Method: method, FilterDigest: filter}
@@ -114,11 +210,27 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	if err != nil {
 		return empty, err
 	}
-	start, err := r.cursor(q.Cursor, "query", filter)
+	limit, err := limitValue(q.Limit)
 	if err != nil {
 		return empty, err
 	}
-	limit, err := limitValue(q.Limit)
+	kind, hasKind := q.Filter["kind"]
+	head, err := r.meta.Head.Uint64()
+	if err != nil {
+		return empty, err
+	}
+	// Only an ordinary read pinned at its current head can use the keyset
+	// projection. Staged transactions and below-head snapshots retain the
+	// predecessor's full reconstruction, filtering and ordinal cursor path.
+	currentHead := r.writer == nil && r.at == head && (len(q.Filter) == 0 || len(q.Filter) == 1 && hasKind)
+	if currentHead {
+		after, index, err := r.queryCursor(q.Cursor, filter, true)
+		if err != nil {
+			return empty, err
+		}
+		return r.queryHead(ctx, kind, hasKind, filter, after, index, limit)
+	}
+	_, start, err := r.queryCursor(q.Cursor, filter, false)
 	if err != nil {
 		return empty, err
 	}
@@ -191,6 +303,65 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	page := driver.Page[driver.Record]{Items: items[start:end], AsOf: model.Natural64(r.at)}
 	if end < uint64(len(items)) {
 		page.NextCursor = r.next("query", filter, end)
+	}
+	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
+	return page, nil
+}
+
+// queryHead reads a bounded current-head page. Live partial indexes make both
+// the unfiltered and kind-filtered key order available without a temporary
+// sort, and the cursor's keyset predicate keeps continuation work independent
+// of the corpus size.
+func (r *reader) queryHead(ctx context.Context, kind any, hasKind bool, filter, after string, index uint64, limit int) (driver.Page[driver.Record], error) {
+	page := driver.Page[driver.Record]{AsOf: model.Natural64(r.at)}
+	where := []string{"NOT deleted", "key > $1"}
+	args := []any{[]byte(after)}
+	if hasKind {
+		where = append(where, fmt.Sprintf("kind = $%d", len(args)+1))
+		args = append(args, kind)
+	}
+	limitPos := len(args) + 1
+	args = append(args, limit+1)
+	query := `SELECT key,ref,kind,revision::text,body FROM plug_postgres.records WHERE ` + strings.Join(where, " AND ") + fmt.Sprintf(" ORDER BY key LIMIT $%d", limitPos)
+	rows, err := r.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	defer rows.Close()
+	items := make([]driver.Record, 0, limit+1)
+	keys := make([]string, 0, limit+1)
+	for rows.Next() {
+		var rawKey, rawRef, body []byte
+		var revision string
+		var record driver.Record
+		if err := rows.Scan(&rawKey, &rawRef, &record.Kind, &revision, &body); err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		driver.ReportReadWork(ctx, driver.ReadSelectorKeys, 1)
+		driver.ReportReadPayload(ctx, body)
+		if err := decode(rawRef, &record.Ref); err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		n, err := parseCounter(revision)
+		if err != nil {
+			return driver.Page[driver.Record]{}, err
+		}
+		record.Revision = model.Natural64(n)
+		record.Body = bytes.Clone(body)
+		items = append(items, record)
+		keys = append(keys, string(rawKey))
+		if len(items) > limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	if len(items) > limit {
+		page.Items = items[:limit]
+		page.NextCursor = r.nextQueryCursor(filter, keys[limit-1], index+uint64(limit))
+	} else {
+		page.Items = items
 	}
 	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
 	return page, nil
