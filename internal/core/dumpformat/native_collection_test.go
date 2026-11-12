@@ -196,7 +196,8 @@ func TestNativeCollectionAsymmetricKindsConserveEveryCurrentRecord(t *testing.T)
 		identity := SourceIdentity{StoreID: source.manifest.StoreID, Project: prefix}
 		for kind, rows := range source.byKind {
 			for _, row := range rows {
-				want[kind+"\x00"+row.Source.Table+"\x00"+row.Project+"\x00"+row.ID] = namespaceRecord(row, identity)
+				scoped := namespaceRecord(row, identity)
+				want[collectionCurrentOracleKey(t, scoped)] = scoped
 				kindCounts[kind]++
 			}
 		}
@@ -234,7 +235,7 @@ func TestNativeCollectionAsymmetricKindsConserveEveryCurrentRecord(t *testing.T)
 			if err := decodeJSON(line, &row); err != nil {
 				t.Fatal(err)
 			}
-			key := row.Kind + "\x00" + row.Source.Table + "\x00" + row.Project + "\x00" + row.ID
+			key := collectionCurrentOracleKey(t, row)
 			if expected, found := want[key]; !found || !equalJSON(row, expected) {
 				t.Fatal("serialized current row changed", key)
 			}
@@ -249,7 +250,7 @@ func TestNativeCollectionAsymmetricKindsConserveEveryCurrentRecord(t *testing.T)
 		if err := decodeJSON(record.Raw, &row); err != nil {
 			t.Fatal(err)
 		}
-		key := row.Kind + "\x00" + row.Source.Table + "\x00" + row.Project + "\x00" + row.ID
+		key := collectionCurrentOracleKey(t, row)
 		expected, found := want[key]
 		if !found || !equalJSON(row, expected) {
 			t.Fatal("provider row missing, duplicated or changed", key)
@@ -264,4 +265,12 @@ func TestNativeCollectionAsymmetricKindsConserveEveryCurrentRecord(t *testing.T)
 	if budget.Usage().CurrentAccountedDecodedBytes != 0 {
 		t.Fatal("asymmetric current owner leaked")
 	}
+}
+
+func collectionCurrentOracleKey(t *testing.T, row Record) string {
+	t.Helper()
+	if row.Source.Identity == nil {
+		t.Fatal("current oracle row omitted authenticated source identity")
+	}
+	return row.Source.Identity.StoreID + "\x00" + row.Source.Identity.Project + "\x00" + row.Kind + "\x00" + row.Source.Table + "\x00" + row.Project + "\x00" + row.ID
 }
