@@ -211,6 +211,9 @@ func (r *reader) queryHistorical(ctx context.Context, filter map[string]any, dig
 	}
 	where, args := historicalQueryWhere(filter, after, r.at)
 	args = append(args, limit+1)
+	// Keep the ordered history range lateral to each selected key. A flat
+	// outer join lets PostgreSQL join the complete versions relation before
+	// applying the page-dependent range, even when the current body is visible.
 	query := `WITH selected AS MATERIALIZED (
  SELECT v.key,v.revision AS last_revision
  FROM plug_postgres.versions AS v JOIN plug_postgres.records AS r ON r.key=v.key
@@ -228,7 +231,11 @@ LEFT JOIN LATERAL (
  WHERE b.key=s.key AND b.revision<=s.last_revision AND b.is_base
  ORDER BY b.revision DESC LIMIT 1
 ) AS b ON r.revision>$2
-LEFT JOIN plug_postgres.versions AS h ON r.revision>$2 AND h.key=s.key AND h.revision>=b.first_revision AND h.revision<=s.last_revision
+LEFT JOIN LATERAL (
+ SELECT h.revision,h.is_base,h.value FROM plug_postgres.versions AS h
+ WHERE r.revision>$2 AND h.key=s.key AND h.revision>=b.first_revision AND h.revision<=s.last_revision
+ ORDER BY h.revision
+) AS h ON true
 ORDER BY s.key,h.revision`, len(args))
 	rows, err := r.sql.QueryContext(ctx, query, args...)
 	if err != nil {
