@@ -43,6 +43,7 @@ type config struct {
 	validators          []ValidatorBinding
 	posts               []PostBinding
 	postFailures        driver.CheckpointStore
+	postFailureObserver port.PostFailureObserver
 	now                 func() time.Time
 	newID               func() (string, error)
 	newAllocatorID      func(driver.OfflineAllocator) (string, error)
@@ -86,6 +87,13 @@ func WithPostSubscribers(b ...PostBinding) Option {
 // same store as the Writer: dead letters use its active lease and incarnation.
 func WithPostFailureStore(store driver.CheckpointStore) Option {
 	return func(c *config) { c.postFailures = store }
+}
+
+// WithPostFailureObserver connects the actual synchronous post-failure path
+// to a host alert observer. Delivery remains outside the graph transaction;
+// observer failure cannot veto the committed result or replace its warning.
+func WithPostFailureObserver(observer port.PostFailureObserver) Option {
+	return func(c *config) { c.postFailureObserver = observer }
 }
 
 // WithClock is for hosts that own a controlled clock; client input never sets it.
