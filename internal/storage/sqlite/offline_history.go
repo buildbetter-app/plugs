@@ -112,6 +112,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 				return e
 			}
 		}
+		if err := rebuildQueryOrder(ctx, c); err != nil {
+			return err
+		}
 		for _, state := range t.derived {
 			state.Revision = plan.Meta.Head
 			if e := publishKey(ctx, c, state); e != nil {

@@ -1,6 +1,6 @@
 package sqlite
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 // All revisions sort as fixed-width unsigned decimal TEXT. SQLite INTEGER is
 // signed; binding a uint64 or casting a revision to INTEGER would lose data.
@@ -14,7 +14,20 @@ CREATE TABLE IF NOT EXISTS active_lease (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL,
  token TEXT NOT NULL, holder TEXT NOT NULL, expires INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, kind TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS objects (
+ key TEXT PRIMARY KEY,
+ kind TEXT NOT NULL,
+ -- Dense lexical rank of live records. Query cursors carry this indexed sort
+ -- value, so the read path remains stateless and native restore keeps its
+ -- existing monotonically advancing numeric cursor contract.
+ query_order INTEGER NOT NULL DEFAULT 0,
+ query_kind_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS objects_query_order_key ON objects(query_order, key);
+CREATE INDEX IF NOT EXISTS objects_kind_query_order_key ON objects(kind, query_kind_order, key);
+-- Kind-filtered keyset pages order by the opaque record key. Keep this index
+-- separate from the dense rank marker used by native restore.
+CREATE INDEX IF NOT EXISTS objects_kind_key ON objects(kind, key);
 CREATE TABLE IF NOT EXISTS records (key TEXT PRIMARY KEY, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS versions (
  key TEXT NOT NULL, rev TEXT NOT NULL, base INTEGER NOT NULL, data BLOB NOT NULL,
