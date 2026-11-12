@@ -27,6 +27,7 @@ import (
 type b23Native struct {
 	t                        *testing.T
 	root, work, binary, base string
+	program                  string
 	env                      []string
 	cmd                      *exec.Cmd
 	done                     chan error
@@ -132,7 +133,7 @@ func (n *b23Native) start() {
 	})
 	select {
 	case line := <-first:
-		address, ok := strings.CutPrefix(line, "bd serve: listening on http://127.0.0.1:")
+		address, ok := strings.CutPrefix(line, n.program+" serve: listening on http://127.0.0.1:")
 		if !ok {
 			n.t.Fatalf("invalid native listener: %q", line)
 		}
@@ -235,7 +236,21 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 	if !filepath.IsAbs(root) {
 		t.Fatal("declared absolute output root required")
 	}
-	r := &nativeRecorder{t: t, root: root, target: "//cmd/bd:bd"}
+	input, err := os.ReadFile(filepath.Join(os.Getenv("PLUG_SOURCE_MODULE_ROOT"), "spec/s1-b09-native/native_inputs.json"))
+	if err != nil || hashBytes(input) != "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2" {
+		t.Fatal("existing canonical native executable descriptor changed", err)
+	}
+	var protocol struct {
+		ExporterLabel string `json:"exporter_label"`
+	}
+	if err := json.Unmarshal(input, &protocol); err != nil {
+		t.Fatal(err)
+	}
+	_, program, ok := strings.Cut(protocol.ExporterLabel, ":")
+	if !ok || !strings.HasPrefix(protocol.ExporterLabel, "//") || program == "" || strings.ContainsAny(program, "/: \t\r\n") {
+		t.Fatal("canonical native executable descriptor lacks a program label")
+	}
+	r := &nativeRecorder{t: t, root: root, target: protocol.ExporterLabel}
 	binary := r.buildCanonicalSource(pinnedSource)
 	work := t.TempDir()
 	for _, part := range []string{"home", "tmp", "project"} {
@@ -244,7 +259,7 @@ func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
 		}
 	}
 	server := publicnative.StartDolt(t, root)
-	n := &b23Native{t: t, root: root, work: filepath.Join(work, "project"), binary: binary}
+	n := &b23Native{t: t, root: root, work: filepath.Join(work, "project"), binary: binary, program: program}
 	n.env = server.ChildEnv([]string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + filepath.Join(work, "home"), "TMPDIR=" + filepath.Join(work, "tmp"), "USER=b23-native", "TZ=UTC", "LC_ALL=C", "CI=true", "NO_COLOR=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "BEADS_ACTOR=b23-recorder", "BEADS_NO_DAEMON=1"})
 	git := exec.Command("/usr/bin/git", "-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template=")
 	git.Dir = n.work

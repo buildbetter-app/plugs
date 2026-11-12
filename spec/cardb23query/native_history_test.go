@@ -166,6 +166,12 @@ func b23RichFixture(t *testing.T) (b23RichFixtureManifest, *dumpformat.Archive) 
 	if manifest.CaptureSet.Directory != "capture-set" || manifest.CaptureSet.Format != "beads-native-capture-set/2" || manifest.CaptureSet.Contract != "beads-native-delta/2" || len(manifest.CaptureSet.Files) != 3 || manifest.CaptureSet.TotalBytes != 2678929 {
 		t.Fatal("rich authenticated capture-set binding changed")
 	}
+	// Bazel runfiles may be links. Materialize only the three committed,
+	// independently hash-bound inputs as ordinary files before public admission.
+	captureDirectory := filepath.Join(t.TempDir(), manifest.CaptureSet.Directory)
+	if err := os.MkdirAll(filepath.Join(captureDirectory, "parts"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	total := 0
 	for _, name := range []string{"capture-set.json", "head.tar", "parts/00000000000000000001.part"} {
 		expected, ok := manifest.CaptureSet.Files[name]
@@ -173,6 +179,19 @@ func b23RichFixture(t *testing.T) (b23RichFixtureManifest, *dumpformat.Archive) 
 		if !ok || len(member) != expected.Bytes || b23RichHash(member) != expected.SHA256 {
 			t.Fatalf("rich capture-set file %s changed", name)
 		}
+		path := filepath.Join(captureDirectory, name)
+		if err := os.WriteFile(path, member, 0600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("materialized rich capture-set file %s is not regular: %v", name, err)
+		}
+		readback, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(readback, member) || b23RichHash(readback) != expected.SHA256 {
+			t.Fatalf("materialized rich capture-set file %s differs: %v", name, err)
+		}
+		t.Logf("B23_CAPTURE_SET_INPUT file=%s bytes=%d sha256=%s regular=true", name, len(readback), expected.SHA256)
 		total += len(member)
 	}
 	if total != manifest.CaptureSet.TotalBytes || total > 20*1024*1024 {
@@ -186,7 +205,7 @@ func b23RichFixture(t *testing.T) (b23RichFixtureManifest, *dumpformat.Archive) 
 		t.Fatal("rich capture-set source identity differs from independent oracle binding")
 	}
 	b23RichTarBindings(t, b23RichReadFile(t, "capture-set/head.tar"), manifest.CaptureSet.HeadMembers)
-	archive, err := dumpformat.ReadNativeCaptureSetDirectory(context.Background(), filepath.Join(b23RichFixtureRoot, manifest.CaptureSet.Directory), dumpformat.NativeCaptureSetOptions{})
+	archive, err := dumpformat.ReadNativeCaptureSetDirectory(context.Background(), captureDirectory, dumpformat.NativeCaptureSetOptions{})
 	if err != nil {
 		t.Fatalf("read authenticated rich native capture set: %v", err)
 	}
