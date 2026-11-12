@@ -471,6 +471,9 @@ func (m *mapping) wispAuxiliary(table string, rows []Row) error {
 			}
 		}
 		if id == "" || m.wisps[id] == "" {
+			if m.sourcePlanes && table == "wisp_child_counters" && m.beads[id] == "" {
+				return ErrSourceHistoryUnavailable{Reason: "child-counter-parent-unresolved"}
+			}
 			return fmt.Errorf("dangling wisp %s row", table)
 		}
 		if !utf8.ValidString(id) {
@@ -688,14 +691,43 @@ func (m *mapping) allocator(tables map[string]Table) error {
 		parent := text(row, "parent_id")
 		project, err := m.project(parent)
 		count, countErr := natural(row["last_child"])
-		if err != nil || countErr != nil || m.beads[parent] == "" {
+		if err != nil || countErr != nil {
 			return fmt.Errorf("dangling or invalid child counter")
 		}
+		if m.beads[parent] == "" {
+			if !m.sourcePlanes {
+				return fmt.Errorf("dangling or invalid child counter")
+			}
+			if m.wisps[parent] != project.Prefix {
+				return ErrSourceHistoryUnavailable{Reason: "child-counter-parent-unresolved"}
+			}
+		}
 		project.ChildCounters[parent] = max(project.ChildCounters[parent], count)
+	}
+	if m.sourcePlanes {
+		// A durable dotted child can have an active-only parent. Preserve the
+		// actual active parent's allocation high-water mark, including numbers
+		// above the currently retained children. Its raw counter row remains in
+		// the active source archive; no parent or counter row is synthesized.
+		for _, row := range tables["wisp_child_counters"].Rows {
+			parent := text(row, "parent_id")
+			project, err := m.project(parent)
+			count, countErr := natural(row["last_child"])
+			if err != nil || countErr != nil || m.wisps[parent] != project.Prefix {
+				return ErrSourceHistoryUnavailable{Reason: "child-counter-parent-unresolved"}
+			}
+			project.ChildCounters[parent] = max(project.ChildCounters[parent], count)
+		}
 	}
 	for _, project := range m.projects {
 		for parent := range project.ChildCounters {
 			if m.beads[parent] != project.Prefix {
+				if m.sourcePlanes {
+					if m.wisps[parent] == project.Prefix {
+						continue
+					}
+					return ErrSourceHistoryUnavailable{Reason: "child-counter-parent-unresolved"}
+				}
 				return fmt.Errorf("unresolved child-counter parent")
 			}
 		}

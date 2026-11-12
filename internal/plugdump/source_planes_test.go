@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"reflect"
@@ -731,5 +732,62 @@ func TestStatusCategoryCatalogIncludesCapturedYAML(t *testing.T) {
 	inventory.Projects[0].Statuses = inventory.Projects[0].Statuses[:len(inventory.Projects[0].Statuses)-1]
 	if data, err := Build(context.Background(), source, inventory); err == nil || len(data) != 0 {
 		t.Fatal("incomplete explicit catalog admitted")
+	}
+}
+
+// The native counter belongs to the parent, independently of the child plane.
+func TestSourcePlaneAllocatorKeepsDurableChildOfActiveParent(t *testing.T) {
+	source, inventory := sourcePlaneFixture(t, "open")
+	parent, child := "demo-9", "demo-9.3"
+	row := cloneRow(source["issues"].Rows[0])
+	row["id"] = child
+	table := source["issues"]
+	table.Rows = append(table.Rows, row)
+	source["issues"] = table
+	source["wisp_child_counters"] = Table{Columns: columnsFor("wisp_child_counters"), Rows: []Row{{"parent_id": parent, "last_child": 17}}}
+	original := mustJSON(t, source)
+	data := buildFixture(t, source, inventory)
+	manifest, err := Validate(bytes.NewReader(data))
+	if err != nil || manifest.Projects[0].ChildCounters[parent] != 17 {
+		t.Fatalf("active parent's exact counter lost: %+v %v", manifest.Projects, err)
+	}
+	members := archiveMembers(t, data)
+	var foundChild, foundCounter bool
+	for _, r := range sourcePlaneRecords(t, members["records/bead.ndjson"]) {
+		if r.ID == child {
+			foundChild = jsonEqual(r.Source.Fields, row)
+		}
+	}
+	for _, r := range sourcePlaneRecords(t, members["records/beads-archive.ndjson"]) {
+		if r.Source.Table == "wisp_child_counters" {
+			foundCounter = jsonEqual(r.Source.Fields, source["wisp_child_counters"].Rows[0])
+		}
+	}
+	if !foundChild || !foundCounter || !bytes.Equal(original, mustJSON(t, source)) {
+		t.Fatal("cross-plane child ID, raw parent counter or source conservation lost")
+	}
+}
+
+func TestSourcePlaneAllocatorMissingParentRefusesWithoutArchive(t *testing.T) {
+	for _, counterTable := range []string{"inferred", "child_counters", "wisp_child_counters"} {
+		t.Run(counterTable, func(t *testing.T) {
+			source, inventory := sourcePlaneFixture(t, "open")
+			parent := "demo-77"
+			if counterTable == "inferred" {
+				row := cloneRow(source["issues"].Rows[0])
+				row["id"] = parent + ".3"
+				table := source["issues"]
+				table.Rows = append(table.Rows, row)
+				source["issues"] = table
+			} else {
+				source[counterTable] = Table{Columns: columnsFor(counterTable), Rows: []Row{{"parent_id": parent, "last_child": 17}}}
+			}
+			before := mustJSON(t, source)
+			data, err := Build(context.Background(), source, inventory)
+			var refusal ErrSourceHistoryUnavailable
+			if len(data) != 0 || !errors.As(err, &refusal) || refusal.Reason != "child-counter-parent-unresolved" || !bytes.Equal(before, mustJSON(t, source)) {
+				t.Fatalf("missing parent lost typed atomic refusal: bytes=%d err=%v", len(data), err)
+			}
+		})
 	}
 }
