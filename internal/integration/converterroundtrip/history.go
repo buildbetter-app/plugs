@@ -36,6 +36,7 @@ func BindHistoryImport(ctx context.Context, input io.Reader, profile driver.Rest
 }
 
 func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time) (driver.RestoreImportProfile, error) {
+	outputArchive := archive
 	archive, release := archive.NativeDeltaAccountingScope()
 	defer release()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
@@ -50,11 +51,11 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 		return p, err
 	}
 	p.HistoryTime = when.UTC().Format(time.RFC3339Nano)
-	plan, err := buildPlanWithProfile(archive, &p, when, ctx)
+	derived, err := sourceDerivedCommitment(ctx, archive, &p, when)
 	if err != nil {
 		return p, fmt.Errorf("%w: history current image/derived verification failed: %w", ErrRestoreUnavailable, err)
 	}
-	if plan.derivedDigest != p.DerivedDigest {
+	if derived != p.DerivedDigest {
 		return p, fmt.Errorf("%w: history current image/derived verification failed", ErrRestoreUnavailable)
 	}
 	if archive.HasNativeDelta() && p.HistoryMode == driver.RestoreHistoryModeFull {
@@ -66,7 +67,7 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 			return p, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 		}
 		p.HistoryDigest = digest
-		return nativeDetachedProfile(archive, p)
+		return nativeDetachedProfile(outputArchive, p)
 	}
 	h, err := lowerSourceHistory(archive, p, when, ctx)
 	if err != nil {
@@ -80,7 +81,7 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 		return p, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
 	p.HistoryDigest = digest
-	return nativeDetachedProfile(archive, p)
+	return nativeDetachedProfile(outputArchive, p)
 }
 
 func historyReadError(mode driver.RestoreHistoryMode, err error) error {

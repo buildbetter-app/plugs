@@ -346,7 +346,7 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			l := newReceivingLedger(t)
 			a := l.archive()
 			defer a.ReleaseNativeDecoded()
-			baseline, _ := a.NativeDecodedUsage()
+			sourceBaseline, _ := a.NativeDecodedUsage()
 			store, lease, reopen := openIdentityTarget(t, engine)
 			s := wrapReceivingStore(t, store, l)
 			if err := lease.Release(context.Background()); err != nil {
@@ -365,6 +365,10 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			lease = heldLease
 			l.phase = "combined current/history/raw"
 			p := receivingPublicProfile(t, a, s, lease)
+			// The returned profile stays live through import and recovery. Its
+			// two output domains belong in the exact baseline; preparation
+			// staging must still disappear when the import returns.
+			baseline := receivingUsageWithProfile(t, sourceBaseline, p)
 			report, err := RestoreNativeCaptureSetImportWithLease(a.WithNativeDeltaAccounting(op), a, s, lease, p)
 			if err != nil {
 				t.Fatal("actual receive", err)

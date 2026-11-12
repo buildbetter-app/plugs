@@ -46,7 +46,11 @@ type result struct {
 type Checkpoint struct{ verified *result }
 
 func mint(request driver.OfflineHistoryStreamRequest, head, current, auxiliary Root, physical bool) (Checkpoint, error) {
-	hash, err := request.Profile.RequestHash()
+	return mintWithAccounting(request, head, current, auxiliary, physical, driver.RestoreImportProfileAccounting{})
+}
+
+func mintWithAccounting(request driver.OfflineHistoryStreamRequest, head, current, auxiliary Root, physical bool, accounting driver.RestoreImportProfileAccounting) (Checkpoint, error) {
+	hash, err := request.Profile.RequestHashWithAccounting(accounting)
 	if err != nil {
 		return Checkpoint{}, err
 	}

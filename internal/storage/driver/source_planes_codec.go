@@ -47,22 +47,29 @@ func EncodeSourcePlanePlanV1(plan SourcePlanePlanV1) ([]byte, error) {
 // input and the minimum encoded element size. Neither a count nor a field
 // length can request an allocation larger than the admitted input budget.
 func DecodeSourcePlanePlanV1(data []byte) (SourcePlanePlanV1, error) {
+	return decodeSourcePlanePlanV1(data, RestoreImportProfileAccounting{})
+}
+
+func decodeSourcePlanePlanV1(data []byte, accounting RestoreImportProfileAccounting) (SourcePlanePlanV1, error) {
 	if len(data) == 0 || len(data) > SourcePlaneMaxPlanBytes {
 		return SourcePlanePlanV1{}, sourcePlaneError("plan byte limit")
 	}
 	r := bytes.NewReader(data)
 	var plan SourcePlanePlanV1
-	if err := decodeSourcePlaneValue(r, reflect.ValueOf(&plan).Elem()); err != nil {
+	if err := decodeSourcePlaneValue(r, reflect.ValueOf(&plan).Elem(), data); err != nil {
 		return SourcePlanePlanV1{}, err
 	}
 	if r.Len() != 0 {
 		return SourcePlanePlanV1{}, sourcePlaneError("trailing canonical plan data")
 	}
-	if err := plan.Validate(); err != nil {
+	if err := plan.validateWithAccounting(accounting); err != nil {
 		return SourcePlanePlanV1{}, err
 	}
-	encoded, err := EncodeSourcePlanePlanV1(plan)
-	if err != nil || !bytes.Equal(encoded, data) {
+	// Re-encode through the same canonical encoder directly against the admitted
+	// input. Validation retains the exact byte-equality guard without a second
+	// plan-sized buffer.
+	check := sourcePlaneCanonicalCheck{data: data, equal: true}
+	if err := encodeSourcePlaneValue(&check, reflect.ValueOf(plan)); err != nil || !check.equal || check.Len() != len(data) {
 		return SourcePlanePlanV1{}, sourcePlaneError("noncanonical plan")
 	}
 	return plan, nil
@@ -72,7 +79,7 @@ func sourcePlaneError(reason string) error {
 	return fmt.Errorf("%w: source planes: %s", ErrUnsupported, reason)
 }
 
-func writeSourcePlaneBytes(out *bytes.Buffer, data []byte) error {
+func writeSourcePlaneBytes(out sourcePlaneEncoder, data []byte) error {
 	if len(data) > SourcePlaneMaxPlanBytes || out.Len() > SourcePlaneMaxPlanBytes-8-len(data) {
 		return sourcePlaneError("plan byte limit")
 	}
@@ -85,7 +92,7 @@ func writeSourcePlaneBytes(out *bytes.Buffer, data []byte) error {
 
 // Reflection is private and starts at one concrete, closed schema. No caller
 // can select a type, insert a map/interface, or change the field order.
-func encodeSourcePlaneValue(out *bytes.Buffer, v reflect.Value) error {
+func encodeSourcePlaneValue(out sourcePlaneEncoder, v reflect.Value) error {
 	if out.Len() > SourcePlaneMaxPlanBytes-8 {
 		return sourcePlaneError("plan byte limit")
 	}
@@ -94,7 +101,14 @@ func encodeSourcePlaneValue(out *bytes.Buffer, v reflect.Value) error {
 		if !utf8.ValidString(v.String()) {
 			return sourcePlaneError("invalid UTF-8")
 		}
-		return writeSourcePlaneBytes(out, []byte(v.String()))
+		if v.Len() > SourcePlaneMaxPlanBytes || out.Len() > SourcePlaneMaxPlanBytes-8-v.Len() {
+			return sourcePlaneError("plan byte limit")
+		}
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(v.Len()))
+		out.Write(size[:])
+		_, err := out.WriteString(v.String())
+		return err
 	case reflect.Uint64:
 		var n [8]byte
 		binary.BigEndian.PutUint64(n[:], v.Uint())
@@ -164,7 +178,7 @@ func sourcePlaneMinimumSize(t reflect.Type) uint64 {
 	}
 }
 
-func decodeSourcePlaneValue(r *bytes.Reader, v reflect.Value) error {
+func decodeSourcePlaneValue(r *bytes.Reader, v reflect.Value, source []byte) error {
 	switch v.Kind() {
 	case reflect.String, reflect.Slice:
 		n, err := readSourcePlaneSize(r)
@@ -175,17 +189,16 @@ func decodeSourcePlaneValue(r *bytes.Reader, v reflect.Value) error {
 			if n > uint64(r.Len()) {
 				return sourcePlaneError("truncated canonical byte field")
 			}
-			data := make([]byte, int(n))
-			if _, err := io.ReadFull(r, data); err != nil {
-				return err
-			}
+			start := len(source) - r.Len()
+			data := source[start : start+int(n)]
+			_, _ = r.Seek(int64(n), io.SeekCurrent)
 			if v.Kind() == reflect.String {
 				if !utf8.Valid(data) {
 					return sourcePlaneError("invalid UTF-8")
 				}
 				v.SetString(string(data))
 			} else {
-				v.SetBytes(data)
+				v.SetBytes(bytes.Clone(data))
 			}
 			return nil
 		}
@@ -195,7 +208,7 @@ func decodeSourcePlaneValue(r *bytes.Reader, v reflect.Value) error {
 		}
 		v.Set(reflect.MakeSlice(v.Type(), int(n), int(n)))
 		for i := 0; i < int(n); i++ {
-			if err := decodeSourcePlaneValue(r, v.Index(i)); err != nil {
+			if err := decodeSourcePlaneValue(r, v.Index(i), source); err != nil {
 				return err
 			}
 		}
@@ -214,11 +227,11 @@ func decodeSourcePlaneValue(r *bytes.Reader, v reflect.Value) error {
 			v.SetBool(b == 1)
 		} else if b == 1 {
 			v.Set(reflect.New(v.Type().Elem()))
-			return decodeSourcePlaneValue(r, v.Elem())
+			return decodeSourcePlaneValue(r, v.Elem(), source)
 		}
 	case reflect.Struct:
 		for i := 0; i < v.NumField(); i++ {
-			if err := decodeSourcePlaneValue(r, v.Field(i)); err != nil {
+			if err := decodeSourcePlaneValue(r, v.Field(i), source); err != nil {
 				return err
 			}
 		}
@@ -251,10 +264,7 @@ func NewSourcePlaneImportBindingV1(plan SourcePlanePlanV1) (SourcePlaneImportBin
 }
 
 func (b SourcePlaneImportBindingV1) Detached() (SourcePlaneImportBindingV1, error) {
-	if b.Version != SourcePlanePlanVersionV1 || len(b.CanonicalPlan) == 0 || len(b.CanonicalPlan) > SourcePlaneMaxPlanBytes || !importDigest(b.JointPlanDigest) || sourcePlanePlanDigest(b.CanonicalPlan) != b.JointPlanDigest {
-		return SourcePlaneImportBindingV1{}, sourcePlaneError("invalid joint plan binding")
-	}
-	if _, err := DecodeSourcePlanePlanV1(b.CanonicalPlan); err != nil {
+	if _, err := b.Plan(); err != nil {
 		return SourcePlaneImportBindingV1{}, err
 	}
 	b.CanonicalPlan = bytes.Clone(b.CanonicalPlan)
@@ -262,11 +272,31 @@ func (b SourcePlaneImportBindingV1) Detached() (SourcePlaneImportBindingV1, erro
 }
 
 func (b SourcePlaneImportBindingV1) Plan() (SourcePlanePlanV1, error) {
-	detached, err := b.Detached()
-	if err != nil {
-		return SourcePlanePlanV1{}, err
+	plan, _, err := b.PlanWithAccounting(RestoreImportProfileAccounting{})
+	return plan, err
+}
+
+// PlanWithAccounting validates and decodes once. The decoded candidate belongs
+// to the caller until release; canonical re-encoding is a shorter-lived check.
+// Existing canonical bytes are borrowed and never cloned just to decode them.
+func (b SourcePlaneImportBindingV1) PlanWithAccounting(accounting RestoreImportProfileAccounting) (SourcePlanePlanV1, func(), error) {
+	if b.Version != SourcePlanePlanVersionV1 || len(b.CanonicalPlan) == 0 || len(b.CanonicalPlan) > SourcePlaneMaxPlanBytes || !importDigest(b.JointPlanDigest) || sourcePlanePlanDigest(b.CanonicalPlan) != b.JointPlanDigest {
+		return SourcePlanePlanV1{}, nil, sourcePlaneError("invalid joint plan binding")
 	}
-	return DecodeSourcePlanePlanV1(detached.CanonicalPlan)
+	size, err := sourcePlaneAllocationSize(bytes.NewReader(b.CanonicalPlan), reflect.TypeOf(SourcePlanePlanV1{}))
+	if err != nil {
+		return SourcePlanePlanV1{}, nil, err
+	}
+	release, err := accounting.reserveBytes("source_plan_decoded", size+uint64(reflect.TypeFor[SourcePlanePlanV1]().Size()))
+	if err != nil {
+		return SourcePlanePlanV1{}, nil, err
+	}
+	plan, err := decodeSourcePlanePlanV1(b.CanonicalPlan, accounting)
+	if err != nil {
+		release()
+		return SourcePlanePlanV1{}, nil, err
+	}
+	return plan, release, nil
 }
 
 // UnmarshalJSON refuses partial/unknown/duplicate bindings, including null.

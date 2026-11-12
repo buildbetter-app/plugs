@@ -76,21 +76,10 @@ func MarshalNativePayload(archive *dumpformat.Archive, phase string, value any) 
 	return json.Marshal(value)
 }
 
-// The unchanged plan codec validates a detached binary buffer and a decoded
-// candidate while checking its canonical re-encoding. The caller retains only
-// the resulting plan; both validation buffers end at this boundary.
+// NativeSourcePlan borrows canonical bytes while decoding one admitted output.
+// Existing callers retain it in their archive owner; short-lived callers pass a
+// child archive and release that owner when the decoded plan is no longer held.
 func NativeSourcePlan(archive *dumpformat.Archive, binding driver.SourcePlaneImportBindingV1) (driver.SourcePlanePlanV1, error) {
-	work, release := archive.NativeDeltaAccountingScope()
-	defer release()
-	n := uint64(len(binding.CanonicalPlan))
-	if err := work.ChargeNativeDeltaBytes("source_plan_binary_detach", n); err != nil {
-		return driver.SourcePlanePlanV1{}, err
-	}
-	if err := work.ChargeNativeDeltaBytes("source_plan_canonical_check", n); err != nil {
-		return driver.SourcePlanePlanV1{}, err
-	}
-	if err := archive.ChargeNativeDeltaBytes("source_plan_decoded", n); err != nil {
-		return driver.SourcePlanePlanV1{}, err
-	}
-	return binding.Plan()
+	plan, _, err := binding.PlanWithAccounting(ProfileAccounting(archive))
+	return plan, err
 }

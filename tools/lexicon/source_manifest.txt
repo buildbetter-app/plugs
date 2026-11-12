@@ -297,7 +297,9 @@ internal/core/nativeprojection/native_delta_current.go
 internal/core/nativeprojection/native_delta_history_modes.go
 internal/core/nativeprojection/native_schema.go
 internal/core/nativeprojection/planner.go
+internal/core/nativeprojection/profile_accounting.go
 internal/core/nativeprojection/result.go
+internal/core/nativeprojection/snapshot_accounting.go
 internal/core/nativeprojection/source_projection.go
 internal/core/ontology/BUILD.bazel
 internal/core/ontology/await_members.go
@@ -665,7 +667,9 @@ internal/integration/converterroundtrip/native_workflow_accounting_test.go
 internal/integration/converterroundtrip/planner_extraction_test.go
 internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go
+internal/integration/converterroundtrip/profile_lifetime_budget_test.go
 internal/integration/converterroundtrip/public_external_capture_test.go
+internal/integration/converterroundtrip/public_external_lease_observer_test.go
 internal/integration/converterroundtrip/public_source_test.go
 internal/integration/converterroundtrip/receiving_pass_budget_test.go
 internal/integration/converterroundtrip/receiving_stream.go
@@ -1301,6 +1305,9 @@ internal/storage/driver/offline_history_stream_consume.go
 internal/storage/driver/offline_history_stream_test.go
 internal/storage/driver/offline_history_test.go
 internal/storage/driver/offline_restore.go
+internal/storage/driver/offline_restore_accounting.go
+internal/storage/driver/offline_restore_hash.go
+internal/storage/driver/offline_restore_hash_test.go
 internal/storage/driver/parent_counter.go
 internal/storage/driver/parent_counter_test.go
 internal/storage/driver/read_work.go
@@ -1312,6 +1319,7 @@ internal/storage/driver/selection_contract_test.go
 internal/storage/driver/source_links.go
 internal/storage/driver/source_links_contract_test.go
 internal/storage/driver/source_planes.go
+internal/storage/driver/source_planes_accounting.go
 internal/storage/driver/source_planes_codec.go
 internal/storage/driver/source_planes_restore.go
 internal/storage/driver/source_planes_restore_test.go
@@ -1334,6 +1342,7 @@ internal/storage/historyverify/export_test.go
 internal/storage/historyverify/native.go
 internal/storage/historyverify/native_evidence.go
 internal/storage/historyverify/native_frames.go
+internal/storage/historyverify/native_hash_test.go
 internal/storage/historyverify/native_plan.go
 internal/storage/historyverify/native_spool.go
 internal/storage/historyverify/native_test.go

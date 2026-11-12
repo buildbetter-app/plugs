@@ -142,6 +142,10 @@ func validateSourcePlaneFields(fields []SourcePlaneFieldV1) error {
 // the actual admitted source and its supported semantic schema. This layer
 // supplies no default type/status/run/principal mapping.
 func (p SourcePlanePlanV1) Validate() error {
+	return p.validateWithAccounting(RestoreImportProfileAccounting{})
+}
+
+func (p SourcePlanePlanV1) validateWithAccounting(accounting RestoreImportProfileAccounting) error {
 	if p.Version != SourcePlanePlanVersionV1 || p.AddressContract != SourcePlaneAddressContractV1 || ValidateCheckpointKey(p.SourceStoreID) != nil || !importDigest(p.ArchiveSHA256) {
 		return sourcePlaneError("invalid plan version/source/archive")
 	}
@@ -157,11 +161,19 @@ func (p SourcePlanePlanV1) Validate() error {
 	if err := sourcePlaneOrder(p.Dispositions, func(v SourcePlaneDispositionV1) []string { return []string{v.Key} }); err != nil {
 		return err
 	}
-	dispositions := make(map[string]SourcePlaneDispositionV1)
-	dispositionTuples := make(map[struct {
+	dispositions, releaseDispositions, err := sourcePlanValidationMap[string, SourcePlaneDispositionV1](accounting, "dispositions", len(p.Dispositions))
+	if err != nil {
+		return err
+	}
+	defer releaseDispositions()
+	dispositionTuples, releaseTuples, err := sourcePlanValidationMap[struct {
 		typ, storage         string
 		ephemeral, noHistory bool
-	}]bool)
+	}, bool](accounting, "disposition_tuples", len(p.Dispositions))
+	if err != nil {
+		return err
+	}
+	defer releaseTuples()
 	for _, d := range p.Dispositions {
 		if !sourcePlaneNames(d.Key, d.SourceType, d.SinkKind, d.Schema, d.Lifetime, d.RefusalPolicy) || !utf8.ValidString(d.StorageClass) {
 			return sourcePlaneError("incomplete disposition")
@@ -195,7 +207,11 @@ func (p SourcePlanePlanV1) Validate() error {
 	if err := sourcePlaneOrder(p.Principals, func(v SourcePlanePrincipalV1) []string { return []string{v.Key} }); err != nil {
 		return err
 	}
-	principals := make(map[string]bool)
+	principals, releasePrincipals, err := sourcePlanValidationMap[string, bool](accounting, "principals", len(p.Principals))
+	if err != nil {
+		return err
+	}
+	defer releasePrincipals()
 	for _, v := range p.Principals {
 		if !sourcePlaneNames(v.Key, v.Source, v.Authority) {
 			return sourcePlaneError("incomplete principal disposition")
@@ -205,11 +221,7 @@ func (p SourcePlanePlanV1) Validate() error {
 				return sourcePlaneError("unverified origin cannot grant principal authority")
 			}
 		} else {
-			var principal model.PrincipalRef
-			if err := json.Unmarshal(v.PrincipalJSON, &principal); err != nil {
-				return sourcePlaneError("invalid trusted principal")
-			}
-			if _, err := PrincipalKey(principal); err != nil {
+			if err := validateSourcePlanePrincipal(v.PrincipalJSON, accounting); err != nil {
 				return err
 			}
 		}
@@ -219,9 +231,25 @@ func (p SourcePlanePlanV1) Validate() error {
 		return err
 	}
 	type runKey struct{ project, key string }
-	runs := make(map[runKey]SourcePlaneRunV1)
-	runTargets := make(map[string]bool)
-	membership := make(map[SourceEntityKey]runKey)
+	runs, releaseRuns, err := sourcePlanValidationMap[runKey, SourcePlaneRunV1](accounting, "runs", len(p.Runs))
+	if err != nil {
+		return err
+	}
+	defer releaseRuns()
+	runTargets, releaseRunTargets, err := sourcePlanValidationMap[string, bool](accounting, "run_targets", len(p.Runs))
+	if err != nil {
+		return err
+	}
+	defer releaseRunTargets()
+	memberCount := 0
+	for _, run := range p.Runs {
+		memberCount += len(run.Members)
+	}
+	membership, releaseMembership, err := sourcePlanValidationMap[SourceEntityKey, runKey](accounting, "membership", memberCount)
+	if err != nil {
+		return err
+	}
+	defer releaseMembership()
 	for _, r := range p.Runs {
 		if !sourcePlaneNames(r.Project, r.Key, r.TargetID, r.Template, r.Schema, r.Mode, r.State, r.PrincipalKey) || !strings.HasPrefix(r.TargetID, "workflow:run/") || !principals[r.PrincipalKey] || runTargets[r.TargetID] {
 			return sourcePlaneError("invalid run declaration")
@@ -247,10 +275,22 @@ func (p SourcePlanePlanV1) Validate() error {
 	if err := sourcePlaneOrder(p.Entities, func(v SourcePlaneEntityV1) []string { return []string{v.Source.Project, v.Source.Plane, v.Source.ID} }); err != nil {
 		return err
 	}
-	entities := make(map[SourceEntityKey]SourcePlaneEntityV1)
-	targets := make(map[struct{ kind, id string }]bool)
+	entities, releaseEntities, err := sourcePlanValidationMap[SourceEntityKey, SourcePlaneEntityV1](accounting, "entities", len(p.Entities))
+	if err != nil {
+		return err
+	}
+	defer releaseEntities()
+	targets, releaseTargets, err := sourcePlanValidationMap[struct{ kind, id string }, bool](accounting, "targets", len(p.Entities))
+	if err != nil {
+		return err
+	}
+	defer releaseTargets()
 	type routeKey struct{ project, id string }
-	routes := make(map[routeKey]SourcePlaneRouteV1)
+	routes, releaseRoutes, err := sourcePlanValidationMap[routeKey, SourcePlaneRouteV1](accounting, "routes", len(p.Entities))
+	if err != nil {
+		return err
+	}
+	defer releaseRoutes()
 	for _, e := range p.Entities {
 		if err := e.Source.Validate(); err != nil {
 			return err
@@ -388,12 +428,8 @@ func (p SourcePlanePlanV1) Validate() error {
 		if err := validateSourcePlaneFields(o.Fields); err != nil {
 			return err
 		}
-		seen := make(map[string]bool)
-		for _, layer := range o.Precedence {
-			if !sourcePlaneNames(layer) || seen[layer] {
-				return sourcePlaneError("duplicate/empty ordered source layer")
-			}
-			seen[layer] = true
+		if err := validateSourcePlanePrecedence(o.Precedence, accounting); err != nil {
+			return err
 		}
 	}
 	if err := sourcePlaneOrder(p.Providers, func(v SourcePlaneProviderV1) []string { return []string{v.Namespace} }); err != nil {
@@ -426,5 +462,39 @@ func (p *RestoreImportProfile) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*p = RestoreImportProfile(value)
+	return nil
+}
+
+func validateSourcePlanePrincipal(raw []byte, accounting RestoreImportProfileAccounting) error {
+	output, err := accounting.reserveBytes("source_plan_validation_principal_output", uint64(len(raw)))
+	if err != nil {
+		return err
+	}
+	defer output()
+	decoder, err := accounting.reserveBytes("source_plan_validation_principal_decoder", uint64(len(raw)))
+	if err != nil {
+		return err
+	}
+	var principal model.PrincipalRef
+	err = json.Unmarshal(raw, &principal)
+	decoder()
+	if err != nil {
+		return sourcePlaneError("invalid trusted principal")
+	}
+	_, err = PrincipalKey(principal)
+	return err
+}
+func validateSourcePlanePrecedence(layers []string, accounting RestoreImportProfileAccounting) error {
+	seen, release, err := sourcePlanValidationMap[string, bool](accounting, "precedence", len(layers))
+	if err != nil {
+		return err
+	}
+	defer release()
+	for _, layer := range layers {
+		if !sourcePlaneNames(layer) || seen[layer] {
+			return sourcePlaneError("duplicate/empty ordered source layer")
+		}
+		seen[layer] = true
+	}
 	return nil
 }
