@@ -94,7 +94,7 @@ func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string, strin
 	}
 	// The parent identity comes from the original SQL counter row, never
 	// from splitting a child suffix or from the receiving result.
-	parentCounters := state.Tables["wisp_child_counters"].Rows
+	parentCounters := state.Tables[dumpformat.EphemeralChildCounterTable].Rows
 	if len(parentCounters) != 1 {
 		t.Fatal("independent SQL parent counter census differs")
 	}
@@ -107,8 +107,8 @@ func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string, strin
 	}
 	decode(t, files["commands/127-create-ordinary_child.stdout"], &created)
 	childID := created.ID
-	child, parent := find("issues", "id", childID), find("wisps", "id", parentID)
-	counter := find("wisp_child_counters", "parent_id", parentID)
+	child, parent := find("issues", "id", childID), find(dumpformat.EphemeralEntityTable, "id", parentID)
+	counter := find(dumpformat.EphemeralChildCounterTable, "parent_id", parentID)
 	if childID != parentID+".1" || child == nil || parent == nil || find("issues", "id", parentID) != nil || counter["last_child"] != json.Number("1") {
 		t.Fatal("independent child/active-only-parent/counter/create input differs")
 	}
@@ -145,10 +145,10 @@ func publicChildCounterCapture(t *testing.T) (*dumpformat.Archive, string, strin
 		}
 	}
 	for _, r := range a.Records("beads-archive") {
-		if r.Source.Table == "wisps" && r.Source.Fields["id"] == parentID {
+		if r.Source.Table == dumpformat.EphemeralEntityTable && r.Source.Fields["id"] == parentID {
 			parentFound = reflect.DeepEqual(r.Source.Fields, parent)
 		}
-		if r.Source.Table == "wisp_child_counters" && r.Source.Fields["parent_id"] == parentID {
+		if r.Source.Table == dumpformat.EphemeralChildCounterTable && r.Source.Fields["parent_id"] == parentID {
 			counterFound = reflect.DeepEqual(r.Source.Fields, counter)
 		}
 	}
