@@ -188,6 +188,8 @@ internal/core/dumpformat/native_delta_allocations.go
 internal/core/dumpformat/native_delta_archive.go
 internal/core/dumpformat/native_delta_budget.go
 internal/core/dumpformat/native_delta_budget_test.go
+internal/core/dumpformat/native_delta_cache.go
+internal/core/dumpformat/native_delta_cache_test.go
 internal/core/dumpformat/native_delta_cells.go
 internal/core/dumpformat/native_delta_cells_test.go
 internal/core/dumpformat/native_delta_dispositions_test.go
@@ -196,6 +198,7 @@ internal/core/dumpformat/native_delta_history.go
 internal/core/dumpformat/native_delta_json.go
 internal/core/dumpformat/native_delta_parts.go
 internal/core/dumpformat/native_delta_parts_test.go
+internal/core/dumpformat/native_delta_public_images_test.go
 internal/core/dumpformat/native_delta_reconstruct.go
 internal/core/dumpformat/native_delta_reconstruct_test.go
 internal/core/dumpformat/native_delta_records.go
