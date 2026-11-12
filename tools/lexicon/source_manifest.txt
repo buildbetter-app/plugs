@@ -1333,6 +1333,7 @@ internal/storage/memory/derived_reader.go
 internal/storage/memory/hierarchy_index.go
 internal/storage/memory/hierarchy_index_test.go
 internal/storage/memory/lease.go
+internal/storage/memory/lease_renewal_test.go
 internal/storage/memory/lifetimes_test.go
 internal/storage/memory/metadata.go
 internal/storage/memory/metadata_test.go
@@ -1399,6 +1400,7 @@ internal/storage/postgres/fencing_test.go
 internal/storage/postgres/hierarchy_schema_test.go
 internal/storage/postgres/lease.go
 internal/storage/postgres/lease_prepare_test.go
+internal/storage/postgres/lease_renewal_test.go
 internal/storage/postgres/lock_batch_test.go
 internal/storage/postgres/metadata.go
 internal/storage/postgres/offline_history.go
@@ -1452,6 +1454,7 @@ internal/storage/sqlite/hierarchy_schema_test.go
 internal/storage/sqlite/lease.go
 internal/storage/sqlite/lease_heartbeat.go
 internal/storage/sqlite/lease_heartbeat_test.go
+internal/storage/sqlite/lease_renewal_test.go
 internal/storage/sqlite/locks_other.go
 internal/storage/sqlite/locks_unix.go
 internal/storage/sqlite/metadata.go

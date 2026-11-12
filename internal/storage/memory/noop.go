@@ -92,9 +92,13 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 	if err := t.check(ctx); err != nil {
 		return model.Commit{}, err
 	}
-	s.state = next
-	s.checkpoints = checkpoints
-	t.finish()
+	if err := s.withLeasePublication(t.lease, func() {
+		s.state = next
+		s.checkpoints = checkpoints
+		t.finish()
+	}); err != nil {
+		return model.Commit{}, err
+	}
 	return response, nil
 }
 

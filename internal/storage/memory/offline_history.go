@@ -68,9 +68,36 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	} else if len(t.checkpointWrites)+len(t.checkpointGuards) != 0 {
 		return zero, driver.ErrUnsupported
 	}
-	plan, err := t.offlineHistory.Finalize(h, tail, t.acquired, bumps)
+	// Finalize is the expensive, detached history build. Keep the transaction's
+	// staged maps unavailable to callers while it runs, then reacquire Store.mu
+	// for the final state construction and lease-fenced publication.
+	base := s.state
+	offline := t.offlineHistory
+	locks := append(driver.LockSet(nil), t.acquired...)
+	hook := s.beforeCommitHook
+	t.committing = true
+	defer func() {
+		if t.committing {
+			t.finish()
+		}
+	}()
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	plan, err := offline.Finalize(h, tail, locks, bumps)
+	s.mu.Lock()
 	if err != nil {
+		// A refused plan leaves the prepared transaction available for corrected
+		// staging and another commit, as it did before detached preparation.
+		t.committing = false
 		return zero, err
+	}
+	if err := t.checkCommit(ctx); err != nil {
+		return zero, err
+	}
+	if s.state != base || s.head != t {
+		return zero, driver.ErrConflict
 	}
 	if err := t.checkCheckpointGuards(); err != nil {
 		return zero, err
@@ -126,19 +153,23 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	}
 	key := normalizedScope(principal, h.AgentLabel, h.Method, h.IdempotencyKey)
 	next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: entry}, at: s.now()}
-	if err = t.check(ctx); err != nil {
+	if err = t.checkCommit(ctx); err != nil {
 		return zero, err
 	}
 	if err := next.publishAllocatorImage(s.state, true); err != nil {
 		return zero, err
 	}
-	if err := t.check(ctx); err != nil {
+	checkpoints := t.prepareCheckpointPublication()
+	if err = t.checkCommit(ctx); err != nil {
 		return zero, err
 	}
-	checkpoints := t.prepareCheckpointPublication()
-	s.state = next
-	s.checkpoints = checkpoints
-	t.finish()
+	if err := s.withLeasePublication(t.lease, func() {
+		s.state = next
+		s.checkpoints = checkpoints
+		t.finish()
+	}); err != nil {
+		return zero, err
+	}
 	return cloneJSON(entry)
 }
 
