@@ -143,11 +143,24 @@ func b19NativeSelectedModes(t *testing.T, engine string) {
 				t.Fatal(err)
 			}
 			store, lease = reopen()
-			_ = lease
+			if err := lease.Release(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			// Reopen returns an unrenewed bootstrap lease. Keep the canonical
+			// restore lease active through the exhaustive historical readback.
+			reopenOp, lease, releaseReopened, err := HoldRestoreLease(context.Background(), store, "b19-native-selected-mode-reopen")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := releaseReopened(); err != nil {
+					t.Error(err)
+				}
+			}()
 			s = wrapReceivingStore(t, store, l)
 			start = len(l.reads)
 			l.phase = "B19 explicit recovery after physical reopen"
-			bound, recovered, found, err := RecoverBoundSourceImport(a.WithNativeDeltaAccounting(context.Background()), s)
+			bound, recovered, found, err := RecoverBoundSourceImport(a.WithNativeDeltaAccounting(reopenOp), s)
 			if recovered.Archive != nil {
 				defer recovered.Archive.ReleaseNativeDecoded()
 			}
@@ -159,7 +172,7 @@ func b19NativeSelectedModes(t *testing.T, engine string) {
 			}
 			start = len(l.reads)
 			l.phase = "B19 reopened complete native readback"
-			if err := VerifyNativeCaptureSetReadback(context.Background(), s, a, recovered); err != nil {
+			if err := VerifyNativeCaptureSetReadback(reopenOp, s, a, recovered); err != nil {
 				t.Fatal(err)
 			}
 			l.assertTraversals(start, 1, true)

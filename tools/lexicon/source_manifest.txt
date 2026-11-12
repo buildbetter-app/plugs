@@ -722,6 +722,7 @@ internal/integration/converterroundtrip/source_planes_test.go
 internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
+internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
 internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz
 internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz.provenance.json
