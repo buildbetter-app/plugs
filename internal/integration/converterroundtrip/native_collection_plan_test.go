@@ -118,7 +118,7 @@ func TestNativeCollectionOneActualPlanAndFinalProfileSealPhysicalPair(t *testing
 	defer c.Close()
 	for _, database := range []string{"ops", "sv2"} {
 		if err = c.Append(ctx, func(ctx context.Context, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
-			return dumpformat.ReadNativeCaptureSetDirectory(ctx, filepath.Join(nativeJoinedPhysicalPath, database), options)
+			return dumpformat.ReadNativeCaptureSetDirectory(ctx, joinedPhysicalDirectory(t, database), options)
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -221,4 +221,32 @@ func TestNativeCollectionOneActualPlanAndFinalProfileSealPhysicalPair(t *testing
 	if usage := budget.Usage(); usage.CurrentAccountedDecodedBytes != 0 || usage.PeakAccountedDecodedBytes > dumpformat.NativeDeltaDefaultDecodedLimit {
 		t.Fatal("final collection lifetime/cap differs", usage)
 	}
+}
+
+// Bazel runfiles may be symlinks. The directory reader's production no-symlink
+// guard stays intact; tests stage byte-identical originals as regular files.
+func joinedPhysicalDirectory(t *testing.T, database string) string {
+	t.Helper()
+	directory := t.TempDir()
+	for _, source := range joinedPhysicalBinding(t).Sources {
+		if source.Database != database {
+			continue
+		}
+		for _, file := range source.Files {
+			raw, err := os.ReadFile(filepath.Join(nativeJoinedPhysicalPath, database, file.Name))
+			if err != nil || uint64(len(raw)) != file.Bytes || hashBytes(raw) != file.SHA256 {
+				t.Fatal("pinned physical fixture bytes differ", file.Name, err)
+			}
+			path := filepath.Join(directory, file.Name)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return directory
+	}
+	t.Fatal("unknown pinned physical source")
+	return ""
 }

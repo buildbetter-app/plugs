@@ -57,7 +57,7 @@ func physicalCollectionBinding(t *testing.T) NativeJoinedBinding {
 
 func appendPhysicalCollectionSource(t *testing.T, ctx context.Context, c *NativeCaptureCollection, database string) {
 	t.Helper()
-	source, err := ReadNativeCaptureSetDirectory(ctx, filepath.Join(joinedPublicFixture, database), NativeCaptureSetOptions{PrepareReceiving: true})
+	source, err := ReadNativeCaptureSetDirectory(ctx, physicalCollectionDirectory(t, database), NativeCaptureSetOptions{PrepareReceiving: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestNativeCollectionRefusesChangedPhysicalLedgerBeforeCurrentPublication(t 
 		t.Fatal(err)
 	}
 	defer c.Close()
-	source, err := ReadNativeCaptureSetDirectory(ctx, filepath.Join(joinedPublicFixture, "ops"), NativeCaptureSetOptions{PrepareReceiving: true})
+	source, err := ReadNativeCaptureSetDirectory(ctx, physicalCollectionDirectory(t, "ops"), NativeCaptureSetOptions{PrepareReceiving: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,4 +273,32 @@ func collectionCurrentOracleKey(t *testing.T, row Record) string {
 		t.Fatal("current oracle row omitted authenticated source identity")
 	}
 	return row.Source.Identity.StoreID + "\x00" + row.Source.Identity.Project + "\x00" + row.Kind + "\x00" + row.Source.Table + "\x00" + row.Project + "\x00" + row.ID
+}
+
+// Bazel runfiles may be symlinks. The directory reader's production no-symlink
+// guard stays intact; tests stage byte-identical originals as regular files.
+func physicalCollectionDirectory(t *testing.T, database string) string {
+	t.Helper()
+	directory := t.TempDir()
+	for _, source := range physicalCollectionBinding(t).Sources {
+		if source.Database != database {
+			continue
+		}
+		for _, file := range source.Files {
+			raw, err := os.ReadFile(filepath.Join(joinedPublicFixture, database, file.Name))
+			if err != nil || uint64(len(raw)) != file.Bytes || digest(raw) != file.SHA256 {
+				t.Fatal("pinned physical fixture bytes differ", file.Name, err)
+			}
+			path := filepath.Join(directory, file.Name)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return directory
+	}
+	t.Fatal("unknown pinned physical source")
+	return ""
 }

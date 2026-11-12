@@ -80,7 +80,7 @@ func newPhysicalNativeCollection(t *testing.T, limit uint64) (*NativeCollection,
 func appendPhysicalNative(t *testing.T, c *NativeCollection, ctx context.Context, database string) {
 	t.Helper()
 	if err := c.Append(ctx, func(ctx context.Context, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
-		return dumpformat.ReadNativeCaptureSetDirectory(ctx, filepath.Join(physicalPairPath, database), options)
+		return dumpformat.ReadNativeCaptureSetDirectory(ctx, nativeCollectionPhysicalDirectory(t, database), options)
 	}); err != nil {
 		t.Fatal("append exact physical source", database, err)
 	}
@@ -240,7 +240,7 @@ func TestNativeCollectionCancellationPermanentlyClosesSourceAdmission(t *testing
 func TestNativeCollectionSharedLimitRefusesBeforeRetainingSource(t *testing.T) {
 	c, budget, ctx := newPhysicalNativeCollection(t, 1<<20)
 	err := c.Append(ctx, func(ctx context.Context, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
-		return dumpformat.ReadNativeCaptureSetDirectory(ctx, filepath.Join(physicalPairPath, "ops"), options)
+		return dumpformat.ReadNativeCaptureSetDirectory(ctx, nativeCollectionPhysicalDirectory(t, "ops"), options)
 	})
 	var limit *dumpformat.NativeDeltaDecodedLimitError
 	if !errors.As(err, &limit) || limit.LimitBytes != 1<<20 || !c.failed || c.next != 0 {
@@ -322,4 +322,32 @@ func TestNativeCollectionBindingEncodingRequiresSeparateLiveReservation(t *testi
 	if err = c.Close(); err != nil || budget.Usage().CurrentAccountedDecodedBytes != 0 {
 		t.Fatal("binding owner cleanup", err, budget.Usage())
 	}
+}
+
+// Bazel runfiles may be symlinks. The directory reader's production no-symlink
+// guard stays intact; tests stage byte-identical originals as regular files.
+func nativeCollectionPhysicalDirectory(t *testing.T, database string) string {
+	t.Helper()
+	directory := t.TempDir()
+	for _, source := range nativeCollectionPhysicalBinding(t).Sources {
+		if source.Database != database {
+			continue
+		}
+		for _, file := range source.Files {
+			raw, err := os.ReadFile(filepath.Join(physicalPairPath, database, file.Name))
+			if err != nil || uint64(len(raw)) != file.Bytes || nativeSHA(raw) != file.SHA256 {
+				t.Fatal("pinned physical fixture bytes differ", file.Name, err)
+			}
+			path := filepath.Join(directory, file.Name)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return directory
+	}
+	t.Fatal("unknown pinned physical source")
+	return ""
 }
