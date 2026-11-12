@@ -210,7 +210,11 @@ func (s *Store) saveCheckpoint(ctx context.Context, lease driver.ActiveLease, ke
 	if err := s.checkLease(lease); err != nil {
 		return driver.Checkpoint{}, err
 	}
-	s.checkpoints[key] = value
+	if err := s.withLeasePublication(lease, func() {
+		s.checkpoints[key] = value
+	}); err != nil {
+		return driver.Checkpoint{}, err
+	}
 	value.Payload = bytes.Clone(value.Payload)
 	return value, nil
 }
@@ -268,18 +272,14 @@ func (s *Store) FinalizeResponse(ctx context.Context, lease driver.ActiveLease, 
 	if err != nil {
 		return err
 	}
+	if err := s.check(ctx); err != nil {
+		return err
+	}
 	current.value.Commit.Warnings = append(current.value.Commit.Warnings, current.post...)
 	current.value.ResponsePending = false
 	next := s.state.fork()
 	next.replays[id] = current
-	if err := s.check(ctx); err != nil {
-		return err
-	}
-	if err := s.checkLease(lease); err != nil {
-		return err
-	}
-	s.state = next
-	return nil
+	return s.withLeasePublication(lease, func() { s.state = next })
 }
 
 func copyReplay(value replay) (replay, error) {

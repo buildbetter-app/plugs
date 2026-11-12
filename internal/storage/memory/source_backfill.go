@@ -136,8 +136,7 @@ func (s *Store) BuildGraphSourceIndexes(ctx context.Context, lease driver.Active
 	// such concurrent metadata rather than restoring the snapshot's older copy.
 	next := *s.state
 	next.hierarchy, next.sourceLinks = h, links
-	s.state = &next
-	return nil
+	return s.withLeasePublication(lease, func() { s.state = &next })
 }
 
 var _ driver.GraphSourceIndexBuilder = (*Store)(nil)

@@ -227,9 +227,13 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 	if err = t.check(ctx); err != nil {
 		return zero, err
 	}
-	store.state = next
-	store.checkpoints = checkpoints
-	t.finish()
+	if err = store.withLeasePublication(t.lease, func() {
+		store.state = next
+		store.checkpoints = checkpoints
+		t.finish()
+	}); err != nil {
+		return zero, err
+	}
 	return cloneJSON(final)
 }
 
