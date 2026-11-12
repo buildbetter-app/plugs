@@ -476,6 +476,7 @@ internal/core/service/reads.go
 internal/core/service/ready_order.go
 internal/core/service/rollback_window_test.go
 internal/core/service/rpc_reads.go
+internal/core/service/selection_filters.go
 internal/core/service/service.go
 internal/core/service/service_test.go
 internal/core/service/source_workflow.go
@@ -1730,6 +1731,12 @@ spec/cardb08/attachment_test.go
 spec/cardb08/native_test.go
 spec/cardb08/public_fixture_test.go
 spec/cardb08/public_test.go
+spec/cardb16/BUILD.bazel
+spec/cardb16/README.md
+spec/cardb16/native_reference_test.go
+spec/cardb16/public_fixture_test.go
+spec/cardb16/public_test.go
+spec/cardb16/public_vector_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
