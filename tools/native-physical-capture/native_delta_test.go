@@ -958,9 +958,9 @@ func TestPublicNativeDeltaCrossPlaneCounterParent(t *testing.T) {
 				ownVersionExec(t, ctx, conn, "INSERT INTO ignored_schema_migrations(version,content_hash) VALUES (?,?)", i+1, fmt.Sprintf("%x", sha256.Sum256([]byte(query))))
 			}
 			ownVersionExec(t, ctx, conn, "INSERT INTO config (`key`,`value`) VALUES ('issue_prefix','public') ON DUPLICATE KEY UPDATE `value`='public'")
-			ownVersionExec(t, ctx, conn, "INSERT INTO issues (id,title,created_by) VALUES ('public-w1.3','durable child of active parent','public')")
+			ownVersionExec(t, ctx, conn, "INSERT INTO issues (id,title,description,design,acceptance_criteria,notes,created_by) VALUES ('public-w1.3','durable child of active parent','','','','','public')")
 			if present {
-				ownVersionExec(t, ctx, conn, "INSERT INTO wisps (id,title,created_by) VALUES ('public-w1','active-only parent','public')")
+				ownVersionExec(t, ctx, conn, "INSERT INTO wisps (id,title,description,design,acceptance_criteria,notes,created_by) VALUES ('public-w1','active-only parent','','','','','public')")
 				ownVersionExec(t, ctx, conn, "INSERT INTO wisp_child_counters (parent_id,last_child) VALUES ('public-w1',17)")
 			}
 			head := ownVersionCommit(t, ctx, conn)

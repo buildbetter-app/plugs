@@ -752,10 +752,15 @@ func TestSourcePlaneAllocatorKeepsDurableChildOfActiveParent(t *testing.T) {
 		t.Fatalf("active parent's exact counter lost: %+v %v", manifest.Projects, err)
 	}
 	members := archiveMembers(t, data)
+	// The durable source-fields contract omits only the transient lock and
+	// rebuilt blocked projection. Keep every other original field exact.
+	expectedChild := cloneRow(row)
+	delete(expectedChild, "row_lock")
+	delete(expectedChild, "is_blocked")
 	var foundChild, foundCounter bool
 	for _, r := range sourcePlaneRecords(t, members["records/bead.ndjson"]) {
 		if r.ID == child {
-			foundChild = jsonEqual(r.Source.Fields, row)
+			foundChild = jsonEqual(r.Source.Fields, expectedChild)
 		}
 	}
 	for _, r := range sourcePlaneRecords(t, members["records/beads-archive.ndjson"]) {

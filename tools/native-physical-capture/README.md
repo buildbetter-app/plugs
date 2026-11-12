@@ -40,6 +40,12 @@ attachment, chained parts and stream hash. The matching receiver takes
 exactly `capture-set.json`, `head.tar` and `parts/`; inventory and evidence are
 siblings of the set directory.
 
+Durable dotted children may have parents in the active plane. Capture resolves
+their allocation counters across both planes, retaining the original child ID
+and the parent's recorded counter even when it exceeds retained child numbers.
+A parent absent from both planes refuses with the closed diagnostic
+`child_counter_parent_unresolved`; no partial capture is published.
+
 The delta stream retains actual parent order and primary-key order, exact
 typed cells, keyless row multiplicity and schemas. Roots and CP11 frontiers
 have snapshots; every other immutable commit uses its retained first parent
