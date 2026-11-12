@@ -50,6 +50,9 @@ PUBLIC_ENV_NAMES = (
 SAFE_ENV = (
     "PATH", "HOME", "USER", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "TZ",
     "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "USE_BAZEL_VERSION",
+    # Public run identity and trusted tool paths required by source-built native tests.
+    "BAZEL_BIN", "BAZEL_RC", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+    "GITHUB_SHA", "GITHUB_WORKFLOW_REF",
 )
 
 

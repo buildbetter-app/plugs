@@ -146,6 +146,25 @@ type PostSubscriber interface {
 	After(context.Context, CommittedChange, SnapshotReader) error
 }
 
+// PostFailureNotice is sanitized delivery metadata for an already committed
+// synchronous callback. It never includes callback errors or record images.
+// DeadLettered reports the actual persistence outcome, not an alert receipt.
+type PostFailureNotice struct {
+	Incarnation  string
+	Revision     model.Revision
+	Binding      string
+	FailedAt     time.Time
+	Reason       string
+	DeadLettered bool
+}
+
+// PostFailureObserver connects synchronous post failures to host alerts and
+// per-binding breaker accounting. It must return promptly and honor ctx.
+// This does not advance an event dispatcher's delivery checkpoint.
+type PostFailureObserver interface {
+	NotifyPostFailure(context.Context, PostFailureNotice)
+}
+
 // TimedPostSubscriber lets a pooled host keep queue wait outside its callback
 // execution budget while retaining the normal post callback bound.
 type TimedPostSubscriber interface {
