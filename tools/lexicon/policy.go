@@ -164,6 +164,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spec/ux-screens/people-50.png":                                     "f620d28fba6d16c9e104b351d61915f5ecd913f42e8ca3f8d14a8e8c066cc4cd",
 		},
 	}
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz"] = "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27"
 
