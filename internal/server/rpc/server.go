@@ -207,7 +207,7 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		return respond("busy", "request deadline or cancellation reached", nil)
 	}
 	paging := s.paging
-	if s.config.CurrentIncarnation != nil && (method == "bead.ready" || method == "bead.get" && selectsCommentPage(params) || method == "history.query" || method == "server.hello" || method == "memory.list") {
+	if s.config.CurrentIncarnation != nil && (method == "bead.blocked" || method == "bead.ready" || method == "bead.get" && selectsCommentPage(params) || method == "history.query" || method == "server.hello" || method == "memory.list") {
 		incarnation, lookupErr := s.config.CurrentIncarnation(ctx)
 		if lookupErr == nil && incarnation == "" {
 			lookupErr = fmt.Errorf("current store incarnation is empty")

@@ -79,3 +79,15 @@ sh_test(
     ],
     size = "small",
 )
+
+sh_test(
+    name = "b02_contract_generate",
+    srcs = ["b02-contract-generate.py"],
+    args = ["$(rlocationpath //internal/server/rpc/cmd/openrpcgen)"],
+    data = [
+        "reconcile-openrpc.py",
+        "//:engdocs/design/plug/contracts/openrpc.json",
+        "//internal/api/wire:reconcile_openrpc_inputs",
+        "//internal/server/rpc/cmd/openrpcgen",
+    ],
+)
