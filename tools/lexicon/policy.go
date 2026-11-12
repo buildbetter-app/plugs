@@ -112,7 +112,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
-			"internal/integration/b01readyorder/testdata/native-ready-c774-43216037385.tar.gz":      "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f",
+			"spec/cardb11/testdata/public-r5-edge-inputs.tar.gz":                                    "80d21b1573730cb0b44d9984e3bf1f39b3f57a5da6988ff2bb04c067cc100b66",
 			"internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar": "46677d8d6021ee35611e81238fd037d33739e4e44eb5308430b90d5f0ba5f93a",
 			"internal/integration/converterroundtrip/testdata/public-multiversion-072a1a8f.tar":     "72df289c1e94535815764be53bc9f01530e683d6c7480ee06fc743e7a69a230b",
 			"internal/integration/converterroundtrip/testdata/public-own-version-d7f83c6f.tar":      "de2a032098a8b17aa3e06ac7fa445ab18bb13427a59606e4a4d66959650e62c5",
@@ -156,10 +156,6 @@ func DefaultTreePolicy() TreePolicy {
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz"] = "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27"
-	// Independent native table commitments retain exact producer vocabulary.
-	// Only these authenticated reference bytes receive that disposition.
-	policy.ReferencePrefixes = append(policy.ReferencePrefixes, "internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json")
-	policy.ReferenceSHA256["internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json"] = "3f5d9c0226f972701b2cc3433a37b5f1321f082a3cb933248a734031055a987b"
 
 	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/head.tar"] = "a48d37135afe56aca95c6675385855c148ae5dbdc9327dbe44bf715b7a073a4e"
 	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/ops/parts/00000000000000000001.part"] = "1cf35b0abf24d69a53efe296a3b6e0163d3bcb4e88e7f8409101eef94b1d3adc"

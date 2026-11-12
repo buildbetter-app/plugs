@@ -32,6 +32,15 @@ go_test(
 )
 
 filegroup(
+    name = "public_native_edge_inputs",
+    srcs = [
+        "testdata/public-r5-edge-inputs.provenance.json",
+        "testdata/public-r5-edge-inputs.tar.gz",
+    ],
+    visibility = ["//internal/integration/converterroundtrip:__pkg__"],
+)
+
+filegroup(
     name = "lexicon_files",
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
