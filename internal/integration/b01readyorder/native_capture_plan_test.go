@@ -318,7 +318,8 @@ func b01MountCapturedWorkflow(t *testing.T, p *publicAcceptance, profile driver.
 	if err := rpc.BindService(registry, p.svc); err != nil {
 		t.Fatal(err)
 	}
-	p.server, err = rpc.New(registry, rpc.Config{DefaultProject: b01CaptureProject, Incarnation: p.meta(t).Incarnation, CursorKey: []byte("b01-ready-captured-stable-key")})
+	cursorKey := sha256.Sum256([]byte("b01-ready-captured-stable-key"))
+	p.server, err = rpc.New(registry, rpc.Config{DefaultProject: b01CaptureProject, Incarnation: p.meta(t).Incarnation, CursorKey: cursorKey[:]})
 	if err != nil {
 		t.Fatal(err)
 	}
