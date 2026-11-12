@@ -146,6 +146,73 @@ func b20VocabularyLines(t *testing.T, raw []byte) []map[string]any {
 	return rows
 }
 
+// Both sides of the new vocabulary comparison retain numeric lexemes. The
+// unchanged older recorder compares its float-decoded CLI payloads separately.
+func b20VocabularyJournalEqual(rows, cli []map[string]any) error {
+	if len(rows) != len(cli) {
+		return fmt.Errorf("SQL/CLI vocabulary journal counts differ")
+	}
+	for i, row := range rows {
+		for _, key := range []string{"seq", "op", "issue_id", "actor"} {
+			sqlValue, sqlPresent := row[key]
+			cliValue, cliPresent := cli[i][key]
+			if !sqlPresent || !cliPresent || !reflect.DeepEqual(sqlValue, cliValue) {
+				return fmt.Errorf("SQL/CLI vocabulary row%d field%s differs", i, key)
+			}
+		}
+		for _, pair := range [][2]string{{"issue_json", "issue"}, {"dep_json", "dep"}, {"comment_json", "comment"}} {
+			raw, present := row[pair[0]]
+			if !present {
+				return fmt.Errorf("SQL vocabulary row%d missing%s", i, pair[0])
+			}
+			var payload any
+			if raw != nil {
+				text, ok := raw.(string)
+				if !ok {
+					return fmt.Errorf("SQL vocabulary row%d %s is not JSON text", i, pair[0])
+				}
+				var err error
+				payload, err = decodeNativeSQLDocument([]byte(text))
+				if err != nil {
+					return fmt.Errorf("SQL vocabulary row%d %s: %w", i, pair[0], err)
+				}
+			}
+			if !reflect.DeepEqual(payload, cli[i][pair[1]]) {
+				return fmt.Errorf("SQL/CLI vocabulary row%d complete%s payload differs", i, pair[0])
+			}
+		}
+	}
+	return nil
+}
+
+func b20VocabularyJournalControls(t *testing.T) {
+	t.Helper()
+	for _, tc := range []struct {
+		name, sql, cli string
+		match          bool
+	}{
+		{"actual_numeric_priority", `{"priority":2}`, `{"priority":2}`, true},
+		{"large_exact", `{"n":9007199254740993}`, `{"n":9007199254740993}`, true},
+		{"rounded_refused", `{"n":9007199254740993}`, `{"n":9007199254740992}`, false},
+		{"string_refused", `{"n":9007199254740993}`, `{"n":"9007199254740993"}`, false},
+		{"numeric_spelling_refused", `{"n":1}`, `{"n":1.0}`, false},
+		{"nested_duplicate_refused", `{"n":{"x":1,"x":2}}`, `{"n":{"x":2}}`, false},
+		{"trailing_refused", `{"n":2} {}`, `{"n":2}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := decodeNativeSQLDocument([]byte(tc.cli))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sql := map[string]any{"seq": json.Number("1"), "op": "create", "issue_id": b20VocabularySubject, "actor": "b20-recorder", "issue_json": tc.sql, "dep_json": nil, "comment_json": nil}
+			cli := map[string]any{"seq": json.Number("1"), "op": "create", "issue_id": b20VocabularySubject, "actor": "b20-recorder", "issue": value}
+			if err := b20VocabularyJournalEqual([]map[string]any{sql}, []map[string]any{cli}); (err == nil) != tc.match {
+				t.Fatalf("exact SQL/CLI numeric/type control match=%v: %v", tc.match, err)
+			}
+		})
+	}
+}
+
 func b20NativeVocabularyProjection(t *testing.T, rows []map[string]any) []b20VocabularyProjection {
 	t.Helper()
 	var result []b20VocabularyProjection
@@ -267,7 +334,9 @@ func (r *nativeRecorder) recordB20VocabularyTwin(binary, name string) b20Vocabul
 		capture(label)
 		raw := r.command(w, "prefix-"+label+"-export", binary, []string{"events", "export", "--json"}, false)
 		rows := b20VocabularyLines(t, raw)
-		compareSQLJournal(t, twin.Images[label].Rows["journal"], rows)
+		if err := b20VocabularyJournalEqual(twin.Images[label].Rows["journal"], rows); err != nil {
+			t.Fatal(err)
+		}
 		projection := b20NativeVocabularyProjection(t, rows)
 		if !reflect.DeepEqual(projection, want[:i+1]) {
 			t.Fatalf("native mutation%d did not produce its independently expected classified row: %+v", i+1, projection)
@@ -423,6 +492,9 @@ func b20VerifyVocabularyAuxiliary(t *testing.T, r *nativeRecorder, path string, 
 }
 
 func TestB20NativeMutationVocabularyTwins(t *testing.T) {
+	if !t.Run("lossless_sql_cli_journal_controls", b20VocabularyJournalControls) {
+		t.Fatal("lossless vocabulary comparison controls failed")
+	}
 	root, checkout := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR"), os.Getenv("PLUG_SOURCE_MODULE_ROOT")
 	if !filepath.IsAbs(root) || !filepath.IsAbs(checkout) {
 		t.Fatal("actual declared output and checkout paths required")
