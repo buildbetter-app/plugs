@@ -642,6 +642,7 @@ internal/integration/converterroundtrip/memory_reverse.go
 internal/integration/converterroundtrip/native_boundary_fixture_test.go
 internal/integration/converterroundtrip/native_boundary_receiving_test.go
 internal/integration/converterroundtrip/native_capture_set_cli_test.go
+internal/integration/converterroundtrip/native_child_counter_parent_test.go
 internal/integration/converterroundtrip/native_commit_fixture_test.go
 internal/integration/converterroundtrip/native_commit_receiving_test.go
 internal/integration/converterroundtrip/native_delta.go
@@ -695,6 +696,8 @@ internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
+internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz
+internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz.provenance.json
 internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz
 internal/integration/converterroundtrip/testdata/public-complete-root-990eb800.tar
 internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar

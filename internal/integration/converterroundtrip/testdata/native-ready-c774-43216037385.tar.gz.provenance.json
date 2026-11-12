@@ -1,0 +1,49 @@
+{
+  "authored_added_members": [
+    "PACKAGE-PROVENANCE.json",
+    "DURABLE-SOURCE-OMISSIONS.json",
+    "INNER-HASHES.json"
+  ],
+  "capture_set": {
+    "final_part_sha256": "62a20786d96bec2e3ec8e9f9b641e07567679c5c6eafdff06aa0cc0ead62f40a",
+    "head_sha256": "f6e9529714ba0945e0cefdba1fc4438454bdda4375d141a826de18b0eca8aae4",
+    "root": "physical/capture-set/capture-set.json",
+    "root_sha256": "c2048f8bfd934f7501ceff3c3127af44cf79678b549f7d1b1d75955a2781364e",
+    "stream_sha256": "b92f2af6cab6eb252323159bded202e9e90facd873d57307d3f3ed7610ef93e1",
+    "totals": {
+      "commits": 95,
+      "full_image_bytes": 1183889,
+      "reconstructed_cells": 18938,
+      "reconstructed_rows": 6242,
+      "row_operations": 475,
+      "schemas": 77,
+      "table_transactions": 1780
+    }
+  },
+  "data_class": "PUBLIC_DISPOSABLE",
+  "format": "b01-complete-ready-public-input-provenance/1",
+  "native_child_expectation": {
+    "source": "Byte-exact public create and physical SQL originals and their expectation mapping are retained inside PACKAGE-PROVENANCE.json in the authenticated envelope; no Plug response is an expectation"
+  },
+  "no_original_cells_removed": true,
+  "original_delivered_index_sha256": "36cef8349e0f91534af5120bd1c67c4f3f2a6990e5018d5da3c507fbf26b739f",
+  "original_member_count": 2040,
+  "original_members": "All2040 delivered files retained byte-for-byte; authenticated individually against original TGZ",
+  "original_receipt_sha256": "121fe00a2c752d375eb41f5605a4bf0f1d41a664234cce1c3ba45a34df2e560b",
+  "original_tgz_sha256": "da48f03262bde15f3ffdba89e873f63aad34c22ed9a935c4b6ce75e92ba9034a",
+  "owning_test_status": "FAIL after authentic physical capture command exit0; source-fields oracle correction separate",
+  "packaged_fixture": {
+    "bytes": 8747815,
+    "inner_members": 2043,
+    "path": "testdata/native-ready-c774-43216037385.tar.gz",
+    "sha256": "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f",
+    "uncompressed_inner_bytes": 60542748
+  },
+  "packaging": "Author-created deterministic tar.gz envelope and inner hash table around immutable originals; not producer PASS or consumer/runtime proof",
+  "producer_head": "c774182b3ce39540b3f2a70bc4844d4242fd3ff6",
+  "producer_source_packet_sha256": "a49ca99fbcf3bf6d8df12d670514426dc054193065e1d5ea6be3d041233e57a2",
+  "producer_tree": "00047051ffee006574fb04bd6a39949c7fb5a407",
+  "qualification": "AUTHENTIC_ORIGINALS_ONLY_FULL_READER_CONSUMER_EXECUTION_PENDING",
+  "run_id": "43216037385",
+  "source_reference": "in-test pinned public source9d6fff760 with original native companion clock hooks; captured source dependencyc774; no admitted bundle substitution"
+}
