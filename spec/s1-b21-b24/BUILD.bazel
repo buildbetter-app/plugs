@@ -151,7 +151,7 @@ go_test(
     name = "native_b23_count_test",
     size = "large",
     srcs = _NATIVE_ACCEPTANCE_SRCS + ["native_count_matrix_test.go"],
-    args = ["-test.v", "-test.run=^TestNativeB23CountMatrix$$"],
+    args = ["-test.v", "-test.run=^TestNativeB23CountMatrix$$", "-native_recording=recording1"],
     data = [
         "native_testdata/profile.json",
         "native_testdata/protocol.json",

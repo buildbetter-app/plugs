@@ -960,6 +960,7 @@ func b23RichNativeOldAsOf(t *testing.T, server *b23RichClient, store driver.Stor
 }
 
 func TestB23NativeSourceHistoryPublicAcceptance(t *testing.T) {
+	b23BindNativeRequest(t)
 	manifest, archive := b23RichFixture(t)
 	commits, states, issueTable, labelTable := b23RichOracle(t)
 	scope, commitStates := b23RichAssertSourceOracle(t, archive, manifest, commits, states)

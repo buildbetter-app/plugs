@@ -37,3 +37,12 @@ that qualification requires a genuine native capture and independent source orac
 Source, focus, canonical whole, hosted, native, history and full-card remain
 separate qualifications. These public disposable fixtures consume no private or
 official admission and make no FullS1 or protected mutable-policy/latency claim.
+
+The main793 rebase retains the predecessor fixtures and adds an exact
+`PLUG_B23_REQUEST_SHA` runner-to-checkout binding for each native root. The first
+full native focus also includes `//spec/s1-b21-b24:native_b23_count_test` with
+its declared `recording1` argument and the authenticated admitted418/c8eb bundle.
+That admitted executable and the source-built9d6 workload keep separate provenance.
+The count matrix retains its independent corpora, refused-operation conservation,
+import/replay and physical SQL reopen assertions. Whole uses the zero-extra
+canonical preset on an on-demand runner; prior head results remain historical.

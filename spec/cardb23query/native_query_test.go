@@ -231,7 +231,34 @@ func (n *b23Native) state(label string) map[string][]string {
 // The native pin is exactly the behavior catalog's beads-base source. The
 // unchanged B20 source builder verifies every Git blob and records the build.
 // This is a fresh public fixture recording, never official/native admission.
+func b23BindNativeRequest(t *testing.T) {
+	t.Helper()
+	request := os.Getenv("PLUG_B23_REQUEST_SHA")
+	source := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if len(request) != 40 || strings.Trim(request, "0123456789abcdef") != "" || !filepath.IsAbs(source) || !filepath.IsAbs(root) {
+		t.Fatal("native B23 requires its exact request SHA and declared source/output roots")
+	}
+	cmd := exec.CommandContext(t.Context(), "/usr/bin/git", "-C", source, "show", "-s", "--format=%H%n%T%n%P", "HEAD")
+	cmd.Env = []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/local/bin:/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	raw, err := cmd.Output()
+	tuple := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if err != nil || len(tuple) != 3 || tuple[0] != request {
+		t.Fatalf("native B23 request/source mismatch: %q %v", raw, err)
+	}
+	receipt, err := json.MarshalIndent(map[string]any{"request_sha": request, "head": tuple[0], "tree": tuple[1], "ordered_parents": strings.Fields(tuple[2]), "test": t.Name(), "target": os.Getenv("TEST_TARGET")}, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(t.Name())
+	if err := os.WriteFile(filepath.Join(root, "b23-request-"+name+".json"), receipt, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("B23_NATIVE_REQUEST head=%s tree=%s parents=%s", tuple[0], tuple[1], tuple[2])
+}
+
 func TestB23FreshNativeCombinedPredicateCountsAndOrderedKeysets(t *testing.T) {
+	b23BindNativeRequest(t)
 	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if !filepath.IsAbs(root) {
 		t.Fatal("declared absolute output root required")
