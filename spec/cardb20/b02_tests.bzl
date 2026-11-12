@@ -37,9 +37,19 @@ def b02_tests():
 
     go_test(
         name = "b02_native_delta_test",
-        srcs = [":native_build_support", "b02_delta_native_test.go"],
+        srcs = [":native_build_support", "b02_delta_native_test.go", "b02_mixed_delta_native_test.go"],
         data = ["//spec/s1-b09-native:lexicon_files", "//internal/publicnative:dolt_runtime"],
         env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+        env_inherit = [
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_SHA",
+            "GITHUB_WORKFLOW_REF",
+            "BAZEL_BIN",
+            "BAZEL_RC",
+            "BAZELISK_HOME",
+            "BAZELISK_VERIFY_SHA256",
+        ],
         args = ["-test.v"],
         deps = [
             "//internal/core/model",

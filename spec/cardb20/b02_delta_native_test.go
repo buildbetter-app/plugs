@@ -94,7 +94,7 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 				t.Fatal("actual public writer search missing command", command.label)
 			}
 		}
-		recipe := []byte("formula = \"b02-public-also\"\nversion = 1\ntype = \"workflow\"\n\n[[steps]]\nid = \"spawner\"\ntitle = \"B02 cooked spawner\"\n\n[[steps]]\nid = \"waiter\"\ntitle = \"B02 cooked waiter\"\nneeds = [\"spawner\"]\nwaits_for = \"all-children\"\n")
+		recipe := []byte("formula = \"b02-public-also\"\nversion = 1\ntype = \"workflow\"\n\n[[steps]]\nid = \"spawner\"\ntitle = \"B02 cooked spawner\"\n\n[[steps]]\nid = \"waiter\"\ntitle = \"B02 cooked waiter\"\nneeds = [\"spawner\"]\nwaits_for = \"all-children\"\n\n[[steps]]\nid = \"waiter-any\"\ntitle = \"B02 cooked waiter-any\"\nneeds = [\"spawner\"]\nwaits_for = \"any-children\"\n")
 		path := filepath.Join(w.dir, "b02-public-also.formula.toml")
 		if err := os.WriteFile(path, recipe, 0600); err != nil {
 			t.Fatal(err)
@@ -104,11 +104,11 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 			ProtoID string `json:"proto_id"`
 			Created int    `json:"created"`
 		}
-		if json.Unmarshal(w.run("cook-persist", "cook", path, "--persist", "--json"), &cooked) != nil || cooked.ProtoID == "" || cooked.Created != 3 {
+		if json.Unmarshal(w.run("cook-persist", "cook", path, "--persist", "--json"), &cooked) != nil || cooked.ProtoID == "" || cooked.Created != 4 {
 			t.Fatal("actual public persisted cook result")
 		}
 		rows := w.rows("cooked-row-readback", "SELECT id,title,status,is_template FROM issues ORDER BY id")
-		if len(rows) != 3 {
+		if len(rows) != 4 {
 			t.Fatal("cook physical census", rows)
 		}
 		for _, row := range rows {
@@ -120,6 +120,8 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 				role = "proto-spawner"
 			case "B02 cooked waiter":
 				role = "proto-waiter"
+			case "B02 cooked waiter-any":
+				role = "proto-waiter-any"
 			}
 			id, ok := row["id"].(string)
 			if !ok || role == "" || w.ids[role] != "" || row["status"] != "open" || fmt.Sprint(row["is_template"]) != "1" {
@@ -130,17 +132,18 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 		if w.ids["proto-root"] != cooked.ProtoID {
 			t.Fatal("cook result not bound to committed root")
 		}
-		w.metadata("cooked-metadata", "proto-waiter", "proto-spawner")
+		w.metadata("cooked-metadata", "proto-waiter", "proto-spawner", "all-children")
+		w.metadata("cooked-any-metadata", "proto-waiter-any", "proto-spawner", "any-children")
 		var poured struct {
 			NewEpicID         string            `json:"new_epic_id"`
 			IDMapping         map[string]string `json:"id_mapping"`
 			Created, Attached int
 			Phase             string
 		}
-		if json.Unmarshal(w.run("pour", "mol", "pour", cooked.ProtoID, "--json"), &poured) != nil || poured.Created != 3 || poured.Attached != 0 || poured.Phase != "liquid" || len(poured.IDMapping) != 3 {
+		if json.Unmarshal(w.run("pour", "mol", "pour", cooked.ProtoID, "--json"), &poured) != nil || poured.Created != 4 || poured.Attached != 0 || poured.Phase != "liquid" || len(poured.IDMapping) != 4 {
 			t.Fatal("actual public pour result")
 		}
-		for _, role := range []string{"root", "spawner", "waiter"} {
+		for _, role := range []string{"root", "spawner", "waiter", "waiter-any"} {
 			id := poured.IDMapping[w.ids["proto-"+role]]
 			if id == "" || id == w.ids["proto-"+role] {
 				t.Fatal("pour omitted physical endpoint mapping")
@@ -150,18 +153,41 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 		if poured.NewEpicID != w.ids["root"] {
 			t.Fatal("pour root identity mismatch")
 		}
-		w.metadata("poured-metadata", "waiter", "spawner")
+		w.metadata("poured-metadata", "waiter", "spawner", "all-children")
+		w.metadata("poured-any-metadata", "waiter-any", "spawner", "any-children")
 		statuses := map[string]string{}
 		for role := range w.ids {
 			statuses[role] = "open"
 		}
-		w.observe("public-childless-open", map[string][]string{"proto-waiter": {"proto-spawner"}, "waiter": {"spawner"}}, statuses)
+		open := map[string][]string{"proto-waiter": {"proto-spawner"}, "proto-waiter-any": {"proto-spawner"}, "waiter": {"spawner"}, "waiter-any": {"spawner"}}
+		closed := map[string][]string{"proto-waiter": {"proto-spawner"}, "proto-waiter-any": {"proto-spawner"}}
+		w.observe("public-childless-open", open, statuses)
 		w.run("close-poured-spawner", "close", w.ids["spawner"], "--reason", "B02 public collapsed edge", "--json")
 		statuses["spawner"] = "closed"
-		w.observe("public-spawner-closed", map[string][]string{"proto-waiter": {"proto-spawner"}}, statuses)
+		w.observe("public-spawner-closed", closed, statuses)
 		w.run("reopen-poured-spawner", "reopen", w.ids["spawner"], "--reason", "B02 public writer live reopen", "--json")
 		statuses["spawner"] = "open"
-		w.observe("public-spawner-reopened", map[string][]string{"proto-waiter": {"proto-spawner"}, "waiter": {"spawner"}}, statuses)
+		w.observe("public-spawner-reopened", open, statuses)
+		w.create("durable-child")
+		w.ids["ephemeral-child"], w.ephemeral["ephemeral-child"] = "b02-ephemeral-child", true
+		w.run("create-ephemeral-child", "create", "--id", w.ids["ephemeral-child"], "--title", "B02 ephemeral-child", "--type", "task", "--force", "--status", "open", "--ephemeral", "--json")
+		for _, role := range []string{"durable-child", "ephemeral-child"} {
+			statuses[role] = "open"
+			w.run("parent-"+role, "update", w.ids[role], "--parent", w.ids["spawner"], "--json")
+		}
+		w.observe("public-mixed-children-open", open, statuses)
+		w.run("close-durable-child", "close", w.ids["durable-child"], "--reason", "B02 also_blocks overrides any opening", "--json")
+		statuses["durable-child"] = "closed"
+		w.observe("public-mixed-any-child-closed", open, statuses)
+		w.run("close-ephemeral-child", "close", w.ids["ephemeral-child"], "--reason", "B02 also_blocks outlives all children", "--json")
+		statuses["ephemeral-child"] = "closed"
+		w.observe("public-mixed-all-children-closed", open, statuses)
+		w.run("close-mixed-spawner", "close", w.ids["spawner"], "--reason", "B02 mixed public also_blocks satisfied", "--json")
+		statuses["spawner"] = "closed"
+		w.observe("public-mixed-spawner-closed", closed, statuses)
+		w.run("reopen-mixed-spawner", "reopen", w.ids["spawner"], "--reason", "B02 mixed public also_blocks live again", "--json")
+		statuses["spawner"] = "open"
+		w.observe("public-mixed-spawner-reopened", open, statuses)
 		for _, engine := range []string{"memory", "sqlite", "postgres"} {
 			t.Run("public-counterpart-"+engine, func(t *testing.T) { b02DeltaPublicAlso(t, engine) })
 		}
@@ -201,6 +227,7 @@ func TestB02NativeNewPublicWriterWIPAndReasonProvenance(t *testing.T) {
 		statuses["spawner"] = "open"
 		w.observe("reason-spawner-reopened", initial, statuses)
 	})
+	b02RecordNewMixedConditions(t, cli, root)
 }
 
 func b02DeltaWriterSource(t *testing.T, r *nativeRecorder, checkout string) {
@@ -252,12 +279,14 @@ func b02DeltaWriterSource(t *testing.T, r *nativeRecorder, checkout string) {
 }
 
 type b02DeltaCLI struct {
-	t        *testing.T
-	rec      *nativeRecorder
-	cli, dir string
-	env      []string
-	ids      map[string]string
-	server   *publicnative.Server
+	t         *testing.T
+	rec       *nativeRecorder
+	cli, dir  string
+	env       []string
+	ids       map[string]string
+	ephemeral map[string]bool
+	edges     []b02DeltaMixedEdge
+	server    *publicnative.Server
 }
 
 func newB02DeltaCLI(t *testing.T, cli, root string) *b02DeltaCLI {
@@ -292,7 +321,7 @@ func newB02DeltaCLI(t *testing.T, cli, root string) *b02DeltaCLI {
 			env[i] = "PATH=/tmp/plug-swarm/bin/worker-safe:" + strings.TrimPrefix(value, "PATH=")
 		}
 	}
-	w := &b02DeltaCLI{t: t, rec: &nativeRecorder{t: t, root: root}, cli: cli, dir: dir, env: env, ids: map[string]string{}, server: server}
+	w := &b02DeltaCLI{t: t, rec: &nativeRecorder{t: t, root: root}, cli: cli, dir: dir, env: env, ids: map[string]string{}, ephemeral: map[string]bool{}, server: server}
 	w.command("git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="})
 	var identity struct{ Commit, Build string }
 	if raw := w.run("version", "version", "--json"); json.Unmarshal(raw, &identity) != nil || identity.Commit != pinnedSource.Commit || identity.Build != "b20-public-fixture-"+pinnedSource.Commit {
@@ -347,7 +376,7 @@ func (w *b02DeltaCLI) rows(label, query string) []map[string]any {
 	}
 	return rows
 }
-func (w *b02DeltaCLI) metadata(label, source, target string) {
+func (w *b02DeltaCLI) metadata(label, source, target, gate string) {
 	w.t.Helper()
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
 	rows := w.rows(label, "SELECT type,metadata FROM dependencies WHERE issue_id="+quote(w.ids[source])+" AND depends_on_issue_id="+quote(w.ids[target]))
@@ -359,7 +388,7 @@ func (w *b02DeltaCLI) metadata(label, source, target string) {
 		w.t.Fatal("physical dependency metadata is not retained JSON", rows)
 	}
 	var actual map[string]any
-	if json.Unmarshal([]byte(text), &actual) != nil || !reflect.DeepEqual(actual, map[string]any{"gate": "all-children", "also_blocks": true}) {
+	if json.Unmarshal([]byte(text), &actual) != nil || !reflect.DeepEqual(actual, map[string]any{"gate": gate, "also_blocks": true}) {
 		w.t.Fatal("public writer exact metadata differs", text)
 	}
 }
@@ -367,7 +396,11 @@ func (w *b02DeltaCLI) observe(label string, want map[string][]string, statuses m
 	w.t.Helper()
 	before := w.rows(label+"-before-issues", "SELECT * FROM issues ORDER BY id")
 	deps := w.rows(label+"-before-dependencies", "SELECT * FROM dependencies ORDER BY issue_id,depends_on_issue_id")
-	if len(before) != len(w.ids) || len(statuses) != len(w.ids) {
+	var extra [2][]map[string]any
+	if len(w.ephemeral) != 0 {
+		extra = b02DeltaMixedRows(w, label+"-before", deps)
+	}
+	if len(before)+len(extra[0]) != len(w.ids) || len(statuses) != len(w.ids) {
 		w.t.Fatal("native physical row census mismatch")
 	}
 	roles := map[string]string{}
@@ -377,11 +410,15 @@ func (w *b02DeltaCLI) observe(label string, want map[string][]string, statuses m
 		}
 		roles[id] = role
 	}
-	for _, row := range before {
-		id, ok := row["id"].(string)
-		role := roles[id]
-		if !ok || role == "" || row["status"] != statuses[role] || row["updated_at"] == nil || row["is_blocked"] == nil {
-			w.t.Fatal("exact committed native status/projection", row)
+	seen := map[string]bool{}
+	for plane, rows := range [2][]map[string]any{before, extra[0]} {
+		for _, row := range rows {
+			id, ok := row["id"].(string)
+			role := roles[id]
+			if !ok || role == "" || seen[role] || w.ephemeral[role] != (plane == 1) || row["status"] != statuses[role] || row["updated_at"] == nil || row["is_blocked"] == nil {
+				w.t.Fatal("exact committed native plane/status/projection", row)
+			}
+			seen[role] = true
 		}
 	}
 	for repeat := 0; repeat < 2; repeat++ {
@@ -422,11 +459,80 @@ func (w *b02DeltaCLI) observe(label string, want map[string][]string, statuses m
 	if after := w.rows(label+"-reopened-issues", "SELECT * FROM issues ORDER BY id"); !reflect.DeepEqual(before, after) {
 		w.t.Fatal("native read changed exact committed rows/timestamps")
 	}
-	if after := w.rows(label+"-reopened-dependencies", "SELECT * FROM dependencies ORDER BY issue_id,depends_on_issue_id"); !reflect.DeepEqual(deps, after) {
+	afterDeps := w.rows(label+"-reopened-dependencies", "SELECT * FROM dependencies ORDER BY issue_id,depends_on_issue_id")
+	if !reflect.DeepEqual(deps, afterDeps) {
 		w.t.Fatal("native read changed exact committed edges")
 	}
+	if len(w.ephemeral) != 0 && !reflect.DeepEqual(extra, b02DeltaMixedRows(w, label+"-reopened", afterDeps)) {
+		w.t.Fatal("native read changed exact committed mixed rows/edges/timestamps")
+	}
 	w.server.RequireDatabaseDir(w.t, "b02_new")
-	w.rec.writeJSON(filepath.Join(w.rec.root, label+"-expectations.json"), map[string]any{"blocked": want, "statuses": statuses, "actual_endpoint_roles": w.ids, "native_runtime_pin": pinnedSource.Commit, "sql_reopen": "each actual CLI process reopens the same physical database; exact before/after row images retained"})
+	w.rec.writeJSON(filepath.Join(w.rec.root, label+"-expectations.json"), map[string]any{"blocked": want, "statuses": statuses, "actual_endpoint_roles": w.ids, "ephemeral_roles": w.ephemeral, "expected_mixed_edges": w.edges, "native_runtime_pin": pinnedSource.Commit, "sql_reopen": "each actual CLI process reopens the same physical database; exact before/after row images retained"})
+}
+
+// The exact native table and target-arm literals are bound to this function's
+// AST sites, context and complete recorder postimage by the existing checker.
+func b02DeltaMixedRows(w *b02DeltaCLI, label string, ordinaryDeps []map[string]any) [2][]map[string]any {
+	w.t.Helper()
+	result := [2][]map[string]any{
+		w.rows(label+"-ephemeral-rows", "SELECT * FROM wisps ORDER BY id"),
+		w.rows(label+"-ephemeral-edges", "SELECT * FROM wisp_dependencies ORDER BY issue_id,depends_on_issue_id"),
+	}
+	if w.edges == nil {
+		return result
+	}
+	want := map[string]b02DeltaMixedEdge{}
+	for _, edge := range w.edges {
+		key := w.ids[edge.From] + "/" + edge.Kind + "/" + w.ids[edge.To]
+		if _, exists := want[key]; exists || w.ids[edge.From] == "" || w.ids[edge.To] == "" {
+			w.t.Fatal("mixed native edge expectation is not independently bound")
+		}
+		want[key] = edge
+	}
+	seen := map[string]bool{}
+	for plane, rows := range [2][]map[string]any{ordinaryDeps, result[1]} {
+		for _, row := range rows {
+			source, ok := row["issue_id"].(string)
+			if !ok || source == "" {
+				w.t.Fatal("mixed native edge source missing")
+			}
+			target, targetEphemeral := "", false
+			for _, column := range []string{"depends_on_issue_id", "depends_on_wisp_id"} {
+				if value, ok := row[column].(string); ok && value != "" {
+					if target != "" {
+						w.t.Fatal("mixed native edge has two target arms")
+					}
+					target, targetEphemeral = value, column != "depends_on_issue_id"
+				}
+			}
+			key := source + "/" + fmt.Sprint(row["type"]) + "/" + target
+			edge, exists := want[key]
+			if !exists || seen[key] || w.ephemeral[edge.From] != (plane == 1) || w.ephemeral[edge.To] != targetEphemeral {
+				w.t.Fatal("mixed native physical adjacency/endpoint planes differ", row)
+			}
+			var metadata map[string]any
+			if text, ok := row["metadata"].(string); ok && text != "" {
+				if json.Unmarshal([]byte(text), &metadata) != nil {
+					w.t.Fatal("mixed native stored metadata is not JSON")
+				}
+			}
+			var expected map[string]any
+			if edge.Gate != "" {
+				expected = map[string]any{"gate": edge.Gate}
+			}
+			if len(metadata) == 0 {
+				metadata = nil
+			}
+			if !reflect.DeepEqual(metadata, expected) {
+				w.t.Fatal("mixed native committed gate metadata differs", metadata, expected)
+			}
+			seen[key] = true
+		}
+	}
+	if len(seen) != len(want) {
+		w.t.Fatal("mixed native physical edge census differs")
+	}
+	return result
 }
 
 func b02DeltaPublicAlso(t *testing.T, engine string) {
@@ -444,17 +550,14 @@ func b02DeltaPublicAlso(t *testing.T, engine string) {
 		return commit.Results[0].Ref
 	}
 	spawner, waiter := create("spawner"), create("waiter")
+	anyWaiter := create("waiter-any")
 	h.Call("bead.link", "also-public-link", map[string]any{"from": waiter, "to": spawner, "kind": "waits-for", "metadata": map[string]any{"gate": "all-children", "also_blocks": true}}, "")
-	for _, phase := range []struct {
-		label, method string
-		blocked       bool
-	}{{"childless-open", "", true}, {"spawner-closed", "bead.close", false}, {"spawner-reopened", "bead.reopen", true}} {
-		if phase.method != "" {
-			h.Call(phase.method, "also-"+phase.label, map[string]any{"id": spawner}, "")
-		}
+	h.Call("bead.link", "also-public-any-link", map[string]any{"from": anyWaiter, "to": spawner, "kind": "waits-for", "metadata": map[string]any{"gate": "any-children", "also_blocks": true}}, "")
+	observe := func(label string, blocked bool) {
+		t.Helper()
 		before := h.Capture()
 		check := func() {
-			reply := h.Call("bead.blocked", "also-read-"+phase.label, map[string]any{"limit": 1000}, "")
+			reply := h.Call("bead.blocked", "also-read-"+label, map[string]any{"limit": 1000}, "")
 			var page struct {
 				Items []struct {
 					Bead                           struct{ ID string }
@@ -463,14 +566,15 @@ func b02DeltaPublicAlso(t *testing.T, engine string) {
 				}
 				NextCursor string
 			}
-			if json.Unmarshal(reply.Result, &page) != nil || page.NextCursor != "" || len(page.Items) != map[bool]int{true: 1, false: 0}[phase.blocked] {
+			if json.Unmarshal(reply.Result, &page) != nil || page.NextCursor != "" || len(page.Items) != map[bool]int{true: 2, false: 0}[blocked] {
 				t.Fatal("public also counterpart membership", string(reply.Result))
 			}
-			if phase.blocked {
-				item := page.Items[0]
-				if item.Bead.ID != waiter.ID || item.BlockedByCount != 1 || item.HiddenBlockers != 0 || !reflect.DeepEqual(item.BlockedBy, []model.Ref{spawner}) {
+			seen := map[string]bool{}
+			for _, item := range page.Items {
+				if (item.Bead.ID != waiter.ID && item.Bead.ID != anyWaiter.ID) || seen[item.Bead.ID] || item.BlockedByCount != 1 || item.HiddenBlockers != 0 || len(item.BlockedBy) != 1 || !b02DeltaSameRef(item.BlockedBy[0], spawner) {
 					t.Fatal("public also counterpart exact reasons")
 				}
+				seen[item.Bead.ID] = true
 			}
 		}
 		check()
@@ -481,5 +585,51 @@ func b02DeltaPublicAlso(t *testing.T, engine string) {
 			check()
 			proof.Same(t, before, h.Capture())
 		}
+	}
+	for _, phase := range []struct {
+		label, method string
+		blocked       bool
+	}{{"childless-open", "", true}, {"spawner-closed", "bead.close", false}, {"spawner-reopened", "bead.reopen", true}} {
+		if phase.method != "" {
+			h.Call(phase.method, "also-"+phase.label, map[string]any{"id": spawner}, "")
+		}
+		observe(phase.label, phase.blocked)
+	}
+	durableChild := create("durable-child")
+	reply := h.Call("x.workflow.invoke", "also-invoke-mixed-child", map[string]any{"template": "b02-also-mixed", "project": "b07positive", "mode": "ephemeral", "checklist": []any{map[string]any{"label": "child", "title": "B02 ephemeral-child"}, map[string]any{"label": "anchor", "title": "B02 keep mixed child run active"}}}, "")
+	var invocation struct {
+		Items []struct{ ID, Label, Plane string }
+	}
+	if json.Unmarshal(reply.Result, &invocation) != nil || len(invocation.Items) != 2 {
+		t.Fatal("actual public mixed also child invocation")
+	}
+	var ephemeralChild model.Ref
+	for _, item := range invocation.Items {
+		if item.Plane != "ephemeral" || item.ID == "" {
+			t.Fatal("mixed also child lost actual provider identity")
+		}
+		if item.Label == "child" {
+			ephemeralChild = model.RefByID(item.ID, model.Natural64(0))
+		}
+	}
+	if !ephemeralChild.IsID() {
+		t.Fatal("mixed also child label missing")
+	}
+	for i, child := range []model.Ref{durableChild, ephemeralChild} {
+		h.Call("bead.link", fmt.Sprintf("also-mixed-parent-%d", i), map[string]any{"from": child, "to": spawner, "kind": "parent-child"}, "")
+	}
+	observe("mixed-children-open", true)
+	for _, phase := range []struct {
+		label, method string
+		ref           model.Ref
+		blocked       bool
+	}{
+		{"mixed-any-child-closed", "bead.close", durableChild, true},
+		{"mixed-all-children-closed", "bead.close", ephemeralChild, true},
+		{"mixed-spawner-closed", "bead.close", spawner, false},
+		{"mixed-spawner-reopened", "bead.reopen", spawner, true},
+	} {
+		h.Call(phase.method, "also-"+phase.label, map[string]any{"id": phase.ref}, "")
+		observe(phase.label, phase.blocked)
 	}
 }

@@ -1642,6 +1642,7 @@ spec/cardb01/reference-run-2.json
 spec/cardb01/reference_test.go
 spec/cardb02/BUILD.bazel
 spec/cardb02/blocked_public_test.go
+spec/cardb02/mixed_conditions_public_test.go
 spec/cardb07/BUILD.bazel
 spec/cardb07/README.md
 spec/cardb07/cases_test.go

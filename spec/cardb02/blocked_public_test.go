@@ -55,7 +55,9 @@ type blockedPage struct {
 }
 
 func sameRef(a, b model.Ref) bool {
-	return a.IsID() == b.IsID() && a.ID == b.ID && a.Branch == b.Branch && a.Key == b.Key
+	aBranch, aErr := a.Branch.Canonical()
+	bBranch, bErr := b.Branch.Canonical()
+	return aErr == nil && bErr == nil && a.IsID() == b.IsID() && a.ID == b.ID && aBranch == bBranch && a.Key == b.Key
 }
 
 func (f *blockedFixture) call(method string, params map[string]any) public.Reply {
@@ -182,11 +184,14 @@ func (f *blockedFixture) observe(phase string, want map[string][]string) {
 			if role == "" || !item.Bead.Blocked || item.HiddenBlockers != 0 || item.BlockedByCount != len(item.BlockedBy) {
 				t.Fatalf("unexpected subject/reasons %+v", item)
 			}
+			if _, duplicate := got[role]; duplicate {
+				t.Fatal("duplicate blocked subject", role)
+			}
 			ids = append(ids, item.Bead.ID)
 			got[role] = []string{}
 			reasonIDs := []string{}
 			for _, ref := range item.BlockedBy {
-				if roles[ref.ID] == "" {
+				if roles[ref.ID] == "" || !sameRef(ref, f.refs[roles[ref.ID]]) {
 					t.Fatal("unbound returned reason")
 				}
 				got[role] = append(got[role], roles[ref.ID])
@@ -437,8 +442,11 @@ func TestB02PublicBlockedUnresolvedReasonsAndSubjectCategories(t *testing.T) {
 			for _, role := range []string{"root", "pinned-subject", "backlog-subject", "dangling", "external", "orphan"} {
 				f.create(role)
 			}
-			f.write("bead.update", map[string]any{"id": f.refs["pinned-subject"], "fields": map[string]any{"status": "pinned"}})
-			f.write("bead.update", map[string]any{"id": f.refs["backlog-subject"], "fields": map[string]any{"status": "backlog"}})
+			beforeStatus := f.h.Capture()
+			f.seq++
+			f.h.Call("bead.update", fmt.Sprintf("b02-direct-status-%d", f.seq), map[string]any{"id": f.refs["pinned-subject"], "fields": map[string]any{"status": "pinned"}}, "ontology_use_slot_verb")
+			proof.Same(t, beforeStatus, f.h.Capture())
+			f.write("bead.defer", map[string]any{"id": f.refs["backlog-subject"]})
 			f.link("pinned-subject", "root", "blocks", nil)
 			f.link("backlog-subject", "root", "blocks", nil)
 			external := model.RefByID("external-b02-target", model.Natural64(0))
@@ -447,17 +455,20 @@ func TestB02PublicBlockedUnresolvedReasonsAndSubjectCategories(t *testing.T) {
 			f.seq++
 			f.h.Call("bead.link", fmt.Sprintf("b02-missing-%d", f.seq), map[string]any{"from": f.refs["dangling"], "to": model.RefByID("missing-b02-target", model.Natural64(0)), "kind": "blocks"}, "not_found")
 			proof.Same(t, beforeMissing, f.h.Capture())
-			// Public mutation refuses a missing local endpoint. Seed only the
-			// deliberately corrupt read controls, then exercise the real method.
+			// Public mutation refuses missing local endpoints and direct status
+			// edits. Fixture-install the literal legacy pinned row and deliberately
+			// corrupt adjacency only for these public read-projection controls.
 			changes := []conformance.FixtureChange{}
-			for _, role := range []string{"dangling", "orphan"} {
+			for _, role := range []string{"dangling", "orphan", "pinned-subject"} {
 				ref := f.refs[role]
 				doc, err := pipeline.DecodeDocument(beforeMissing.Row(t, ref.ID).Body)
 				if err != nil {
 					t.Fatal(err)
 				}
 				missing := model.RefByID("missing-b02-"+role, model.Natural64(0))
-				if role == "dangling" {
+				if role == "pinned-subject" {
+					doc.Fields["status"] = "pinned"
+				} else if role == "dangling" {
 					doc.Links = []pipeline.Link{{To: missing, Kind: "blocks"}}
 				} else {
 					doc.Parent = &missing
@@ -486,7 +497,7 @@ func TestB02PublicBlockedUnresolvedReasonsAndSubjectCategories(t *testing.T) {
 						t.Fatal("unresolved reason must fail closed with exact count")
 					}
 					if item.Bead.ID == f.refs["backlog-subject"].ID {
-						if item.HiddenBlockers != 0 || !reflect.DeepEqual(item.BlockedBy, []model.Ref{f.refs["root"]}) || item.Bead.Status != "backlog" {
+						if item.HiddenBlockers != 0 || len(item.BlockedBy) != 1 || !sameRef(item.BlockedBy[0], f.refs["root"]) || item.Bead.Status != "backlog" {
 							t.Fatal("backlog subject was treated as terminal")
 						}
 					} else if len(item.BlockedBy) != 0 || len(item.Bead.Links) != 0 {
