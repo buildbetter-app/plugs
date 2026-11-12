@@ -289,7 +289,7 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 		if err := validateSourcePlaneRelations(scoped, scopedRows); err != nil {
 			return err
 		}
-		if err := validateIssueOntology(scoped.Ontology, scopedRows["bead"], true); err != nil {
+		if err := validateIssueOntology(scoped.Ontology, scoped.Projects, scopedRows["bead"], true); err != nil {
 			return err
 		}
 		if native {

@@ -174,6 +174,13 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 			return fmt.Errorf("invalid source title/priority")
 		}
 		category, result, targetType := "", "", "issue"
+		// Native status catalogs install literal gate alongside issue. Retain
+		// that projection only in this modern route; an explicit gate->issue
+		// directive is validated/accounted by validateIssueOntology. Strict
+		// union migration below remains the authority for its target type.
+		if len(p.Statuses) != 0 && stringValue(fields["issue_type"]) == "gate" && stringValue(record.Body["type"]) == "gate" {
+			targetType = "gate"
+		}
 		if migration != nil {
 			target, ok := migration.Target(record.Project, record.ID)
 			status, known := migration.snapshot.Effective(record.Project).Status(target.Status)

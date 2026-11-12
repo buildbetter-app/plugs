@@ -59,7 +59,7 @@ func validateOntology(directives []OntologyDirective, projects []Project) error 
 // authorization is checked separately so a frame may use a subset of the
 // head's directives, while admission of the head requires every declaration
 // to be accounted for.
-func validateIssueOntology(directives []OntologyDirective, records []Record, requireAll bool) error {
+func validateIssueOntology(directives []OntologyDirective, projects []Project, records []Record, requireAll bool) error {
 	used := map[string]bool{}
 	for _, r := range records {
 		sourceType := stringValue(r.Source.Fields["issue_type"])
@@ -72,7 +72,18 @@ func validateIssueOntology(directives []OntologyDirective, records []Record, req
 				(d.Target.ID == "" || d.Target.ID == r.ID) {
 				matches++
 				used[d.ID] = true
+				if sourceType == "gate" && stringValue(r.Body["type"]) != d.To {
+					return fmt.Errorf("gate projection must honor its explicit ontology directive")
+				}
 			}
+		}
+		// Modern native catalogs carry the built-in gate node literally. A
+		// matching historical gate->issue directive still takes precedence and
+		// is accounted above. The validated per-project status catalog is the
+		// admission context; legacy record validation has no such context.
+		project := findProject(r.Project, projects)
+		if matches == 0 && len(project.Statuses) != 0 && sourceType == "gate" && stringValue(r.Body["type"]) == "gate" {
+			continue
 		}
 		if matches != 1 {
 			return fmt.Errorf("unsupported source type; one explicit ontology directive required")
