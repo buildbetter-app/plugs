@@ -1,0 +1,1774 @@
+{
+  "capture_set": {
+    "files": [
+      {
+        "mode": "0644",
+        "path": "capture-set/capture-set.json",
+        "sha256": "e411c8a368b61f52ccfb5f20f4c74dd67e6aaf07cbfee0f5d57a71dcff080ebc",
+        "size": 693
+      },
+      {
+        "mode": "0644",
+        "path": "capture-set/head.tar",
+        "sha256": "a9133123d03e432bcf1cd2421e2656d3c1a520117aa5757aca1dbd71d9ffaa46",
+        "size": 86528
+      },
+      {
+        "mode": "0644",
+        "path": "capture-set/parts/00000000000000000001.part",
+        "sha256": "2f8769933dfa88a577364f9956421128a93d8d60e109c8bbc3ec93c08a58f5bc",
+        "size": 287164
+      }
+    ],
+    "head_archive_declared_sha256": "a9133123d03e432bcf1cd2421e2656d3c1a520117aa5757aca1dbd71d9ffaa46",
+    "head_archive_declared_size": 86528,
+    "manifest_sha256": "e411c8a368b61f52ccfb5f20f4c74dd67e6aaf07cbfee0f5d57a71dcff080ebc",
+    "part_count": 1,
+    "path": "capture-set",
+    "read_api": "dumpformat.ReadNativeCaptureSetDirectory",
+    "stream_bytes": 286983,
+    "stream_sha256": "4862b149e5cc1dbee6ca772479b716efb60654ae59f3d97b73c13225eee1f42b"
+  },
+  "files": [
+    {
+      "mode": "0644",
+      "path": "capture-set/capture-set.json",
+      "sha256": "e411c8a368b61f52ccfb5f20f4c74dd67e6aaf07cbfee0f5d57a71dcff080ebc",
+      "size": 693
+    },
+    {
+      "mode": "0644",
+      "path": "capture-set/head.tar",
+      "sha256": "a9133123d03e432bcf1cd2421e2656d3c1a520117aa5757aca1dbd71d9ffaa46",
+      "size": 86528
+    },
+    {
+      "mode": "0644",
+      "path": "capture-set/parts/00000000000000000001.part",
+      "sha256": "2f8769933dfa88a577364f9956421128a93d8d60e109c8bbc3ec93c08a58f5bc",
+      "size": 287164
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-dolt_ignore.table.json",
+      "sha256": "a81bba80c4f916322f51d18a74366b02a1d6160a231bcbf91e3487ba26e222e1",
+      "size": 306
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-events.table.json",
+      "sha256": "ce5c49dd324915e31110e47a655cd21959852efc9e17f4e03b2c238774ae46df",
+      "size": 281
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-issues.table.json",
+      "sha256": "b588c36cac77d24bc076e72d84e44e25cbf804bc0ae8fe589bdb33d5bf5b0b73",
+      "size": 947
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-labels.table.json",
+      "sha256": "1678f295d8b3db90c2bd9a807290a2eba945bac2c8d89a4e5e80b3e1c776af2f",
+      "size": 216
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000002-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-dolt_ignore.table.json",
+      "sha256": "8c024974af6a6af689d3782602b08787dbfe2c006939a8f02f1f5d806e0c58db",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-events.table.json",
+      "sha256": "ce5c49dd324915e31110e47a655cd21959852efc9e17f4e03b2c238774ae46df",
+      "size": 281
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-issues.table.json",
+      "sha256": "b588c36cac77d24bc076e72d84e44e25cbf804bc0ae8fe589bdb33d5bf5b0b73",
+      "size": 947
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-labels.table.json",
+      "sha256": "1678f295d8b3db90c2bd9a807290a2eba945bac2c8d89a4e5e80b3e1c776af2f",
+      "size": 216
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000003-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-dolt_ignore.table.json",
+      "sha256": "8c024974af6a6af689d3782602b08787dbfe2c006939a8f02f1f5d806e0c58db",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-events.table.json",
+      "sha256": "09f2b5a3b60392f8310cf141835eca04a8c8fa23307c6dee591378404a483558",
+      "size": 483
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-issues.table.json",
+      "sha256": "f44c1072f11709c0247219a644b00220e28ca1b6ff2da7b97e0ec9a945527f95",
+      "size": 2146
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-labels.table.json",
+      "sha256": "1678f295d8b3db90c2bd9a807290a2eba945bac2c8d89a4e5e80b3e1c776af2f",
+      "size": 216
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000004-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-dolt_ignore.table.json",
+      "sha256": "8c024974af6a6af689d3782602b08787dbfe2c006939a8f02f1f5d806e0c58db",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-events.table.json",
+      "sha256": "febe5ab8541010ecc1bc3ad0cd32faf3c6f901ef9642839d38ebb8f63278e6a8",
+      "size": 1053
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-issues.table.json",
+      "sha256": "07029b40ca39562edf6a338c7f52b7d1e0b2b9c854b8b442cc0eca596506bd9b",
+      "size": 2147
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-labels.table.json",
+      "sha256": "1678f295d8b3db90c2bd9a807290a2eba945bac2c8d89a4e5e80b3e1c776af2f",
+      "size": 216
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000005-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-dolt_ignore.table.json",
+      "sha256": "8c024974af6a6af689d3782602b08787dbfe2c006939a8f02f1f5d806e0c58db",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-events.table.json",
+      "sha256": "d113679336bfb483955d029c4a7cf4cb6a842725f91e511094ea0152ca833d77",
+      "size": 1294
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-issues.table.json",
+      "sha256": "07029b40ca39562edf6a338c7f52b7d1e0b2b9c854b8b442cc0eca596506bd9b",
+      "size": 2147
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-labels.table.json",
+      "sha256": "1574368d6d294fe98c0c5ff4ea5f5fafd38eca99b8bf01bd2ea0c4491e373998",
+      "size": 269
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000006-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-dolt_ignore.table.json",
+      "sha256": "8c024974af6a6af689d3782602b08787dbfe2c006939a8f02f1f5d806e0c58db",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-events.table.json",
+      "sha256": "d99c25984e589e78717c20585712ccdaca910fca0c888bcacaceb80481aebcc0",
+      "size": 1536
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-issues.table.json",
+      "sha256": "07029b40ca39562edf6a338c7f52b7d1e0b2b9c854b8b442cc0eca596506bd9b",
+      "size": 2147
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-labels.table.json",
+      "sha256": "1574368d6d294fe98c0c5ff4ea5f5fafd38eca99b8bf01bd2ea0c4491e373998",
+      "size": 269
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/commit-00000000000000000007-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-bd_events_journal.table.json",
+      "sha256": "2968122a8f4c8cf10aabf6b2c563176aa573f5b105e410b1ba4ad3f8a3401bf2",
+      "size": 269
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-bd_events_seq.table.json",
+      "sha256": "3739bbcb6d2819c5dd628d8ae2f7031d114d2d8afd0aa192d9635655183db2f7",
+      "size": 207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-child_counters.table.json",
+      "sha256": "79d98778e6412635b724559748e3dc5aa29537da56bfbe905c4521c59e099dc7",
+      "size": 217
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-comments.table.json",
+      "sha256": "e73868bebe4232678258134c9459e0ce1d2ba3421f7b1a872d5b73de8b71b43b",
+      "size": 231
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-compaction_snapshots.table.json",
+      "sha256": "44babcd1c54dba014c8cb8f7f9bf1f4ef8bd031f3b5f83f8cea77849c8dbcfc4",
+      "size": 262
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-config.table.json",
+      "sha256": "6667ae14de062cb91bc6a059699cd35804e058295c0c224284cd39b0a8713817",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-custom_statuses.table.json",
+      "sha256": "00b4392e16859091686d368e5073f7a7e1a6dacb2205f2810b2aa695deb69c20",
+      "size": 211
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-custom_types.table.json",
+      "sha256": "bc557a8534d8e685aec6720fd1d08e501c76112891c028c25c588981c402e892",
+      "size": 197
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-dependencies.table.json",
+      "sha256": "cc36359a1b36d2a2f3febdb4618df4ce787a14c029bd15ef90ae4fb8fdab00d6",
+      "size": 327
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-dolt_ignore.table.json",
+      "sha256": "ff21ada9e80e79a70a63eb8c39e78ab7741a6b011b89a8b60ceee5e86ed9c8f8",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-epoch_minted_addresses.table.json",
+      "sha256": "357c2e5b4b5b679e0705bebe2bd81065c8535b7bc61205df4bb7b6443cf909e1",
+      "size": 291
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-events.table.json",
+      "sha256": "dc563368099297c610247ce430f3c6baa37d0f5538213b69f57a02a7a0544548",
+      "size": 1523
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-federation_peers.table.json",
+      "sha256": "2e54e696ec67c4b1a3477576f24ce906e98384120a879ab4035eefeaadf8aae1",
+      "size": 298
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-ignored_schema_migrations.table.json",
+      "sha256": "d5afc76bab1e1db8c721c5f226d7c62e8051f815861720a86db95454bfafd88c",
+      "size": 3451
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-interactions.table.json",
+      "sha256": "dad014a2bdfc8013b72f9c740db23a6d1ed94de51dda6d69a8d41d6921d54419",
+      "size": 331
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-issue_counter.table.json",
+      "sha256": "a2552d33b9d5996e7508f26052469574125baec10af6b49193a8fc674b03c3a3",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-issue_snapshots.table.json",
+      "sha256": "2c171aa8950aa6a49003974aba761f8e2f4ec70a4c80fff6fca9319915317d85",
+      "size": 315
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-issue_versions.table.json",
+      "sha256": "3ec56fb3a36cd94cd623314b24231a2d6312bc00137d344e65ac65ed1ec672d4",
+      "size": 370
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-issues.table.json",
+      "sha256": "b5a904b31f4b5e87c7794068493477f2b15e344f75985b1760cd05f035c7bd5f",
+      "size": 2134
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-labels.table.json",
+      "sha256": "b180bb634217ced7dcedecf109d5d5d1ad150dde2bd591fa14e178768432f44e",
+      "size": 256
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-leases.table.json",
+      "sha256": "d2b6ff7340ea4f2bd1f5a7405420580eb1ea7edee7cbac9d61f8fd8c62fe098a",
+      "size": 266
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-local_metadata.table.json",
+      "sha256": "9e7e58a451c087ba9d7424543edee2469289dd1bcbedf9cb44be8bb4b5165234",
+      "size": 206
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-metadata.table.json",
+      "sha256": "6f343f34ac117d93ee09a7d4dd307010ab206b5c570e8f8fb7440c0613c4de84",
+      "size": 200
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-provenance_events.table.json",
+      "sha256": "b52648c461757f4f3b60cb868e36acaa17c4c8a7fa49616185602d509180406e",
+      "size": 289
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-repo_mtimes.table.json",
+      "sha256": "b74237b076f679174f2fe1f2968bc1e1163e1a2bc2bf50040f629a0db59f957a",
+      "size": 240
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-routes.table.json",
+      "sha256": "51c6c65aeb82bbeed71ffeb6b3066541536ab07d0521e33529c506bb8e5d5137",
+      "size": 226
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-schema_migrations.table.json",
+      "sha256": "60d1d66af19972fb235d63aa285cae3fde8402d5cc2a94a23237c6e793c627ee",
+      "size": 7194
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-store_epoch.table.json",
+      "sha256": "bc84c474f9c39208b008751bdfa98f2f2ac4a4f17e5849cb80129bce2cfefc60",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-wisp_child_counters.table.json",
+      "sha256": "8614a9b52357ddd471e6c6fb22aeed027bf798624642917ca40d202b054a4392",
+      "size": 222
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-wisp_comments.table.json",
+      "sha256": "1456ef89301adfbe03416aa25c1d6428dac7fcb08db03995ad78ba68545d1088",
+      "size": 236
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-wisp_dependencies.table.json",
+      "sha256": "766c9fa2a33bc36664f68e3dc0431bb3e5d5c989c65d7b96656164f3eecd9f3b",
+      "size": 332
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-wisp_events.table.json",
+      "sha256": "82235659ca79a26d7756d45d5688cb6dce9d1dad5d07969d0b525f8685f180c1",
+      "size": 273
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-wisp_labels.table.json",
+      "sha256": "98276e6b836ba1179551f6f27172c5ceead6b404d2a9fe20caa7fbefef727e46",
+      "size": 208
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/current-00000000000000000000-wisps.table.json",
+      "sha256": "c344b74c7fb7f87231375e7f49aae9a0e61cf734940708a549b597f2b308be85",
+      "size": 933
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-bd_events_journal.table.json",
+      "sha256": "69f66022baaaa0642676710d6335b770c281a4b054ecf47f9198097a2318213d",
+      "size": 282
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-bd_events_seq.table.json",
+      "sha256": "479fcde84eb744ba549c087c39a1e5dc7a4a7ed3ee86378e29f24e7b12ab1f17",
+      "size": 220
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-child_counters.table.json",
+      "sha256": "5b5d844cad007416c6d3e362675d6f11069681c16f6a0cc6df35e243bef12803",
+      "size": 230
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-comments.table.json",
+      "sha256": "ce72efd835a952acdd77265ecfd4a1cc3874889eae3fa1ecfb25fd27d139c341",
+      "size": 244
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-compaction_snapshots.table.json",
+      "sha256": "9804a5c66f02c46ba5197e38968b48934cff7fcf040a4939f015313ab0b88215",
+      "size": 275
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-config.table.json",
+      "sha256": "bc450677a827824bec0db7c5b596fc5761cfba95f6ed6cb05d5036d958a2f840",
+      "size": 248
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-custom_statuses.table.json",
+      "sha256": "6dc9481cb57bf891633242a5f641d1bb6a3c5aa6856f10da38b92068250d85b0",
+      "size": 224
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-custom_types.table.json",
+      "sha256": "0f1eb090f8e02556f3686552ade6905846215d0a1229f757fa04401608fdb448",
+      "size": 210
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-dependencies.table.json",
+      "sha256": "82c92eeaa38af81f2ae614c0892fe899d8a489041fd91899a15a217861b99aa1",
+      "size": 340
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-dolt_ignore.table.json",
+      "sha256": "8c024974af6a6af689d3782602b08787dbfe2c006939a8f02f1f5d806e0c58db",
+      "size": 603
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-epoch_minted_addresses.table.json",
+      "sha256": "cba664fb3b595783429f45f56d85e8e553641dae93121c9db8d943ec599ef3c4",
+      "size": 304
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-events.table.json",
+      "sha256": "d99c25984e589e78717c20585712ccdaca910fca0c888bcacaceb80481aebcc0",
+      "size": 1536
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-federation_peers.table.json",
+      "sha256": "34bbc156954546108501e948be07637a59a4e2c82bb9bfafee7a9d4f4d3c7f4e",
+      "size": 311
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-ignored_schema_migrations.table.json",
+      "sha256": "9e1f08135ef3544c046f531a7f3f56b027e6817c5a0b368e2518e98b0da70114",
+      "size": 3464
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-interactions.table.json",
+      "sha256": "4d403d3f574678ffc998d594e3315801a45bb24ee14876bebf5ddc6520310854",
+      "size": 344
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-issue_counter.table.json",
+      "sha256": "264fb2f0cba4134cd4d1b6f1587061136a4fd69b000f8731a783d0be5b8ddc2c",
+      "size": 223
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-issue_snapshots.table.json",
+      "sha256": "474b861c349be4e772d75096a45819d5533d9fb975fdce04eafb871c5b318c40",
+      "size": 328
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-issue_versions.table.json",
+      "sha256": "3e3c8f5e864343de7998c92261b46de105a8fe9595244d12efd3f0b468a1ab76",
+      "size": 383
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-issues.table.json",
+      "sha256": "07029b40ca39562edf6a338c7f52b7d1e0b2b9c854b8b442cc0eca596506bd9b",
+      "size": 2147
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-labels.table.json",
+      "sha256": "1574368d6d294fe98c0c5ff4ea5f5fafd38eca99b8bf01bd2ea0c4491e373998",
+      "size": 269
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-leases.table.json",
+      "sha256": "ae8f7b4f2ebb867e45818d328de2f63d9c03d7a4e788ea35522c95f68950a3b6",
+      "size": 279
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-local_metadata.table.json",
+      "sha256": "54ed6b2b3d1324b438e56b29b01905e3772f206ac2678271c5ca482261957111",
+      "size": 219
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-metadata.table.json",
+      "sha256": "584b4b4df44e0b719815805ca94c9df216648f1fceb0cfd28f10771e57c9f47d",
+      "size": 213
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-provenance_events.table.json",
+      "sha256": "4145197427f978208bf96462e2d7ddb0e7997e6555d3d2d6e3e6594876482b9d",
+      "size": 302
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-repo_mtimes.table.json",
+      "sha256": "09b77772b76791ea6cf9979afe2eef34b847bfb9ef13af0af99e32763e68b82a",
+      "size": 253
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-routes.table.json",
+      "sha256": "ea089fec03cf145ec7431f052915c8602aea06432cc61811d1449ffab7b0187b",
+      "size": 239
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-schema_migrations.table.json",
+      "sha256": "8841a9b2c2ac981319b6825ef3a9ccfdb5519579db182d9ed21a1a2b186e8bc5",
+      "size": 7207
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-store_epoch.table.json",
+      "sha256": "5375d2dcb8f00697ebdc0244aaf4396c09175fbe1f10bb4c2de51e742cc638c5",
+      "size": 243
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-wisp_child_counters.table.json",
+      "sha256": "9cd823cf95db90cebda8fd089122ec50dea1bc0aafd18c9ffcea8e9adf0cfff4",
+      "size": 235
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-wisp_comments.table.json",
+      "sha256": "69749d5795aa1d1c77c79eb2d5266519ffe6055aa741ba09000c8411656d038a",
+      "size": 249
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-wisp_dependencies.table.json",
+      "sha256": "260a6a385cdb30fe74a3f6cfc61cafad491d811e83f2f229199b81e949333975",
+      "size": 345
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-wisp_events.table.json",
+      "sha256": "1122b1143ff2b5d47c980b9ac45f3241710829664627ff4e8cafa84294c1f7dd",
+      "size": 286
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-wisp_labels.table.json",
+      "sha256": "7a1f295702e2975a805279074179cc9a51bd7c2adc15df487a347c10872c935d",
+      "size": 221
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/head-checkpoint-00000000000000000000-wisps.table.json",
+      "sha256": "b4bac8f34f543e1172058cd56bfbbbb97cf1d3b34fe4506fd64b2f3513aee4e4",
+      "size": 946
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/independent-replay.json",
+      "sha256": "184a678b6d8d4302b05c188408bfe362f99d7e51335e74c641bbc3ee65bdc9e7",
+      "size": 1437
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/states.ndjson",
+      "sha256": "dc889fe7149aa290dcba960be35e263720f468004d69a7479473a139d337ea59",
+      "size": 1674
+    },
+    {
+      "mode": "0644",
+      "path": "oracle/tables.ndjson",
+      "sha256": "e9fd812fd7da3d44dfe7759746e16938c3619ed8695669b08d244580e084d394",
+      "size": 145636
+    },
+    {
+      "mode": "0644",
+      "path": "requests/continuation-plan.json",
+      "sha256": "c07453e2b8f67f97372328b9bf1ce458571bd2a3793a79f57fd6d5a1fb1257f4",
+      "size": 895
+    },
+    {
+      "mode": "0644",
+      "path": "requests/full.json",
+      "sha256": "566ca882ec710e29e7c3c3fb4d58ec4b1bc91d033796fa0164ff558f2a848114",
+      "size": 800
+    },
+    {
+      "mode": "0644",
+      "path": "requests/partial.json",
+      "sha256": "0a2d3b899c37b3818d62e2eb43dc69d142302a2ee4a4bbdf825bc8810087642a",
+      "size": 834
+    },
+    {
+      "mode": "0644",
+      "path": "requests/snapshot.json",
+      "sha256": "2263004a1c12910e4b4bed4236d8e24d56c2522be1ee00653bfffc0c9db14fba",
+      "size": 804
+    },
+    {
+      "mode": "0644",
+      "path": "workspace-root.tar",
+      "sha256": "68a72ae55b50705a89e67216cf0a654d3c2dc7d33f6f7e4c71a67ad384a46e69",
+      "size": 911360
+    }
+  ],
+  "generated_outputs": {
+    "classification": "generated from actual native CLI IDs/clocks/responses/SQL journal; not a committed input",
+    "native_continuation_request": "native-continuation-request.json"
+  },
+  "kind": "public-synthetic-native-fixture",
+  "limits": {
+    "aggregate_bytes": 1617574,
+    "max_aggregate_bytes": 20971520,
+    "regular_file_count": 283
+  },
+  "oracle": {
+    "complete_authenticated_state_count": 9,
+    "ledger": "tables.ndjson",
+    "ledger_sha256": "e9fd812fd7da3d44dfe7759746e16938c3619ed8695669b08d244580e084d394",
+    "path": "oracle",
+    "states": "states.ndjson",
+    "states_sha256": "dc889fe7149aa290dcba960be35e263720f468004d69a7479473a139d337ea59",
+    "table_files": 272
+  },
+  "qualification": "source-input-only; no historical run or generated output transfers runtime, native, import, reopen, equality, mode, admission or FullS1 credit",
+  "request_templates": {
+    "continuation_plan": "requests/continuation-plan.json",
+    "full": "requests/full.json",
+    "partial": "requests/partial.json",
+    "snapshot": "requests/snapshot.json"
+  },
+  "schema": "plug-id-style-a-native-inputs/1",
+  "source": {
+    "historical_head": "49a714e1",
+    "historical_run": "43067466009",
+    "historical_verdict": "FULL3_RED_BOUNDED_NATIVE_WORKSPACE_SETUP_NO_BEADS_DATABASE",
+    "independent_reviewer_recompute_required": true,
+    "origin": "historical public fresh-49a714e1 memory Full fixture input",
+    "status": "PUBLIC_SYNTHETIC"
+  },
+  "workspace": {
+    "extract_only_disposable_copy": true,
+    "mode": "0644",
+    "path": "workspace-root.tar",
+    "sha256": "68a72ae55b50705a89e67216cf0a654d3c2dc7d33f6f7e4c71a67ad384a46e69",
+    "size": 911360
+  }
+}

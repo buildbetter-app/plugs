@@ -25,8 +25,10 @@ go_library(
 
 go_test(
     name = "converterroundtrip_test",
+    visibility = ["//tools/roundtrip:__pkg__"],
     srcs = glob(["*_test.go"]),
     data = [
+        "//tools/roundtrip:continuation_field_profile",
         "testdata/native-built-in-statuses.json",
         "testdata/planner-predecessor-53742cc.tar.gz",
         "testdata/real-store-import-policy-v2.md",
@@ -52,6 +54,7 @@ go_test(
     tags = ["local", "requires-network"],
     embed = [":converterroundtrip"],
     deps = [
+        "//internal/core/ontology",
         "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/nativeprojection",

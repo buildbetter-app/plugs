@@ -49,6 +49,7 @@ go_test(
         ":rule_files",
         "//:lexicon_tree",
         "@lexicon_sources//:source_inventory.json",
+        "//tools/roundtrip:readback_reference_fixtures",
     ],
     embed = [":checker"],
 )
