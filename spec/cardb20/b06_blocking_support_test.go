@@ -13,9 +13,9 @@ import (
 )
 
 // These are diagnostic images, not accepted ordinary scheduling mutations.
-// Membership is separate from topology: deleting z leaves a's durable outgoing
-// fact and y's inbound fact intact, exactly as native dependency rows can outlive
-// their source hydration in a damaged disposable database.
+// Membership is separate from topology. The complete and parallel paths stay
+// fixed; the missing-hydration fixture inserts a workflow bridge before z.
+// Deleting z then preserves both incident facts on surviving workflow neighbors.
 type b06BlockingRelation struct {
 	From string    `json:"from"`
 	To   model.Ref `json:"to"`
@@ -124,14 +124,14 @@ func b06RunBlockingPlug(t *testing.T, engine string) [][][]string {
 	f.by = model.PrincipalRef{Kind: "user", ID: "user:b06-blocking"}
 	b06InstallMixed(f)
 	f.create("b06-block-request-anchor")
-	ids := b06InvokeMixed(f, "block-z", "block-y", "block-v")
-	z, y, v := ids[0], ids[1], ids[2]
+	ids := b06InvokeMixed(f, "block-z", "block-y", "block-v", "block-w")
+	z, y, v, w := ids[0], ids[1], ids[2], ids[3]
 	f.seedDiagnostic("mixed-default-blocking", []string{"b06-block-c", "b06-block-b", "b06-block-a"}, []b06Edge{
 		{"b06-block-b", "b06-block-a", "blocks"},
-		{"b06-block-a", z, "blocks"},
-		{"b06-block-c", v, "blocks"},
 	})
-	f.requireEdges("mixed-blocking-durable", []b06Edge{{"b06-block-b", "b06-block-a", "blocks"}, {"b06-block-a", z, "blocks"}, {"b06-block-c", v, "blocks"}})
+	// GraphSourceWriter accepts canonical durable refs. Cross-plane facts
+	// belong to the workflow checkpoint, not the durable Graph declaration.
+	f.requireEdges("mixed-blocking-durable", []b06Edge{{"b06-block-b", "b06-block-a", "blocks"}})
 	b06BlockingCheckpoint(f, "mixed-blocking-topology", func(items map[string]map[string]json.RawMessage) {
 		b06BlockingRelations(t, items[z], "inbound", b06Edge{"b06-block-a", z, "blocks"})
 		b06BlockingRelations(t, items[z], "links", b06Edge{z, y, "blocks"})
@@ -152,13 +152,42 @@ func b06RunBlockingPlug(t *testing.T, engine string) [][][]string {
 		t.Fatal("complete mixed blocking SQL reopen lost exact committed state")
 	}
 	b06BlockingCheck(f, want, 0)
+	// Retarget the three parallel a -> z facts to a -> w, then insert
+	// w -> z. The complete/parallel vectors above remain unchanged.
+	b06BlockingCheckpoint(f, "mixed-blocking-missing-bridge", func(items map[string]map[string]json.RawMessage) {
+		var incoming []b06BlockingRelation
+		if err := json.Unmarshal(items[z]["inbound"], &incoming); err != nil || len(incoming) != 3 {
+			t.Fatal("exact original parallel inbound facts required", err)
+		}
+		kinds := map[string]int{}
+		for i := range incoming {
+			if incoming[i].From != "b06-block-a" || !reflect.DeepEqual(incoming[i].To, model.RefByID(z, model.Natural64(0))) {
+				t.Fatal("bridge would replace an unrelated inbound fact")
+			}
+			kinds[incoming[i].Kind]++
+			incoming[i].To = model.RefByID(w, model.Natural64(0))
+		}
+		if !reflect.DeepEqual(kinds, map[string]int{"blocks": 2, "tracks": 1}) || len(items[w]["inbound"]) != 0 || len(items[w]["links"]) != 0 {
+			t.Fatal("bridge requires only the declared parallel facts and an isolated workflow member")
+		}
+		var err error
+		items[w]["inbound"], err = json.Marshal(incoming)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delete(items[z], "inbound")
+		b06BlockingRelations(t, items[w], "links", b06Edge{w, z, "blocks"})
+		b06BlockingRelations(t, items[z], "inbound", b06Edge{w, z, "blocks"})
+	})
+	bridge := [][]string{{"b06-block-a", w, z, y, "b06-block-b"}, {"b06-block-c", v}}
+	b06BlockingCheck(f, bridge, 0)
 	b06BlockingCheckpoint(f, "mixed-blocking-missing-hydration", func(items map[string]map[string]json.RawMessage) {
 		if _, exists := items[z]; !exists {
 			t.Fatal("workflow hydration was already absent")
 		}
 		delete(items, z)
 	})
-	partial := [][]string{{"b06-block-a", "", y, "b06-block-b"}, {"b06-block-c", v}}
+	partial := [][]string{{"b06-block-a", w, "", y, "b06-block-b"}, {"b06-block-c", v}}
 	b06BlockingCheck(f, partial, 1)
 	before = b06MixedImage(f, "blocking-partial-before-reopen")
 	f.reopen()
@@ -167,6 +196,6 @@ func b06RunBlockingPlug(t *testing.T, engine string) [][][]string {
 		t.Fatal("partial mixed blocking SQL reopen lost exact committed state")
 	}
 	b06BlockingCheck(f, partial, 1)
-	b06Retain(t, "mixed-blocking-public.json", map[string]any{"engine": engine, "workflow_ids_in_label_order": ids, "raw_complete_paths": want, "raw_partial_paths": partial, "absent_hydration": z, "retained_source_facts": "durable a outgoing and extant y inbound", "sql_reopen": engine != "memory", "native_history": "UNQUALIFIED"})
+	b06Retain(t, "mixed-blocking-public.json", map[string]any{"engine": engine, "workflow_ids_in_label_order": ids, "raw_complete_paths": want, "raw_bridge_paths": bridge, "raw_partial_paths": partial, "absent_hydration": z, "retained_source_facts": "surviving workflow w outgoing and y inbound", "sql_reopen": engine != "memory", "native_history": "UNQUALIFIED"})
 	return [][][]string{want, partial}
 }

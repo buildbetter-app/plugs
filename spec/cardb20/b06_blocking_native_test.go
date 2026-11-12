@@ -15,26 +15,36 @@ import (
 	"github.com/buildbetter-app/plugs/internal/publicnative"
 )
 
+type b06BlockingNativeEvent struct {
+	EventType string `json:"event_type"`
+	OldValue  string `json:"old_value"`
+	NewValue  string `json:"new_value"`
+	Comment   string `json:"comment"`
+}
+
 type b06BlockingNativeInput struct {
-	Schema               string     `json:"schema"`
-	SourceCommit         string     `json:"source_commit"`
-	DurableIDs           []string   `json:"durable_ids"`
-	EphemeralIDs         []string   `json:"ephemeral_ids"`
-	OrdinaryEdges        []b06Edge  `json:"ordinary_edges"`
-	DiagnosticEdges      []b06Edge  `json:"diagnostic_edges"`
-	ParallelEdges        []b06Edge  `json:"parallel_edges"`
-	MissingID            string     `json:"missing_id"`
-	ExpectedPaths        [][]string `json:"expected_paths"`
-	ExpectedMissingCount int        `json:"expected_missing_count"`
-	ExpectedCycleCount   int        `json:"expected_cycle_count"`
-	Limit                int        `json:"limit"`
+	Schema                string                   `json:"schema"`
+	SourceCommit          string                   `json:"source_commit"`
+	DurableIDs            []string                 `json:"durable_ids"`
+	EphemeralIDs          []string                 `json:"ephemeral_ids"`
+	OrdinaryEdges         []b06Edge                `json:"ordinary_edges"`
+	DiagnosticEdges       []b06Edge                `json:"diagnostic_edges"`
+	ParallelEdges         []b06Edge                `json:"parallel_edges"`
+	MissingID             string                   `json:"missing_id"`
+	ExpectedPaths         [][]string               `json:"expected_paths"`
+	MissingBridgeID       string                   `json:"missing_bridge_id"`
+	ExpectedMissingPaths  [][]string               `json:"expected_missing_paths"`
+	ExpectedMissingEvents []b06BlockingNativeEvent `json:"expected_missing_events"`
+	ExpectedMissingCount  int                      `json:"expected_missing_count"`
+	ExpectedCycleCount    int                      `json:"expected_cycle_count"`
+	Limit                 int                      `json:"limit"`
 }
 
 func b06ReadBlockingNativeInput(t *testing.T) b06BlockingNativeInput {
 	t.Helper()
 	const name = "spec/cardb20/testdata/b06-blocking-native.json"
 	raw, err := os.ReadFile(filepath.Join(os.Getenv("PLUG_SOURCE_MODULE_ROOT"), name))
-	if err != nil || hashBytes(raw) != "6944b755d7fda3f98086fbbff15a5c1d9e53db790b6d294419b5231a7cce1240" {
+	if err != nil || hashBytes(raw) != "5dcc2babbbd85903149137264a278b48b27db6c8a3a885d5c07942ae139d4c0c" {
 		t.Fatal("committed public native request/oracle authentication failed", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -45,6 +55,9 @@ func b06ReadBlockingNativeInput(t *testing.T) b06BlockingNativeInput {
 	}
 	if decoder.Decode(new(any)) != io.EOF || input.Schema != "b06-public-diagnostic-request/1" || input.SourceCommit != pinnedSource.Commit || input.ExpectedCycleCount != 2 || input.ExpectedMissingCount != 1 || input.Limit != 1 {
 		t.Fatal("wrong public native diagnostic request contract")
+	}
+	if len(input.EphemeralIDs) != 4 || input.MissingBridgeID != input.EphemeralIDs[3] || len(input.ExpectedMissingPaths) != 2 || len(input.ExpectedMissingPaths[0]) != 5 || input.ExpectedMissingPaths[0][1] != input.MissingBridgeID || input.ExpectedMissingPaths[0][2] != input.MissingID || len(input.ExpectedMissingEvents) != 2 {
+		t.Fatal("missing-hydration bridge/event request is incomplete")
 	}
 	b06Retain(t, "blocking-native-input.json", map[string]any{"committed_path": name, "sha256": hashBytes(raw), "raw_request_oracle": json.RawMessage(raw), "scope": "public operational diagnostics; no import or native-history claim"})
 	return input
@@ -148,6 +161,27 @@ func b06RecordBlockingNative(r *b06NativeRecorder, binary string, server *public
 	if !reflect.DeepEqual(complete, b06BlockingNativeCheck(r, w, binary, "blocking-parallel", input, false)) {
 		r.t.Fatal("parallel native facts multiplied or reordered mixed blocking paths")
 	}
+	// Keep the complete and parallel literals above. Only the missing fixture
+	// retargets a -> z to a -> w and inserts w -> z, so two surviving workflow
+	// neighbors retain z's incident topology in the public counterpart.
+	bridgeFrom := input.OrdinaryEdges[0].From
+	r.command(w, "blocking-bridge-retarget", binary, []string{"sql", fmt.Sprintf("UPDATE dependencies SET %s='%s' WHERE issue_id='%s' AND %s='%s'", target, input.MissingBridgeID, bridgeFrom, target, input.MissingID), "--json"}, false)
+	r.command(w, "blocking-bridge-insert", binary, []string{"sql", fmt.Sprintf("INSERT INTO %s (id,issue_id,%s,type,created_by) VALUES ('b06-blocking-bridge','%s','%s','blocks','b06-public-diagnostic')", w.ephemeralDependencies, target, input.MissingBridgeID, input.MissingID), "--json"}, false)
+	retargeted := 0
+	for i := range edges {
+		if edges[i].From == bridgeFrom && edges[i].To == input.MissingID {
+			edges[i].To = input.MissingBridgeID
+			retargeted++
+		}
+	}
+	if retargeted != 3 {
+		r.t.Fatal("bridge must retarget exactly the original three parallel facts")
+	}
+	edges = append(edges, b06Edge{input.MissingBridgeID, input.MissingID, "blocks"})
+	r.requireEdges(w, binary, "blocking-missing-bridge", edges)
+	bridgeInput := input
+	bridgeInput.ExpectedPaths = input.ExpectedMissingPaths
+	b06BlockingNativeCheck(r, w, binary, "blocking-missing-bridge", bridgeInput, false)
 	// Preserve actual independent dependency rows when removing hydration.
 	constraint := regexp.MustCompile("CONSTRAINT `([^`]+)` FOREIGN KEY")
 	for _, table := range []string{"dependencies", w.ephemeralDependencies} {
@@ -168,32 +202,59 @@ func b06RecordBlockingNative(r *b06NativeRecorder, binary string, server *public
 			r.command(w, "blocking-drop-"+match[1], binary, []string{"sql", "ALTER TABLE " + table + " DROP FOREIGN KEY `" + match[1] + "`", "--json"}, false)
 		}
 	}
+	// The pinned ignored/0004 migration cascades only victim-owned event
+	// rows here. Preserve its actual DDL alongside the dependency DDL above.
+	r.rows(w, binary, "blocking-missing-event-schema", "SHOW CREATE TABLE "+w.ephemeralEvents)
 	before := r.image(w, binary, "blocking-missing-before")
 	r.command(w, "blocking-remove-hydration", binary, []string{"sql", "DELETE FROM " + w.ephemeralTable + " WHERE id='" + input.MissingID + "'", "--json"}, false)
 	after := r.image(w, binary, "blocking-missing-after")
+	wantEvents := map[b06BlockingNativeEvent]int{}
+	for _, event := range input.ExpectedMissingEvents {
+		wantEvents[event]++
+	}
+	removedRows := map[string][]map[string]any{}
 	for table, rows := range before {
 		expected := rows
-		if table == w.ephemeralTable {
+		switch table {
+		case w.ephemeralTable, w.ephemeralEvents:
 			expected = nil
-			removed := 0
+			key := "id"
+			if table == w.ephemeralEvents {
+				key = "issue_id"
+			}
+			gotEvents := map[b06BlockingNativeEvent]int{}
 			for _, row := range rows {
-				if row["id"] == input.MissingID {
-					removed++
-				} else {
+				if row[key] != input.MissingID {
 					expected = append(expected, row)
+					continue
+				}
+				removedRows[table] = append(removedRows[table], row)
+				if table == w.ephemeralEvents {
+					eventType, typeOK := row["event_type"].(string)
+					oldValue, oldOK := row["old_value"].(string)
+					newValue, newOK := row["new_value"].(string)
+					comment, commentOK := row["comment"].(string)
+					if !typeOK || !oldOK || !newOK || !commentOK {
+						r.t.Fatal("victim event type/values/comment are not exact strings")
+					}
+					gotEvents[b06BlockingNativeEvent{eventType, oldValue, newValue, comment}]++
 				}
 			}
-			if removed != 1 {
-				r.t.Fatalf("actual hydration deletion removed%d rows", removed)
+			if table == w.ephemeralTable && len(removedRows[table]) != 1 {
+				r.t.Fatal("hydration deletion must remove exactly the declared victim")
+			}
+			if table == w.ephemeralEvents && !reflect.DeepEqual(gotEvents, wantEvents) {
+				r.t.Fatalf("victim event cascade differs from pinned create/edge contract: got%+v want%+v", gotEvents, wantEvents)
 			}
 		}
 		if !reflect.DeepEqual(expected, after[table]) {
 			r.t.Fatalf("missing hydration changed unexpected source rows in%s", table)
 		}
 	}
+	r.writeJSON(filepath.Join(r.root, "blocking-hydration-delete-delta.json"), map[string]any{"removed_hydration_rows": removedRows[w.ephemeralTable], "removed_victim_events": removedRows[w.ephemeralEvents], "expected_victim_events": input.ExpectedMissingEvents, "unrelated_rows": "byte-values conserved in all six families", "dependency_families": "both preserved exactly"})
 	r.requireEdges(w, binary, "blocking-missing", edges)
-	partial := b06BlockingNativeCheck(r, w, binary, "blocking-missing", input, true)
-	r.writeJSON(filepath.Join(r.root, "blocking-native-result.json"), map[string]any{"complete_paths": complete, "partial_paths": partial, "absent_hydration": input.MissingID, "ordinary_cycle_admission": false, "parallel_edge_count": len(edges), "private": "HARD_DISABLED", "official": "UNSPENT", "native_history": "UNQUALIFIED"})
+	partial := b06BlockingNativeCheck(r, w, binary, "blocking-missing", bridgeInput, true)
+	r.writeJSON(filepath.Join(r.root, "blocking-native-result.json"), map[string]any{"complete_paths": complete, "bridge_paths": input.ExpectedMissingPaths, "partial_paths": partial, "absent_hydration": input.MissingID, "ordinary_cycle_admission": false, "parallel_edge_count": len(edges), "private": "HARD_DISABLED", "official": "UNSPENT", "native_history": "UNQUALIFIED"})
 	return [][][]string{complete, partial}
 }
 
@@ -247,14 +308,14 @@ func TestB06MixedBlockingCanonicalNative(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run("compare_"+engine, func(t *testing.T) {
 			plug := results[engine]
-			if len(plug) != 2 || len(plug[0]) != 2 || len(plug[0][0]) != 4 || len(plug[0][1]) != 2 || len(plug[1]) != 2 || len(plug[1][0]) != 4 {
+			if len(plug) != 2 || len(plug[0]) != 2 || len(plug[0][0]) != 4 || len(plug[0][1]) != 2 || len(plug[1]) != 2 || len(plug[1][0]) != 5 {
 				t.Fatal("public blocking original not complete")
 			}
 			native := twins[0]
-			if plug[0][0][0] != native[0][0][0] || plug[0][0][3] != native[0][0][3] || plug[0][1][0] != native[0][1][0] || plug[1][0][1] != "" || native[1][0][1] != input.MissingID || plug[1][0][2] != plug[0][0][2] || !reflect.DeepEqual(plug[1][1], plug[0][1]) {
+			if plug[0][0][0] != native[0][0][0] || plug[0][0][3] != native[0][0][3] || plug[0][1][0] != native[0][1][0] || plug[1][0][0] != plug[0][0][0] || plug[1][0][4] != plug[0][0][3] || plug[1][0][2] != "" || native[1][0][2] != input.MissingID || native[1][0][1] != input.MissingBridgeID || plug[1][0][3] != plug[0][0][2] || !reflect.DeepEqual(plug[1][1], plug[0][1]) {
 				t.Fatal("mixed native/public raw positions or missing-role correspondence changed")
 			}
-			b06Retain(t, "blocking-native-public-pair.json", map[string]any{"native_originals": native, "public_originals": plug, "workflow_label_role_binding": map[string]string{native[0][0][1]: plug[0][0][1], native[0][0][2]: plug[0][0][2], native[0][1][1]: plug[0][1][1]}, "missing_position": 1, "disclosure_contract": "native preserves absent ID; public preserves unreadable position without disclosing ID", "native_history": "UNQUALIFIED", "full_card": "requires independent original focus/whole disposition"})
+			b06Retain(t, "blocking-native-public-pair.json", map[string]any{"native_originals": native, "public_originals": plug, "workflow_label_role_binding": map[string]string{native[0][0][1]: plug[0][0][1], native[0][0][2]: plug[0][0][2], native[0][1][1]: plug[0][1][1], native[1][0][1]: plug[1][0][1]}, "missing_position": 2, "disclosure_contract": "native preserves absent ID; public preserves unreadable position without disclosing ID", "native_history": "UNQUALIFIED", "full_card": "requires independent original focus/whole disposition"})
 		})
 	}
 }
