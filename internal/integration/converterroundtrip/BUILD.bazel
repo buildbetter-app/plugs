@@ -82,7 +82,7 @@ filegroup(
 
 exports_files(["testdata/synthetic-plug-dump-1.tar"], visibility = ["//visibility:public"])
 
-exports_files(["testdata/public-native-delta-small-0e4d5da4.tar.gz"], visibility = ["//internal/storage/historyverify:__pkg__", "//tools/native-receive:__pkg__"])
+exports_files(["testdata/public-native-delta-small-0e4d5da4.tar.gz"], visibility = ["//internal/integration/graphcertfixture:__pkg__", "//internal/storage/historyverify:__pkg__", "//tools/native-receive:__pkg__"])
 
 filegroup(
     name = "public_source_fixtures",
