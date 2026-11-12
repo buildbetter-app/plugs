@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -218,5 +219,92 @@ func TestActualNativeProducerMergeRetainsDirtySourceAndIncompleteEvidence(t *tes
 	data, err := MergeArchives(archives...)
 	if data != nil || err == nil || err.Error() != `offline merge input 0: unmerged or dirty source family "dolt-conflicts"` {
 		t.Fatalf("actual dirty producer must refuse before history qualification: %v", err)
+	}
+}
+
+// These detached controls exercise the public reader's catalog/type contract.
+// The unchanged B23 capture set supplies the separate native acceptance input.
+func TestNativeGateReaderCatalogDirectiveBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name, sourceType, targetType, refusal string
+		explicit, extraSource, extraBody      bool
+	}{
+		{name: "literal", sourceType: "gate", targetType: "gate"},
+		{name: "explicit-to-issue", sourceType: "gate", targetType: "issue", explicit: true},
+		{name: "explicit-precedence", sourceType: "gate", targetType: "gate", explicit: true, refusal: "gate projection must honor its explicit ontology directive"},
+		{name: "forged-source-type", sourceType: "task", targetType: "gate", refusal: "typed body/source mapping mismatch"},
+		{name: "unknown-source-column", sourceType: "gate", targetType: "gate", extraSource: true, refusal: "source record schema drift"},
+		{name: "unknown-body-member", sourceType: "gate", targetType: "gate", extraBody: true, refusal: "typed body/source mapping mismatch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			members := sourcePlaneReaderMembers(t, nativeProducerArchive(t, "reprocody"))
+			var manifest Manifest
+			if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
+				t.Fatal(err)
+			}
+			lines := bytes.Split(bytes.TrimSuffix(members["records/bead.ndjson"], []byte{'\n'}), []byte{'\n'})
+			var record Record
+			index := -1
+			for i, line := range lines {
+				if err := decodeJSON(line, &record); err != nil {
+					t.Fatal(err)
+				}
+				if builtInIssueType(stringValue(record.Source.Fields["issue_type"])) {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				t.Fatal("control fixture has no builtin source type")
+			}
+			record.Source.Fields["issue_type"] = test.sourceType
+			record.Body["source_type"], record.Body["type"] = test.sourceType, test.targetType
+			if test.extraSource {
+				record.Source.Fields["unknown_column"] = "unexpected"
+			}
+			if test.extraBody {
+				record.Body["unknown_member"] = "unexpected"
+			}
+			if test.explicit {
+				manifest.Ontology = append(manifest.Ontology, OntologyDirective{
+					ID: "native-gate-explicit", Kind: "map_type",
+					Target: OntologyTarget{Project: record.Project, Type: "gate"}, From: "gate", To: "issue",
+				})
+			}
+			lines[index] = bytes.TrimSpace(fixtureJSON(t, record))
+			raw := append(bytes.Join(lines, []byte{'\n'}), '\n')
+			members["records/bead.ndjson"] = raw
+			manifest.Files["records/bead.ndjson"] = File{SHA256: digest(raw), Size: int64(len(raw))}
+			members["manifest.json"] = fixtureJSON(t, manifest)
+			archive, err := Read(bytes.NewReader(fixtureTar(t, members)))
+			if test.refusal != "" {
+				if err == nil || !strings.Contains(err.Error(), test.refusal) {
+					t.Fatalf("want refusal %q, got %v", test.refusal, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, got := range archive.Records("bead") {
+				if got.ID == record.ID {
+					found = true
+					if !equalJSON(got, record) {
+						t.Fatal("reader changed source cells or the declared body")
+					}
+				}
+			}
+			if !found {
+				t.Fatal("reader lost projected record")
+			}
+			source, ok := archive.NativeStatusOntology()
+			if !ok || source.Base.Types[ontology.GateType].Workflow != "issue" || source.Overlays[record.Project].Types[ontology.GateType].Workflow != "issue" {
+				t.Fatal("native catalog omitted the literal type definition")
+			}
+			if _, problems := ontology.Compile(source.Base, source.Overlays, nil); len(problems) != 0 {
+				t.Fatal("projected native catalog does not compile", problems)
+			}
+		})
 	}
 }

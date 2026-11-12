@@ -159,10 +159,12 @@ func b23RichFixture(t *testing.T) (b23RichFixtureManifest, *dumpformat.Archive) 
 	b23RichTarBindings(t, data, manifest.ArchiveMembers)
 	// The original legacy TAR remains a refusal control, before any target is
 	// opened. Native history is admitted only through the authenticated set.
-	if _, err := dumpformat.Read(bytes.NewReader(data)); err == nil || err.Error() != "typed body/source mapping mismatch" {
+	// Literal native types now validate; the portable source-disposition guard
+	// still refuses the unchanged native archive/0 declarations.
+	if _, err := dumpformat.Read(bytes.NewReader(data)); err == nil || err.Error() != "source disposition/action/count mismatch" {
 		t.Fatalf("legacy native archive refusal changed: %v", err)
 	}
-	t.Logf("B23_LEGACY_NATIVE_REFUSAL sha256=%s reason=typed body/source mapping mismatch target_opened=false", manifest.Archive.SHA256)
+	t.Logf("B23_LEGACY_NATIVE_REFUSAL sha256=%s reason=source disposition/action/count mismatch target_opened=false", manifest.Archive.SHA256)
 	if manifest.CaptureSet.Directory != "capture-set" || manifest.CaptureSet.Format != "beads-native-capture-set/2" || manifest.CaptureSet.Contract != "beads-native-delta/2" || len(manifest.CaptureSet.Files) != 3 || manifest.CaptureSet.TotalBytes != 2678929 {
 		t.Fatal("rich authenticated capture-set binding changed")
 	}
