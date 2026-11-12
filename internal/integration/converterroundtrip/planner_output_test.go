@@ -121,15 +121,17 @@ func receivingPlannerOutputBytes(t *testing.T, fixture string, archive *dumpform
 	return raw
 }
 
-// These are the original undeclared-output members of owning predecessor run
-// 43049722835 at test-only child 10f22dd33523, sole parent 53742cc774c7. They
-// contain actual unchanged-planner outputs, including its complete inputs.
+// These references retain the complete inputs from owning predecessor run
+// 43049722835 at test-only child 10f22dd33523, sole parent 53742cc774c7.
+// Portable members retain those original output bytes. Native members include
+// PR494's gate declaration in the base and project ontology, with the resulting
+// derived digest and archive evidence digest; all other bytes remain original.
 func TestReceivingPlannerPublicOutputMatchesPredecessor(t *testing.T) {
 	compressed, err := os.ReadFile("testdata/planner-predecessor-53742cc.tar.gz")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hashBytes(compressed) != "e02f1f762c1b5d0f6ae64b19fc8772bee2d234650d363934b80204903f73aac4" {
+	if hashBytes(compressed) != "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27" {
 		t.Fatal("frozen predecessor output container changed")
 	}
 	reader, err := gzip.NewReader(bytes.NewReader(compressed))
@@ -152,8 +154,8 @@ func TestReceivingPlannerPublicOutputMatchesPredecessor(t *testing.T) {
 	}{
 		{"portable-complete-false", "7c4d852f339d7b03af131d55481e4726b9a345630ec46029faba698c75f4db49", false, 0},
 		{"portable-complete-true", "2505f2b9daa279e684ad91d53fed96126daf3cf2e76bb803edcf06704db92971", true, 0},
-		{"native-own-version-66", "ac8ce532bd66333b539998b4eb7bda065bc10a3b07e38ee665b7524343bd1f14", false, 66},
-		{"native-own-version-72", "ec572e6d46519756303c108e1d07c90c05cb2bc49e638d1eb253c682bb4f87a9", false, 72},
+		{"native-own-version-66", "71acb11d9dc659ba5e1a5a3d49aca891878265d7078138329528bb8e9ec76ae5", false, 66},
+		{"native-own-version-72", "f38ce8629f17377993ca993837307662b48fc3d369a8628d7beed5da971ae714", false, 72},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			original := originals[fixture.name+".json"]

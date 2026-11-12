@@ -700,7 +700,7 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 		return nil, nil, err
 	}
 	if migration == nil {
-		if err := validateIssueOntology(manifest.Ontology, byKind["bead"], true); err != nil {
+		if err := validateIssueOntology(manifest.Ontology, manifest.Projects, byKind["bead"], true); err != nil {
 			return nil, nil, err
 		}
 	}
