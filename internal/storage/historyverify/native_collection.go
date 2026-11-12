@@ -114,11 +114,8 @@ func NewNativeCollection(ctx context.Context, binding dumpformat.NativeJoinedBin
 	if err = owner.ChargeNativeDeltaJSON("collection_issuer_binding", binding); err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(binding)
+	c.binding, err = detachNativeCollectionBinding(owner, binding)
 	if err != nil {
-		return nil, err
-	}
-	if err = json.Unmarshal(raw, &c.binding); err != nil {
 		return nil, err
 	}
 	c.dir, err = os.MkdirTemp("", "plug-native-collection-*")
@@ -139,6 +136,24 @@ func NewNativeCollection(ctx context.Context, binding dumpformat.NativeJoinedBin
 		return os.RemoveAll(c.dir)
 	}
 	return c, nil
+}
+
+// The caller reserves the retained detached binding separately. Encoding is
+// simultaneous scratch, admitted before Marshal and dropped before release.
+func detachNativeCollectionBinding(owner *dumpformat.Archive, binding dumpformat.NativeJoinedBinding) (dumpformat.NativeJoinedBinding, error) {
+	work, release := owner.NativeDeltaAccountingScope()
+	defer release()
+	if err := work.ChargeNativeDeltaJSON("collection_issuer_encoding", binding); err != nil {
+		return dumpformat.NativeJoinedBinding{}, err
+	}
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		return dumpformat.NativeJoinedBinding{}, err
+	}
+	var detached dumpformat.NativeJoinedBinding
+	err = json.Unmarshal(raw, &detached)
+	raw = nil
+	return detached, err
 }
 
 func (c *NativeCollection) Owner() *dumpformat.Archive {

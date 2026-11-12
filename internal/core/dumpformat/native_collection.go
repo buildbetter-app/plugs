@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -150,7 +151,37 @@ func (c *NativeCaptureCollection) Append(ctx context.Context, source *Archive) e
 		return fmt.Errorf("native collection authenticated file ledger differs")
 	}
 	ledger = nil
-	if state.added > 0 {
+	identity := SourceIdentity{want.SourceStoreID, want.SourceProject}
+	if err := c.appendCurrent(source, identity); err != nil {
+		return err
+	}
+	metadata, err := source.NativeSourceHistoryMetadata()
+	if err != nil {
+		return err
+	}
+	if len(metadata) != 1 {
+		return fmt.Errorf("native collection source metadata differs")
+	}
+	if err := c.archive.ChargeNativeDeltaJSON("collection_source_metadata", metadata); err != nil {
+		return err
+	}
+	// Metadata is already a detached small view; it holds no graph or tables.
+	state.metadata = append(state.metadata, metadata...)
+	for _, file := range want.Files {
+		if err := c.archive.ChargeNativeDeltaBytes("collection_original_ledger", uint64(len(file.Name))+256); err != nil {
+			return err
+		}
+		name := NativeCollectionFileName(state.added, file.Name)
+		state.files[name] = File{SHA256: file.SHA256, Size: int64(file.Bytes)}
+	}
+	state.added++
+	return ctx.Err()
+}
+
+// appendCurrent is the single post-authentication compact-current transfer.
+// It has no source-history or original-file ownership.
+func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity SourceIdentity) error {
+	if c.archive.collection.added > 0 {
 		if err := compatibleManifests(c.archive.manifest, source.manifest); err != nil {
 			return err
 		}
@@ -159,8 +190,9 @@ func (c *NativeCaptureCollection) Append(ctx context.Context, source *Archive) e
 		return err
 	}
 	manifest := source.Manifest()
-	if state.added == 0 {
+	if c.archive.collection.added == 0 {
 		c.archive.manifest = manifest
+		c.archive.manifest.Kinds = nil
 		c.archive.manifest.Projects = nil
 		c.archive.manifest.Sources = nil
 		c.archive.manifest.Ontology = nil
@@ -168,7 +200,28 @@ func (c *NativeCaptureCollection) Append(ctx context.Context, source *Archive) e
 		c.archive.manifest.Machine = "native-capture-collection"
 		c.archive.manifest.SourceIdentityContract = SourceIdentityContract
 	}
-	identity := SourceIdentity{want.SourceStoreID, want.SourceProject}
+	// An admitted source may declare kinds absent from earlier sources. Keep
+	// one charged, detached registry entry for each kind before finalization.
+	for _, kind := range manifest.Kinds {
+		present := false
+		for _, retained := range c.archive.manifest.Kinds {
+			if retained.Name == kind.Name {
+				present = true
+				break
+			}
+		}
+		if present {
+			continue
+		}
+		if err := c.archive.ChargeNativeDeltaJSON("collection_kind_registry", kind); err != nil {
+			return err
+		}
+		kind.Name, kind.File = strings.Clone(kind.Name), strings.Clone(kind.File)
+		c.archive.manifest.Kinds = append(c.archive.manifest.Kinds, kind)
+	}
+	sort.Slice(c.archive.manifest.Kinds, func(i, j int) bool {
+		return c.archive.manifest.Kinds[i].Name < c.archive.manifest.Kinds[j].Name
+	})
 	c.archive.manifest.Projects = append(c.archive.manifest.Projects, manifest.Projects...)
 	c.archive.manifest.Ontology = append(c.archive.manifest.Ontology, manifest.Ontology...)
 	for _, disposition := range manifest.Sources {
@@ -198,27 +251,7 @@ func (c *NativeCaptureCollection) Append(ctx context.Context, source *Archive) e
 		entry.Identity = &identity
 		c.entries = append(c.entries, entry)
 	}
-	metadata, err := source.NativeSourceHistoryMetadata()
-	if err != nil {
-		return err
-	}
-	if len(metadata) != 1 {
-		return fmt.Errorf("native collection source metadata differs")
-	}
-	if err := c.archive.ChargeNativeDeltaJSON("collection_source_metadata", metadata); err != nil {
-		return err
-	}
-	// Metadata is already a detached small view; it holds no graph or tables.
-	state.metadata = append(state.metadata, metadata...)
-	for _, file := range want.Files {
-		if err := c.archive.ChargeNativeDeltaBytes("collection_original_ledger", uint64(len(file.Name))+256); err != nil {
-			return err
-		}
-		name := NativeCollectionFileName(state.added, file.Name)
-		state.files[name] = File{SHA256: file.SHA256, Size: int64(file.Bytes)}
-	}
-	state.added++
-	return ctx.Err()
+	return nil
 }
 
 // NativeCollectionFileName is an ordinal-qualified provenance path, never a

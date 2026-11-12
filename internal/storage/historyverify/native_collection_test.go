@@ -284,3 +284,42 @@ func TestNativeCollectionFinalAdmissionSubstitutionRefusesBeforePlanSeal(t *test
 		t.Fatal("refused final bind leaked owner")
 	}
 }
+
+func TestNativeCollectionBindingEncodingRequiresSeparateLiveReservation(t *testing.T) {
+	c, budget, _ := newPhysicalNativeCollection(t, 0)
+	binding := nativeCollectionPhysicalBinding(t)
+	owner := c.Owner()
+	if err := owner.ChargeNativeDeltaJSON("test_retained_binding", binding); err != nil {
+		t.Fatal(err)
+	}
+	n, err := dumpformat.NativeDeltaJSONSize(binding)
+	if err != nil || n == 0 {
+		t.Fatal("binding size", err)
+	}
+	before := budget.Usage().CurrentAccountedDecodedBytes
+	block := budget.Scope()
+	if err = block.ChargeBytes("test_other_live_payloads", budget.Usage().LimitBytes-before-n+1); err != nil {
+		t.Fatal(err)
+	}
+	detached, err := detachNativeCollectionBinding(owner, binding)
+	var limit *dumpformat.NativeDeltaDecodedLimitError
+	if !errors.As(err, &limit) || limit.Phase != "collection_issuer_encoding" || len(detached.Sources) != 0 {
+		t.Fatal("encoding allocated without its own admission", err)
+	}
+	block.Release()
+	if budget.Usage().CurrentAccountedDecodedBytes != before {
+		t.Fatal("refused encoding retained a reservation")
+	}
+	detached, err = detachNativeCollectionBinding(owner, binding)
+	if err != nil || len(detached.Sources) != 2 {
+		t.Fatal("admitted binding clone", err)
+	}
+	binding.Sources[0].Files[0].Name = "changed-after-detach"
+	if detached.Sources[0].Files[0].Name != "capture-set.json" || budget.Usage().CurrentCategories["collection_issuer_encoding"] != 0 || budget.Usage().CurrentAccountedDecodedBytes != before {
+		t.Fatal("encoding scratch retained or detached binding aliases input")
+	}
+	detached, binding = dumpformat.NativeJoinedBinding{}, dumpformat.NativeJoinedBinding{}
+	if err = c.Close(); err != nil || budget.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("binding owner cleanup", err, budget.Usage())
+	}
+}

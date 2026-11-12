@@ -1,6 +1,7 @@
 package dumpformat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -169,5 +170,98 @@ func TestNativeCollectionRefusesChangedPhysicalLedgerBeforeCurrentPublication(t 
 	}
 	if _, err = c.Finish(); err == nil {
 		t.Fatal("failed source yielded current collection")
+	}
+}
+
+// Synthetic current-leaf regression only: these independently serialized and
+// validated portable images are not physical native capture-set evidence.
+func TestNativeCollectionAsymmetricKindsConserveEveryCurrentRecord(t *testing.T) {
+	budget := NewNativeDeltaBudget(0)
+	ctx := WithNativeDeltaBudget(context.Background(), budget)
+	c, err := NewNativeCaptureCollection(ctx, physicalCollectionBinding(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	want := map[string]Record{}
+	kindCounts := map[string]int{}
+	for ordinal, prefix := range []string{"alpha", "beta"} {
+		fixture := sourcePlaneReaderFixture(t, prefix)
+		if ordinal == 0 {
+			delete(fixture.records, "comment")
+		} else {
+			delete(fixture.records, "memory")
+		}
+		source := readMergeArchive(t, sourcePlaneReaderBytes(t, fixture))
+		identity := SourceIdentity{StoreID: source.manifest.StoreID, Project: prefix}
+		for kind, rows := range source.byKind {
+			for _, row := range rows {
+				want[kind+"\x00"+row.Source.Table+"\x00"+row.Project+"\x00"+row.ID] = namespaceRecord(row, identity)
+				kindCounts[kind]++
+			}
+		}
+		// Exercise the same private post-authentication transfer used by Append,
+		// without conferring native authentication on these synthetic images.
+		if err := c.appendCurrent(source, identity); err != nil {
+			t.Fatal(err)
+		}
+		c.archive.collection.added++
+	}
+	a, err := c.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := a.Manifest()
+	if len(manifest.Kinds) != len(kindCounts) {
+		t.Fatal("asymmetric registry omitted a kind", manifest.Kinds, kindCounts)
+	}
+	previous := ""
+	for _, kind := range manifest.Kinds {
+		if kind.Name <= previous || kind.File != "records/"+kind.Name+".ndjson" || kind.Count != kindCounts[kind.Name] {
+			t.Fatal("noncanonical or incomplete registry", kind)
+		}
+		previous = kind.Name
+		raw, ok := a.Member(kind.File)
+		if !ok || digest(raw) != manifest.Files[kind.File].SHA256 {
+			t.Fatal("current member missing or not committed", kind)
+		}
+		lines := bytes.Split(bytes.TrimSuffix(raw, []byte{'\n'}), []byte{'\n'})
+		if len(lines) != kind.Count {
+			t.Fatal("serialized kind count lost records", kind)
+		}
+		for _, line := range lines {
+			var row Record
+			if err := decodeJSON(line, &row); err != nil {
+				t.Fatal(err)
+			}
+			key := row.Kind + "\x00" + row.Source.Table + "\x00" + row.Project + "\x00" + row.ID
+			if expected, found := want[key]; !found || !equalJSON(row, expected) {
+				t.Fatal("serialized current row changed", key)
+			}
+		}
+	}
+	records, err := a.SourcePlaneRecords()
+	if err != nil || len(records) != len(want) {
+		t.Fatal("provider preparation omitted asymmetric current rows", len(records), len(want), err)
+	}
+	for _, record := range records {
+		var row Record
+		if err := decodeJSON(record.Raw, &row); err != nil {
+			t.Fatal(err)
+		}
+		key := row.Kind + "\x00" + row.Source.Table + "\x00" + row.Project + "\x00" + row.ID
+		expected, found := want[key]
+		if !found || !equalJSON(row, expected) {
+			t.Fatal("provider row missing, duplicated or changed", key)
+		}
+		delete(want, key)
+	}
+	if len(want) != 0 || budget.Usage().CurrentCategories["collection_kind_registry"] == 0 {
+		t.Fatal("current rows lost or registry not admitted")
+	}
+	a, records, manifest = nil, nil, Manifest{}
+	c.Close()
+	if budget.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("asymmetric current owner leaked")
 	}
 }
