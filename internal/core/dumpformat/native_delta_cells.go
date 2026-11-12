@@ -261,12 +261,12 @@ func validateNativeDeltaRow(table NativeDeltaTableSchema, row NativeDeltaRow, po
 		}
 	}
 	if table.Name == "config" || table.Name == "metadata" || table.Name == "local_metadata" {
-		if err := validateSecretReferences(map[string]any{stringValue(fields["key"]): fields["value"]}); err != nil {
+		if err := validateNativeDeltaSecretReferences(table.Name, map[string]any{"key": fields["key"], "value": fields["value"]}); err != nil {
 			return nil, nil, err
 		}
 		for k, v := range fields {
 			if k != "key" && k != "value" {
-				if err := validateSecretReferences(map[string]any{k: v}); err != nil {
+				if err := validateNativeDeltaSecretReferences(table.Name, map[string]any{k: v}); err != nil {
 					return nil, nil, err
 				}
 			}
@@ -290,15 +290,111 @@ func validateNativeDeltaRow(table NativeDeltaTableSchema, row NativeDeltaRow, po
 // this optional peer credential. Nested objects, config and all other fields
 // retain the existing reference rules; no credential value is admitted here.
 func validateNativeDeltaSecretReferences(family string, values map[string]any) error {
-	if family != "federation_peers" {
-		return validateSecretReferences(values)
+	// Config/metadata rows carry the credential name in `key`, while physical
+	// native tables carry it in the column name. Keep this native-only wrapper
+	// separate from validateSecretReferences so portable behavior is unchanged.
+	if family == "config" || family == "metadata" || family == "local_metadata" {
+		logicalKey, hasKey := values["key"].(string)
+		if hasKey {
+			if secretKey(logicalKey) {
+				if err := validateNativeCredentialValue(family, logicalKey, values["value"]); err != nil {
+					return err
+				}
+			} else if err := validateNativeNestedCredentialValue(family, logicalKey, values["value"]); err != nil {
+				return err
+			}
+			// `key` and `value` are the row envelope, not credential fields. The
+			// logical key above is the only field that decides whether the value is
+			// stored or an admitted secret reference.
+			for key, value := range values {
+				if key == "key" || key == "value" {
+					continue
+				}
+				if err := validateNativeNestedCredentialValue(family, key, value); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
 	}
 	for key, value := range values {
-		if key == "password_encrypted" && nativeDeltaEmptyPeerCredential(value) {
+		if family == "federation_peers" && key == "password_encrypted" && nativeDeltaEmptyPeerCredential(value) {
 			continue
 		}
-		if err := validateSecretReferences(map[string]any{key: value}); err != nil {
+		if err := validateNativeCredentialValue(family, key, value); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// NativeStoredCredentialError is the counts-only refusal for a real native
+// credential value. It deliberately never stores or formats the value.
+type NativeStoredCredentialError struct {
+	Code   string `json:"code"`
+	Family string `json:"family"`
+	Field  string `json:"field"`
+	Count  int    `json:"count"`
+}
+
+func (e *NativeStoredCredentialError) Error() string {
+	code := e.Code
+	if code == "" {
+		code = "native_stored_credential"
+	}
+	return fmt.Sprintf("%s: family=%s field=%s count=%d", code, e.Family, e.Field, e.Count)
+}
+
+func nativeStoredCredential(family, field string) error {
+	return &NativeStoredCredentialError{Code: "native_stored_credential", Family: family, Field: field, Count: 1}
+}
+
+func validateNativeCredentialValue(family, field string, value any) error {
+	if ref, ok := value.(map[string]any); ok && len(ref) == 1 {
+		if secret, present := ref["$secret"]; present {
+			name, valid := secret.(string)
+			if !valid || name == "" {
+				return fmt.Errorf("invalid secret reference")
+			}
+			return nil
+		}
+	}
+	if secretKey(field) {
+		return nativeStoredCredential(family, field)
+	}
+	return validateNativeNestedCredentialValue(family, field, value)
+}
+
+func validateNativeNestedCredentialValue(family, prefix string, value any) error {
+	switch value := value.(type) {
+	case map[string]any:
+		if ref, ok := value["$secret"]; ok {
+			name, valid := ref.(string)
+			if !valid || name == "" || len(value) != 1 {
+				return fmt.Errorf("invalid secret reference")
+			}
+			return nil
+		}
+		for key, item := range value {
+			field := key
+			if prefix != "" {
+				field = prefix + "." + key
+			}
+			if secretKey(key) {
+				if err := validateNativeCredentialValue(family, field, item); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := validateNativeNestedCredentialValue(family, field, item); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range value {
+			if err := validateNativeNestedCredentialValue(family, prefix, item); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

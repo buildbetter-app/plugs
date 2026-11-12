@@ -39,6 +39,40 @@ type NativeDeltaPrepared struct {
 	ready       bool
 }
 
+// NativeCaptureFileLedger returns the ordered file commitments retained by a
+// complete authenticated preparation. The returned values contain metadata
+// only; raw roots, heads and parts remain owned by this preparation and are
+// released by Close. The canonical order is capture-set.json, head.tar, then
+// each numeric part in ordinal order.
+func (p *NativeDeltaPrepared) NativeCaptureFileLedger() ([]NativeCaptureFile, error) {
+	if p == nil || !p.ready {
+		return nil, fmt.Errorf("unqualified native staging view")
+	}
+	names := make([]string, 0, len(p.files))
+	for name := range p.files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	ledger := make([]NativeCaptureFile, 0, len(names))
+	for _, name := range names {
+		raw := p.files[name]
+		ledger = append(ledger, NativeCaptureFile{Name: name, Bytes: uint64(len(raw)), SHA256: digest(raw)})
+	}
+	if len(ledger) < 3 || ledger[0].Name != "capture-set.json" || ledger[1].Name != "head.tar" {
+		return nil, fmt.Errorf("native capture file ledger is incomplete")
+	}
+	for i := 2; i < len(ledger); i++ {
+		want := fmt.Sprintf("parts/%020d.part", i-1)
+		if ledger[i].Name != want {
+			return nil, fmt.Errorf("native capture file ledger order differs")
+		}
+	}
+	if err := p.budget.ChargeJSON("native_capture_file_ledger", ledger); err != nil {
+		return nil, err
+	}
+	return ledger, nil
+}
+
 func newNativeDeltaPrepared(owner *NativeDeltaBudget) *NativeDeltaPrepared {
 	return &NativeDeltaPrepared{budget: owner.Scope(), files: map[string][]byte{}}
 }
