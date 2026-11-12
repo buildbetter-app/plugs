@@ -96,6 +96,10 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 		return nil, nil, nil, nativeDeltaRecoveryError(err)
 	}
 	defer archive.ReleaseNativeDecoded()
+	return recoverNativeFamiliesArchive(ctx, reader, profile, receipt, archive, nil)
+}
+
+func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, profile driver.RestoreImportProfile, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *restorePlan) ([]NativeFamilyReport, []NativeSchemaReport, []NativeHistoryReport, error) {
 	archive, releaseArchive := archive.NativeDeltaAccountingScope()
 	defer releaseArchive()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
@@ -106,22 +110,14 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	if err != nil {
 		return nil, nil, nil, driver.ErrConflict
 	}
-	_, reports, err := nativeCurrentRecords(archive, when, ctx)
-	if err != nil {
-		return nil, nil, nil, nativeDeltaRecoveryError(err)
-	}
-	var schemas []NativeSchemaReport
-	if archive.Manifest().MainVersion != 72 {
+	if prepared == nil {
 		plan, planErr := buildPlanWithProfile(archive, &profile, when, ctx)
 		if planErr != nil {
 			return nil, nil, nil, nativeDeltaRecoveryError(planErr)
 		}
-		schemas = plan.nativeSchemas
+		prepared = &plan
 	}
-	histories, err := nativeHistoryAccounting(archive)
-	if err != nil {
-		return nil, nil, nil, nativeDeltaRecoveryError(err)
-	}
+	reports, schemas, histories := prepared.nativeFamilies, prepared.nativeSchemas, prepared.nativeHistories
 	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: histories})
 	if err != nil {
 		return nil, nil, nil, driver.ErrConflict

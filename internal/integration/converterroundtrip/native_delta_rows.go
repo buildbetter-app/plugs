@@ -21,7 +21,11 @@ func lowerNativeDeltaRowHistory(ctx context.Context, archive *dumpformat.Archive
 	if scope.HistoryCoverage != nil {
 		history.NativeBoundaries = []driver.NativeHistoryBoundary{{SourceStoreID: scope.StoreID, Project: scope.Projects[0], VerifiedCommitCount: uint64(scope.ImageCount), BoundarySHA256: dumpformat.NativeHistoryCoverageSHA256(*scope.HistoryCoverage)}}
 	}
-	err = archive.VisitNativeDeltaRowChanges(ctx, func(commit dumpformat.NativeDeltaRowCommit) error {
+	prepared, err := archive.PrepareNativeDelta(ctx)
+	if err != nil {
+		return driver.OfflineHistory{}, err
+	}
+	err = prepared.Visit(ctx, dumpformat.NativeDeltaVisitor{Commit: func(commit dumpformat.NativeDeltaRowCommit) error {
 		if commit.Sequence != history.Head+1 {
 			return fmt.Errorf("native row source sequence differs")
 		}
@@ -34,7 +38,7 @@ func lowerNativeDeltaRowHistory(ctx context.Context, archive *dumpformat.Archive
 		history.Batches = append(history.Batches, batch)
 		history.Head = commit.Sequence
 		return nil
-	}, nil)
+	}})
 	if err != nil {
 		return driver.OfflineHistory{}, err
 	}
