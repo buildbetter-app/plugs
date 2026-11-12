@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -42,35 +44,98 @@ type NativeDeltaPrepared struct {
 // NativeCaptureFileLedger returns the ordered file commitments retained by a
 // complete authenticated preparation. The returned values contain metadata
 // only; raw roots, heads and parts remain owned by this preparation and are
-// released by Close. The canonical order is capture-set.json, head.tar, then
-// each numeric part in ordinal order.
-func (p *NativeDeltaPrepared) NativeCaptureFileLedger() ([]NativeCaptureFile, error) {
+// released by Close. The detached ledger remains charged to owner until the
+// caller discards it and releases that owner. The owner must be outside this
+// preparation and share its session budget. The canonical order is
+// capture-set.json, head.tar, then each numeric part in ordinal order.
+func (p *NativeDeltaPrepared) NativeCaptureFileLedger(owner *NativeDeltaBudget) ([]NativeCaptureFile, error) {
 	if p == nil || !p.ready {
 		return nil, fmt.Errorf("unqualified native staging view")
 	}
-	names := make([]string, 0, len(p.files))
-	for name := range p.files {
-		names = append(names, name)
+	if owner == nil || owner == p.budget || owner.root() != p.budget.root() {
+		return nil, fmt.Errorf("native capture ledger requires shared owner")
 	}
-	sort.Strings(names)
-	ledger := make([]NativeCaptureFile, 0, len(names))
-	for _, name := range names {
-		raw := p.files[name]
-		ledger = append(ledger, NativeCaptureFile{Name: name, Bytes: uint64(len(raw)), SHA256: digest(raw)})
+	for scope := owner.parent; scope != nil; scope = scope.parent {
+		if scope == p.budget {
+			return nil, fmt.Errorf("native capture ledger requires external owner")
+		}
 	}
-	if len(ledger) < 3 || ledger[0].Name != "capture-set.json" || ledger[1].Name != "head.tar" {
+	if len(p.files) < 3 {
 		return nil, fmt.Errorf("native capture file ledger is incomplete")
 	}
-	for i := 2; i < len(ledger); i++ {
-		want := fmt.Sprintf("parts/%020d.part", i-1)
-		if ledger[i].Name != want {
+	if _, ok := p.files["capture-set.json"]; !ok {
+		return nil, fmt.Errorf("native capture file ledger is incomplete")
+	}
+	if _, ok := p.files["head.tar"]; !ok {
+		return nil, fmt.Errorf("native capture file ledger is incomplete")
+	}
+	partCount := len(p.files) - 2
+	for name := range p.files {
+		if name == "capture-set.json" || name == "head.tar" {
+			continue
+		}
+		if len(name) != len("parts/")+20+len(".part") || !strings.HasPrefix(name, "parts/") || !strings.HasSuffix(name, ".part") {
+			return nil, fmt.Errorf("native capture file ledger order differs")
+		}
+		for _, digit := range name[len("parts/") : len("parts/")+20] {
+			if digit < '0' || digit > '9' {
+				return nil, fmt.Errorf("native capture file ledger order differs")
+			}
+		}
+		ordinal, err := strconv.ParseUint(name[len("parts/"):len("parts/")+20], 10, 64)
+		if err != nil || ordinal == 0 || ordinal > uint64(partCount) {
 			return nil, fmt.Errorf("native capture file ledger order differs")
 		}
 	}
-	if err := p.budget.ChargeJSON("native_capture_file_ledger", ledger); err != nil {
+
+	// Admit the complete metadata payload before allocating the result slice
+	// or any hashes. The size helper walks one entry at a time and retains no
+	// aggregate representation, so a limit refusal cannot leave a ledger live.
+	ledgerBytes, err := nativeCaptureFileLedgerJSONSize(p.files)
+	if err != nil {
 		return nil, err
 	}
+	if err := owner.ChargeBytes("native_capture_file_ledger", ledgerBytes); err != nil {
+		return nil, err
+	}
+	ledger := make([]NativeCaptureFile, 0, len(p.files))
+	appendFile := func(name string) {
+		raw := p.files[name]
+		ledger = append(ledger, NativeCaptureFile{Name: name, Bytes: uint64(len(raw)), SHA256: digest(raw)})
+	}
+	appendFile("capture-set.json")
+	appendFile("head.tar")
+	for i := 1; i <= partCount; i++ {
+		appendFile(fmt.Sprintf("parts/%020d.part", i))
+	}
 	return ledger, nil
+}
+
+// nativeCaptureFileLedgerJSONSize computes the exact compact JSON size of the
+// ledger without allocating the ledger itself. Each entry is counted and
+// discarded before the aggregate result is admitted by the shared budget.
+func nativeCaptureFileLedgerJSONSize(files map[string][]byte) (uint64, error) {
+	var total uint64
+	// SHA-256 is always the fixed 64-byte lowercase hexadecimal form. Count
+	// with a placeholder of the same length so no source digest or ledger
+	// metadata is materialized before admission.
+	const placeholderSHA = "0000000000000000000000000000000000000000000000000000000000000000"
+	for name, raw := range files {
+		n, err := NativeDeltaJSONSize(NativeCaptureFile{Name: name, Bytes: uint64(len(raw)), SHA256: placeholderSHA})
+		if err != nil {
+			return 0, err
+		}
+		if err := deltaAddCount(&total, n); err != nil {
+			return 0, err
+		}
+	}
+	// Each entry count includes its own terminal newline. The array has one
+	// final newline and one comma between adjacent entries, so the net framing
+	// adjustment is two bytes for every non-empty array.
+	if err := deltaAddCount(&total, 2); err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 func newNativeDeltaPrepared(owner *NativeDeltaBudget) *NativeDeltaPrepared {

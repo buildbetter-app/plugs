@@ -333,8 +333,11 @@ func validateNativeDeltaSecretReferences(family string, values map[string]any) e
 type NativeStoredCredentialError struct {
 	Code   string `json:"code"`
 	Family string `json:"family"`
-	Field  string `json:"field"`
-	Count  int    `json:"count"`
+	// Field is a stable public category, never the producer's config key or
+	// nested JSON path. Stored names can contain secrets and are counts-only
+	// refusal data, so they must not escape through diagnostics.
+	Field string `json:"field"`
+	Count int    `json:"count"`
 }
 
 func (e *NativeStoredCredentialError) Error() string {
@@ -346,7 +349,15 @@ func (e *NativeStoredCredentialError) Error() string {
 }
 
 func nativeStoredCredential(family, field string) error {
-	return &NativeStoredCredentialError{Code: "native_stored_credential", Family: family, Field: field, Count: 1}
+	// Only fixed schema fields are public diagnostic labels. Dynamic logical
+	// keys and JSON path components never enter the exported error.
+	label := "credential"
+	if family == "config" || family == "metadata" || family == "local_metadata" {
+		label = "value"
+	} else if family == "federation_peers" && field == "password_encrypted" {
+		label = "password_encrypted"
+	}
+	return &NativeStoredCredentialError{Code: "native_stored_credential", Family: family, Field: label, Count: 1}
 }
 
 func validateNativeCredentialValue(family, field string, value any) error {

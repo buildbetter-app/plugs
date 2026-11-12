@@ -215,6 +215,7 @@ internal/core/dumpformat/native_history.go
 internal/core/dumpformat/native_history_coverage.go
 internal/core/dumpformat/native_history_coverage_test.go
 internal/core/dumpformat/native_history_test.go
+internal/core/dumpformat/native_joined_input_test.go
 internal/core/dumpformat/native_row_records.go
 internal/core/dumpformat/native_row_records.md
 internal/core/dumpformat/native_row_table.go
