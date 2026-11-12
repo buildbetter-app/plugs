@@ -32,6 +32,17 @@ func (e *UnresolvedDependencyError) Error() string {
 	return fmt.Sprintf("unresolved dependency target: edge %s project %s source %s target %s kind %s", e.EdgeID, e.Project, e.Source, e.Target, e.TargetKind)
 }
 
+// ChildCounterParentUnresolvedError identifies an allocator parent absent from
+// both authenticated source planes. A refused read returns no archive.
+type ChildCounterParentUnresolvedError struct {
+	Project string `json:"project"`
+	Parent  string `json:"parent"`
+}
+
+func (e *ChildCounterParentUnresolvedError) Error() string {
+	return fmt.Sprintf("child_counter_parent_unresolved: project %s parent %s", e.Project, e.Parent)
+}
+
 var hashPattern = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
 
 // EphemeralDependencyTargetField names the physical exporter column used by
@@ -409,6 +420,10 @@ func validateRelations(projects []Project, records map[string][]Record) error {
 }
 
 func validateRelationsForVersion(projects []Project, records map[string][]Record, main, ignored int) error {
+	return validateRelationsWithActiveCounterParents(projects, records, main, ignored, nil)
+}
+
+func validateRelationsWithActiveCounterParents(projects []Project, records map[string][]Record, main, ignored int, activeParentProject func(string) string) error {
 	beads := map[string]string{}
 	for _, record := range records["bead"] {
 		if beads[record.ID] != "" {
@@ -416,10 +431,23 @@ func validateRelationsForVersion(projects []Project, records map[string][]Record
 		}
 		beads[record.ID] = record.Project
 	}
+	counterParentProject := func(parent string) string {
+		if project := beads[parent]; project != "" {
+			return project
+		}
+		if activeParentProject != nil {
+			return activeParentProject(parent)
+		}
+		return ""
+	}
 	for _, p := range projects {
 		for parent := range p.ChildCounters {
-			if beads[parent] != p.Prefix {
-				return fmt.Errorf("unresolved child counter parent")
+			project := counterParentProject(parent)
+			if project == "" {
+				return &ChildCounterParentUnresolvedError{Project: p.Prefix, Parent: parent}
+			}
+			if project != p.Prefix {
+				return fmt.Errorf("child counter parent project mismatch")
 			}
 		}
 	}
@@ -452,7 +480,11 @@ func validateRelationsForVersion(projects []Project, records map[string][]Record
 			seenTop[prefix] = true
 		case "child_counters":
 			parent := stringValue(fields["parent_id"])
-			p := findProject(beads[parent], projects)
+			project := counterParentProject(parent)
+			if project == "" {
+				return &ChildCounterParentUnresolvedError{Parent: parent}
+			}
+			p := findProject(project, projects)
 			count, err := natural(fields["last_child"])
 			if p.Prefix == "" || seenChild[parent] || err != nil || count > p.ChildCounters[parent] {
 				return fmt.Errorf("invalid source child counter")

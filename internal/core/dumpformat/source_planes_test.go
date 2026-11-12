@@ -3,14 +3,176 @@ package dumpformat
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func childCounterParentFixture(t *testing.T, durable, active bool) *mergeFixture {
+	t.Helper()
+	f := sourcePlaneReaderFixture(t, "pl")
+	f.manifest.Projects[0].ChildCounters["pl-9"] = 17
+	f.addArchive(t, "child_counters", Row{"parent_id": "pl-9", "last_child": json.Number("17")})
+	child := f.records["bead"][1]
+	child.ID = "pl-9.3"
+	child.Source.Fields = Row{}
+	for key, value := range f.records["bead"][1].Source.Fields {
+		child.Source.Fields[key] = value
+	}
+	child.Source.Fields["id"] = child.ID
+	f.records["bead"] = append(f.records["bead"], child)
+	if durable {
+		parent := f.records["bead"][0]
+		parent.ID = "pl-9"
+		parent.Source.Fields = Row{}
+		for key, value := range f.records["bead"][0].Source.Fields {
+			parent.Source.Fields[key] = value
+		}
+		parent.Source.Fields["id"] = parent.ID
+		f.records["bead"] = append(f.records["bead"], parent)
+	}
+	if active {
+		for _, r := range f.records["beads-archive"] {
+			if r.Source.Table == EphemeralEntityTable {
+				fields := Row{}
+				for key, value := range r.Source.Fields {
+					fields[key] = value
+				}
+				fields["id"] = "pl-9"
+				f.addArchive(t, EphemeralEntityTable, fields)
+				break
+			}
+		}
+	}
+	return f
+}
+
+// These wire controls are separate from the genuine producer-capture proof.
+func TestSourcePlaneChildCounterParentAcrossBothPlanes(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		durable, active bool
+	}{
+		{"durable", true, false},
+		{"active-only", false, true},
+		{"both", true, true},
+		{"absent-both", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := sourcePlaneReaderBytes(t, childCounterParentFixture(t, test.durable, test.active))
+			a, err := Read(bytes.NewReader(data))
+			if !test.durable && !test.active {
+				var refusal *ChildCounterParentUnresolvedError
+				if a != nil || !errors.As(err, &refusal) || refusal.Project != "pl" || refusal.Parent != "pl-9" || !strings.Contains(err.Error(), "child_counter_parent_unresolved") {
+					t.Fatalf("missing parent returned partial archive or wrong typed refusal: %v %v", a, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(data, a.TarBytes()) || a.Manifest().Projects[0].ChildCounters["pl-9"] != 17 {
+				t.Fatal("archive or exact parent counter changed")
+			}
+			child, counter := false, false
+			for _, r := range a.Records("bead") {
+				if r.ID == "pl-9.3" && r.Source.Fields["id"] == "pl-9.3" {
+					child = true
+				}
+			}
+			for _, r := range a.Records("beads-archive") {
+				if r.Source.Table == "child_counters" && r.Source.Fields["parent_id"] == "pl-9" && r.Source.Fields["last_child"] == json.Number("17") {
+					counter = true
+				}
+			}
+			if !child || !counter {
+				t.Fatal("exact child number or raw parent counter missing")
+			}
+		})
+	}
+}
+
+func TestSourcePlaneCounterParentKeepsDurableCommentOwnerCheck(t *testing.T) {
+	f := childCounterParentFixture(t, false, true)
+	f.records["comment"][0].Source.Fields["issue_id"] = "pl-9"
+	a, err := Read(bytes.NewReader(sourcePlaneReaderBytes(t, f)))
+	if a != nil || err == nil || !strings.Contains(err.Error(), "dangling relation owner") {
+		t.Fatalf("active allocator parent admitted durable comment owner: %v %v", a, err)
+	}
+}
+
+func TestSourcePlaneMissingCounterParentRefusesReceivingWithoutOutput(t *testing.T) {
+	for _, table := range []string{"inferred", "child_counters", EphemeralChildCounterTable} {
+		t.Run(table, func(t *testing.T) {
+			// A declared synthetic native head, with only this parent omitted.
+			members := nativeDeltaDispositionHead(t, false)
+			var m Manifest
+			if err := decodeJSON(members["manifest.json"], &m); err != nil {
+				t.Fatal(err)
+			}
+			if table == "inferred" {
+				m.Projects[0].ChildCounters["pl-9"] = 17
+			} else {
+				fields := Row{"parent_id": "pl-9", "last_child": json.Number("17")}
+				records := []Record{}
+				for _, line := range bytes.Split(bytes.TrimSpace(members["records/beads-archive.ndjson"]), []byte{'\n'}) {
+					var r Record
+					if err := decodeJSON(line, &r); err != nil {
+						t.Fatal(err)
+					}
+					records = append(records, r)
+				}
+				records = append(records, Record{Kind: "beads-archive", ID: table + "/" + digest(fixtureJSON(t, fields)), Source: Provenance{Table: table, Fields: fields}, Body: Row{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false}})
+				sort.Slice(records, func(i, j int) bool {
+					return compareSourceRecords(records[i], records[j], m.SourcePlaneAddressContract) < 0
+				})
+				members["records/beads-archive.ndjson"] = nil
+				for _, r := range records {
+					members["records/beads-archive.ndjson"] = append(members["records/beads-archive.ndjson"], fixtureJSON(t, r)...)
+				}
+				for i := range m.Kinds {
+					if m.Kinds[i].Name == "beads-archive" {
+						m.Kinds[i].Count++
+					}
+				}
+				for i := range m.Sources {
+					if m.Sources[i].Family == table {
+						m.Sources[i].Rows++
+					}
+				}
+			}
+			members["manifest.json"] = fixtureJSON(t, m)
+			head := nativeFixtureMembers(t, members)
+			root := NativeCaptureSet{Format: NativeCaptureSetFormat, Contract: NativeDeltaFormat, StoreID: m.StoreID, Projects: []string{"pl"}, Head: strings.Repeat("a", 32), PartCount: 1, FinalPartSHA256: strings.Repeat("b", 64), StreamSHA256: strings.Repeat("c", 64), StreamBytes: 1}
+			root.HeadArchive.SHA256, root.HeadArchive.Size = digest(head), int64(len(head))
+			rootBytes, err := json.Marshal(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget := NewNativeDeltaBudget(0)
+			opened := false
+			a, err := ReadNativeCaptureSet(WithNativeDeltaBudget(context.Background(), budget), bytes.NewReader(rootBytes), bytes.NewReader(head), func(context.Context, uint64) (io.ReadCloser, error) {
+				opened = true
+				return nil, io.EOF
+			}, NativeCaptureSetOptions{PrepareReceiving: true})
+			var refusal *ChildCounterParentUnresolvedError
+			if a != nil || opened || !errors.As(err, &refusal) || refusal.Parent != "pl-9" || !strings.Contains(err.Error(), "child_counter_parent_unresolved") {
+				t.Fatalf("missing parent published output or wrong typed refusal: %v %v opened=%v", a, err, opened)
+			}
+			usage := budget.Usage()
+			if usage.CurrentAccountedDecodedBytes != 0 || len(usage.CurrentCategories) != 0 || len(usage.CurrentCharges) != 0 {
+				t.Fatal("refused receiving read retained partial allocations", usage)
+			}
+		})
+	}
+}
 
 // Disposable wire controls bind the actual bc32707d producer contract. They
 // are neither stored producer output nor public/native runtime evidence.
