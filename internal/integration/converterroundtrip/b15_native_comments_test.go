@@ -18,6 +18,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
@@ -574,19 +575,30 @@ func b15BindNativeClient(t *testing.T, ctx context.Context, store driver.Store, 
 	provider, err := workflowplugin.NewSourceRuntime(state, report.SourcePlanes.Providers[0])
 	publicProofError(t, "B15-bind-source-provider", err)
 	provider = provider.WithClock(func() time.Time { return b15NativeWriteClock })
-	ontology := service.NewOntology(nil)
-	writer := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return b15NativeWriteClock }), pipeline.WithOntology(ontology), pipeline.WithAuthorizer(&sourcePublicPolicy{}))
-	domain := service.New(store, lease, writer, service.WithClock(func() time.Time { return b15NativeWriteClock }), service.WithOntology(ontology))
+	nativeSource, native := report.Archive.NativeStatusOntology()
+	if !native {
+		t.Fatal("B15 authenticated archive has no native status ontology")
+	}
+	snapshot, problems := ontology.Compile(nativeSource.Base, nativeSource.Overlays, nil)
+	if len(problems) != 0 {
+		t.Fatalf("B15 authenticated native status ontology does not compile: %v", problems)
+	}
 	registry, err := rpc.NewRegistry()
 	publicProofError(t, "B15-bind-registry", err)
-	publicProofError(t, "B15-bind-public-service", rpc.BindService(registry, domain))
-	publicProofError(t, "B15-install-actual-source-provider", domain.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt))
 	plan, err := profile.SourcePlanes.Plan()
 	publicProofError(t, "B15-bound-source-plan", err)
 	if len(plan.Entities) == 0 {
 		t.Fatal("B15 actual source plan has no public entities")
 	}
 	project := plan.Entities[0].Source.Project
+	if _, ok := snapshot.Effective(project).Status("open"); !ok {
+		t.Fatalf("B15 native ontology has no open status for source project %s", project)
+	}
+	runtimeOntology := service.NewOntology(snapshot.Effective)
+	writer := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return b15NativeWriteClock }), pipeline.WithOntology(runtimeOntology), pipeline.WithAuthorizer(&sourcePublicPolicy{}))
+	domain := service.New(store, lease, writer, service.WithClock(func() time.Time { return b15NativeWriteClock }), service.WithOntology(runtimeOntology))
+	publicProofError(t, "B15-bind-public-service", rpc.BindService(registry, domain))
+	publicProofError(t, "B15-install-actual-source-provider", domain.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt))
 	server, err := rpc.New(registry, rpc.Config{DefaultProject: project, Incarnation: meta.Incarnation, AuthMode: "authenticated", CursorKey: bytes.Repeat([]byte{0x15}, 32)})
 	publicProofError(t, "B15-bind-public-server", err)
 	return &b15NativeClient{t: t, ctx: ctx, store: store, project: project, actor: actor, server: server, checkpoint: checkpoints, namespace: report.SourcePlanes.Providers[0].Provider.Namespace}
