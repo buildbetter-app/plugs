@@ -1,6 +1,7 @@
 package converterroundtrip
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
 )
@@ -72,6 +74,33 @@ func TestNativeCollectionPreparedHandleReceivesOnceAndReleasesOwner(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Independent retained-evidence oracle: a compact manifest does not hash
+	// itself, but the actual final plan must retain it for receipt recovery.
+	owner := issuer.Owner()
+	manifest, exists, err := owner.MemberChecked("manifest.json")
+	if err != nil || !exists {
+		t.Fatal("authenticated compact manifest unavailable", err)
+	}
+	image, err := prepared.prepared.plan.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence archiveEvidence
+	for _, row := range image.Records {
+		if row.Ref.ID == "restore/archive" {
+			if err := json.Unmarshal(row.Body, &evidence); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	file, exists := evidence.Members["manifest.json"]
+	if !exists || file.SHA256 != hashBytes(manifest) || file.Size != int64(len(manifest)) || !bytes.Equal(image.Blobs[file.SHA256], manifest) || evidence.ArchiveSHA256 != bound.ArchiveDigest {
+		t.Fatal("actual plan omitted or changed retained compact manifest")
+	}
+	if _, self := owner.Manifest().Files["manifest.json"]; self {
+		t.Fatal("source manifest acquired a self commitment")
+	}
+	manifest, image, evidence, owner = nil, nativeprojection.Snapshot{}, archiveEvidence{}, nil
 	observed := observeJoinedStore(t, store, l)
 	report, err := prepared.RestoreWithLease(ctx, observed, lease)
 	if err != nil {

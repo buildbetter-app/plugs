@@ -37,7 +37,7 @@ type collectionCommandReceipt struct {
 		Receiving        []int  `json:"receiving_source_preparations"`
 		Readback         []int  `json:"imported_readback_source_preparations"`
 		Later            []int  `json:"later_readback_source_preparations"`
-	} `json:"collection_verification"`
+	} `json:"native_collection_verification"`
 	Measurements struct {
 		Decoded dumpformat.NativeDeltaDecodedUsage `json:"decoded"`
 	} `json:"capture_set_measurements"`
