@@ -595,7 +595,11 @@ func b15BindNativeClient(t *testing.T, ctx context.Context, store driver.Store, 
 		t.Fatalf("B15 native ontology has no open status for source project %s", project)
 	}
 	runtimeOntology := service.NewOntology(snapshot.Effective)
-	writer := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return b15NativeWriteClock }), pipeline.WithOntology(runtimeOntology), pipeline.WithAuthorizer(&sourcePublicPolicy{}))
+	// The native writer exercises the same complete durable event contract as
+	// the ordinary B15 fixture. Without this host option the pipeline retains
+	// its legacy nil-event-plan behavior, so a successful comment cannot satisfy
+	// the one-history/one-event assertion below.
+	writer := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return b15NativeWriteClock }), pipeline.WithOntology(runtimeOntology), pipeline.WithOntologyAudit(service.NewOntologyAudit(nil)), pipeline.WithAuthorizer(&sourcePublicPolicy{}))
 	domain := service.New(store, lease, writer, service.WithClock(func() time.Time { return b15NativeWriteClock }), service.WithOntology(runtimeOntology))
 	publicProofError(t, "B15-bind-public-service", rpc.BindService(registry, domain))
 	publicProofError(t, "B15-install-actual-source-provider", domain.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt))
@@ -868,7 +872,7 @@ func (c *b15NativeClient) appendComment(thread *b15NativeThread, body string, al
 		}
 		entry := after.History[len(before.History)]
 		if len(entry.Changes) != 1 || entry.Changes[0].Op != model.OpComment || entry.Changes[0].Ref.ID != thread.TargetID || !reflect.DeepEqual(entry.Changes[0].ChangedPaths, []string{"/comments"}) || len(entry.Events) != 1 || entry.Events[0].Type != model.EventBeadCommented {
-			c.t.Fatal("B15 durable public comment changed its history/event identity or multiplicity")
+			c.t.Fatalf("B15 durable public comment changed its history/event identity or multiplicity: entry=%s", b15JSON(c.t, entry))
 		}
 		for id, previous := range before.Anchors {
 			current := after.Anchors[id]
@@ -1138,6 +1142,24 @@ func b15NativeHostPlan(t *testing.T, ctx context.Context, archive *dumpformat.Ar
 // lifecycle separately for both source projects and all three target drivers.
 func TestB15NativeCommentImportedReopen(t *testing.T) {
 	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_RUN")
+	b15RunNativePacketCases(t, "B15-native", func(t *testing.T, req publicProofRequest) {
+		writer, afterReopen := b15NativeContinuations(req)
+		runPublicNativeExternalCaptureWithHostPlan(t, b15NativeHostPlan, writer, afterReopen)
+	})
+}
+
+// The standalone unfiltered matrix needs the same complete committed-input
+// binding as the writer root when packet mode opts it in. It keeps the shared
+// root's default host intent and read-only import/reopen workload; each project
+// and driver still owns a distinct invocation and once-only output directory.
+func b15RunNativeCaptureMatrix(t *testing.T) {
+	b15RunNativePacketCases(t, "B15-native-matrix", func(t *testing.T, _ publicProofRequest) {
+		runPublicNativeExternalCapture(t, nil)
+	})
+}
+
+func b15RunNativePacketCases(t *testing.T, outputName string, run func(*testing.T, publicProofRequest)) {
+	t.Helper()
 	packetRoot := b15MaterializeNativePacket(t)
 	// Bind the actual compiled ELF before entering the shared callback. A
 	// caller-supplied digest must agree with it.
@@ -1151,8 +1173,9 @@ func TestB15NativeCommentImportedReopen(t *testing.T) {
 		if !filepath.IsAbs(artifacts) {
 			t.Fatal("B15 needs an absolute output root or Bazel artifact directory")
 		}
-		outputRoot = filepath.Join(artifacts, "B15-native")
+		outputRoot = artifacts
 	}
+	outputRoot = filepath.Join(outputRoot, outputName)
 	if !filepath.IsAbs(outputRoot) {
 		t.Fatal("B15 committed packet mode requires an absolute output root")
 	}
@@ -1202,8 +1225,7 @@ func TestB15NativeCommentImportedReopen(t *testing.T) {
 						t.Fatal("B15 lifecycle mutated its request or independent oracle")
 					}
 				})
-				writer, afterReopen := b15NativeContinuations(req)
-				runPublicNativeExternalCaptureWithHostPlan(t, b15NativeHostPlan, writer, afterReopen)
+				run(t, req)
 				publicProofJSON(t, filepath.Join(output, "B15-input-bindings.json"), bindings)
 			})
 		}
