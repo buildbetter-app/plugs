@@ -169,7 +169,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 	if os.Getenv("PLUG_PUBLIC_BUNDLE") == "" {
 		t.Skip("requires explicit PLUG_PUBLIC_BUNDLE opt-in")
 	}
-	for _, count := range []int{5000, 8000} {
+	for _, count := range []int{3, 5000, 8000} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			capture, parent := graphcertfixture.Capture(t, "../../internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz", count)
 			for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -267,16 +267,20 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 							t.Fatal("stale/missing import fact or sentinel", state)
 						}
 					}
-					if _, _, err := r.(driver.HierarchyChildrenReader).HierarchyChildren(op, nil, 0); err != nil {
-						t.Fatal("parent coverage", err)
+					parentRef := model.RefByID(parent, model.Natural64(0))
+					importChildren, childMore, err := r.(driver.HierarchyChildrenReader).HierarchyChildren(op, []model.Ref{parentRef}, 2)
+					if err != nil || childMore || len(importChildren) != 0 {
+						t.Fatal("imported isolated parent coverage", err, importChildren)
 					}
-					if _, _, err := r.(driver.InverseSourceLinksReader).InverseSourceLinks(op, nil, nil, nil, 0); err != nil {
-						t.Fatal("link coverage", err)
+					importIncoming, incomingMore, err := r.(driver.InverseSourceLinksReader).InverseSourceLinks(op, []model.Ref{parentRef}, []driver.IncomingLinkKind{driver.IncomingLinkBlocks}, nil, 2)
+					if err != nil || incomingMore || len(importIncoming) != 0 {
+						t.Fatal("imported isolated link coverage", err, importIncoming)
 					}
 					rows, err := r.Get(op, []model.Ref{model.RefByID(parent, model.Natural64(0)), model.RefByID("instance_config/restore-import/binding", model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 					if err != nil || len(rows) != 3 {
 						t.Fatal("durable parent/binding/source binding", err, len(rows))
 					}
+					graphArtifact(t, "import-coverage-readback", map[string]any{"snapshot": r.Snapshot(), "fact_states": states, "binding_rows": rows, "parent_target": parentRef, "parent_members": importChildren, "parent_more": childMore, "inverse_target": parentRef, "inverse_kind": driver.IncomingLinkBlocks, "inverse_members": importIncoming, "inverse_more": incomingMore})
 					r.Close()
 					prior, _ := H.Uint64()
 					prior--
@@ -284,9 +288,15 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, _, err = historical.(driver.HierarchyChildrenReader).HierarchyChildren(op, nil, 0); !errors.Is(err, driver.ErrUnsupported) {
-						t.Fatal("imported history falsely certified", err)
+					_, _, parentErr := historical.(driver.HierarchyChildrenReader).HierarchyChildren(op, []model.Ref{parentRef}, 2)
+					if !errors.Is(parentErr, driver.ErrUnsupported) {
+						t.Fatal("imported history falsely certified", parentErr)
 					}
+					_, _, linkErr := historical.(driver.InverseSourceLinksReader).InverseSourceLinks(op, []model.Ref{parentRef}, []driver.IncomingLinkKind{driver.IncomingLinkBlocks}, nil, 2)
+					if !errors.Is(linkErr, driver.ErrUnsupported) {
+						t.Fatal("imported historical links falsely certified", linkErr)
+					}
+					graphArtifact(t, "historical-coverage-readback", map[string]any{"snapshot": historical.Snapshot(), "parent_target": parentRef, "parent_error": parentErr.Error(), "inverse_target": parentRef, "inverse_kind": driver.IncomingLinkBlocks, "inverse_error": linkErr.Error()})
 					historical.Close()
 					work := &graphRequestWork{}
 					observed := &graphObservedStore{Store: retained, work: work}
@@ -328,6 +338,9 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 						}
 						graphcertfixture.Decode(t, response.Body.Bytes(), &envelope)
 						graphArtifact(t, name, map[string]any{"http_attempt": 1, "request": json.RawMessage(raw), "response": json.RawMessage(response.Body.Bytes()), "http_status": response.Code, "started": started, "finished": finished, "elapsed_ms": float64(finished.Sub(started)) / float64(time.Millisecond), "pipeline_attempts": work.Attempts, "observed_deadlines": work.Deadlines, "query_calls": work.Queries, "bead_rows_returned": work.Beads, "ordinary_preparation_budget_ms": 2000})
+						if response.Code != http.StatusOK {
+							t.Fatal("RPC HTTP status", response.Code)
+						}
 						if len(envelope.Error) == 0 || string(envelope.Error) == "null" {
 							return envelope.Result, nil
 						}
@@ -376,22 +389,28 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 					if err != nil || allocator.Children[parent] != 1 {
 						t.Fatal("durable first child number", err, allocator.Children[parent])
 					}
-					graphArtifact(t, "fresh-readback", map[string]any{"rows": rows, "children": children, "child_number": allocator.Children[parent], "import_head": H, "incarnation": received.Report.Restored.Incarnation, "fact_states": states, "coverage_from": H, "coverage_through": H, "historical_probe": "unsupported"})
+					graphArtifact(t, "fresh-readback", map[string]any{"snapshot": r.Snapshot(), "rows": rows, "children": children, "child_number": allocator.Children[parent], "import_head": H, "incarnation": received.Report.Restored.Incarnation})
 					r.Close()
 					work.mu.Lock()
 					work.Attempts, work.Queries, work.Beads = 0, 0, 0
 					work.Deadlines = nil
 					work.mu.Unlock()
-					linked, linkFailed := call("bead.link", map[string]any{"from": model.RefByID(parent, model.Natural64(0)), "to": model.RefByID(archive.Records("bead")[0].ID, model.Natural64(0)), "kind": "related"}, "explicit-link")
+					linked, linkFailed := call("bead.link", map[string]any{"from": parentRef, "to": model.RefByID(archive.Records("bead")[0].ID, model.Natural64(0)), "kind": "blocks"}, "explicit-link")
 					if work.Queries == 0 {
 						t.Fatal("explicit link did not take unchanged full-read path")
 					}
 					if linkFailed != nil {
+						if count == 3 {
+							t.Fatal("small explicit-link control must succeed", linkFailed)
+						}
 						if linkFailed.Code != "busy" || !linkFailed.Retryable {
 							t.Fatal("unexpected explicit link refusal", linkFailed)
 						}
 						t.Log("explicit link retained its existing full-read limit; typed busy refusal preserved without retry")
 					} else {
+						if work.Attempts != 1 || len(linked.Results) != 1 {
+							t.Fatal("explicit link must commit on its first attempt", linked, work.Attempts)
+						}
 						r = graphFreshReader(t, retained)
 						linkRows, err := r.Get(op, []model.Ref{model.RefByID(parent, model.Natural64(0))})
 						if err != nil || len(linkRows) != 1 {
@@ -403,12 +422,25 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 						}
 						found := false
 						for _, edge := range doc.Links {
-							found = found || edge.Kind == "related" && edge.To.ID == archive.Records("bead")[0].ID
+							found = found || edge.Kind == "blocks" && edge.To.ID == archive.Records("bead")[0].ID
 						}
 						if !found {
 							t.Fatal("successful explicit link not durable")
 						}
-						graphArtifact(t, "explicit-link-readback", map[string]any{"commit": linked, "source": linkRows[0]})
+						inverse, more, err := r.(driver.InverseSourceLinksReader).InverseSourceLinks(op, []model.Ref{model.RefByID(archive.Records("bead")[0].ID, model.Natural64(0))}, []driver.IncomingLinkKind{driver.IncomingLinkBlocks}, nil, 4)
+						if err != nil || more {
+							t.Fatal("fresh inverse link readback", err, more)
+						}
+						inverseFound := false
+						for _, row := range inverse {
+							if row.Ref == linkRows[0].Ref && row.Revision == linked.Revision && bytes.Equal(row.Body, linkRows[0].Body) {
+								inverseFound = true
+							}
+						}
+						if !inverseFound {
+							t.Fatal("successful link lacks exact durable inverse membership", err, inverse)
+						}
+						graphArtifact(t, "explicit-link-readback", map[string]any{"snapshot": r.Snapshot(), "commit": linked, "source": linkRows[0], "inverse": inverse, "inverse_more": more, "required_success_control": count == 3})
 						r.Close()
 					}
 				})
