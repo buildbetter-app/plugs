@@ -22,6 +22,27 @@ import (
 	"github.com/steveyegge/beads/internal/storage/physicalcapture"
 )
 
+type captureMode uint8
+
+const (
+	legacyCaptureMode captureMode = iota
+	nativeDeltaCaptureMode
+)
+
+// selectCaptureMode keeps the legacy archive as the default while making the
+// capture-set route explicit. --native-delta is retained as a compatibility
+// spelling for existing public procedures; both v2 spellings select the same
+// bounded, on-disk emitter and neither reaches plugdump.Build.
+func selectCaptureMode(captureSet, nativeDelta bool) (captureMode, error) {
+	if captureSet && nativeDelta {
+		return legacyCaptureMode, fmt.Errorf("--capture-set and --native-delta are mutually exclusive")
+	}
+	if captureSet || nativeDelta {
+		return nativeDeltaCaptureMode, nil
+	}
+	return legacyCaptureMode, nil
+}
+
 func main() {
 	if err := run(); err != nil {
 		writeSafeReport(os.Stderr, err)
@@ -51,8 +72,13 @@ func run() (resultErr error) {
 	timeout := flags.Duration("timeout", 20*time.Minute, "capture deadline")
 	schemaOnly := flags.Bool("schema-only", false, "measure schema cursor without inventory, history or output files")
 	historyProbeOnly := flags.Bool("history-probe-only", false, "count reachable commits, readable roots and indexed storage without user rows or output files")
-	nativeDelta := flags.Bool("native-delta", false, "capture authenticated bounded native delta parts instead of the legacy history archive")
+	captureSet := flags.Bool("capture-set", false, "capture an authenticated bounded native delta capture set")
+	nativeDelta := flags.Bool("native-delta", false, "compatibility alias for --capture-set")
 	if err := flags.Parse(os.Args[1:]); err != nil {
+		return err
+	}
+	mode, err := selectCaptureMode(*captureSet, *nativeDelta)
+	if err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || !*disposable || (*schemaOnly && *historyProbeOnly) || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,127}$`).MatchString(*database) {
@@ -197,7 +223,9 @@ func run() (resultErr error) {
 		}
 	}
 	stage = stageHistory
-	if *nativeDelta {
+	// The capture-set selector must branch before Build: Build enters the
+	// legacy single-member path and its aggregate native-history census.
+	if mode == nativeDeltaCaptureMode {
 		return runNativeDelta(ctx, db, conn, tx, closeDriver, source, inventory, working, originalLog, *output, &ownedOutputs)
 	}
 	archive, err := plugdump.Build(ctx, source, inventory)

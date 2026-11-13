@@ -25,6 +25,28 @@ import (
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
+func TestCaptureSetSelectsNativeDeltaAndKeepsLegacyDefault(t *testing.T) {
+	tests := []struct {
+		name                    string
+		captureSet, nativeDelta bool
+		want                    captureMode
+		wantErr                 bool
+	}{
+		{name: "legacy default", want: legacyCaptureMode},
+		{name: "capture set", captureSet: true, want: nativeDeltaCaptureMode},
+		{name: "compatibility alias", nativeDelta: true, want: nativeDeltaCaptureMode},
+		{name: "both selectors", captureSet: true, nativeDelta: true, want: legacyCaptureMode, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := selectCaptureMode(test.captureSet, test.nativeDelta)
+			if (err != nil) != test.wantErr || got != test.want {
+				t.Fatalf("selectCaptureMode(%t, %t) = %v, %v; want %v, error=%t", test.captureSet, test.nativeDelta, got, err, test.want, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestPublicNativeDeltaCapturesOver64MiBEquivalentHistory(t *testing.T) {
 	binary := diagnosticBinary(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -61,6 +83,7 @@ func TestPublicNativeDeltaCapturesOver64MiBEquivalentHistory(t *testing.T) {
 	ownVersionExec(t, ctx, conn, "INSERT INTO config (`key`,`value`) VALUES ('issue_prefix','public') ON DUPLICATE KEY UPDATE `value`='public'")
 	large := strings.Repeat("public unchanged large description ", (3<<20)/35+1)
 	singleLeaf := strings.Repeat("public single-leaf description ", 100)
+	repeatedHistoryValue := strings.Repeat("public repeated native delta history value ", (3<<20)/40+1)
 	// The pinned Dolt tuple target is 2048 bytes and blob leaves are 4000
 	// bytes. This TEXT exceeds the inline target but needs only one leaf.
 	if len(singleLeaf) <= 2048 || len(singleLeaf) > 4000 {
@@ -76,6 +99,11 @@ func TestPublicNativeDeltaCapturesOver64MiBEquivalentHistory(t *testing.T) {
 	var head string
 	for i := 0; i < 25; i++ {
 		ownVersionExec(t, ctx, conn, "INSERT INTO config (`key`,`value`) VALUES ('public.delta_counter',?) ON DUPLICATE KEY UPDATE `value`=VALUES(`value`)", fmt.Sprint(i))
+		// Change a versioned LONGTEXT issue field on every commit. Config values
+		// are deliberately bounded by the source schema, while issue notes
+		// exercise the real out-of-line cell path and cross the 64 MiB part
+		// boundary without changing the source family or schema.
+		ownVersionExec(t, ctx, conn, "UPDATE issues SET notes=? WHERE id='public-a1b'", repeatedHistoryValue+fmt.Sprintf("\ncommit=%02d", i))
 		head = ownVersionCommit(t, ctx, conn)
 	}
 	ownVersionExec(t, ctx, conn, "UPDATE wisps SET title='separate current-only value' WHERE id='public-w1'")
@@ -106,7 +134,7 @@ func TestPublicNativeDeltaCapturesOver64MiBEquivalentHistory(t *testing.T) {
 		environment = append(environment, entry)
 	}
 	environment = append(environment, "HOME="+home, "DOLT_ROOT_PATH="+home, "BEADS_DIR="+beadsDir, "XDG_CONFIG_HOME="+home, "BD_DISABLE_METRICS=1", "BD_DISABLE_EVENT_FLUSH=1")
-	command := exec.CommandContext(ctx, binary, "--disposable", "--native-delta", "--data-dir", dataDir, "--database", "public_native_delta", "--beads-dir", beadsDir, "--output-dir", output)
+	command := exec.CommandContext(ctx, binary, "--disposable", "--capture-set", "--data-dir", dataDir, "--database", "public_native_delta", "--beads-dir", beadsDir, "--output-dir", output)
 	command.Dir, command.Env = workspace, environment
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
@@ -131,7 +159,7 @@ func TestPublicNativeDeltaCapturesOver64MiBEquivalentHistory(t *testing.T) {
 	if err := json.Unmarshal(setData, &set); err != nil {
 		t.Fatal(err)
 	}
-	if set.Head != head || set.Totals.Commits < 25 || set.Totals.FullImageBytes <= 64<<20 || set.StreamBytes >= set.Totals.FullImageBytes || set.PartCount == 0 {
+	if set.Head != head || set.Totals.Commits < 25 || set.Totals.FullImageBytes <= 64<<20 || set.StreamBytes <= 64<<20 || set.PartCount <= 1 {
 		t.Fatalf("old capacity failure not exercised: %+v", set.Totals)
 	}
 	headData, err := os.ReadFile(filepath.Join(setDirectory, "head.tar"))
@@ -145,7 +173,7 @@ func TestPublicNativeDeltaCapturesOver64MiBEquivalentHistory(t *testing.T) {
 		t.Fatal("legacy archive validator silently accepted v2 head")
 	}
 	stream := deltaFixtureStream(t, setDirectory, set)
-	verified := deltaFixtureReplay(t, stream, set, descriptions, before)
+	verified := deltaFixtureReplay(t, stream, set, descriptions, repeatedHistoryValue, before)
 	if verified != set.Totals.Commits {
 		t.Fatal("not every commit was reconstructed")
 	}
@@ -360,7 +388,7 @@ type deltaFixtureState map[string]map[string]plugdump.NativeDeltaRow
 
 // This fixture replay checks every emitted commit/table checksum and exact
 // full-image byte metric. The separately owned receiver/import proof is required.
-func deltaFixtureReplay(t *testing.T, stream []byte, set plugdump.NativeCaptureSet, descriptions map[string]string, working physicalcapture.WorkingImage) uint64 {
+func deltaFixtureReplay(t *testing.T, stream []byte, set plugdump.NativeCaptureSet, descriptions map[string]string, notePrefix string, working physicalcapture.WorkingImage) uint64 {
 	t.Helper()
 	schemas := map[string]plugdump.NativeDeltaSchema{}
 	commits := map[string]deltaFixtureState{}
@@ -375,6 +403,7 @@ func deltaFixtureReplay(t *testing.T, stream []byte, set plugdump.NativeCaptureS
 	var totals plugdump.NativeDeltaTotals
 	var descriptionStates uint64
 	var checkedCurrent bool
+	noteValues := map[string]bool{}
 	for {
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err == io.EOF {
@@ -464,7 +493,7 @@ func deltaFixtureReplay(t *testing.T, stream []byte, set plugdump.NativeCaptureS
 			}
 			rows := deltaFixtureSortedRows(t, state[table.Name])
 			if table.Name == "issues" && len(rows) != 0 {
-				deltaFixtureDescriptions(t, definition, rows, descriptions)
+				deltaFixtureDescriptions(t, definition, rows, descriptions, notePrefix, noteValues)
 				descriptionStates++
 			}
 			hash, err := plugdump.NativeDeltaTableSHA256(definition, rows)
@@ -531,6 +560,9 @@ func deltaFixtureReplay(t *testing.T, stream []byte, set plugdump.NativeCaptureS
 	if descriptionStates < 27 { // 25 immutable commits plus independent HEAD/current.
 		t.Fatal("large and single-leaf values were not checked in every expected state")
 	}
+	if notePrefix != "" && len(noteValues) != 25 {
+		t.Fatalf("historical note updates were not all retained: got %d want 25", len(noteValues))
+	}
 	if !checkedCurrent {
 		t.Fatal("complete physical current state was not checked")
 	}
@@ -595,15 +627,17 @@ func deltaFixtureWorkingRoot(t *testing.T, schema plugdump.NativeDeltaSchema, st
 	}
 }
 
-func deltaFixtureDescriptions(t *testing.T, schema plugdump.NativeDeltaTableSchema, rows []plugdump.NativeDeltaRow, expected map[string]string) {
+func deltaFixtureDescriptions(t *testing.T, schema plugdump.NativeDeltaTableSchema, rows []plugdump.NativeDeltaRow, expected map[string]string, notePrefix string, noteValues map[string]bool) {
 	t.Helper()
-	idColumn, descriptionColumn := -1, -1
+	idColumn, descriptionColumn, notesColumn := -1, -1, -1
 	for i, column := range schema.Columns {
 		switch column.Name {
 		case "id":
 			idColumn = i
 		case "description":
 			descriptionColumn = i
+		case "notes":
+			notesColumn = i
 		}
 	}
 	if idColumn < 0 || descriptionColumn < 0 {
@@ -621,6 +655,15 @@ func deltaFixtureDescriptions(t *testing.T, schema plugdump.NativeDeltaTableSche
 		}
 		if id.Kind != "string" || row.Cells[descriptionColumn] != (plugdump.NativeDeltaCell{Kind: "string", Value: want}) {
 			t.Fatal("captured typed large or single-leaf value differs from SQL input")
+		}
+		if id.Value == "public-a1b" && notesColumn >= 0 {
+			notes := row.Cells[notesColumn]
+			if notes.Kind == "string" && strings.HasPrefix(notes.Value, notePrefix+"\ncommit=") {
+				suffix := strings.TrimPrefix(notes.Value, notePrefix+"\ncommit=")
+				if len(suffix) == 2 && suffix >= "00" && suffix <= "24" {
+					noteValues[notes.Value] = true
+				}
+			}
 		}
 		data, err := base64.StdEncoding.DecodeString(row.NormalizedJSON)
 		if err != nil {
@@ -757,7 +800,7 @@ func TestPublicNativeDeltaSmallLandingFixture(t *testing.T) {
 		environment = append(environment, entry)
 	}
 	environment = append(environment, "HOME="+home, "DOLT_ROOT_PATH="+home, "BEADS_DIR="+beadsDir, "XDG_CONFIG_HOME="+home, "BD_DISABLE_METRICS=1", "BD_DISABLE_EVENT_FLUSH=1")
-	command := exec.CommandContext(ctx, binary, "--disposable", "--native-delta", "--data-dir", dataDir, "--database", "public_native_delta_landing", "--beads-dir", beadsDir, "--output-dir", output)
+	command := exec.CommandContext(ctx, binary, "--disposable", "--capture-set", "--data-dir", dataDir, "--database", "public_native_delta_landing", "--beads-dir", beadsDir, "--output-dir", output)
 	command.Dir, command.Env = workspace, environment
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
@@ -796,7 +839,7 @@ func TestPublicNativeDeltaSmallLandingFixture(t *testing.T) {
 		t.Fatal("legacy archive validator silently accepted v2 head")
 	}
 	stream := deltaFixtureStream(t, setDirectory, set)
-	verified := deltaFixtureReplay(t, stream, set, descriptions, before)
+	verified := deltaFixtureReplay(t, stream, set, descriptions, "", before)
 	opaqueStates := smallDeltaFixtureOpaqueHistory(t, stream, requiredRows)
 	if verified != set.Totals.Commits {
 		t.Fatal("not every commit was reconstructed")
@@ -991,6 +1034,9 @@ func TestPublicNativeDeltaCrossPlaneCounterParent(t *testing.T) {
 				environment = append(environment, entry)
 			}
 			environment = append(environment, "HOME="+home, "DOLT_ROOT_PATH="+home, "BEADS_DIR="+beadsDir, "XDG_CONFIG_HOME="+home, "BD_DISABLE_METRICS=1", "BD_DISABLE_EVENT_FLUSH=1")
+			// Keep one real invocation on the compatibility spelling so the
+			// retained --native-delta alias is exercised in addition to the
+			// canonical --capture-set path.
 			command := exec.CommandContext(ctx, binary, "--disposable", "--native-delta", "--data-dir", dataDir, "--database", "public_counter_parent", "--beads-dir", beadsDir, "--output-dir", output)
 			command.Dir, command.Env = workspace, environment
 			var stdout, stderr bytes.Buffer

@@ -295,7 +295,7 @@ func b01CopyFingerprint(t *testing.T, root, destination string) map[string]strin
 }
 
 // The unchanged physical capture tool owns graph/image/delta construction.
-// The only new adapter choice is its already supported --native-delta mode.
+// The capture-set route is the explicit bounded v2 mode.
 func (b *b01ReadyCapture) physicalSet(want b01ReadyState) {
 	b.f.t.Helper()
 	t := b.f.t
@@ -340,7 +340,7 @@ func (b *b01ReadyCapture) physicalSet(want b01ReadyState) {
 	}
 	tool := *b
 	tool.f = &local
-	tool.run("complete-physical-native-delta", binary, "--disposable", "--native-delta", "--data-dir", copyDir, "--database", "capture", "--beads-dir", beadsDir, "--output-dir", output)
+	tool.run("complete-physical-native-delta", binary, "--disposable", "--capture-set", "--data-dir", copyDir, "--database", "capture", "--beads-dir", beadsDir, "--output-dir", output)
 	b.seq = tool.seq
 	if !equalPhysicalCaptureJSON(want, b.state("states/final-after-capture")) {
 		t.Fatal("physical capture changed original native state or graph")
