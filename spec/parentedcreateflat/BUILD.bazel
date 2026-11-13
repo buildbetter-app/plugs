@@ -1,0 +1,27 @@
+# Keep ontology visibility and product BUILD files unchanged; the test target
+# lives within the existing internal visibility boundary.
+test_suite(
+    name = "parented_create_flat_test",
+    tests = ["//internal/integration/parentedcreateflat:parented_create_flat_test"],
+    testonly = True,
+)
+
+filegroup(
+    name = "test_sources",
+    srcs = [
+        "b04_ordinary_authority_test.go",
+        "b04_ordinary_support_test.go",
+        "fixture_test.go",
+        "create_flat_test.go",
+        "child_semantics_test.go",
+        "initialization_test.go",
+    ],
+    testonly = True,
+    visibility = ["//internal/integration/parentedcreateflat:__pkg__"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

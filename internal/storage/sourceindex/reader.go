@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -74,6 +75,10 @@ func unavailableBudget() error {
 // exclusion and shadow filters run only on these budgeted key-only headers;
 // they cannot hide an unbounded physical scan behind a filtered SQL LIMIT.
 func (d Dialect) fetchHeaders(ctx context.Context, q SQL, incarnation string, request Request, cursors []*sourceCursor, take int, work *Work) error {
+	if !request.Inverse {
+		started := time.Now()
+		defer func() { driver.ReportReadWork(ctx, driver.ReadHierarchyHeaderNanos, time.Since(started).Nanoseconds()) }()
+	}
 	if take <= 0 || len(cursors)*take > MaxHeaders-work.Headers {
 		return unavailableBudget()
 	}
@@ -126,6 +131,9 @@ func (d Dialect) fetchHeaders(ctx context.Context, q SQL, incarnation string, re
 		queries = append(queries, outer)
 		cursor.rows = nil
 		cursor.position = 0
+	}
+	if !request.Inverse {
+		driver.ReportReadWork(ctx, driver.ReadHierarchyHeaderPages, 1)
 	}
 	rows, err := q.QueryContext(ctx, strings.Join(queries, " UNION ALL "), b.args...)
 	if err != nil {
@@ -385,6 +393,10 @@ func (d Dialect) Select(ctx context.Context, q SQL, meta driver.Meta, at uint64,
 }
 
 func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at uint64, request Request, selected []sourceHeader, staged map[string]*driver.Record, work *Work) ([]driver.Record, error) {
+	if !request.Inverse {
+		started := time.Now()
+		defer func() { driver.ReportReadWork(ctx, driver.ReadHierarchyImageNanos, time.Since(started).Nanoseconds()) }()
+	}
 	found := make(map[string]driver.Record, len(selected))
 	stored := make([]sourceHeader, 0, len(selected))
 	for _, header := range selected {
@@ -435,6 +447,9 @@ func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at 
 		if request.Historical {
 			query += " AND h.start_revision=s.start_revision"
 		}
+		if !request.Inverse {
+			driver.ReportReadWork(ctx, driver.ReadHierarchyImagePages, 1)
+		}
 		rows, err := q.QueryContext(ctx, query, b.args...)
 		if err != nil {
 			return nil, err
@@ -447,6 +462,9 @@ func (d Dialect) fetchImages(ctx context.Context, q SQL, incarnation string, at 
 				break
 			}
 			work.Images++
+			if !request.Inverse {
+				driver.ReportReadWork(ctx, driver.ReadHierarchyImages, 1)
+			}
 			n, e := strconv.ParseUint(revision, 10, 64)
 			if e != nil {
 				err = e
