@@ -14,7 +14,6 @@ go_test(
     # architecture guide. That guide covers the entire package tree, so its
     # source references require the production-Go and other-file partitions.
     data = [
-        "//:.github/workflows/bazel.yml",
         "//:.golangci.yml",
         "//:beads.go",
         "//:docs/docs.json",

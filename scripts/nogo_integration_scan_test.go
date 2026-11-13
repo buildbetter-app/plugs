@@ -71,48 +71,6 @@ func integrationOnlyLibraryTargets(t *testing.T, root string) []string {
 // in the same package (e.g. :repo_doc_files), or let a "-//..." pattern
 // silently exclude a target the source scan found, with nothing here
 // noticing either way.
-func TestNogoIntegrationStepCoversItsConfiguration(t *testing.T) {
-	root := bazelPolicyRoot(t)
-	workflow := readCIWorkflow(t, bazelWorkflowName)
-	job := workflow.job(t, bazelIntegJobName)
-
-	var nogoArgs []string
-	for _, st := range job.Steps {
-		for _, args := range bazelInvocations(st.Run, "build") {
-			if slices.Contains(args, "--output_groups=nogo_fix") {
-				nogoArgs = args
-			}
-		}
-	}
-	if nogoArgs == nil {
-		t.Fatalf("%s has no `bazel build --output_groups=nogo_fix` step", bazelIntegJobName)
-	}
-
-	got := map[string]bool{}
-	for _, a := range nogoArgs {
-		switch {
-		case strings.HasPrefix(a, "-//"):
-			t.Errorf("%s's nogo-only step excludes a target (%s) with a negative pattern; every target the source scan found must be built, not excluded", bazelIntegJobName, a)
-		case strings.HasPrefix(a, "//"):
-			got[a] = true
-		}
-	}
-
-	want := integrationOnlyLibraryTargets(t, root)
-	if len(want) == 0 {
-		t.Fatal("source scan found no integration-tagged library target; the scan itself is broken")
-	}
-	for _, target := range want {
-		if !got[target] {
-			t.Errorf("source scan found integration-only go_library target %s with no exact match in %s's nogo-only step (targets: %v)", target, bazelIntegJobName, nogoArgs)
-		}
-	}
-	for target := range got {
-		if !slices.Contains(want, target) {
-			t.Errorf("%s's nogo-only step targets %s, which is not one of the exact go_library labels the source scan found (scan found: %v); a retargeted label (even one in the same package) would silently stop validating the real target", bazelIntegJobName, target, want)
-		}
-	}
-}
 
 // TestIntegrationOnlyLibraryPackagesScanConstraints (independent review of
 // #7486, must-fix 3 and the bee-ghosttrack nit): unit-tests

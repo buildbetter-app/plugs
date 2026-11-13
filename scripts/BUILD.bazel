@@ -33,40 +33,30 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "scripts_test",
     srcs = [
-        "bazel_autofix_push_test.go",
-        "bazel_cache_mode_test.go",
-        "bazel_dolt_int_test.go",
-        "bazel_dolt_race_test.go",
-        "bazel_farm_workflow_test.go",
-        "bazel_fork_mode_test.go",
         "bazel_go_repository_tools_test.go",
+        "bazel_fork_mode_test.go",
+        "bazel_policy_test.go",
         "bazel_hermetic_cc_test.go",
         "bazel_invocations_test.go",
-        "bazel_policy_test.go",
-        "bazel_rbe_prewarm_test.go",
         "bazel_rrc_test.go",
-        "ci_actions_policy_test.go",
-        "ci_analytics_workflow_test.go",
-        "ci_blacksmith_runner_test.go",
-        "ci_f7b_review_test.go",
-        "ci_f7c_advisory_test.go",
         "ci_merge_queue_test.go",
-        "ci_workflow_apt_get_timeout_test.go",
+        "ci_blacksmith_runner_test.go",
+        "ci_actions_policy_test.go",
         "ci_workflow_core_test.go",
         "ci_workflow_test.go",
         "embedded_shard_count_test.go",
         "host_tools_test.go",
         "makefile_bazel_primary_test.go",
         "migration_corpus_bazel_test.go",
-        "nogo_integration_step_script_test.go",
         "nogo_lint_policy_test.go",
         "pinned_shards_helpers_test.go",
         "pinned_shards_test.go",
         "pr_lanes_bazel_coverage_test.go",
         "pr_risk_bazel_coverage_test.go",
         "rbe_worker_env_test.go",
-        "repo_helpers_test.go",
         "worker_env_autosync_test.go",
+        "repo_helpers_test.go",
+        "retired_workflow_test_helpers_test.go",
     ],  # keep
     data = [
         "//:repo_other_files",
@@ -76,8 +66,7 @@ go_test(
     ],
     # The Go SDK is go.mod's toolchain, whatever go the executor has on PATH.
     # No //:repo_go_srcs here (F5 S2, cost fix, independent review of #7486):
-    # T4 (TestNogoIntegrationStepCoversItsConfiguration) and the
-    # unvalidated_integration_tests.txt exactness check moved to their own
+    # The unvalidated_integration_tests.txt exactness check moved to its own
     # :nogo_integration_scan_test target below, which alone depends on
     # //:repo_go_srcs and //:repo_go_test_srcs, so a Go-only change no longer
     # re-runs the rest of this suite too.
@@ -91,16 +80,13 @@ go_test(
     ],
 )
 
-# T4 (TestNogoIntegrationStepCoversItsConfiguration) and T6
-# (TestUnvalidatedIntegrationTestsFileIsExact, independent review of #7486
+# T6 (TestUnvalidatedIntegrationTestsFileIsExact, independent review of #7486
 # must-fix 6): both source-scan every tracked .go file (test and non-test)
 # for the "integration" build tag, so they alone depend on //:repo_go_srcs
 # and //:repo_go_test_srcs. Carved out of scripts_test (cost fix, same
 # review): with this data in scripts_test, any Go-only change re-ran the
 # whole nogo-policy suite, raising scripts_test's rerun rate from 73% to 91%
-# of main commits. bazel_invocations_test.go and ci_workflow_core_test.go are
-# helper-only files (no Test functions) shared with scripts_test, so neither
-# copy duplicates the other's parsing logic.
+# of main commits.
 go_test(
     name = "nogo_integration_scan_test",
     srcs = [

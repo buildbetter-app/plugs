@@ -110,26 +110,3 @@ var primaryMakeCallRE = regexp.MustCompile(`\bmake (test|check|check-docs)(\s|$|
 // TestWorkflowsNameTheirTestEngine: a workflow runs bazel directly, or a
 // Go-native suite through an explicit -go make target, never a primary name
 // whose engine a reader would have to look up in the Makefile.
-func TestWorkflowsNameTheirTestEngine(t *testing.T) {
-	root := sourceRepoRoot(t)
-	files, err := filepath.Glob(filepath.Join(root, ".github", "workflows", "*.y*ml"))
-	if err != nil || len(files) == 0 {
-		t.Fatalf("glob workflows: %v (%d files)", err, len(files))
-	}
-	for _, file := range files {
-		body, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		for i, line := range strings.Split(string(body), "\n") {
-			trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
-			if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "name:") {
-				continue
-			}
-			if m := primaryMakeCallRE.FindStringSubmatch(line); m != nil {
-				t.Errorf("%s:%d calls `make %s`, which runs bazel; call `make %s-go` for the Go-native suite or bazel directly",
-					filepath.Base(file), i+1, m[1], m[1])
-			}
-		}
-	}
-}

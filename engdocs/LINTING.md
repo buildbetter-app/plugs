@@ -3,8 +3,7 @@
 Last reviewed: 2026-10-07
 
 Freshness source: `.golangci.yml`, `tools/nogo/`, `scripts/ci/pr-lint.sh`,
-`scripts/pr-lint/`, `Makefile`, `.github/workflows/pr.yml`, and
-`.github/workflows/main.yml`.
+`scripts/pr-lint/`, and `Makefile`.
 
 This document explains the required Go lint and vet gate for this codebase.
 

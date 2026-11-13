@@ -97,9 +97,6 @@ func TestConformanceE2ETierRunsUnderBazel(t *testing.T) {
 			t.Errorf("test/conformance/%s must build under e2e (scripts/conformance.sh) and integration (the Bazel lane)", file)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(root, ".github", "workflows", "conformance.yml")); err == nil {
-		t.Error(".github/workflows/conformance.yml is back; its tiers run under Bazel")
-	}
 }
 
 // Tier 3's Bazel target runs the script's Tier 3 package, the httpclient

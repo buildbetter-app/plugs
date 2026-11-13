@@ -9,7 +9,7 @@ import (
 )
 
 // scripts/pre-push-suite.sh is the push-time suite .githooks/pre-push runs
-// when a pushed branch changes Go or Bazel inputs: bazel.yml's test lane
+// when a pushed branch changes Go or Bazel inputs: the local Bazel test suite
 // (`bazel test //... --config=ci`), remotely when some rc names an executor,
 // else through the read-only fork cache. Plain go test runs only when bazel
 // cannot (or BD_PREPUSH_SUITE=go asks for it), and then under a banner, so
@@ -119,7 +119,7 @@ func TestPrePushSuiteGoFallbackIsAnnounced(t *testing.T) {
 			if run.make != "test-go" || run.bazel != "" {
 				t.Errorf("ran make %q, bazel %q; want make test-go only\n%s", run.make, run.bazel, run.out)
 			}
-			for _, want := range []string{"NOT the bazel suite CI gates on", "why: " + tc.why, "bazel test //... --config=ci"} {
+			for _, want := range []string{"NOT the full Bazel suite", "why: " + tc.why, "bazel test //... --config=ci"} {
 				if !strings.Contains(run.out, want) {
 					t.Errorf("go fallback banner lacks %q:\n%s", want, run.out)
 				}

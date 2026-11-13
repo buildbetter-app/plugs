@@ -9,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Merge queue readiness (engdocs/CI_REQUIRED_CHECK_TOPOLOGY.md, "Merge
@@ -98,197 +96,23 @@ func interpolateGH(t *testing.T, s string, ctx map[string]string) string {
 // run, and no job's or step's condition in either workflow keys on the
 // event, so the merge group runs (or skips) exactly what the decision jobs
 // say, like a PR.
-func TestMergeQueueRequiredGatesRunOnMergeGroup(t *testing.T) {
-	gates := map[string]string{"pr.yml": "CI Gate / Required", prRiskWorkflowName: "PR Risk Gate / Required"}
-	for name, gateName := range gates {
-		var doc struct {
-			On map[string]yaml.Node `yaml:"on"`
-		}
-		if err := yaml.Unmarshal([]byte(readPolicyFile(t, sourceRepoRoot(t), ".github/workflows/"+name)), &doc); err != nil {
-			t.Fatal(err)
-		}
-		mg, ok := doc.On["merge_group"]
-		if !ok {
-			t.Fatalf("%s has no merge_group trigger; a queued PR would wait forever for %q", name, gateName)
-		}
-		var trig struct {
-			Types []string `yaml:"types"`
-		}
-		if err := mg.Decode(&trig); err != nil || strings.Join(trig.Types, ",") != "checks_requested" {
-			t.Errorf("%s merge_group trigger types = %v (%v), want exactly [checks_requested]", name, trig.Types, err)
-		}
-		w := readCIWorkflow(t, name)
-		gate := w.job(t, "ci-gate")
-		if gate.Name != gateName || gate.If != "${{ always() }}" {
-			t.Errorf("%s ci-gate: name %q, if %q; want %q (the ruleset's exact context), if ${{ always() }}", name, gate.Name, gate.If, gateName)
-		}
-		// The gate runs on Blacksmith for a merge group (same-repo trust).
-		if got := mustEvalGHRunsOn(t, gate.RunsOn, mergeGroupCtx(1, nil)); !strings.HasPrefix(got, "blacksmith-") {
-			t.Errorf("%s ci-gate runs-on for merge_group = %q, want a Blacksmith runner", name, got)
-		}
-		event := regexp.MustCompile(`github\.event_name|github\.event\.|github\.base_ref|github\.head_ref`)
-		for jobName, job := range w.Jobs {
-			if event.MatchString(job.If) {
-				t.Errorf("%s job %s if %q keys on the event; decide in a job (bazel.yml's rbe job) and read its outputs", name, jobName, job.If)
-			}
-			for _, step := range job.Steps {
-				if event.MatchString(step.If) {
-					t.Errorf("%s job %s step %q if %q keys on the event; a merge group must run it like a PR", name, jobName, step.Name, step.If)
-				}
-				if strings.Contains(step.Run, "github.base_ref") || strings.Contains(step.Run, "github.head_ref") {
-					t.Errorf("%s job %s step %q interpolates base_ref/head_ref, which a merge group lacks", name, jobName, step.Name)
-				}
-			}
-		}
-	}
-}
 
 // Concurrency: a merge group's runs key on its own gh-readonly-queue/* ref,
 // so two queue entries never share a group (cancel-in-progress would
 // otherwise cancel the earlier entry's required checks), and a PR's own
 // runs never cancel its queue entry's or the other way round. bazel.yml's
 // called-workflow group never cancels a merge group either.
-func TestMergeQueueConcurrencyNeverCancelsQueueRuns(t *testing.T) {
-	for _, name := range []string{"pr.yml", prRiskWorkflowName, bazelWorkflowName} {
-		var doc struct {
-			Concurrency struct {
-				Group            string `yaml:"group"`
-				CancelInProgress any    `yaml:"cancel-in-progress"`
-			} `yaml:"concurrency"`
-		}
-		if err := yaml.Unmarshal([]byte(readPolicyFile(t, sourceRepoRoot(t), ".github/workflows/"+name)), &doc); err != nil {
-			t.Fatal(err)
-		}
-		group := func(ctx map[string]string) string {
-			c := map[string]string{"github.workflow": strings.TrimSuffix(name, ".yml")}
-			for k, v := range ctx {
-				c[k] = v
-			}
-			return interpolateGH(t, doc.Concurrency.Group, c)
-		}
-		mg1, mg2 := group(mergeGroupCtx(1, nil)), group(mergeGroupCtx(2, nil))
-		pr1 := group(pullRequestCtx(1, nil))
-		if mg1 == mg2 || mg1 == pr1 || !strings.Contains(mg1, "gh-readonly-queue/main/pr-7001") {
-			t.Errorf("%s concurrency group: merge group 1 %q, merge group 2 %q, PR %q; want one group per queue entry, apart from the PR's", name, mg1, mg2, pr1)
-		}
-		if name == bazelWorkflowName {
-			if got := interpolateGH(t, fmt.Sprint(doc.Concurrency.CancelInProgress), mergeGroupCtx(1, nil)); got != "false" {
-				t.Errorf("%s cancel-in-progress on merge_group = %q, want false", name, got)
-			}
-		}
-	}
-}
 
 // Every github.event.pull_request.* read in the required topology either
 // falls back to the merge_group field (evaluated below: the queue's SHAs on
 // merge_group, the PR's on pull_request) or is listed here with why null is
 // right on a merge group. A new read fails until it is classified.
-func TestMergeQueuePullRequestFieldsHandleMergeGroup(t *testing.T) {
-	// path suffix (workflow:YAML path) -> why null on merge_group is right.
-	nullOK := map[string]string{
-		"pr.yml:.concurrency.group":           "falls back to github.ref (TestMergeQueueConcurrencyNeverCancelsQueueRuns)",
-		"pr-risk.yml:.concurrency.group":      "falls back to github.ref",
-		"bazel.yml:.concurrency.group":        "falls back to github.ref",
-		"rbe.steps[0].env.FORK":               "null == true is false: a merge group is never a fork",
-		"rbe.steps[0].env.PR_NUMBER":          "read only for fork/Dependabot pull_request runs (the rbe-fork mint)",
-		".env.RBE_FORK_PR":                    "setup-bazel reads it only in the fork modes, which a merge group never takes",
-		"bazel-test.steps[*].env.PR_NUMBER":   "bazel-sync patch metadata; bazel-autofix.yml ignores non-pull_request runs",
-		"bazel-test.steps[*].env.PR_HEAD_SHA": "bazel-sync patch metadata; bazel-autofix.yml ignores non-pull_request runs",
-		// bazel.yml's CI analytics summary step (rbe-ci-bep-analytics-
-		// design.md, S3), one entry per lane job (ciAnalyticsLaneJobs in
-		// ci_analytics_workflow_test.go) rather than a bare "steps[*]...",
-		// so this stays scoped to bazel.yml's own PR_HINT and can't
-		// silently also cover a future PR_HINT read elsewhere.
-		"bazel-test.steps[*].env.PR_HINT":           "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-pure.steps[*].env.PR_HINT":           "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-embedded.steps[*].env.PR_HINT":       "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-integration.steps[*].env.PR_HINT":    "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-doltserver.steps[*].env.PR_HINT":     "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-proxied.steps[*].env.PR_HINT":        "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-server-storage.steps[*].env.PR_HINT": "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-cmd-dolt.steps[*].env.PR_HINT":       "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-dolt-race.steps[*].env.PR_HINT":      "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-		"bazel-dolt-int.steps[*].env.PR_HINT":       "ci-analytics-summary metadata only (--pr-hint); `|| 0` already covers merge_group same as a non-PR push",
-	}
-	used := map[string]bool{}
-	var fallbacks []string
-	for _, name := range []string{"pr.yml", prRiskWorkflowName, bazelWorkflowName} {
-		walkYAML(readYAMLNode(t, filepath.Join(".github", "workflows", name)), "", func(path string, key bool, value string) {
-			if key || !strings.Contains(value, "github.event.pull_request.") {
-				return
-			}
-			// The Blacksmith venue ternaries name merge_group explicitly
-			// (TestSameRepoBlacksmithExpressionSemantics).
-			if strings.HasSuffix(path, ".runs-on") && strings.Contains(value, "github.event_name == 'merge_group' ||") {
-				return
-			}
-			if strings.Contains(value, "github.event.merge_group.") {
-				fallbacks = append(fallbacks, value)
-				return
-			}
-			for suffix := range nullOK {
-				// steps[*] matches any step index (the sync step moves when
-				// steps are added before it).
-				re := regexp.MustCompile(regexp.QuoteMeta(suffix) + "$")
-				if strings.Contains(suffix, "[*]") {
-					re = regexp.MustCompile(strings.ReplaceAll(regexp.QuoteMeta(suffix), `\[\*\]`, `\[[0-9]+\]`) + "$")
-				}
-				if re.MatchString(name + ":" + path) {
-					used[suffix] = true
-					return
-				}
-			}
-			t.Errorf("%s %s reads %q, which is null on merge_group: add a github.event.merge_group.* fallback or classify it here", name, path, value)
-		})
-	}
-	for suffix, why := range nullOK {
-		if !used[suffix] {
-			t.Errorf("stale merge_group classification %q (%s): nothing matches it", suffix, why)
-		}
-	}
-	if len(fallbacks) < 3 {
-		t.Fatalf("found %d merge_group fallbacks, want at least the migration-hygiene BASE_SHA and both package gates' bounds", len(fallbacks))
-	}
-	for _, expr := range fallbacks {
-		mg, pr := interpolateGH(t, expr, mergeGroupCtx(1, nil)), interpolateGH(t, expr, pullRequestCtx(1, nil))
-		if !strings.HasPrefix(mg, "0000") || mg == pr || !strings.HasPrefix(pr, "0000") {
-			t.Errorf("%q: merge_group %q, pull_request %q; want the queue's SHA and the PR's", expr, mg, pr)
-		}
-	}
-}
 
 // Merge groups: bazel.yml's rbe step, evaluated by evalGHExpr for a merge
 // group, takes mode remote with the CI secrets, so pr.yml's gate (which
 // requires every lane to have run remotely, BAZEL_REMOTE) can pass. Without
 // the secret or with the farm switch off the mode is cache or skip, and the
 // gate is red (TestPRGateRequiresRemoteBazelLanes).
-func TestMergeQueueBazelRunsRemotely(t *testing.T) {
-	requireHostTool(t, "bash")
-	rbe := readCIWorkflow(t, bazelWorkflowName).job(t, bazelRBEJobName)
-	for _, c := range []struct {
-		name, varOn, secret, mode string
-	}{
-		{"farm on, secrets", "true", "grpcs://rbe.example:443", "remote"},
-		{"secret missing", "true", "", "cache"},
-		{"farm switch off", "", "grpcs://rbe.example:443", "skip"},
-	} {
-		ctx := mergeGroupCtx(1, map[string]string{"vars.RBE_WEST_WORKERS": c.varOn, "secrets.RBE_WEST_EXECUTOR": c.secret, "inputs.rbe": "on", "inputs.fork-farm": "off"})
-		env := map[string]string{}
-		for k, v := range rbe.Steps[0].Env {
-			env[k] = interpolateGH(t, v, ctx)
-		}
-		out, log, err := runBazelRBEDecisionLog(t, rbe.Steps[0].Run, env)
-		if err != nil {
-			t.Fatalf("rbe on merge_group (%s): %v", c.name, err)
-		}
-		if out["mode"] != c.mode || log != "" {
-			t.Errorf("rbe on merge_group (%s): mode %q (mint asked: %q), want %s without asking rbe-fork", c.name, out["mode"], log, c.mode)
-		}
-		if got := mustEvalGHRunsOn(t, rbe.RunsOn, ctx); !strings.HasPrefix(got, "blacksmith-") {
-			t.Errorf("rbe runs-on for merge_group = %q, want Blacksmith", got)
-		}
-	}
-}
 
 // Test result caching: every `bazel test` in bazel.yml reuses cached
 // results except where the caller asks for fresh ones. BAZEL_FRESH is one
@@ -297,222 +121,21 @@ func TestMergeQueueBazelRunsRemotely(t *testing.T) {
 // other --config of each `bazel test` so its --nocache_test_results wins;
 // no lane config turns caching off; and nothing adds retries (eviction retries stay 0 where
 // set, TestBazelRetiredLanesArePinned / TestBazelPRLanesArePinned).
-func TestBazelTestResultCachingPolicy(t *testing.T) {
-	var doc struct {
-		Env map[string]string `yaml:"env"`
-		On  struct {
-			Dispatch struct {
-				Inputs map[string]struct {
-					Type    string `yaml:"type"`
-					Default any    `yaml:"default"`
-				} `yaml:"inputs"`
-			} `yaml:"workflow_dispatch"`
-			Call struct {
-				Inputs map[string]struct {
-					Type    string `yaml:"type"`
-					Default any    `yaml:"default"`
-				} `yaml:"inputs"`
-			} `yaml:"workflow_call"`
-		} `yaml:"on"`
-	}
-	if err := yaml.Unmarshal([]byte(readPolicyFile(t, sourceRepoRoot(t), ".github/workflows/"+bazelWorkflowName)), &doc); err != nil {
-		t.Fatal(err)
-	}
-	if doc.Env["BAZEL_FRESH"] != bazelFreshEnv {
-		t.Errorf("%s env BAZEL_FRESH = %q, want %q", bazelWorkflowName, doc.Env["BAZEL_FRESH"], bazelFreshEnv)
-	}
-	for name, in := range map[string]struct {
-		Type    string `yaml:"type"`
-		Default any    `yaml:"default"`
-	}{"workflow_call": doc.On.Call.Inputs["fresh-test-results"], "workflow_dispatch": doc.On.Dispatch.Inputs["fresh-test-results"]} {
-		if in.Type != "boolean" || in.Default != false {
-			t.Errorf("%s input fresh-test-results: type %q default %v; want boolean, default false", name, in.Type, in.Default)
-		}
-	}
-	for _, c := range []struct {
-		name string
-		v    any
-		want string
-	}{
-		{"nightly (true)", true, "--config=fresh"},
-		{"default (false)", false, ""},
-		{"push (null)", nil, ""},
-	} {
-		got, err := evalGHExprTyped(bazelFreshEnv, map[string]any{"inputs.fresh-test-results": c.v})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != c.want {
-			t.Errorf("%s: BAZEL_FRESH = %#v, want %q", c.name, got, c.want)
-		}
-	}
-
-	w := readCIWorkflow(t, bazelWorkflowName)
-	bazelTest := regexp.MustCompile(`^\s*bazel\s+test\b`)
-	tests := 0
-	for name, job := range w.Jobs {
-		if _, ok := job.Env["BAZEL_FRESH"]; ok {
-			t.Errorf("%s sets BAZEL_FRESH; only the workflow env may", name)
-		}
-		for _, step := range job.Steps {
-			if strings.Contains(step.Run, "--config=fresh") || strings.Contains(step.Run, "cache_test_results") || strings.Contains(step.Run, "BAZEL_REUSE_RESULTS") {
-				t.Errorf("%s step %q names result caching directly; only BAZEL_FRESH may", name, step.Name)
-			}
-			for _, line := range strings.Split(step.Run, "\n") {
-				if !bazelTest.MatchString(line) {
-					continue
-				}
-				tests++
-				i := strings.Index(line, bazelFreshArg)
-				if i < 0 || strings.Contains(line[i:], "--config") || strings.Contains(line[i:], "SOLE_RUN") {
-					t.Errorf("%s step %q: %q must pass %s after every --config", name, step.Name, line, bazelFreshArg)
-				}
-			}
-		}
-	}
-	if tests < 9 {
-		t.Errorf("found %d `bazel test` lines in %s, want every lane's (at least 9)", tests, bazelWorkflowName)
-	}
-	nightly := readCIWorkflow(t, "nightly.yml").job(t, "bazel")
-	if nightly.With["fresh-test-results"] != "true" {
-		t.Errorf("nightly.yml's bazel call with fresh-test-results = %q, want true (the run that samples flakes)", nightly.With["fresh-test-results"])
-	}
-	for _, name := range []string{"pr.yml", "bazel-farm.yml"} {
-		for jobName, job := range readCIWorkflow(t, name).Jobs {
-			if _, ok := job.With["fresh-test-results"]; ok {
-				t.Errorf("%s %s passes fresh-test-results; only nightly re-executes every test", name, jobName)
-			}
-		}
-	}
-	rc := readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc")
-	var lines []string
-	for _, line := range strings.Split(rc, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		head, _, _ := strings.Cut(line, " ")
-		if strings.HasSuffix(head, ":fresh") {
-			lines = append(lines, line)
-		}
-		if strings.Contains(line, "cache_test_results") && line != bazelFreshRCLine {
-			t.Errorf(".bazelrc %q: only test:fresh sets test result caching", line)
-		}
-	}
-	if strings.Join(lines, "\n") != bazelFreshRCLine {
-		t.Errorf(".bazelrc --config=fresh = %q, want exactly %q", lines, bazelFreshRCLine)
-	}
-}
 
 // detect-package-gates.sh on merge_group diffs the queue's own bounds
 // (merge_group.base_sha..head_sha), not HEAD^: a rebase-method entry
 // stacks every commit of the PR, and only the first touches a package.
-func TestMergeQueueDetectPackageGatesUsesQueueBounds(t *testing.T) {
-	requireHostTool(t, "git")
-	requireHostTool(t, "bash")
-	dir, base, head := mergeQueueRepo(t, []string{"npm-package/package.json"}, []string{"README.md"})
-	script := filepath.Join(sourceRepoRoot(t), "scripts/ci/detect-package-gates.sh")
-	run := func(env ...string) map[string]string {
-		t.Helper()
-		out := filepath.Join(t.TempDir(), "out")
-		cmd := exec.Command("bash", script)
-		cmd.Dir = dir
-		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "GITHUB_OUTPUT=" + out, "GITHUB_EVENT_NAME=merge_group"}, env...)
-		if b, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("detect-package-gates.sh: %v\n%s", err, b)
-		}
-		data, err := os.ReadFile(out)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := map[string]string{}
-		for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			k, v, _ := strings.Cut(l, "=")
-			got[k] = v
-		}
-		return got
-	}
-	if got := run("PR_BASE_SHA="+base, "PR_HEAD_SHA="+head); got["npm_package"] != "true" || got["mcp_package"] != "false" {
-		t.Errorf("merge group whose first commit changes npm-package/: %v, want npm_package only", got)
-	}
-	if got := run(); got["npm_package"] != "true" || got["mcp_package"] != "true" {
-		t.Errorf("merge group without bounds: %v, want every gate", got)
-	}
-	if got := run("PR_BASE_SHA="+head+"^", "PR_HEAD_SHA="+head); got["npm_package"] != "false" {
-		t.Errorf("merge group touching only README.md: %v, want no gate", got)
-	}
-}
 
 // fast-checks' .beads guard runs on merge_group against the queue's base
 // commit and on pull_request against origin/<base branch>.
-func TestMergeQueueBeadsGuardRuns(t *testing.T) {
-	requireHostTool(t, "git")
-	requireHostTool(t, "bash")
-	step := readCIWorkflow(t, "pr.yml").job(t, "fast-checks").step(t, "Check for .beads/issues.jsonl changes")
-	for _, c := range []struct {
-		name    string
-		changed string
-		pass    bool
-	}{
-		{"unrelated change", "README.md", true},
-		{".beads change", ".beads/issues.jsonl", false},
-	} {
-		dir, base, _ := mergeQueueRepo(t, []string{c.changed})
-		gitIn(t, dir, "update-ref", "refs/remotes/origin/main", base)
-		for event, env := range map[string][]string{
-			"merge_group":  {"MERGE_GROUP_BASE_SHA=" + interpolateGH(t, step.Env["MERGE_GROUP_BASE_SHA"], mergeGroupCtx(1, map[string]string{"github.event.merge_group.base_sha": base}))},
-			"pull_request": {"MERGE_GROUP_BASE_SHA=" + interpolateGH(t, step.Env["MERGE_GROUP_BASE_SHA"], pullRequestCtx(1, nil)), "GITHUB_BASE_REF=main"},
-		} {
-			// GitHub's default shell for a run step without `shell:`.
-			cmd := exec.Command("bash", "--noprofile", "--norc", "-e", "-c", step.Run)
-			cmd.Dir = dir
-			cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
-			out, err := cmd.CombinedOutput()
-			if (err == nil) != c.pass {
-				t.Errorf("%s, %s: err %v, want pass %v\n%s", event, c.name, err, c.pass, out)
-			}
-		}
-	}
-}
 
 // The guard fails closed when its diff base is missing (a failed git diff
 // piped into grep -q would otherwise pass).
-func TestMergeQueueBeadsGuardFailsWithoutBase(t *testing.T) {
-	requireHostTool(t, "git")
-	requireHostTool(t, "bash")
-	step := readCIWorkflow(t, "pr.yml").job(t, "fast-checks").step(t, "Check for .beads/issues.jsonl changes")
-	dir, _, _ := mergeQueueRepo(t, []string{"README.md"})
-	for name, env := range map[string][]string{
-		"merge_group, unknown base_sha": {"MERGE_GROUP_BASE_SHA=" + strings.Repeat("e", 40)},
-		"pull_request, no origin/main":  {"GITHUB_BASE_REF=main"},
-	} {
-		cmd := exec.Command("bash", "--noprofile", "--norc", "-e", "-c", step.Run)
-		cmd.Dir = dir
-		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH")}, env...)
-		if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "unavailable") {
-			t.Errorf("%s: err %v, want a failure naming the missing base\n%s", name, err, out)
-		}
-	}
-}
 
 // check-doc-flags' CLI-docs drift attribution needs a diff base; a merge
 // group has no GITHUB_BASE_REF, so the step passes the queue's base commit
 // (and nothing on pull_request, where origin/$GITHUB_BASE_REF applies).
 // Without it, drift already on main fails every queue entry.
-func TestMergeQueueDocDriftHasDiffBase(t *testing.T) {
-	step := readCIWorkflow(t, "pr.yml").job(t, "check-doc-flags").step(t, "Validate docs against CLI")
-	expr := step.Env["BD_DOCS_DIFF_BASE"]
-	if got := interpolateGH(t, expr, mergeGroupCtx(1, nil)); got != fmt.Sprintf("%040d", 101) {
-		t.Errorf("check-doc-flags BD_DOCS_DIFF_BASE on merge_group = %q (%q), want merge_group.base_sha", got, expr)
-	}
-	if got := interpolateGH(t, expr, pullRequestCtx(1, nil)); got != "" {
-		t.Errorf("check-doc-flags BD_DOCS_DIFF_BASE on pull_request = %q, want empty (origin/$GITHUB_BASE_REF)", got)
-	}
-	drift := readPolicyFile(t, sourceRepoRoot(t), "scripts/check-cli-docs-drift.sh")
-	if !strings.Contains(drift, `BASE_REF="${BD_DOCS_DIFF_BASE:-}"`) {
-		t.Error("check-cli-docs-drift.sh no longer reads BD_DOCS_DIFF_BASE")
-	}
-}
 
 // The shared evaluator follows GitHub's loose equality, so a boolean input
 // compared with a string ('true') is false, as on GitHub, instead of

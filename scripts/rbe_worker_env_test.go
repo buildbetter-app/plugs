@@ -4,17 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Test actions exec host tools and load the shared libraries of every cgo
@@ -365,180 +361,9 @@ func TestRBEWorkerEnvSync(t *testing.T) {
 // fork-ro, fork-rw; merge groups are remote) check; gascity unreachable
 // warns and proceeds. The steps run after decide and set no output, so the
 // mode the lanes read is decide's alone.
-func TestBazelRBEWorkerEnvPreflight(t *testing.T) {
-	job := readCIWorkflow(t, bazelWorkflowName).job(t, bazelRBEJobName)
-	if len(job.Steps) != 4 || job.Steps[0].ID != "decide" || job.Steps[1].ID != bazelRRCModeStepID {
-		t.Fatalf("%s steps = %d (first %q), want decide, rrc (TestBazelRRCModeStep), the checkout and the worker-env check", bazelRBEJobName, len(job.Steps), job.Steps[0].ID)
-	}
-	if !strings.Contains(job.Steps[0].Run, `case "$mode" in remote|fork-ro|fork-rw) enabled=true ;; esac`) {
-		t.Errorf("%s decide no longer sets enabled exactly for the remote modes; the preflight's if depends on it", bazelRBEJobName)
-	}
-	checkout, check := job.Steps[2], job.Steps[3]
-	if actionFamily(checkout.Uses) != "actions/checkout" || checkout.If != rbeWorkerEnvEnabledIf || checkout.With["sparse-checkout"] != bazelRBESparseCheckout {
-		t.Errorf("%s step 3: uses %q, if %q, sparse-checkout %q; want a checkout of %q if %s",
-			bazelRBEJobName, checkout.Uses, checkout.If, checkout.With["sparse-checkout"], bazelRBESparseCheckout, rbeWorkerEnvEnabledIf)
-	}
-	wantEnv := map[string]string{"MODE": "${{ steps.decide.outputs.mode }}"}
-	if check.If != rbeWorkerEnvEnabledIf || check.ID != "" || check.Uses != "" || check.ContinueOnError != nil || !reflect.DeepEqual(check.Env, wantEnv) ||
-		!strings.Contains(check.Run, "tools/rbe/worker-env-sync main") {
-		t.Errorf("%s step 4: if %q, id %q, uses %q, continue-on-error %v, env %v; want if %s, no id, env %v, running tools/rbe/worker-env-sync main",
-			bazelRBEJobName, check.If, check.ID, check.Uses, check.ContinueOnError, check.Env, rbeWorkerEnvEnabledIf, wantEnv)
-	}
-
-	f := newRBEWorkerEnvFixture(t)
-	stalePin := rbeTestPin(rbeTestStaleManifest)
-	for _, c := range []struct {
-		name, manifest, pin, url string
-		code                     int
-		want                     string
-	}{
-		{"in step", f.manifest, f.pin, "", 0, "worker-env: in step with gascity main"},
-		{"gascity re-pinned", rbeTestStaleManifest, stalePin, "", 1,
-			"::error title=Bazel lanes stopped before queueing::beads' worker-env pin is out of step with gascity main, so rbe-west has no worker for this run's remote actions (mode remote): copy tools/rbe/worker-env.txt and the worker-env pin in platforms/BUILD.bazel from gastownhall/gascity main"},
-		{"gascity unreachable", rbeTestStaleManifest, stalePin, "file:///nonexistent-gascity", 0,
-			"::warning title=rbe worker-env not checked::could not compare beads' worker-env pin with gascity main (exit 2); proceeding in mode remote."},
-	} {
-		env := []string{"MODE=remote", "GITHUB_STEP_SUMMARY=" + filepath.Join(t.TempDir(), "summary")}
-		if c.url != "" {
-			env = append(env, "WORKER_ENV_SYNC_URL="+c.url)
-		}
-		code, out := f.run(t, f.beads(t, c.manifest, c.pin), check.Run, env...)
-		if code != c.code || !strings.Contains(out, c.want) {
-			t.Errorf("rbe preflight, %s: exit %d, want %d with %q:\n%s", c.name, code, c.code, c.want, out)
-		}
-	}
-}
 
 // TestNightlyWorkerEnvSyncOpensIssue: nightly's check, out of step, opens a
 // ci/infra issue with the diff (or, with one open, updates its body and
 // comments with the run), with GITHUB_TOKEN's issues: write scoped to that
 // job and the token in that one step; the rest of nightly.yml reads only.
 // gascity unreachable fails the job without an issue.
-func TestNightlyWorkerEnvSyncOpensIssue(t *testing.T) {
-	nightly := readCIWorkflow(t, "nightly.yml")
-	var top struct {
-		Permissions map[string]string `yaml:"permissions"`
-	}
-	if err := yaml.Unmarshal([]byte(readPolicyFile(t, sourceRepoRoot(t), ".github/workflows/nightly.yml")), &top); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(top.Permissions, map[string]string{"contents": "read"}) {
-		t.Errorf("nightly.yml permissions = %v, want contents: read", top.Permissions)
-	}
-	for name, job := range nightly.Jobs {
-		want := any(nil)
-		switch name {
-		case nightlyWorkerEnvJob:
-			want = map[string]any{"contents": "read", "issues": "write"}
-		case "bazel": // the bazel.yml call: what its rrc jobs ask for
-			want = bazelCallPermissions
-		}
-		if !reflect.DeepEqual(job.Permissions, want) {
-			t.Errorf("nightly.yml job %s permissions = %v, want %v", name, job.Permissions, want)
-		}
-	}
-	job := nightly.job(t, nightlyWorkerEnvJob)
-	if len(job.Steps) != 3 {
-		t.Fatalf("nightly.yml %s has %d steps, want checkout, check, issue", nightlyWorkerEnvJob, len(job.Steps))
-	}
-	check, issue := job.Steps[1], job.Steps[2]
-	if check.ID != "sync" || check.If != "" || !reflect.DeepEqual(check.Env, map[string]string{"WORKER_ENV_SYNC_REPORT": nightlyWorkerEnvReport}) {
-		t.Errorf("nightly check step: id %q, if %q, env %v; want id sync, no if, WORKER_ENV_SYNC_REPORT=%s", check.ID, check.If, check.Env, nightlyWorkerEnvReport)
-	}
-	wantIssueEnv := map[string]string{
-		"GH_TOKEN": "${{ github.token }}",
-		"REPORT":   nightlyWorkerEnvReport,
-		"RUN_URL":  "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-	}
-	if issue.If != "${{ failure() && steps.sync.outputs.rc == '1' }}" || !reflect.DeepEqual(issue.Env, wantIssueEnv) || !strings.Contains(issue.Run, rbeWorkerEnvSyncIssue) {
-		t.Errorf("nightly issue step: if %q, env %v, run %q; want only on rc 1, env %v, running %s", issue.If, issue.Env, issue.Run, wantIssueEnv, rbeWorkerEnvSyncIssue)
-	}
-	for name, j := range nightly.Jobs {
-		for i, step := range j.Steps {
-			if (name != nightlyWorkerEnvJob || i != 2) && strings.Contains(fmt.Sprint(step.Env, step.With, step.Run), "github.token") {
-				t.Errorf("nightly.yml job %s step %d uses github.token; only the issue step may", name, i)
-			}
-		}
-	}
-
-	// The check step's rc output: 1 out of step (the issue step runs), 2
-	// unknown (it does not), 0 in step.
-	f := newRBEWorkerEnvFixture(t)
-	stalePin := rbeTestPin(rbeTestStaleManifest)
-	for _, c := range []struct {
-		name, manifest, pin, url, rc string
-	}{
-		{"in step", f.manifest, f.pin, "", "0"},
-		{"out of step", rbeTestStaleManifest, stalePin, "", "1"},
-		{"gascity unreachable", f.manifest, f.pin, "file:///nonexistent-gascity", "2"},
-	} {
-		dir := t.TempDir()
-		output := filepath.Join(dir, "output")
-		report := filepath.Join(dir, "report.md")
-		env := []string{"GITHUB_OUTPUT=" + output, "WORKER_ENV_SYNC_REPORT=" + report}
-		if c.url != "" {
-			env = append(env, "WORKER_ENV_SYNC_URL="+c.url)
-		}
-		code, out := f.run(t, f.beads(t, c.manifest, c.pin), check.Run, env...)
-		got, _ := os.ReadFile(output)
-		if fmt.Sprint(code) != c.rc || string(got) != "rc="+c.rc+"\n" {
-			t.Errorf("nightly check, %s: exit %d, output %q; want exit and rc %s\n%s", c.name, code, got, c.rc, out)
-		}
-		if r, _ := os.ReadFile(report); (c.rc == "1") != strings.Contains(string(r), "### rbe worker-env out of step with gascity") {
-			t.Errorf("nightly check, %s: report %q", c.name, r)
-		}
-	}
-
-	// The issue step, against a stand-in gh that logs its calls and lists
-	// the open ci/infra issues it is given.
-	const ghStub = `#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$GH_LOG"
-for a in "$@"; do
-	case "$prev" in --body-file) cp "$a" "$GH_LOG.body" ;; esac
-	prev=$a
-done
-case "$1 $2" in
-	"issue list") jq -r "$(for a in "$@"; do [ "$p" = --jq ] && echo "$a"; p=$a; done)" <<<"$GH_ISSUES" ;;
-esac
-`
-	requireHostTool(t, "jq")
-	title := "rbe worker-env out of step with gascity main"
-	for _, c := range []struct {
-		name, issues string
-		want         []string
-	}{
-		{"no open issue", `[{"number":7,"title":"something else"}]`, []string{
-			"issue create --repo gastownhall/beads --title " + title + " --label ci/infra --body-file ",
-		}},
-		{"open issue", `[{"number":7,"title":"something else"},{"number":42,"title":"` + title + `"}]`, []string{
-			"issue edit 42 --repo gastownhall/beads --body-file ",
-			"issue comment 42 --repo gastownhall/beads --body Still out of step with gascity main: https://github.com/gastownhall/beads/actions/runs/9",
-		}},
-	} {
-		dir := t.TempDir()
-		bin := filepath.Join(dir, "bin")
-		rbeTestWrite(t, filepath.Join(bin, "gh"), ghStub, 0o755)
-		report := filepath.Join(dir, "report.md")
-		rbeTestWrite(t, report, "### rbe worker-env out of step with gascity\n\nthe diff\n", 0o644)
-		log := filepath.Join(dir, "gh.log")
-		code, out := f.run(t, f.beads(t, f.manifest, f.pin), issue.Run,
-			"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_LOG="+log, "GH_ISSUES="+c.issues,
-			"GITHUB_REPOSITORY=gastownhall/beads", "REPORT="+report, "RUN_URL=https://github.com/gastownhall/beads/actions/runs/9")
-		calls, _ := os.ReadFile(log)
-		body, _ := os.ReadFile(log + ".body")
-		if code != 0 {
-			t.Errorf("issue step, %s: exit %d\n%s", c.name, code, out)
-		}
-		for _, want := range c.want {
-			if !strings.Contains(string(calls), want) {
-				t.Errorf("issue step, %s: gh calls lack %q:\n%s", c.name, want, calls)
-			}
-		}
-		if strings.Contains(string(calls), "issue create") == (c.name == "open issue") {
-			t.Errorf("issue step, %s: gh calls:\n%s", c.name, calls)
-		}
-		if !strings.Contains(string(body), "the diff") || !strings.Contains(string(body), "https://github.com/gastownhall/beads/actions/runs/9") {
-			t.Errorf("issue step, %s: body:\n%s", c.name, body)
-		}
-	}
-}

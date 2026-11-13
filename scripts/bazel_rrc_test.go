@@ -6,15 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Bazel's remote repo contents cache on rbe-west (ga-vnycm2.29, ported from
@@ -130,50 +126,6 @@ func rrcStep(t *testing.T, job ciWorkflowJob, what string, pick func(ciWorkflowS
 // and execution mode: only mode remote enables anything, unset and off are
 // off, and an unknown value is off with a warning (a typo never fails the
 // required gate). It reads no secret and runs before the checkout.
-func TestBazelRRCModeStep(t *testing.T) {
-	rbe := readCIWorkflow(t, bazelWorkflowName).Jobs[bazelRBEJobName]
-	if got := rbe.Outputs["rrc"]; got != "${{ steps.rrc.outputs.rrc }}" {
-		t.Errorf("rbe job output rrc = %q", got)
-	}
-	step := rrcStep(t, rbe, "rrc", func(s ciWorkflowStep) bool { return s.ID == bazelRRCModeStepID })
-	if want := map[string]string{"RRC": "${{ " + bazelRRCVar + " }}", "MODE": "${{ steps.decide.outputs.mode }}"}; !reflect.DeepEqual(step.Env, want) {
-		t.Errorf("rrc step env %v, want %v", step.Env, want)
-	}
-	if step.If != "" {
-		t.Errorf("rrc step if %q; it must always set the output", step.If)
-	}
-	for i, s := range rbe.Steps {
-		if s.Uses != "" {
-			t.Errorf("rbe step %d (%s) precedes nothing it should: the rrc step must come before any checkout", i, s.Uses)
-		}
-		if s.ID == bazelRRCModeStepID {
-			break
-		}
-	}
-	for _, mode := range []string{"remote", "fork-ro", "fork-rw", "cache", "local", "skip"} {
-		for value, want := range map[string]string{"": "off", "off": "off", "seed": "seed", "canary": "canary", "on": "on", "On": "off", "true": "off", "on;x": "off"} {
-			if mode != "remote" {
-				want = "off"
-			}
-			dir := t.TempDir()
-			output := filepath.Join(dir, "output")
-			out, err := runRRCScript(t, dir, step.Run, map[string]string{
-				"RRC": value, "MODE": mode, "GITHUB_OUTPUT": output, "GITHUB_STEP_SUMMARY": filepath.Join(dir, "summary"),
-			})
-			if err != nil {
-				t.Errorf("mode %s value %q: %v\n%s", mode, value, err, out)
-				continue
-			}
-			if got := rrcOutputs(t, output)["rrc"]; got != want {
-				t.Errorf("mode %s value %q: rrc=%q, want %q", mode, value, got, want)
-			}
-			unknown := !slices.Contains([]string{"", "off", "seed", "canary", "on"}, value)
-			if warned := strings.Contains(out, "::warning"); warned != unknown {
-				t.Errorf("mode %s value %q: warning %v, want %v:\n%s", mode, value, warned, unknown, out)
-			}
-		}
-	}
-}
 
 // TestBazelRRCReadSteps: exactly bazelRRCReadLanes read through these steps,
 // in mode remote only (fork modes and local never; mode cache reads through
@@ -181,55 +133,6 @@ func TestBazelRRCModeStep(t *testing.T) {
 // bazel-test under canary and every one of them under on; each
 // writes exactly bazelRRCReadLines, never mentions uploads, and comes before
 // the job's Set up Bazel (so no Bazel server starts without it).
-func TestBazelRRCReadSteps(t *testing.T) {
-	wf := readCIWorkflow(t, bazelWorkflowName)
-	var readers []string
-	for name, job := range wf.Jobs {
-		read, setup := -1, -1
-		for i, s := range job.Steps {
-			switch {
-			case s.Name == bazelRRCReadStep:
-				if read >= 0 {
-					t.Errorf("%s has two %q steps", name, bazelRRCReadStep)
-				}
-				read = i
-			case s.Uses == bazelSetupBazelUses && setup < 0:
-				setup = i
-			}
-		}
-		if read < 0 {
-			continue
-		}
-		readers = append(readers, name)
-		if setup < 0 || read > setup {
-			t.Errorf("%s: %q at step %d, Set up Bazel at %d; the reader must come first", name, bazelRRCReadStep, read, setup)
-		}
-		step := job.Steps[read]
-		for _, mode := range []string{"remote", "fork-ro", "fork-rw", "cache", "local"} {
-			for _, rrc := range []string{"off", "seed", "canary", "on"} {
-				want := mode == "remote" && (rrc == "on" || (rrc == "canary" && name == bazelRRCCanaryLane))
-				if got := evalRRCIf(t, step.If, map[string]string{"needs.rbe.outputs.mode": mode, "needs.rbe.outputs.rrc": rrc}); got != want {
-					t.Errorf("%s mode %s rrc %s: reader runs %v, want %v", name, mode, rrc, got, want)
-				}
-			}
-		}
-		dir := t.TempDir()
-		if out, err := runRRCScript(t, dir, step.Run, nil); err != nil {
-			t.Fatalf("%s reader: %v\n%s", name, err, out)
-		}
-		got := strings.Split(strings.TrimSpace(readPolicyFile(t, dir, ".bazelrc.local")), "\n")
-		if !slices.Equal(got, bazelRRCReadLines) {
-			t.Errorf("%s reader writes %q, want %q", name, got, bazelRRCReadLines)
-		}
-		if strings.Contains(step.Run, "upload") || len(step.Env) != 0 {
-			t.Errorf("%s reader mentions uploads or takes env; lanes only read", name)
-		}
-	}
-	sort.Strings(readers)
-	if !slices.Equal(readers, bazelRRCReadLanes) {
-		t.Errorf("lanes with a reader step %v, want %v", readers, bazelRRCReadLanes)
-	}
-}
 
 // bazelRRCLaneCommands parses rrc-lane-commands.txt as rrc-run-lanes.sh does.
 func bazelRRCLaneCommands(t *testing.T, root string) []string {
@@ -272,25 +175,6 @@ func bazelRRCEnablingJobs(t *testing.T) map[string][]string {
 // trusted readers' jobs, bazelRRCReadLanes: not on every mode cache job
 // (bazel-release-cross builds for platforms rrc-lane-commands.txt does not
 // seed, and the package gates are not lanes).
-func TestBazelRRCOptInMirrorsTheTrustedReaders(t *testing.T) {
-	var optIn []string
-	for name, job := range readCIWorkflow(t, bazelWorkflowName).Jobs {
-		for _, s := range job.Steps {
-			v, ok := s.Env["BAZEL_RRC_READ"]
-			if !ok {
-				continue
-			}
-			if s.Uses != bazelSetupBazelUses || v != "true" {
-				t.Errorf("%s step %q sets BAZEL_RRC_READ=%q; only setup-bazel takes it, as \"true\"", name, s.Name, v)
-			}
-			optIn = append(optIn, name)
-		}
-	}
-	sort.Strings(optIn)
-	if !slices.Equal(optIn, bazelRRCReadLanes) {
-		t.Errorf("jobs passing BAZEL_RRC_READ %v, want the trusted readers %v", optIn, bazelRRCReadLanes)
-	}
-}
 
 // TestBazelRRCLaneCommandsCoverEveryReader: rrc-seed seeds (and rrc-verify
 // checks) what the readers fetch, so every job that enables the flag
@@ -298,58 +182,6 @@ func TestBazelRRCOptInMirrorsTheTrustedReaders(t *testing.T) {
 // is a reading lane, every --config it passes to `bazel test` or `bazel
 // build` has a command in rrc-lane-commands.txt, and every command there is
 // a reading lane's.
-func TestBazelRRCLaneCommandsCoverEveryReader(t *testing.T) {
-	root := sourceRepoRoot(t)
-	seeded := map[string]bool{}
-	for _, cmd := range bazelRRCLaneCommands(t, root) {
-		f := strings.Fields(cmd)
-		if f[0] != "test" && f[0] != "build" {
-			t.Errorf("lane command %q: want a test or build command", cmd)
-		}
-		for _, a := range f[1:] {
-			if c, ok := strings.CutPrefix(a, "--config="); ok {
-				seeded[c] = true
-			}
-		}
-	}
-	used := map[string]bool{}
-	invocation := regexp.MustCompile(`\bbazel (?:test|build)\b[^\n]*(?:\\\n[^\n]*)*`)
-	config := regexp.MustCompile(`--config=([a-z0-9-]+)`)
-	wf := readCIWorkflow(t, bazelWorkflowName)
-	enabling := bazelRRCEnablingJobs(t)
-	for job, how := range enabling {
-		if !slices.Contains(bazelRRCReadLanes, job) {
-			t.Errorf("%s enables the remote repo contents cache (%v) but is not a reading lane whose configs %s seeds", job, how, bazelRRCLaneCmds)
-		}
-		var configs []string
-		for _, s := range wf.Jobs[job].Steps {
-			for _, inv := range invocation.FindAllString(s.Run, -1) {
-				for _, m := range config.FindAllStringSubmatch(inv, -1) {
-					if m[1] != "sole-run" && m[1] != "fresh" { // test-result options, nothing fetched
-						configs = append(configs, m[1])
-					}
-				}
-			}
-		}
-		if len(configs) == 0 {
-			t.Errorf("%s enables the remote repo contents cache (%v) but no `bazel test|build --config=` is visible in its steps, so its configs cannot be checked against %s", job, how, bazelRRCLaneCmds)
-		}
-		for _, c := range configs {
-			used[c] = true
-			if !seeded[c] {
-				t.Errorf("%s enables the remote repo contents cache (%v) and runs bazel with --config=%s, which %s does not seed", job, how, c, bazelRRCLaneCmds)
-			}
-		}
-	}
-	if len(enabling) < len(bazelRRCReadLanes) || len(used) < len(bazelRRCReadLanes) {
-		t.Fatalf("found %d jobs enabling the cache and the configs %v; the scan is broken", len(enabling), used)
-	}
-	for c := range seeded {
-		if !used[c] {
-			t.Errorf("%s seeds --config=%s, which no reading lane uses", bazelRRCLaneCmds, c)
-		}
-	}
-}
 
 // TestRRCRunLanes runs rrc-run-lanes.sh with a stub bazel: one --nobuild
 // invocation per lane command, in order, startup flags first and command
@@ -431,77 +263,6 @@ func TestRRCRunLanes(t *testing.T) {
 // no secret (its credential is the OIDC-minted certificate), sets Bazel up
 // in local mode, seeds only with a certificate, uploads to the cache alone
 // (no executor), and always removes the key.
-func TestBazelRRCSeedJob(t *testing.T) {
-	wf := readCIWorkflow(t, bazelWorkflowName)
-	job, ok := wf.Jobs[bazelRRCSeedJob]
-	if !ok {
-		t.Fatalf("%s has no %s job", bazelWorkflowName, bazelRRCSeedJob)
-	}
-	if job.If != bazelRRCSeedJobIf {
-		t.Errorf("%s if %q, want %q", bazelRRCSeedJob, job.If, bazelRRCSeedJobIf)
-	}
-	if !slices.Equal(job.Needs, []string{bazelRBEJobName}) || job.Outputs != nil {
-		t.Errorf("%s needs %v outputs %v; it needs the rbe job alone and reports nothing to the gate", bazelRRCSeedJob, job.Needs, job.Outputs)
-	}
-	for _, c := range []struct {
-		event, ref, mode, rrc string
-		want                  bool
-	}{
-		{"push", "refs/heads/main", "remote", "seed", true},
-		{"push", "refs/heads/main", "remote", "canary", true},
-		{"push", "refs/heads/main", "remote", "on", true},
-		{"push", "refs/heads/main", "remote", "off", false},
-		{"push", "refs/heads/main", "cache", "on", false},
-		{"push", "refs/heads/other", "remote", "on", false},
-		{"pull_request", "refs/pull/1/merge", "remote", "on", false},
-		{"pull_request_target", "refs/heads/main", "remote", "on", false},
-		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", "remote", "on", false},
-		{"workflow_dispatch", "refs/heads/main", "remote", "on", false},
-		{"schedule", "refs/heads/main", "remote", "on", false},
-	} {
-		got := evalRRCIf(t, job.If, map[string]string{
-			"github.event_name": c.event, "github.ref": c.ref, "needs.rbe.outputs.mode": c.mode, "needs.rbe.outputs.rrc": c.rrc,
-		})
-		if got != c.want {
-			t.Errorf("%+v: seed runs %v, want %v", c, got, c.want)
-		}
-	}
-	if want := map[string]any{"contents": "read", "id-token": "write"}; !reflect.DeepEqual(job.Permissions, want) {
-		t.Errorf("%s permissions %v, want %v", bazelRRCSeedJob, job.Permissions, want)
-	}
-	raw := readPolicyFile(t, sourceRepoRoot(t), ".github/workflows/"+bazelWorkflowName)
-	if text := bazelRRCJobText(t, raw, bazelRRCSeedJob); strings.Contains(text, "secrets.") {
-		t.Errorf("%s reads a secret; its only credential is the OIDC-minted writer certificate", bazelRRCSeedJob)
-	}
-	setup := rrcStep(t, job, "setup-bazel", func(s ciWorkflowStep) bool { return s.Uses == bazelSetupBazelUses })
-	if len(setup.Env) != 0 {
-		t.Errorf("%s setup-bazel env %v; local mode (no executor, no certificate) only", bazelRRCSeedJob, setup.Env)
-	}
-	cred := rrcStep(t, job, "writer certificate", func(s ciWorkflowStep) bool { return s.ID == "writer" })
-	if cred.Run != "bash "+bazelRRCCredential {
-		t.Errorf("writer step runs %q, want bash %s", cred.Run, bazelRRCCredential)
-	}
-	seed := rrcStep(t, job, "seed", func(s ciWorkflowStep) bool { return strings.Contains(s.Run, bazelRRCRunLanes) })
-	if seed.If != "${{ steps.writer.outputs.cert != '' }}" {
-		t.Errorf("seed step if %q; it must skip when the mint switched seeding off (no certificate)", seed.If)
-	}
-	for _, want := range []string{
-		"bash " + bazelRRCRunLanes + " --experimental_remote_repo_contents_cache --", "--loading_phase_threads=64",
-		`"--remote_cache=$ENDPOINT"`, `"--remote_instance_name=$INSTANCE"`,
-		`"--tls_client_certificate=$CERT"`, `"--tls_client_key=$KEY"`, "--remote_upload_local_results",
-	} {
-		if !strings.Contains(seed.Run, want) {
-			t.Errorf("seed step lacks %q:\n%s", want, seed.Run)
-		}
-	}
-	if strings.Contains(seed.Run, "remote_executor") {
-		t.Errorf("seed step names an executor; the writer certificate is cache only")
-	}
-	cleanup := rrcStep(t, job, "key removal", func(s ciWorkflowStep) bool { return strings.Contains(s.Run, "rrc-writer.key") })
-	if cleanup.If != "${{ always() }}" {
-		t.Errorf("the writer key removal runs if %q; it must always run", cleanup.If)
-	}
-}
 
 // bazelRRCJobText returns a job's raw text in a workflow.
 func bazelRRCJobText(t *testing.T, raw, job string) string {
@@ -522,90 +283,6 @@ func bazelRRCJobText(t *testing.T, raw, job string) string {
 // the repo contents cache, compares with rrc_verify.py using the lanes'
 // read-only certificate and setup-bazel's endpoint (no secret outside
 // setup-bazel), and alerts through an issue only when the comparison fails.
-func TestBazelRRCVerifyJob(t *testing.T) {
-	wf := readCIWorkflow(t, bazelWorkflowName)
-	job, ok := wf.Jobs[bazelRRCVerifyJob]
-	if !ok {
-		t.Fatalf("%s has no %s job", bazelWorkflowName, bazelRRCVerifyJob)
-	}
-	if job.If != bazelRRCVerifyJobIf {
-		t.Errorf("%s if %q, want %q", bazelRRCVerifyJob, job.If, bazelRRCVerifyJobIf)
-	}
-	if job.Outputs != nil {
-		t.Errorf("%s outputs %v; it reports nothing to the gate", bazelRRCVerifyJob, job.Outputs)
-	}
-	for _, c := range []struct {
-		event, mode, rrc string
-		want             bool
-	}{
-		{"schedule", "remote", "on", true},
-		{"schedule", "remote", "seed", true},
-		{"workflow_dispatch", "remote", "canary", true},
-		{"schedule", "remote", "off", false},
-		{"schedule", "cache", "on", false},
-		{"push", "remote", "on", false},
-		{"pull_request", "remote", "on", false},
-		{"pull_request_target", "remote", "on", false},
-		{"merge_group", "remote", "on", false},
-	} {
-		got := evalRRCIf(t, job.If, map[string]string{
-			"github.event_name": c.event, "needs.rbe.outputs.mode": c.mode, "needs.rbe.outputs.rrc": c.rrc,
-		})
-		if got != c.want {
-			t.Errorf("%+v: verify runs %v, want %v", c, got, c.want)
-		}
-	}
-	if want := map[string]any{"contents": "read", "issues": "write"}; !reflect.DeepEqual(job.Permissions, want) {
-		t.Errorf("%s permissions %v, want %v", bazelRRCVerifyJob, job.Permissions, want)
-	}
-	for _, s := range job.Steps {
-		if strings.Contains(s.Run, "experimental_remote_repo_contents_cache") || strings.Contains(s.Run, ".bazelrc.local") ||
-			strings.Contains(s.Run, "remote_upload_local_results") {
-			t.Errorf("%s step %q reads or writes the repo contents cache; the cold fetch must not", bazelRRCVerifyJob, s.Name)
-		}
-		for k, v := range s.Env {
-			if strings.Contains(v, "secrets.") && s.Uses != bazelSetupBazelUses {
-				t.Errorf("%s step %q env %s reads a secret; only setup-bazel may", bazelRRCVerifyJob, s.Name, k)
-			}
-		}
-	}
-	fetch := rrcStep(t, job, "cold fetch", func(s ciWorkflowStep) bool { return strings.HasPrefix(s.Name, "Cold fetch") })
-	if fetch.Run != "bash "+bazelRRCRunLanes+" -- --loading_phase_threads=64" {
-		t.Errorf("cold fetch runs %q; it must run every lane's command with no startup flag", fetch.Run)
-	}
-	verify := rrcStep(t, job, "verify", func(s ciWorkflowStep) bool { return s.ID == "verify" })
-	for _, want := range []string{"python3 " + bazelRRCVerifyTool, `--cert "$secret_dir/client.crt"`, `--key "$secret_dir/client.key"`, "--instance oss", ".bazelversion", "remote_executor="} {
-		if !strings.Contains(verify.Run, want) {
-			t.Errorf("verify step lacks %q", want)
-		}
-	}
-	alert := rrcStep(t, job, "alert", func(s ciWorkflowStep) bool { return strings.Contains(s.Run, "gh issue") })
-	if alert.If != "${{ failure() && steps.verify.outcome == 'failure' }}" {
-		t.Errorf("alert step if %q; it must alert only on a failed comparison", alert.If)
-	}
-	if strings.Contains(alert.Run, "${{") {
-		t.Errorf("alert step interpolates an expression into its script; pass it through env")
-	}
-	// The issue's containment: mode cache lanes see no repository
-	// variables, so the committed switches (both repositories) and
-	// rbe-cache-gate stop them. The mode remote readers read the same
-	// entries, so a mismatch sets the variable to seed (no reader, rrc-seed
-	// and this check keep running); off stops seeding and this check too.
-	for _, want := range []string{
-		"fork_rrc_read=off in both probe scripts", cacheRRCProbe, "gascity tools/rbe/cache-rrc-probe.sh",
-		"beads has no fresh-merge", "rbe-cache-gate close", "on a mismatch, set RBE_REPO_CONTENTS_CACHE to seed",
-		"set it to off only to stop seeding too", "could not check, leave the variable as it is",
-	} {
-		if !strings.Contains(alert.Run, want) {
-			t.Errorf("alert issue body lacks %q", want)
-		}
-	}
-	for _, bad := range []string{"Stop readers first: set the repository variable", "leave RBE_REPO_CONTENTS_CACHE on"} {
-		if strings.Contains(alert.Run, bad) {
-			t.Errorf("alert issue body still says %q; a mismatch sets the variable to seed", bad)
-		}
-	}
-}
 
 // permissionRank orders GitHub token permission levels so a grant can be
 // compared with a request: write covers read, read covers none.
@@ -623,58 +300,6 @@ type permWorkflow struct {
 // job permissions when the caller starts, including jobs whose `if:` would
 // skip, so every workflow that calls bazel.yml must grant at least the
 // highest level any bazel.yml job requests for each scope.
-func TestBazelWorkflowCallersGrantEveryRequestedPermission(t *testing.T) {
-	root := sourceRepoRoot(t)
-	load := func(name string) permWorkflow {
-		var wf permWorkflow
-		if err := yaml.Unmarshal([]byte(readPolicyFile(t, root, ".github/workflows/"+name)), &wf); err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		return wf
-	}
-	need := map[string]string{}
-	for _, job := range load(bazelWorkflowName).Jobs {
-		for scope, level := range job.Permissions {
-			if permissionRank[level] > permissionRank[need[scope]] {
-				need[scope] = level
-			}
-		}
-	}
-	if need["id-token"] != "write" || need["issues"] != "write" {
-		t.Fatalf("bazel.yml requests %v; the parser is broken or the rrc jobs are gone", need)
-	}
-	entries, err := os.ReadDir(filepath.Join(root, ".github", "workflows"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var callers []string
-	for _, e := range entries {
-		name := e.Name()
-		if name == bazelWorkflowName || (!strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml")) {
-			continue
-		}
-		for jobName, job := range load(name).Jobs {
-			if job.Uses != "./.github/workflows/"+bazelWorkflowName {
-				continue
-			}
-			callers = append(callers, name)
-			var missing []string
-			for scope, level := range need {
-				if permissionRank[job.Permissions[scope]] < permissionRank[level] {
-					missing = append(missing, scope+": "+level)
-				}
-			}
-			sort.Strings(missing)
-			if len(missing) > 0 {
-				t.Errorf("%s job %q calls %s without granting %s (startup_failure)", name, jobName, bazelWorkflowName, strings.Join(missing, ", "))
-			}
-		}
-	}
-	sort.Strings(callers)
-	if want := []string{"bazel-farm.yml", "nightly.yml", "pr.yml"}; !slices.Equal(callers, want) {
-		t.Errorf("bazel.yml callers %v, want %v", callers, want)
-	}
-}
 
 // rrcMintCurlStub stands in for curl in rrc-writer-credential.sh. The OIDC
 // request (its URL carries audience=) logs the audience and authorization

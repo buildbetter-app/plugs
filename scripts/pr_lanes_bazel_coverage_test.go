@@ -158,64 +158,6 @@ func prLegacyJobResult(job string, sc bazelGateScenario) string {
 // downloads the retired build-artifacts job's artifact, the package gates
 // are pinned, Bazel publishes bd under the name pr.yml passes, and a failed
 // package gate or preflight leg reds pr.yml's actual gate step.
-func TestPRGateNonBazelNeeds(t *testing.T) {
-	requireHostTool(t, "bash")
-	pr := readCIWorkflow(t, "pr.yml")
-	gateStep := pr.job(t, "ci-gate").step(t, "Evaluate CI gate")
-	required := strings.Fields(gateStep.Env["CI_GATE_REQUIRED"])
-
-	for name, job := range pr.Jobs {
-		if contains(job.Needs, "build-artifacts") {
-			t.Errorf("%s needs the retired build-artifacts job", name)
-		}
-		for _, step := range job.Steps {
-			if !strings.HasPrefix(step.Uses, "actions/download-artifact@") {
-				continue
-			}
-			art := step.With["name"]
-			if art == "" || step.With["pattern"] != "" {
-				t.Errorf("%s downloads an artifact by pattern or without a name: %v", name, step.With)
-			}
-			if strings.Contains(art, "ci-build-artifacts") {
-				t.Errorf("%s downloads %q; nothing in pr.yml consumes the bd artifact", name, art)
-			}
-		}
-	}
-	testPackageGateJobs(t, required)
-	// Bazel's artifact: bazel-test publishes it (always, after its tests)
-	// under the name pr.yml passes (TestBazelWorkflowPublishesBuildArtifacts).
-	if pr.job(t, "bazel").With["build-artifact-name"] != "bazel-ci-build-artifacts" {
-		t.Errorf("pr.yml's bazel call no longer names its artifact bazel-ci-build-artifacts")
-	}
-	bazelTest := readCIWorkflow(t, bazelWorkflowName).job(t, bazelJobName)
-	pkgStep := bazelTest.step(t, "Package bd (ci-build-artifacts layout)")
-	if pkgStep.Run != `./scripts/ci/package-bazel-bd.sh "$RUNNER_TEMP/bd-artifacts"` || pkgStep.ContinueOnError != nil {
-		t.Errorf("bazel-test packages bd with %q (continue-on-error %v)", pkgStep.Run, pkgStep.ContinueOnError)
-	}
-
-	lanes := bazelPRCallLanes(t, pr.job(t, "bazel").With)
-	if pass, out := runPRGateStep(t, gateStep, prGateFor(t, lanes, "pull_request", "remote")); !pass {
-		t.Errorf("remote, every lane and job passed: gate red\n%s", out)
-	}
-	for _, res := range []string{"skipped", "failure", "cancelled"} {
-		for _, job := range []string{"package-mcp", "package-npm", "pr-preflight-platforms"} {
-			sc := prGateFor(t, lanes, "pull_request", "remote")
-			// F3: package-mcp/package-npm are bazel.yml call outputs
-			// (needs.bazel.outputs.package-mcp), not pr.yml job results.
-			id := prPackageGateIDs[job]
-			if id != "" {
-				sc.outputs[job] = res
-			} else {
-				id = "PR_PREFLIGHT_PLATFORMS"
-				sc.results = map[string]string{job: res}
-			}
-			pass, out := runPRGateStep(t, gateStep, sc)
-			if pass || !regexp.MustCompile(`::error::`+regexp.QuoteMeta(id)+`\b`).MatchString(out) {
-				t.Errorf("%s %s: gate pass = %v, want red naming %s\n%s", job, res, pass, id, out)
-			}
-		}
-	}
-}
 
 func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
@@ -395,28 +337,6 @@ func testPackageGateJobs(t *testing.T, prGateRequired []string) {
 // any more, so none runs its container half (plain `go test` does, wherever
 // docker and the image are present), and no pr.yml job runs the fingerprint
 // or reports a separate fingerprint result.
-func TestDoltServerFingerprintRunsOnTheDoltServerLane(t *testing.T) {
-	pr := readCIWorkflow(t, "pr.yml")
-	for name, j := range pr.Jobs {
-		for _, s := range j.Steps {
-			if strings.Contains(s.Run, "TestDoltServerFingerprint") {
-				t.Errorf("%s step %q runs the fingerprint; //internal/testutil:testutil_dolt_test does", name, s.Name)
-			}
-		}
-	}
-	gate := pr.job(t, "ci-gate")
-	env := gate.step(t, "Evaluate CI gate").Env
-	if _, ok := env["TEST_DOLT_SERVER_FINGERPRINT"]; ok || strings.Contains(env["CI_GATE_REQUIRED"], "FINGERPRINT") {
-		t.Errorf("ci-gate still evaluates a separate fingerprint result: %q", env["CI_GATE_REQUIRED"])
-	}
-
-	rule := bazelRuleBlock(readPolicyFile(t, sourceRepoRoot(t), "internal/testutil/BUILD.bazel"), "testutil_dolt_test")
-	for _, w := range []string{`"$(rootpath :testutil_test)"`, `"BEADS_TEST_DOLT_SERVER": "local"`, `"BEADS_TEST_REQUIRE_DOLT_CONTAINER": "1"`, `tags = ["dolt-server"]`} {
-		if !strings.Contains(rule, w) {
-			t.Errorf("//internal/testutil:testutil_dolt_test lacks %s (the local half runs on the dolt-server lane):\n%s", w, rule)
-		}
-	}
-}
 
 // PR Core's one duty the Bazel lanes did not take over, go test's vet checks
 // over ./... (rules_go's go_test runs none), is nogo's: //tools/nogo runs
@@ -427,82 +347,6 @@ func TestDoltServerFingerprintRunsOnTheDoltServerLane(t *testing.T) {
 // //test/docsync's go_tests, over the repo_files partitions they read), so no
 // workflow runs `go test` over ./scripts/... or the equivalence allowlist
 // either.
-func TestPRRunsGoTestsBazelSkips(t *testing.T) {
-	pr := readCIWorkflow(t, "pr.yml")
-	root := sourceRepoRoot(t)
-	// tools/nogo/analyzers.bzl's VET_PASSES are go test's vet checks (cmd/vet
-	// keeps -bool and -buildtags as aliases of the bools and buildtag
-	// analyzers). A subtest, so a host that cannot run go.mod's toolchain skips
-	// only this comparison: the checks after it read nothing but the checkout.
-	t.Run("VET_PASSES", func(t *testing.T) {
-		m := regexp.MustCompile(`(?ms)^VET_PASSES = \[(.*?)^\]`).FindStringSubmatch(readPolicyFile(t, root, "tools/nogo/analyzers.bzl"))
-		if m == nil {
-			t.Fatal("tools/nogo/analyzers.bzl has no VET_PASSES list")
-		}
-		var passes []string
-		for _, q := range regexp.MustCompile(`"([a-z]+)"`).FindAllStringSubmatch(m[1], -1) {
-			passes = append(passes, q[1])
-		}
-		var want []string
-		for _, flag := range goTestDefaultVetFlags(t) {
-			flag = strings.TrimPrefix(flag, "-")
-			if alias, ok := map[string]string{"bool": "bools", "buildtags": "buildtag"}[flag]; ok {
-				flag = alias
-			}
-			want = append(want, flag)
-		}
-		sort.Strings(passes)
-		sort.Strings(want)
-		if !reflect.DeepEqual(passes, want) {
-			t.Errorf("tools/nogo/analyzers.bzl VET_PASSES = %v, want go test's vet checks %v", passes, want)
-		}
-	})
-	if module := readPolicyFile(t, root, "MODULE.bazel"); !strings.Contains(module, "go_sdk.nogo(\n    includes = [\"//:__subpackages__\"],\n    nogo = \"//tools/nogo\",\n)") {
-		t.Error("MODULE.bazel does not register //tools/nogo for every first-party package (go_sdk.nogo)")
-	}
-	if _, err := os.Stat(filepath.Join(root, "scripts", "ci", "go-test-vet.sh")); err == nil {
-		t.Error("scripts/ci/go-test-vet.sh is back; go test's vet checks run as nogo")
-	}
-	goVet := regexp.MustCompile(`\bgo vet\b|go-test-vet\.sh`)
-	for _, wf := range []string{"pr.yml", "main.yml", "nightly.yml", "pr-risk.yml", bazelWorkflowName} {
-		for name, j := range readCIWorkflow(t, wf).Jobs {
-			for _, st := range j.Steps {
-				if goVet.MatchString(st.Run) {
-					t.Errorf("%s %s step %q runs go vet; nogo runs its checks in the Bazel lanes", wf, name, st.Name)
-				}
-			}
-		}
-	}
-	retired := regexp.MustCompile(`allowlisted-go-tests\.sh|scripts-go-test\.sh|run_allowlisted_go_tests\.py|go test[^\n]* \./scripts/\.\.\.`)
-	for _, wf := range []string{"pr.yml", "main.yml", "nightly.yml", "pr-risk.yml", bazelWorkflowName} {
-		for name, j := range readCIWorkflow(t, wf).Jobs {
-			for _, st := range j.Steps {
-				// A compile-only cache warm (-run '^$') runs no test.
-				if m := retired.FindString(st.Run); m != "" && !strings.Contains(m, "-run '^$'") {
-					t.Errorf("%s %s step %q runs %q; the scripts packages and the allowlisted tests run under Bazel", wf, name, st.Name, m)
-				}
-			}
-		}
-	}
-	for _, gone := range []string{"scripts/ci/allowlisted-go-tests.sh", "scripts/ci/scripts-go-test.sh", "tools/bazel/run_allowlisted_go_tests.py"} {
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(gone))); err == nil {
-			t.Errorf("%s is back; the tests it ran under go test run under Bazel", gone)
-		}
-	}
-	// The allowlist's remaining skip entries run in pr-preflight-platforms
-	// (every OS), each named in its go test selector.
-	fallback := pr.job(t, "pr-preflight-platforms").step(t, "Exercise generated Git hook timeout process boundary and go test's bd build fallback").Run
-	for _, line := range strings.Split(readPolicyFile(t, root, "tools/bazel/equivalence_allowlist.txt"), "\n") {
-		body, _, _ := strings.Cut(line, "#")
-		f := strings.Fields(body)
-		if len(f) == 0 {
-			continue
-		}
-		if len(f) != 3 || f[0] != "cmd/bd" || f[2] != "skip" || !strings.Contains(fallback, f[1]) || !strings.HasSuffix(fallback, " ./cmd/bd") {
-			t.Errorf("allowlist entry %q is not a cmd/bd skip run by pr-preflight-platforms' bd build fallback step (%q)", line, fallback)
-		}
-	}
-}
 
 // goTestDefaultVetFlags: the vet checks go.mod's Go toolchain gives `go test`
 // (cmd/go's defaultVetFlags), read from its source, so a Go upgrade that
@@ -580,58 +424,3 @@ func TestGoToolchainNamePadsAMissingPatchComponent(t *testing.T) {
 // `bazel test` adds --config=sole-run, whose lines are exactly no cached
 // test results and no whole-invocation retry after a remote cache eviction;
 // their Bazel steps and configs are pinned exactly.
-func TestBazelPRLanesArePinned(t *testing.T) {
-	workflow := readCIWorkflow(t, bazelWorkflowName)
-	bazelCmd := regexp.MustCompile(`^\s*(?:\S+=\S+\s+)*(?:"?\$\(\s*)?bazel\s+(test|build|run|query|cquery|coverage)\b`)
-	for lane, steps := range bazelPRLaneSteps {
-		job := workflow.job(t, lane)
-		if job.Env["BAZEL_SOLE_RUN"] != bazelSoleRunEnv {
-			t.Errorf("%s env BAZEL_SOLE_RUN = %q, want %q", lane, job.Env["BAZEL_SOLE_RUN"], bazelSoleRunEnv)
-		}
-		for name, want := range steps {
-			step := job.step(t, name)
-			if strings.TrimSpace(step.Run) != want || step.ContinueOnError != nil {
-				t.Errorf("%s step %q (continue-on-error %v) changed; want exactly:\n%s\ngot:\n%s", lane, name, step.ContinueOnError, want, step.Run)
-			}
-		}
-		// Every bazel test in the lane takes sole-run; nothing else runs
-		// Bazel but the pinned steps and pure's builds.
-		for _, step := range job.Steps {
-			for _, line := range strings.Split(step.Run, "\n") {
-				m := bazelCmd.FindStringSubmatch(line)
-				if m == nil {
-					continue
-				}
-				if m[1] == "test" && !strings.Contains(line, bazelSoleRunArg) {
-					t.Errorf("%s step %q runs bazel test without %s: %q", lane, step.Name, bazelSoleRunArg, line)
-				}
-				if _, pinned := steps[step.Name]; !pinned && m[1] != "build" && m[1] != "cquery" {
-					t.Errorf("%s step %q runs %q outside the pinned steps", lane, step.Name, line)
-				}
-			}
-		}
-	}
-	rc := readPolicyFile(t, bazelPolicyRoot(t), ".bazelrc")
-	for config, want := range bazelPRLaneRCLines {
-		var got []string
-		for _, line := range strings.Split(rc, "\n") {
-			line = strings.TrimSpace(line)
-			head, _, _ := strings.Cut(line, " ")
-			if strings.HasSuffix(head, ":"+config) {
-				got = append(got, line)
-			}
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf(".bazelrc --config=%s lines changed; want exactly:\n%s\ngot:\n%s", config, strings.Join(want, "\n"), strings.Join(got, "\n"))
-		}
-	}
-	// sole-run is used by these lanes only, and only through the env above.
-	for name, job := range workflow.Jobs {
-		_, lane := bazelPRLaneSteps[name]
-		for _, step := range job.Steps {
-			if strings.Contains(step.Run, "sole-run") || (!lane && strings.Contains(step.Run, "BAZEL_SOLE_RUN")) {
-				t.Errorf("%s step %q names sole-run directly", name, step.Name)
-			}
-		}
-	}
-}

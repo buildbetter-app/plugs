@@ -245,8 +245,7 @@ repo_subset(
     srcs = ["//:repo_files"],
     include = [
         ".buildflags",
-        ".github/workflows/main.yml",
-        ".github/workflows/pr.yml",
+        ".github/workflows/release.yml",
         ".golangci.yml",
         "Makefile",
         "cmd/bd/ado*.go",

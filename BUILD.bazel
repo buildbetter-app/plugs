@@ -107,7 +107,6 @@ filegroup(
 # to a file not listed here fails docsync_test under Bazel; add the file.
 exports_files(
     [
-        ".github/workflows/bazel.yml",
         "beads.go",
         "docs/docs.json",
     ],

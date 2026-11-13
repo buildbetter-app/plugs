@@ -1163,47 +1163,6 @@ func sameTagSet(a, b map[string]bool) bool {
 // test files and the lane would silently run the plain package tests instead.
 // With it, a file gaining `//go:build integration` lands in its package's srcs
 // through `make bazel-sync`, whose staleness bazel.yml already fails on.
-func TestBazelIntegrationLaneMatchesMainWorkflow(t *testing.T) {
-	root := bazelPolicyRoot(t)
-	want := tagSet("integration,gms_pure_go")
-
-	bazelrc := readPolicyFile(t, root, ".bazelrc")
-	lines := map[string]bool{}
-	var laneTags map[string]bool
-	for _, line := range strings.Split(bazelrc, "\n") {
-		line = strings.TrimSpace(line)
-		lines[line] = true
-		if v, ok := strings.CutPrefix(line, "build:integration --@rules_go//go/config:tags="); ok {
-			laneTags = tagSet(v)
-		}
-	}
-	if !sameTagSet(laneTags, want) {
-		t.Errorf(".bazelrc build:integration tags = %v, want %v", laneTags, want)
-	}
-	if err := checkBazelrcIntegrationLane(bazelrc); err != nil {
-		t.Error(err)
-	}
-	for _, need := range []string{
-		"test:integration --@rules_go//go/config:race",
-		"test:integration --test_env=BEADS_TEST_SKIP=dolt",
-	} {
-		if !lines[need] {
-			t.Errorf(".bazelrc lacks %q", need)
-		}
-	}
-
-	m := regexp.MustCompile(`(?m)^# gazelle:build_tags (\S+)$`).FindStringSubmatch(readPolicyFile(t, root, "BUILD.bazel"))
-	if m == nil {
-		t.Fatal("BUILD.bazel has no `# gazelle:build_tags` directive")
-	}
-	gazelleTags := tagSet(m[1])
-	for tag := range want {
-		if !gazelleTags[tag] {
-			t.Errorf("BUILD.bazel `gazelle:build_tags %s` lacks %q: gazelle would leave that lane's files out of every BUILD file", m[1], tag)
-		}
-	}
-}
-
 func TestBazelrcIntegrationLaneFixtures(t *testing.T) {
 	exclude := bazelIntegrationExcludedTags()
 	good := "test:integration --test_tag_filters=-" + strings.Join(exclude, ",-") + "\n" +
@@ -1233,32 +1192,3 @@ func TestBazelrcIntegrationLaneFixtures(t *testing.T) {
 // the zstd probe. No .bazelrc config, workflow or other action file may set
 // it: every other remote (rbe-west's trusted schedulers on :443, rbe-fork on
 // :8444) advertises no compressor, and Bazel then refuses the remote.
-func TestBazelRemoteCacheCompressionOnlyForkCache(t *testing.T) {
-	root := bazelPolicyRoot(t)
-	files := []string{".bazelrc"}
-	for _, pattern := range []string{".github/workflows/*.yml", ".github/workflows/*.yaml", ".github/actions/*/*"} {
-		m, err := filepath.Glob(filepath.Join(root, pattern))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, f := range m {
-			rel, err := filepath.Rel(root, f)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files = append(files, rel)
-		}
-	}
-	var found []string
-	for _, f := range files {
-		for i, line := range strings.Split(readPolicyFile(t, root, f), "\n") {
-			if strings.Contains(line, "remote_cache_compression") && !strings.HasPrefix(strings.TrimSpace(line), "#") {
-				found = append(found, f+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
-			}
-		}
-	}
-	want := setupBazelActionDir + "/write-bazelrc.sh:"
-	if len(found) != 1 || !strings.HasPrefix(found[0], want) || !strings.HasSuffix(found[0], `echo "`+forkCacheZstdLine+`"`) {
-		t.Errorf("--remote_cache_compression set at %q; want only %s echo %q", found, want, forkCacheZstdLine)
-	}
-}

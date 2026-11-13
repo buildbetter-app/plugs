@@ -249,13 +249,6 @@ func TestSetupBazelForkCredential(t *testing.T) {
 			t.Errorf("key with GITHUB_JOB %q succeeded: %v\n%s", job, out, logs)
 		}
 	}
-	// Every bazel.yml job that runs setup-bazel has an id the mint accepts.
-	for jobName := range readCIWorkflow(t, bazelWorkflowName).Jobs {
-		if !rbeForkJobRE.MatchString(jobName) {
-			t.Errorf("%s job id %q does not fit the mint's job pattern", bazelWorkflowName, jobName)
-		}
-	}
-
 	cert := func(t *testing.T, answer, tier string) (map[string]string, string, error) {
 		t.Helper()
 		m.reset(t)

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # The push-time test suite, run by .githooks/pre-push when a pushed branch
-# changes Go or Bazel inputs: bazel.yml's test lane, `bazel test //...
-# --config=ci`, with the action keys CI uses, so a push reuses what CI and
-# earlier pushes already computed.
+# changes Go or Bazel inputs: the repository's local `bazel test //...
+# --config=ci` suite, with the action keys used for repeatable local runs.
 #
 # BD_PREPUSH_SUITE picks where it runs (default auto):
 #   auto   remote-exec when bazel's effective options name a remote executor
@@ -29,17 +28,16 @@ executor=""
 go_why="BD_PREPUSH_SUITE=go"
 go_fix="unset BD_PREPUSH_SUITE to run the bazel suite"
 
-# The go suite is not what CI enforces: bazel.yml gates on bazel test, whose
-# nogo lint/vet, formatting and repository-guard targets have no go test
-# counterpart. Say so loudly, with the reason, so a green push is not read as
-# CI parity.
+# The go suite does not cover Bazel's nogo lint/vet, formatting and
+# repository-guard targets. Say so loudly so a green push is not read as
+# full-suite parity.
 announce_go_suite() {
   {
     echo "pre-push: ========================================================================"
-    echo "pre-push: running make test-go (plain go test): NOT the bazel suite CI gates on."
+    echo "pre-push: running make test-go (plain go test): NOT the full Bazel suite."
     echo "pre-push: why: $go_why"
-    echo "pre-push: CI runs bazel test //... --config=ci (.github/workflows/bazel.yml); a push"
-    echo "pre-push: that passes here can still fail there (nogo lint/vet, formatting, guards)."
+    echo "pre-push: the full local suite runs bazel test //... --config=ci; a push"
+    echo "pre-push: that passes here can still fail the Bazel policy targets (nogo lint/vet, formatting, guards)."
     echo "pre-push: fix: $go_fix"
     echo "pre-push: ========================================================================"
   } >&2

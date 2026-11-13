@@ -490,139 +490,13 @@ func mustEvalGHRunsOn(t *testing.T, expr string, ctx map[string]string) string {
 // semantic typo in any of the three consts (a dropped `!`, a swapped `&&`/
 // `||`, a wrong field name) fails this test even if a hand-rolled Go mirror
 // would have been edited to match it.
-func TestSameRepoBlacksmithExpressionSemantics(t *testing.T) {
-	const ownRepo = "steveyegge/beads"
-	type tc struct {
-		name       string
-		event      string
-		headRepo   string // github.event.pull_request.head.repo.full_name; "" = fork or deleted fork head
-		actor      string
-		wantRunner bool
-	}
-	cases := []tc{
-		{"same-repo PR, human actor", "pull_request", ownRepo, "alice", true},
-		{"merge_group always Blacksmith", "merge_group", "", "", true},
-		{"fork PR stays ubuntu-latest", "pull_request", "someone-else/beads", "alice", false},
-		{"deleted fork head stays ubuntu-latest", "pull_request", "", "alice", false},
-		{"same-repo PR, dependabot actor stays ubuntu-latest", "pull_request", ownRepo, "dependabot[bot]", false},
-		{"push stays ubuntu-latest", "push", "", "alice", false},
-		{"pull_request_target stays ubuntu-latest", "pull_request_target", ownRepo, "alice", false},
-		{"schedule stays ubuntu-latest", "schedule", "", "", false},
-		{"workflow_dispatch stays ubuntu-latest", "workflow_dispatch", "", "", false},
-	}
-	type constCase struct {
-		label    string // the Blacksmith label the expression resolves to when wantRunner
-		fallback string // the GitHub-hosted label it falls back to otherwise
-		expr     string
-	}
-	consts := []constCase{
-		{"blacksmith-2vcpu-ubuntu-2404", "ubuntu-latest", sameRepoBlacksmith2vcpu},
-		{"blacksmith-4vcpu-ubuntu-2404", "ubuntu-latest", sameRepoBlacksmith4vcpu},
-		{"blacksmith-8vcpu-ubuntu-2404", "ubuntu-latest", sameRepoBlacksmith8vcpu},
-	}
-	for _, c := range cases {
-		ctx := map[string]string{
-			"github.event_name":                             c.event,
-			"github.event.pull_request.head.repo.full_name": c.headRepo,
-			"github.repository":                             ownRepo,
-			"github.actor":                                  c.actor,
-		}
-		for _, cst := range consts {
-			t.Run(c.name+"/"+cst.label, func(t *testing.T) {
-				got := mustEvalGHRunsOn(t, cst.expr, ctx)
-				want := cst.fallback
-				if c.wantRunner {
-					want = cst.label
-				}
-				if got != want {
-					t.Errorf("%s: real evaluator on %q = %q, want %q", c.name, cst.expr, got, want)
-				}
-			})
-		}
-	}
-}
 
 // TestBlacksmithWindowsMacOSRunsOnEveryEvent: the Windows and macOS labels
 // resolve to Blacksmith on every event shape, forks and Dependabot included;
 // there is no GitHub-hosted fallback left to drift to.
-func TestBlacksmithWindowsMacOSRunsOnEveryEvent(t *testing.T) {
-	const ownRepo = "steveyegge/beads"
-	events := []struct{ name, event, headRepo, actor string }{
-		{"same-repo PR", "pull_request", ownRepo, "alice"},
-		{"merge_group", "merge_group", "", ""},
-		{"fork PR", "pull_request", "someone-else/beads", "alice"},
-		{"deleted fork head", "pull_request", "", "alice"},
-		{"dependabot", "pull_request", ownRepo, "dependabot[bot]"},
-		{"push", "push", "", "alice"},
-		{"schedule", "schedule", "", ""},
-	}
-	for _, c := range []struct{ expr, want string }{
-		{blacksmithWindows2vcpuRunsOn, "blacksmith-2vcpu-windows-2025"},
-		{blacksmithWindows4vcpuRunsOn, blacksmithWindowsLabel},
-		{"${{ '" + blacksmithMacOSLabel + "' }}", blacksmithMacOSLabel},
-	} {
-		for _, e := range events {
-			ctx := map[string]string{
-				"github.event_name":                             e.event,
-				"github.event.pull_request.head.repo.full_name": e.headRepo,
-				"github.repository":                             ownRepo,
-				"github.actor":                                  e.actor,
-			}
-			if got := mustEvalGHRunsOn(t, c.expr, ctx); got != c.want {
-				t.Errorf("%s under %s = %q, want %q", c.expr, e.name, got, c.want)
-			}
-		}
-	}
-	for _, leg := range []string{blacksmithMacOSLabel, blacksmithWindowsLabel} {
-		if got := mustEvalGHRunsOn(t, platformsMatrixRunsOn, map[string]string{"matrix.runner": leg}); got != leg {
-			t.Errorf("%s with matrix.runner %q = %q", platformsMatrixRunsOn, leg, got)
-		}
-	}
-}
 
 // TestBlacksmithBazelRunnerSizes evaluates every bazel.yml lane's real
 // runs-on (and package-mcp's xdist worker count) under each rbe mode: mode
 // remote gets the lane's Blacksmith size, every other mode the GitHub-hosted
 // runner, and package-mcp runs 16 xdist workers exactly when it is on its
 // 8 vCPU runner (8 everywhere else, package-mcp.sh's default).
-func TestBlacksmithBazelRunnerSizes(t *testing.T) {
-	workflow := readCIWorkflow(t, bazelWorkflowName)
-	wantRemote := map[string]string{
-		bazelJobName:           "blacksmith-8vcpu-ubuntu-2404",
-		bazelPackageMCPJobName: "blacksmith-8vcpu-ubuntu-2404",
-		bazelPackageNPMJobName: "blacksmith-4vcpu-ubuntu-2404",
-		bazelRBEPrewarmJobName: "blacksmith-2vcpu-ubuntu-2404",
-	}
-	mcpGate := workflow.job(t, bazelPackageMCPJobName).step(t, "Run MCP package gate")
-	if got := mcpGate.Env["BEADS_MCP_PYTEST_WORKERS"]; got != bazelMCPPytestWorkers {
-		t.Errorf("package-mcp Run MCP package gate BEADS_MCP_PYTEST_WORKERS = %q, want %q", got, bazelMCPPytestWorkers)
-	}
-	for _, mode := range []string{"remote", "fork-ro", "fork-rw", "local", "cache", "skip"} {
-		ctx := map[string]string{"needs.rbe.outputs.mode": mode}
-		for name, job := range workflow.Jobs {
-			if name == bazelRBEJobName || isBazelRRCJob(name) {
-				continue // rrc jobs: push/schedule only, never a fork (literal label)
-			}
-			want := "ubuntu-latest"
-			if isBazelRRCCacheReader(name) {
-				want = "ubuntu-24.04"
-			}
-			if mode == "remote" {
-				want = "blacksmith-4vcpu-ubuntu-2404"
-				if label, ok := wantRemote[name]; ok {
-					want = label
-				}
-			}
-			if got := mustEvalGHRunsOn(t, job.RunsOn, ctx); got != want {
-				t.Errorf("%s runs-on under mode %s = %q, want %q", name, mode, got, want)
-			}
-		}
-		wantWorkers := "8"
-		if mustEvalGHRunsOn(t, workflow.job(t, bazelPackageMCPJobName).RunsOn, ctx) == "blacksmith-8vcpu-ubuntu-2404" {
-			wantWorkers = "16"
-		}
-		if got := mustEvalGHRunsOn(t, mcpGate.Env["BEADS_MCP_PYTEST_WORKERS"], ctx); got != wantWorkers {
-			t.Errorf("package-mcp BEADS_MCP_PYTEST_WORKERS under mode %s = %q, want %q", mode, got, wantWorkers)
-		}
-	}
-}
