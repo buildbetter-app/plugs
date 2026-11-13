@@ -667,6 +667,17 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 }
 
 func (s *state) publishKey(id string, value driver.LockState) {
+	if value.Key.Kind == driver.LockRecord && s.kinds[id] == "bead" {
+		if parent, number := driver.ChildIDOrder(id); parent != "" {
+			order := parent + "\x00" + number + "\x00" + id
+			s.childIDHistory = childInsert(s.childIDHistory, order, id)
+			if value.Present {
+				s.childIDs = childInsert(s.childIDs, order, id)
+			} else {
+				s.childIDs = childRemove(s.childIDs, order)
+			}
+		}
+	}
 	s.keys[id] = value
 	s.keyHistory[id] = append(append([]driver.LockState(nil), s.keyHistory[id]...), value)
 }

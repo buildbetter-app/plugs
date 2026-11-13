@@ -55,6 +55,8 @@ type state struct {
 	replays          map[scope]replay
 	allocators       map[string]driver.OfflineAllocator
 	parentCounters   map[string]driver.ParentCounter
+	childIDs         *childIDNode     // persistent numeric-identity catalog; bodies remain in records
+	childIDHistory   *childIDNode     // historical identity catalog, visibility from version headers
 	hierarchy        *hierarchyIndex  // immutable; nil/empty roots never certify coverage
 	sourceLinks      *sourceLinkIndex // separate complete outgoing-link coverage
 }

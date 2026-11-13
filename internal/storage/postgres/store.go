@@ -102,6 +102,9 @@ func (s *Store) initialize(ctx context.Context) error {
 	if err = ensureHistoricalQueryFields(ctx, tx); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, childIDSchema); err != nil {
+		return err
+	}
 	id, err := identity()
 	if err != nil {
 		return err

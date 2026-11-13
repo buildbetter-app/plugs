@@ -873,6 +873,7 @@ internal/integration/ontologyrefusals/fixture_test.go
 internal/integration/ontologysql/BUILD.bazel
 internal/integration/ontologysql/README.md
 internal/integration/ontologysql/integration_test.go
+internal/integration/parentedcreateflat/BUILD.bazel
 internal/integration/permissions/BUILD.bazel
 internal/integration/permissions/compose.go
 internal/integration/permissions/permissions_test.go
@@ -1307,6 +1308,8 @@ internal/storage/driver/allocator_snapshot.go
 internal/storage/driver/allocator_snapshot_test.go
 internal/storage/driver/audit_contract_test.go
 internal/storage/driver/checkpoint_mutation.go
+internal/storage/driver/child_ids.go
+internal/storage/driver/child_ids_test.go
 internal/storage/driver/cycle_topology.go
 internal/storage/driver/descendant_filter.go
 internal/storage/driver/descendant_filter_test.go
@@ -1382,6 +1385,8 @@ internal/storage/memory/b06_cycle_topology_test.go
 internal/storage/memory/boundaries_test.go
 internal/storage/memory/checkpoint_guard.go
 internal/storage/memory/checkpoint_test.go
+internal/storage/memory/child_ids.go
+internal/storage/memory/child_ids_test.go
 internal/storage/memory/clock_test.go
 internal/storage/memory/cycle_topology.go
 internal/storage/memory/derived_prefix_test.go
@@ -1443,6 +1448,8 @@ internal/storage/postgres/b05_persisted_clock_test.go
 internal/storage/postgres/boundaries_test.go
 internal/storage/postgres/checkpoint_guard.go
 internal/storage/postgres/checkpoint_mutation.go
+internal/storage/postgres/child_ids.go
+internal/storage/postgres/child_ids_test.go
 internal/storage/postgres/clock_test.go
 internal/storage/postgres/commit.go
 internal/storage/postgres/commit_batch_test.go
@@ -1498,6 +1505,8 @@ internal/storage/sqlite/b05_persisted_clock_test.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
 internal/storage/sqlite/checkpoint_mutation.go
+internal/storage/sqlite/child_ids.go
+internal/storage/sqlite/child_ids_test.go
 internal/storage/sqlite/clock.go
 internal/storage/sqlite/clock_test.go
 internal/storage/sqlite/cycle_topology.go
@@ -1886,6 +1895,15 @@ spec/extended/lifecycle_test.go
 spec/extended/paging_test.go
 spec/extended/time_test.go
 spec/fixture_test.go
+spec/parentedcreateflat/BUILD.bazel
+spec/parentedcreateflat/FOLLOW-UP.md
+spec/parentedcreateflat/README.md
+spec/parentedcreateflat/b04_ordinary_authority_test.go
+spec/parentedcreateflat/b04_ordinary_support_test.go
+spec/parentedcreateflat/child_semantics_test.go
+spec/parentedcreateflat/create_flat_test.go
+spec/parentedcreateflat/fixture_test.go
+spec/parentedcreateflat/initialization_test.go
 spec/pipeline_test.go
 spec/recorded/BUILD.bazel
 spec/recorded/README.md
