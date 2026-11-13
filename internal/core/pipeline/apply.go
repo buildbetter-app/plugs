@@ -427,7 +427,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 			continue
 		}
 		pending := p.writes[ref.ID]
-		result := model.OpResult{Ref: ref, Revision: revision, SetBy: cloneMap(pending.setBy)}
+		result := model.OpResult{Ref: ref, Revision: revision, SetBy: cloneMap(pending.setBy), Replaced: pending.replaced}
 		if !p.changed[ref.ID] {
 			result.Revision = pending.revision
 		}
@@ -514,6 +514,28 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	if err := p.snapshot.check(states); err != nil {
 		return model.Commit{}, err
+	}
+	if meta.Method == "memory.save" {
+		// Observe effective existence on the locked transaction before staging
+		// its replacement. The prepared key predicate and source/overlay reads
+		// are already guarded above, including same-value receipt-only writes.
+		pending := p.writes[p.refs[0].ID]
+		page, err := findMemoryByKey(ctx, tx, pending.memory.Key)
+		if err != nil {
+			return model.Commit{}, err
+		}
+		if len(page) > 1 {
+			return model.Commit{}, failure("internal_error", "duplicate memory key")
+		}
+		replaced := false
+		if len(page) == 1 {
+			_, document, _, err := ResolveMemoryRecord(ctx, tx, page[0])
+			if err != nil {
+				return model.Commit{}, failure("internal_error", "invalid persisted memory")
+			}
+			replaced = document.Overlay == nil || !document.Overlay.Deleted
+		}
+		pending.replaced = &replaced
 	}
 	if p.source != nil && p.source.Mutation != nil {
 		staged, ok := tx.(driver.CheckpointWriteTx)

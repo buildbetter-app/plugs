@@ -29,6 +29,7 @@ type pending struct {
 	revision  model.Revision
 	deleted   bool
 	setBy     map[string]string
+	replaced  *bool
 	// allocatorPrefix/Expected are set only for IDs previewed from a
 	// transaction-capable allocator. A parent with no prefix uses its internal
 	// parent-only counter. The expected value is checked
@@ -770,6 +771,14 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		if len(page) > 1 {
 			return nil, failure("internal_error", "duplicate memory key")
 		}
+		replaced := false
+		if len(page) == 1 {
+			_, document, _, err := ResolveMemoryRecord(ctx, snapshot, page[0])
+			if err != nil {
+				return nil, failure("internal_error", "invalid persisted memory")
+			}
+			replaced = document.Overlay == nil || !document.Overlay.Deleted
+		}
 		var pendingRecord *pending
 		changeOp := op
 		if len(page) == 1 {
@@ -809,6 +818,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 			doc := MemoryDocument{ID: id, Key: key, Content: content, Metadata: cloneAnyMap(metadata)}
 			pendingRecord = &pending{ref: ref, kind: "memory", memory: &doc, setBy: map[string]string{"key": "request", "content": "request", "metadata": "request"}}
 		}
+		pendingRecord.replaced = &replaced
 		p.writes[pendingRecord.ref.ID], p.refs = pendingRecord, append(p.refs, pendingRecord.ref)
 		p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "memory", Ref: pendingRecord.ref}, Op: changeOp, Before: pendingRecord.before})
 	} else if meta.Method == "memory.delete" {
@@ -928,7 +938,12 @@ func recordLockKey(ref model.Ref) string {
 	return key
 }
 
-func findMemoryByKey(ctx context.Context, snapshot *snapshotReader, key string) ([]driver.Record, error) {
+type memoryKeyReader interface {
+	memoryRecordReader
+	Query(context.Context, driver.Query) (driver.Page[driver.Record], error)
+}
+
+func findMemoryByKey(ctx context.Context, snapshot memoryKeyReader, key string) ([]driver.Record, error) {
 	found := make([]driver.Record, 0, 1)
 	seen := map[string]bool{}
 	var cursor *driver.Cursor
