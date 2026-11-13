@@ -37,6 +37,7 @@ type readerQueryEventKey struct{}
 
 type readerQueryEvent struct {
 	sql       string
+	args      []any
 	completed bool
 	err       error
 }
@@ -58,7 +59,7 @@ func (readerQueryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data 
 		(!strings.Contains(sql, "FROM plug_postgres.records") && !strings.Contains(sql, "FROM plug_postgres.versions")) {
 		return ctx
 	}
-	event := &readerQueryEvent{sql: sql}
+	event := &readerQueryEvent{sql: sql, args: append([]any(nil), data.Args...)}
 	capture.mu.Lock()
 	capture.events = append(capture.events, event)
 	capture.mu.Unlock()
