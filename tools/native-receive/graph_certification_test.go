@@ -65,17 +65,58 @@ func (s *graphObservedStore) Read(ctx context.Context, view driver.View) (driver
 		s.work.Deadlines = append(s.work.Deadlines, graphDeadline{now, at, float64(at.Sub(now)) / float64(time.Millisecond)})
 		s.work.mu.Unlock()
 	}
-	return &graphObservedReader{Reader: r, HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader), InverseSourceLinksReader: r.(driver.InverseSourceLinksReader), work: s.work, AllocatorReader: r.(driver.AllocatorReader), ParentCounterReader: r.(driver.ParentCounterReader), DerivedPrefixReader: r.(driver.DerivedPrefixReader)}, nil
+	observed := &graphObservedReader{
+		Reader:                           r,
+		AllocatorReader:                  r.(driver.AllocatorReader),
+		NumericChildReader:               r.(driver.NumericChildReader),
+		ParentCounterReader:              r.(driver.ParentCounterReader),
+		DerivedPrefixReader:              r.(driver.DerivedPrefixReader),
+		HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader),
+		InverseSourceLinksReader:         r.(driver.InverseSourceLinksReader),
+		work:                             s.work,
+	}
+	// Keep the observer's optional reader surface identical to the driver;
+	// otherwise prepare silently selects a different correctness path.
+	if missing := graphMissingReaderCapability(r, observed); missing != "" {
+		return nil, fmt.Errorf("graph observer dropped optional reader capability %s", missing)
+	}
+	return observed, nil
 }
 
 type graphObservedReader struct {
 	driver.AllocatorReader
+	driver.NumericChildReader
 	driver.ParentCounterReader
 	driver.DerivedPrefixReader
 	driver.Reader
 	driver.HierarchyChildrenExcludingReader
 	driver.InverseSourceLinksReader
 	work *graphRequestWork
+}
+
+// These are the optional Reader capabilities checked by pipeline preparation
+// and hierarchy application. WriteTx continuations are returned by Write and
+// are not hidden by this read observer.
+var graphOptionalReaderCapabilities = []struct {
+	name string
+	has  func(driver.Reader) bool
+}{
+	{"NumericChildReader", func(r driver.Reader) bool { _, ok := r.(driver.NumericChildReader); return ok }},
+	{"ParentCounterReader", func(r driver.Reader) bool { _, ok := r.(driver.ParentCounterReader); return ok }},
+	{"AllocatorReader", func(r driver.Reader) bool { _, ok := r.(driver.AllocatorReader); return ok }},
+	{"HierarchyChildrenExcludingReader", func(r driver.Reader) bool { _, ok := r.(driver.HierarchyChildrenExcludingReader); return ok }},
+	{"HierarchyChildrenReader", func(r driver.Reader) bool { _, ok := r.(driver.HierarchyChildrenReader); return ok }},
+	{"InverseSourceLinksReader", func(r driver.Reader) bool { _, ok := r.(driver.InverseSourceLinksReader); return ok }},
+	{"DerivedPrefixReader", func(r driver.Reader) bool { _, ok := r.(driver.DerivedPrefixReader); return ok }},
+}
+
+func graphMissingReaderCapability(raw, observed driver.Reader) string {
+	for _, capability := range graphOptionalReaderCapabilities {
+		if capability.has(raw) != capability.has(observed) {
+			return capability.name
+		}
+	}
+	return ""
 }
 
 func (r *graphObservedReader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
