@@ -227,7 +227,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 	if os.Getenv("PLUG_PUBLIC_BUNDLE") == "" {
 		t.Skip("requires explicit PLUG_PUBLIC_BUNDLE opt-in")
 	}
-	for _, count := range []int{3, 5000, 8000} {
+	for _, count := range []int{3, 500, 5000, 8000} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			capture, parent := graphcertfixture.Capture(t, "../../internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz", count)
 			for _, engine := range []string{"memory", "sqlite", "postgres"} {
