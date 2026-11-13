@@ -91,6 +91,12 @@ func (t *transaction) prepareSourcePublication(ctx context.Context, revision mod
 	return sourceindex.Postgres.Prepare(ctx, t.sql, t.meta, next, empty, t.records, t.identities, &t.sourceOverlay, func() error { return t.writable(driver.GraphBlockingSentinelLock) }, bumped)
 }
 
+func (t *transaction) prepareImportedSources(ctx context.Context, meta driver.Meta) (sourceindex.Plan, error) {
+	graphKey, _ := keyID(driver.GraphBlockingSentinelLock)
+	_, bumped := t.bumps[graphKey]
+	return sourceindex.Postgres.PrepareImport(ctx, t.sql, t.meta, meta, t.records, t.identities, &t.sourceOverlay, func() error { return t.writable(driver.GraphBlockingSentinelLock) }, bumped)
+}
+
 func (r *reader) HierarchyChildren(ctx context.Context, parents []model.Ref, limit int) ([]driver.Record, bool, error) {
 	return r.HierarchyChildrenExcluding(ctx, parents, nil, limit)
 }

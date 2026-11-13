@@ -77,12 +77,19 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		if err := restoreEmpty(ctx, c); err != nil {
 			return err
 		}
+		sources, err := t.prepareImportedSources(ctx, c, plan.Meta)
+		if err != nil {
+			return err
+		}
 		if err := t.publishAllocatorJournal(ctx, c, plan.Meta, true); err != nil {
 			return err
 		}
 		for i, row := range plan.Rows {
 			r := row.Record
 			id, _ := recordKey(r.Ref)
+			if source := sources.Records[id]; source != nil {
+				source.Revision = r.Revision
+			}
 			rev := revKey(mustUint(r.Revision))
 			raw, e := json.Marshal(r)
 			if e != nil {
@@ -114,6 +121,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 			if e = publishKey(ctx, c, state); e != nil {
 				return e
 			}
+		}
+		if err := sources.PublishImport(ctx, c); err != nil {
+			return err
 		}
 		if err := rebuildQueryOrder(ctx, c); err != nil {
 			return err

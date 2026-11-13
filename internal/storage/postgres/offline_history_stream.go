@@ -131,6 +131,10 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 	if actual != s.binding.Current {
 		return fail(driver.ErrConflict)
 	}
+	sources, err := t.prepareImportedSources(ctx, s.binding.Meta)
+	if err != nil {
+		return fail(err)
+	}
 	if err = t.checkCheckpointGuards(ctx); err != nil {
 		return fail(err)
 	}
@@ -141,6 +145,9 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		id, err := recordKey(row.Ref)
 		if err != nil {
 			return err
+		}
+		if source := sources.Records[id]; source != nil {
+			source.Revision = row.Revision
 		}
 		ref, err := encode(row.Ref)
 		if err != nil {
@@ -179,6 +186,9 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		}
 		return t.writeState(ctx, id, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref}, Revision: row.Revision, Present: !row.Deleted})
 	}); err != nil {
+		return fail(err)
+	}
+	if err = sources.PublishImport(ctx, t.sql); err != nil {
 		return fail(err)
 	}
 	for id, state := range t.derived {

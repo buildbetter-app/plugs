@@ -9,7 +9,7 @@ import (
  "github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamRequest,image nativeprojection.Snapshot) (Root,Root,error) {
+func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamRequest,image nativeprojection.Snapshot,currentGraphFacts ...driver.ReadFact) (Root,Root,error) {
  owner,releaseOwner:=s.archive.NativeDeltaAccountingScope();defer releaseOwner()
  usage,ok:=owner.NativeDecodedUsage();if !ok {return Root{},Root{},ErrCheckpoint{"missing verifier admission ceiling"}}
  if image.DerivedDigest!=request.Profile.DerivedDigest {return Root{},Root{},ErrCheckpoint{"actual rebuilt derived image differs"}}
@@ -51,6 +51,13 @@ func (s *NativeArchiveStream) planRoots(request driver.OfflineHistoryStreamReque
  // extra write is refused by the full auxiliary equality in the engines.
  for _,sentinel:=range image.Sentinels {
   key:=driver.LockKey{Kind:driver.LockSentinel,Sentinel:sentinel};encoded,err:=driver.EncodeLockKey(key);if err!=nil {return Root{},Root{},err};auxiliary.Bumps[encoded]=key
+ }
+ // Trusted core supplies this fact only after complete semantic validation
+ // and typed-writer preflight. Bind the exact extra bump into the checkpoint;
+ // do not weaken auxiliary equality or silently accept arbitrary extra writes.
+ for _,fact:=range currentGraphFacts {
+  key:=driver.LockKey{Kind:driver.LockReadFact,Fact:fact};encoded,err:=driver.EncodeLockKey(key);if err!=nil{return Root{},Root{},err};auxiliary.Bumps[encoded]=key
+  graph:=driver.GraphBlockingSentinelLock;encoded,err=driver.EncodeLockKey(graph);if err!=nil{return Root{},Root{},err};auxiliary.Bumps[encoded]=graph
  }
  for digest,data:=range image.Blobs {auxiliary.Blobs[driver.Hash(digest)]=data}
  currentRoot,err:=convertedRoot(current);if err!=nil {return Root{},Root{},err}

@@ -238,6 +238,7 @@ func assertJoinedEmptyTarget(t *testing.T, store driver.Store, before storeState
 		t.Fatal(err)
 	}
 	defer r.Close()
+	assertImportGraphUncertified(t, r)
 	principal, err := driver.PrincipalKey(profile.Admission.Actor)
 	if err != nil {
 		t.Fatal(err)

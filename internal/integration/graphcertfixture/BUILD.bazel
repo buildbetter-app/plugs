@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "graphcertfixture",
+    testonly = True,
+    srcs = ["capture.go", "plan.go"],
+    importpath = "github.com/buildbetter-app/plugs/internal/integration/graphcertfixture",
+    visibility = ["//:__subpackages__"],
+    deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/storage/driver", "//plugins/workflow"],
+)
+
+go_test(
+    name = "fixture_admission_test",
+    srcs = ["capture_admission_test.go"],
+    size = "medium",
+    data = ["//internal/integration/converterroundtrip:testdata/public-native-delta-small-0e4d5da4.tar.gz"],
+    embed = [":graphcertfixture"],
+    deps = ["//internal/core/dumpformat"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)

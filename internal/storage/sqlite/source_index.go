@@ -135,6 +135,11 @@ func (t *transaction) prepareSourcePublication(ctx context.Context, c *sql.Conn,
 	return sourceindex.SQLite.Prepare(ctx, c, current, next, empty, t.records, t.sourceIdentities, &t.sourceOverlay, func() error { return t.writable(driver.GraphBlockingSentinelLock) }, bumped)
 }
 
+func (t *transaction) prepareImportedSources(ctx context.Context, c *sql.Conn, meta driver.Meta) (sourceindex.Plan, error) {
+	_, bumped := t.bumps[keyID(driver.GraphBlockingSentinelLock)]
+	return sourceindex.SQLite.PrepareImport(ctx, c, t.meta, meta, t.records, t.sourceIdentities, &t.sourceOverlay, func() error { return t.writable(driver.GraphBlockingSentinelLock) }, bumped)
+}
+
 func (r *reader) HierarchyChildren(ctx context.Context, parents []model.Ref, limit int) ([]driver.Record, bool, error) {
 	return r.HierarchyChildrenExcluding(ctx, parents, nil, limit)
 }

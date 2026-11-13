@@ -211,8 +211,8 @@ func (t *transaction) publishSourceIndexes(next *state) error {
 	activateParent := !hReady && empty && parentComplete && parentDeclared
 	activateLinks := !linksReady && empty && graphComplete && graphDeclared
 	if t.restore != nil {
-		// Current-image restore starts its new incarnation at the actual floor.
-		// Imported history publishes through its separate unbuilt path instead.
+		// Both snapshot and history imports certify only the complete current
+		// image at H. Older imported revisions keep the unbuilt fallback.
 		h, links = newHierarchyIndex(next.meta.Incarnation), newSourceLinkIndex(next.meta.Incarnation)
 		hReady, linksReady = false, false
 	}
