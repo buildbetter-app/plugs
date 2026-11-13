@@ -65,15 +65,26 @@ func (s *graphObservedStore) Read(ctx context.Context, view driver.View) (driver
 		s.work.Deadlines = append(s.work.Deadlines, graphDeadline{now, at, float64(at.Sub(now)) / float64(time.Millisecond)})
 		s.work.mu.Unlock()
 	}
-	observed := &graphObservedReader{
+	for _, capability := range graphOptionalReaderCapabilities {
+		if capability.name == "DerivedPrefixReader" {
+			continue
+		}
+		if !capability.has(r) {
+			return nil, fmt.Errorf("graph driver lacks required reader capability %s", capability.name)
+		}
+	}
+	observedBase := &graphObservedReader{
 		Reader:                           r,
 		AllocatorReader:                  r.(driver.AllocatorReader),
 		NumericChildReader:               r.(driver.NumericChildReader),
 		ParentCounterReader:              r.(driver.ParentCounterReader),
-		DerivedPrefixReader:              r.(driver.DerivedPrefixReader),
 		HierarchyChildrenExcludingReader: r.(driver.HierarchyChildrenExcludingReader),
 		InverseSourceLinksReader:         r.(driver.InverseSourceLinksReader),
 		work:                             s.work,
+	}
+	var observed driver.Reader = observedBase
+	if derived, ok := r.(driver.DerivedPrefixReader); ok {
+		observed = &graphObservedDerivedReader{graphObservedReader: observedBase, DerivedPrefixReader: derived}
 	}
 	// Keep the observer's optional reader surface identical to the driver;
 	// otherwise prepare silently selects a different correctness path.
@@ -87,11 +98,15 @@ type graphObservedReader struct {
 	driver.AllocatorReader
 	driver.NumericChildReader
 	driver.ParentCounterReader
-	driver.DerivedPrefixReader
 	driver.Reader
 	driver.HierarchyChildrenExcludingReader
 	driver.InverseSourceLinksReader
 	work *graphRequestWork
+}
+
+type graphObservedDerivedReader struct {
+	*graphObservedReader
+	driver.DerivedPrefixReader
 }
 
 // These are the optional Reader capabilities checked by pipeline preparation
@@ -415,7 +430,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 					}
 					var childDoc pipeline.Document
 					for _, row := range rows {
-						if row.Ref == child {
+						if row.Ref.ID == child.ID && row.Ref.Branch.IsZero() == child.Branch.IsZero() {
 							childDoc, err = pipeline.DecodeDocument(row.Body)
 							if err != nil {
 								t.Fatal(err)
@@ -426,7 +441,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 						t.Fatal("first parent-child link missing", childDoc.Parent)
 					}
 					children, more, err := r.(driver.HierarchyChildrenReader).HierarchyChildren(op, []model.Ref{model.RefByID(parent, model.Natural64(0))}, 2)
-					if err != nil || more || len(children) != 1 || children[0].Ref != child {
+					if err != nil || more || len(children) != 1 || children[0].Ref.ID != child.ID || children[0].Ref.Branch.IsZero() != child.Branch.IsZero() {
 						t.Fatal("durable parent membership", err)
 					}
 					allocator, err := r.(driver.AllocatorReader).LoadAllocator(op, input.Projects[0])
@@ -439,7 +454,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 					work.Attempts, work.Queries, work.Beads = 0, 0, 0
 					work.Deadlines = nil
 					work.mu.Unlock()
-					linked, linkFailed := call("bead.link", map[string]any{"from": parentRef, "to": model.RefByID(archive.Records("bead")[0].ID, model.Natural64(0)), "kind": "blocks"}, "explicit-link")
+					linked, linkFailed := call("bead.link", map[string]any{"from": child, "to": model.RefByID(archive.Records("bead")[0].ID, model.Natural64(0)), "kind": "blocks"}, "explicit-link")
 					if work.Queries == 0 {
 						t.Fatal("explicit link did not take unchanged full-read path")
 					}
@@ -456,7 +471,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 							t.Fatal("explicit link must commit on its first attempt", linked, work.Attempts)
 						}
 						r = graphFreshReader(t, retained)
-						linkRows, err := r.Get(op, []model.Ref{model.RefByID(parent, model.Natural64(0))})
+						linkRows, err := r.Get(op, []model.Ref{child})
 						if err != nil || len(linkRows) != 1 {
 							t.Fatal("link durable readback", err)
 						}
@@ -477,7 +492,7 @@ func TestNativeReceiveFirstGraphWriteCertification(t *testing.T) {
 						}
 						inverseFound := false
 						for _, row := range inverse {
-							if row.Ref == linkRows[0].Ref && row.Revision == linked.Revision && bytes.Equal(row.Body, linkRows[0].Body) {
+							if row.Ref.ID == linkRows[0].Ref.ID && row.Ref.Branch.IsZero() == linkRows[0].Ref.Branch.IsZero() && row.Revision == linked.Revision && bytes.Equal(row.Body, linkRows[0].Body) {
 								inverseFound = true
 							}
 						}
