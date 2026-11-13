@@ -70,6 +70,7 @@ func (s *graphObservedStore) Read(ctx context.Context, view driver.View) (driver
 			continue
 		}
 		if !capability.has(r) {
+			_ = r.Close()
 			return nil, fmt.Errorf("graph driver lacks required reader capability %s", capability.name)
 		}
 	}
@@ -89,6 +90,7 @@ func (s *graphObservedStore) Read(ctx context.Context, view driver.View) (driver
 	// Keep the observer's optional reader surface identical to the driver;
 	// otherwise prepare silently selects a different correctness path.
 	if missing := graphMissingReaderCapability(r, observed); missing != "" {
+		_ = r.Close()
 		return nil, fmt.Errorf("graph observer dropped optional reader capability %s", missing)
 	}
 	return observed, nil
