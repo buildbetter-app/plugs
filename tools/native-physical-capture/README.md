@@ -28,9 +28,12 @@ captures environment and configuration from those locations. The output director
 must contain none of `inventory.json`, `inventory.json.sources` `capture.tar` or `physical-evidence.json`.
 The default deadline is 20 minutes; `--timeout` accepts a Go duration.
 
-Add `--native-delta` to select the explicit `beads-native-delta/2` format.
-It writes `capture-set/parts/`, `capture-set/head.tar`, inventory sidecars and
-the sibling `physical-evidence.json`, then publishes
+Add `--capture-set` to select the explicit `beads-native-delta/2` format.
+The older `--native-delta` spelling remains an alias for existing procedures.
+The capture-set route enters the bounded v2 emitter before the legacy
+`plugdump.Build` path, so it never constructs the legacy aggregate native
+history census. It writes `capture-set/parts/`, `capture-set/head.tar`,
+inventory sidecars and the sibling `physical-evidence.json`, then publishes
 `capture-set/capture-set.json` after closing all
 source handles and rechecking the working root, graph and ignore policy.
 The output directory must also have no existing `head.tar`, `capture-set.json`

@@ -21,7 +21,7 @@ input assertion is retained; additional unbounded observations supplement the
 1/2/1000 prefixes. Native default is priority, explicit hybrid changes
 immediately after the inclusive 48h cutoff, and native has no P74 stored lag.
 
-The capture uses the existing standalone executable's `--native-delta` port on
+The capture uses the existing standalone executable's `--capture-set` port on
 a fingerprinted disposable copy. Clock evidence is obtained from the running
 public CLI and persistent SQL companion before copying. Clock opt-ins are
 removed only for the unchanged embedded physical capture, which does not
