@@ -285,7 +285,11 @@ func openIdentityTarget(t *testing.T, engine string, capture ...func(string)) (d
 		t.Fatal(err)
 	}
 	var lease driver.ActiveLease
+	var stopRenewal func() error
 	t.Cleanup(func() {
+		if stopRenewal != nil {
+			_ = stopRenewal()
+		}
 		if lease != nil {
 			if err := lease.Release(ctx); err != nil {
 				t.Errorf("release identity lease: %v", err)
@@ -303,10 +307,15 @@ func openIdentityTarget(t *testing.T, engine string, capture ...func(string)) (d
 		if err != nil {
 			t.Fatal(err)
 		}
+		_, stopRenewal = startRestoreLeaseRenewal(ctx, lease)
 	}
 	acquire()
 	return store, lease, func() (driver.Store, driver.ActiveLease) {
 		t.Helper()
+		if stopRenewal != nil {
+			_ = stopRenewal()
+			stopRenewal = nil
+		}
 		if err := lease.Release(ctx); err != nil {
 			t.Fatal(err)
 		}
