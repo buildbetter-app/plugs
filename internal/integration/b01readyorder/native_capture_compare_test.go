@@ -135,14 +135,24 @@ func (c *b01CapturedConsumer) readback(t *testing.T, changedTitles map[string]st
 				wantStatus = changed
 			}
 			var sourceType, nativeIssueType any
-			foundSource := false
-			for _, record := range c.input.Archive.Records("bead") {
-				if record.ID == entity.Source.ID {
-					sourceType, nativeIssueType, foundSource = record.Body["type"], record.Source.Fields["issue_type"], true
-					break
+			if entity.TargetKind == "workflow:item" {
+				// Active workflow items are sourced from wisps, which have no
+				// typed bead archive record. Their public type is the authenticated
+				// SQL issue_type projected by sourceItem.
+				sourceType = source["issue_type"]
+			} else {
+				foundSource := false
+				for _, record := range c.input.Archive.Records("bead") {
+					if record.ID == entity.Source.ID {
+						sourceType, nativeIssueType, foundSource = record.Body["type"], record.Source.Fields["issue_type"], true
+						break
+					}
+				}
+				if !foundSource || sourceType == nil {
+					t.Fatal("captured source bead lacks its authenticated public type")
 				}
 			}
-			if !foundSource || sourceType == nil {
+			if sourceType == nil {
 				t.Fatal("captured source bead lacks its authenticated public type")
 			}
 			created, err := time.Parse(time.RFC3339Nano, b01CaptureText(t, source, "created_at"))
