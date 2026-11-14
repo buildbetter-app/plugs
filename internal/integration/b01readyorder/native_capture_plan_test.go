@@ -201,7 +201,8 @@ func b01CapturePlan(t *testing.T, p *publicAcceptance, archive *dumpformat.Archi
 		dispositions[d.Key] = d
 		e := driver.SourcePlaneEntityV1{Source: key, TargetKind: "bead", TargetID: key.ID, DispositionKey: d.Key, PrincipalKey: "owner", Origin: b01CaptureCommitment(record.Raw, "object"), Fields: census, Route: driver.SourcePlaneRouteV1{Project: key.Project, SourceID: key.ID, DurableTargetID: key.ID, Preference: "active-first"}}
 		if active {
-			e.TargetKind, e.TargetID, e.RunKey = "workflow:item", "workflow:item/b01-"+key.ID, run.Key
+			activeID := "workflow:item/" + b01CaptureHash([]byte(key.Project + "/" + key.Plane + "/" + key.ID))[:32]
+			e.TargetKind, e.TargetID, e.RunKey = "workflow:item", activeID, run.Key
 			e.Route.ActiveTargetID, e.Route.DurableTargetID = e.TargetID, ""
 			run.Members = append(run.Members, key)
 		}
