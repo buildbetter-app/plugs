@@ -134,9 +134,25 @@ func (c *b01CapturedConsumer) readback(t *testing.T, changedTitles map[string]st
 			if changed, ok := c.statuses[entity.Source.ID]; ok {
 				wantStatus = changed
 			}
+			var sourceType, nativeIssueType any
+			foundSource := false
+			for _, record := range c.input.Archive.Records("bead") {
+				if record.ID == entity.Source.ID {
+					sourceType, nativeIssueType, foundSource = record.Body["type"], record.Source.Fields["issue_type"], true
+					break
+				}
+			}
+			if !foundSource || sourceType == nil {
+				t.Fatal("captured source bead lacks its authenticated public type")
+			}
 			created, err := time.Parse(time.RFC3339Nano, b01CaptureText(t, source, "created_at"))
-			if err != nil || got.Bead.ID != entity.TargetID || got.Bead.Project != b01CaptureProject || got.Bead.Type != source["issue_type"] || got.Bead.Status != wantStatus || !got.Bead.CreatedAt.Equal(created) {
+			if err != nil || got.Bead.ID != entity.TargetID || got.Bead.Project != b01CaptureProject || got.Bead.Type != sourceType || got.Bead.Status != wantStatus || !got.Bead.CreatedAt.Equal(created) {
 				t.Fatalf("native/public identity, status or creation differs: source=%s got=%s", entity.Source.ID, response.Result)
+			}
+			if entity.TargetKind == "bead" {
+				if nativeIssueType != "task" {
+					t.Fatalf("captured durable source issue_type changed: got=%v", nativeIssueType)
+				}
 			}
 			for _, field := range []string{"title", "description", "priority"} {
 				want, present := source[field]
