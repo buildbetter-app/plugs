@@ -2,6 +2,7 @@ package b09native
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -609,6 +610,57 @@ func assertB09SQLRecord(t *testing.T, engine string, table b09SQLTable, row stri
 	b09Equal(t, "complete physical PostgreSQL record body", json.RawMessage(want.Body), json.RawMessage(column("body")))
 }
 
+// Main's historical-query index stores a compact projection beside every
+// physical version. Keep this projection in the recorder oracle: it is part
+// of the durable SQL image, not a derived value that can be ignored.
+func b09SQLQueryFields(t *testing.T, engine string, want driver.Version) string {
+	t.Helper()
+	encode := func(value string) string {
+		if engine == "postgres" {
+			return base64.StdEncoding.EncodeToString([]byte(value))
+		}
+		return value
+	}
+	fields := map[string]any{
+		"deleted": want.Deleted,
+		"id":      encode(want.Ref.ID),
+		"key":     encode(want.Ref.Key),
+	}
+	if !want.Deleted {
+		body := want.Body
+		if !want.Base {
+			var patches []struct {
+				Op, Path string
+				Value    json.RawMessage
+			}
+			if err := json.Unmarshal(want.Patch, &patches); err != nil || len(patches) != 1 || patches[0].Op != "replace" || patches[0].Path != "" {
+				t.Fatalf("physical version query_fields: invalid expected forward patch: %v", err)
+			}
+			body = patches[0].Value
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(body, &object); err != nil {
+			fields["body_error"] = true
+		} else {
+			for _, name := range []string{"type", "project", "status"} {
+				raw, ok := object[name]
+				if !ok {
+					continue
+				}
+				var value string
+				if err := json.Unmarshal(raw, &value); err == nil {
+					fields[name] = encode(value)
+				}
+			}
+		}
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row string, want driver.Version) {
 	t.Helper()
 	revColumn, baseColumn, dataColumn := "rev", "base", "data"
@@ -618,7 +670,7 @@ func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row str
 		base = strconv.FormatBool(want.Base)
 	}
 	text := func(name string) string { return b09SQLText(t, b09SQLColumn(t, table, row, name)) }
-	if len(table.Columns) != 4 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) {
+	if len(table.Columns) != 5 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) || text("query_fields") != b09SQLQueryFields(t, engine, want) {
 		t.Fatal("complete physical version columns differ")
 	}
 	var got driver.Version
