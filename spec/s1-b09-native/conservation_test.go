@@ -670,8 +670,21 @@ func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row str
 		base = strconv.FormatBool(want.Base)
 	}
 	text := func(name string) string { return b09SQLText(t, b09SQLColumn(t, table, row, name)) }
-	if len(table.Columns) != 5 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) || text("query_fields") != b09SQLQueryFields(t, engine, want) {
+	if len(table.Columns) != 5 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) {
 		t.Fatal("complete physical version columns differ")
+	}
+	wantFields, gotFields := b09SQLQueryFields(t, engine, want), text("query_fields")
+	if engine == "postgres" {
+		var wantJSON, gotJSON any
+		if err := json.Unmarshal([]byte(wantFields), &wantJSON); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(gotFields), &gotJSON); err != nil {
+			t.Fatal(err)
+		}
+		b09Equal(t, "complete physical PostgreSQL version query fields", wantJSON, gotJSON)
+	} else if gotFields != wantFields {
+		t.Fatal("complete physical version query fields differ")
 	}
 	var got driver.Version
 	if err := json.Unmarshal([]byte(text(dataColumn)), &got); err != nil {
