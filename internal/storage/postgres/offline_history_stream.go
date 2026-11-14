@@ -157,8 +157,8 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 			return err
 		}
 		if !row.Deleted {
-			if err = s.private.Copy(ctx, row.Image, func(part []byte) error {
-				_, e := t.sql.ExecContext(ctx, `UPDATE plug_postgres.records SET body=body || $2::bytea WHERE key=$1`, []byte(id), part)
+			if err = s.private.WithImage(ctx, row.Image, func(body []byte) error {
+				_, e := t.sql.ExecContext(ctx, `UPDATE plug_postgres.records SET body=$2::bytea WHERE key=$1`, []byte(id), body)
 				return e
 			}); err != nil {
 				return err
@@ -168,20 +168,12 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		if err != nil {
 			return err
 		}
-		if _, err = t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions VALUES($1,$2,true,$3)`, []byte(id), row.Revision.String(), []byte{}); err != nil {
-			return err
-		}
-		if err = s.private.Copy(ctx, image, func(part []byte) error {
-			_, e := t.sql.ExecContext(ctx, `UPDATE plug_postgres.versions SET value=value || $3::bytea WHERE key=$1 AND revision=$2`, []byte(id), row.Revision.String(), part)
-			return e
+		if err = s.private.WithImage(ctx, image, func(versionData []byte) error {
+			if _, e := t.sql.ExecContext(ctx, `INSERT INTO plug_postgres.versions VALUES($1,$2,true,$3)`, []byte(id), row.Revision.String(), versionData); e != nil {
+				return e
+			}
+			return populateHistoricalQueryFields(ctx, t.sql, id, row.Revision.String(), versionData)
 		}); err != nil {
-			return err
-		}
-		var versionData []byte
-		if err = t.sql.QueryRowContext(ctx, `SELECT value FROM plug_postgres.versions WHERE key=$1 AND revision=$2`, []byte(id), row.Revision.String()).Scan(&versionData); err != nil {
-			return err
-		}
-		if err = populateHistoricalQueryFields(ctx, t.sql, id, row.Revision.String(), versionData); err != nil {
 			return err
 		}
 		return t.writeState(ctx, id, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref}, Revision: row.Revision, Present: !row.Deleted})

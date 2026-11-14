@@ -5,5 +5,5 @@ go_library(
     srcs = glob(["*.go"], exclude = ["*_test.go"]),
     importpath = "github.com/buildbetter-app/plugs/internal/storage/historystream",
     visibility = ["//internal/storage:__subpackages__"],
-    deps = ["//internal/core/model", "//internal/storage/driver", "//internal/storage/historyverify", "@org_modernc_sqlite//:sqlite"],
+    deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/storage/driver", "//internal/storage/historyverify", "@org_modernc_sqlite//:sqlite"],
 )
