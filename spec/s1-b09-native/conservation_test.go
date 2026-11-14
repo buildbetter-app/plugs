@@ -797,11 +797,9 @@ func assertB09IndexActivation(t *testing.T, before, after b09ReplayStage) {
 		b09Equal(t, "startup preserves physical schema "+name, old.Columns, next.Columns)
 		switch name {
 		case "hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history", "graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage":
-			if len(old.Rows) != 0 {
-				t.Fatalf("raw restore unexpectedly prebuilt %s", name)
-			}
-			// Complete post-startup rows and marker payloads are independently
-			// checked against archive-derived records by assertB09Source.
+			// Main publishes typed source rows and ready coverage atomically
+			// during import; startup must retain that exact physical image.
+			b09Equal(t, "startup preserves complete source SQL "+name, old, next)
 		default:
 			b09Equal(t, "startup preserves every unrelated SQL row "+name, old, next)
 		}
