@@ -277,6 +277,8 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 			stamp := r.now
 			wantDoc.Fields["status"] = "done"
 			wantDoc.ClosedAt = &stamp
+			reason := "B09 native paired close"
+			wantDoc.CloseReason = &reason
 			wantDoc.Comments = append(wantDoc.Comments, pipeline.Comment{Body: "B09 native paired close", Principal: b09Principal, Time: r.now})
 		case "compact":
 			wantDoc.Fields["description"] = "native compacted summary"
