@@ -714,7 +714,8 @@ func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]dri
 		table := stage.SQL.Tables[name]
 		remaining := map[string]driver.Record{}
 		for key, record := range want {
-			if name == "records" || name == "versions" || indexesBuilt && record.Kind == "bead" {
+			sourceImage := strings.HasSuffix(name, "_source_current") || strings.HasSuffix(name, "_source_history")
+			if name == "records" || name == "versions" || sourceImage && record.Kind == "bead" {
 				remaining[key] = record
 			}
 		}
@@ -745,11 +746,12 @@ func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]dri
 			t.Fatalf("initial physical %s omitted expected identities: %v", name, remaining)
 		}
 	}
-	// The admitted source corpus has no graph links. Before startup no source
-	// coverage is certified; afterward both domains cover exactly restore Head.
+	// The admitted source corpus has no graph links. Typed source rows and their
+	// coverage are published atomically with import; explicit startup preserves
+	// that exact image rather than creating a second, different source state.
 	for _, name := range []string{"graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage"} {
 		table := stage.SQL.Tables[name]
-		if !indexesBuilt || name == "graph_link_current" || name == "graph_link_history" {
+		if name == "graph_link_current" || name == "graph_link_history" {
 			if len(table.Rows) != 0 {
 				t.Fatalf("unexpected initial %s rows before/after explicit startup", name)
 			}
