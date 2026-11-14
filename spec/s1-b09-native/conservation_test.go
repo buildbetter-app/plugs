@@ -2,10 +2,12 @@ package b09native
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -276,6 +278,8 @@ func (r *b09ReplayTarget) assertMutation(before, after b09ReplayStage, id, opera
 			stamp := r.now
 			wantDoc.Fields["status"] = "done"
 			wantDoc.ClosedAt = &stamp
+			reason := "B09 native paired close"
+			wantDoc.CloseReason = &reason
 			wantDoc.Comments = append(wantDoc.Comments, pipeline.Comment{Body: "B09 native paired close", Principal: b09Principal, Time: r.now})
 		case "compact":
 			wantDoc.Fields["description"] = "native compacted summary"
@@ -433,6 +437,104 @@ func b09SQLNumber(t *testing.T, value string) uint64 {
 	return n
 }
 
+func b09SQLHasColumn(table b09SQLTable, name string) bool {
+	for _, column := range table.Columns {
+		if column == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SQLite's objects table carries dense query ranks, so publishing one record
+// legitimately rewrites those derived cells on every live row. The recorder
+// still binds the complete live identity set, kind, rank values, added-row
+// cardinality, and every non-rank cell; only the documented derived columns
+// are allowed to differ from the preimage.
+func assertB09SQLiteObjectMutation(t *testing.T, operation string, after b09ReplayStage, old, next b09SQLTable, added []string, keys map[string]bool, recordKey string, creating bool) {
+	t.Helper()
+	if !b09SQLHasColumn(next, "query_order") || !b09SQLHasColumn(next, "query_kind_order") {
+		t.Fatalf("%s SQLite objects schema lacks derived query-rank columns", operation)
+	}
+	if len(added) != boolB09(creating) {
+		t.Fatalf("%s SQLite objects exact add cardinality: got=%d want=%d", operation, len(added), boolB09(creating))
+	}
+	rowsByKey := func(table b09SQLTable) map[string]string {
+		rows := map[string]string{}
+		for _, row := range table.Rows {
+			key := b09SQLText(t, b09SQLColumn(t, table, row, "key"))
+			if _, exists := rows[key]; exists {
+				t.Fatalf("%s duplicate SQLite objects key %q", operation, key)
+			}
+			rows[key] = row
+		}
+		return rows
+	}
+	oldByKey, newByKey := rowsByKey(old), rowsByKey(next)
+	for _, row := range added {
+		key := b09SQLText(t, b09SQLColumn(t, next, row, "key"))
+		if !keys[key] || creating && key != recordKey {
+			t.Fatalf("%s unexpected added SQLite objects key %q", operation, key)
+		}
+	}
+
+	allKeys := make([]string, 0, len(after.Records))
+	byKind := map[string][]string{}
+	for key, record := range after.Records {
+		allKeys = append(allKeys, key)
+		byKind[record.Kind] = append(byKind[record.Kind], key)
+	}
+	sort.Strings(allKeys)
+	queryOrder := make(map[string]uint64, len(allKeys))
+	for i, key := range allKeys {
+		queryOrder[key] = uint64(i + 1)
+	}
+	queryKindOrder := make(map[string]uint64, len(allKeys))
+	for _, keys := range byKind {
+		sort.Strings(keys)
+		for i, key := range keys {
+			queryKindOrder[key] = uint64(i + 1)
+		}
+	}
+	for key, record := range after.Records {
+		row, ok := newByKey[key]
+		if !ok {
+			t.Fatalf("%s SQLite objects omitted live record key %q", operation, key)
+		}
+		if got := b09SQLText(t, b09SQLColumn(t, next, row, "kind")); got != record.Kind {
+			t.Fatalf("%s SQLite objects kind for %q: got=%q want=%q", operation, key, got, record.Kind)
+		}
+	}
+	for key, row := range newByKey {
+		wantOrder, live := queryOrder[key]
+		wantKindOrder := queryKindOrder[key]
+		if !live {
+			wantOrder, wantKindOrder = 0, 0
+		}
+		if got := b09SQLNumber(t, b09SQLColumn(t, next, row, "query_order")); got != wantOrder {
+			t.Fatalf("%s SQLite objects query_order for %q: got=%d want=%d", operation, key, got, wantOrder)
+		}
+		if got := b09SQLNumber(t, b09SQLColumn(t, next, row, "query_kind_order")); got != wantKindOrder {
+			t.Fatalf("%s SQLite objects query_kind_order for %q: got=%d want=%d", operation, key, got, wantKindOrder)
+		}
+	}
+	for key, oldRow := range oldByKey {
+		newRow, ok := newByKey[key]
+		if !ok {
+			t.Fatalf("%s removed SQLite objects key %q", operation, key)
+		}
+		oldCells, newCells := b09SQLCells(t, oldRow), b09SQLCells(t, newRow)
+		for i, column := range next.Columns {
+			if column == "query_order" || column == "query_kind_order" {
+				continue
+			}
+			if oldCells[i] != newCells[i] {
+				t.Fatalf("%s changed non-rank SQLite objects cell %s for %q", operation, column, key)
+			}
+		}
+	}
+}
+
 // These images are constructed from the archive/request or the expected
 // logical delta. No field in an affected SQL image supplies its own oracle.
 func assertB09SQLSourceRow(t *testing.T, table b09SQLTable, row string, meta driver.Meta, want driver.Record, history bool) {
@@ -508,6 +610,57 @@ func assertB09SQLRecord(t *testing.T, engine string, table b09SQLTable, row stri
 	b09Equal(t, "complete physical PostgreSQL record body", json.RawMessage(want.Body), json.RawMessage(column("body")))
 }
 
+// Main's historical-query index stores a compact projection beside every
+// physical version. Keep this projection in the recorder oracle: it is part
+// of the durable SQL image, not a derived value that can be ignored.
+func b09SQLQueryFields(t *testing.T, engine string, want driver.Version) string {
+	t.Helper()
+	encode := func(value string) string {
+		if engine == "postgres" {
+			return base64.StdEncoding.EncodeToString([]byte(value))
+		}
+		return value
+	}
+	fields := map[string]any{
+		"deleted": want.Deleted,
+		"id":      encode(want.Ref.ID),
+		"key":     encode(want.Ref.Key),
+	}
+	if !want.Deleted {
+		body := want.Body
+		if !want.Base {
+			var patches []struct {
+				Op, Path string
+				Value    json.RawMessage
+			}
+			if err := json.Unmarshal(want.Patch, &patches); err != nil || len(patches) != 1 || patches[0].Op != "replace" || patches[0].Path != "" {
+				t.Fatalf("physical version query_fields: invalid expected forward patch: %v", err)
+			}
+			body = patches[0].Value
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(body, &object); err != nil {
+			fields["body_error"] = true
+		} else {
+			for _, name := range []string{"type", "project", "status"} {
+				raw, ok := object[name]
+				if !ok {
+					continue
+				}
+				var value string
+				if err := json.Unmarshal(raw, &value); err == nil {
+					fields[name] = encode(value)
+				}
+			}
+		}
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
 func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row string, want driver.Version) {
 	t.Helper()
 	revColumn, baseColumn, dataColumn := "rev", "base", "data"
@@ -517,8 +670,21 @@ func assertB09SQLVersion(t *testing.T, engine string, table b09SQLTable, row str
 		base = strconv.FormatBool(want.Base)
 	}
 	text := func(name string) string { return b09SQLText(t, b09SQLColumn(t, table, row, name)) }
-	if len(table.Columns) != 4 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) {
+	if len(table.Columns) != 5 || text("key") != b09RecordKey(t, want.Ref) || text(baseColumn) != base || b09SQLNumber(t, b09SQLColumn(t, table, row, revColumn)) != mustB09Revision(t, want.Revision) {
 		t.Fatal("complete physical version columns differ")
+	}
+	wantFields, gotFields := b09SQLQueryFields(t, engine, want), text("query_fields")
+	if engine == "postgres" {
+		var wantJSON, gotJSON any
+		if err := json.Unmarshal([]byte(wantFields), &wantJSON); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(gotFields), &gotJSON); err != nil {
+			t.Fatal(err)
+		}
+		b09Equal(t, "complete physical PostgreSQL version query fields", wantJSON, gotJSON)
+	} else if gotFields != wantFields {
+		t.Fatal("complete physical version query fields differ")
 	}
 	var got driver.Version
 	if err := json.Unmarshal([]byte(text(dataColumn)), &got); err != nil {
@@ -561,7 +727,8 @@ func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]dri
 		table := stage.SQL.Tables[name]
 		remaining := map[string]driver.Record{}
 		for key, record := range want {
-			if name == "records" || name == "versions" || indexesBuilt && record.Kind == "bead" {
+			sourceImage := strings.HasSuffix(name, "_source_current") || strings.HasSuffix(name, "_source_history")
+			if name == "records" || name == "versions" || sourceImage && record.Kind == "bead" {
 				remaining[key] = record
 			}
 		}
@@ -592,11 +759,12 @@ func assertB09InitialSQL(t *testing.T, stage b09ReplayStage, want map[string]dri
 			t.Fatalf("initial physical %s omitted expected identities: %v", name, remaining)
 		}
 	}
-	// The admitted source corpus has no graph links. Before startup no source
-	// coverage is certified; afterward both domains cover exactly restore Head.
+	// The admitted source corpus has no graph links. Typed source rows and their
+	// coverage are published atomically with import; explicit startup preserves
+	// that exact image rather than creating a second, different source state.
 	for _, name := range []string{"graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage"} {
 		table := stage.SQL.Tables[name]
-		if !indexesBuilt || name == "graph_link_current" || name == "graph_link_history" {
+		if name == "graph_link_current" || name == "graph_link_history" {
 			if len(table.Rows) != 0 {
 				t.Fatalf("unexpected initial %s rows before/after explicit startup", name)
 			}
@@ -642,11 +810,9 @@ func assertB09IndexActivation(t *testing.T, before, after b09ReplayStage) {
 		b09Equal(t, "startup preserves physical schema "+name, old.Columns, next.Columns)
 		switch name {
 		case "hierarchy_source_current", "hierarchy_source_history", "graph_link_source_current", "graph_link_source_history", "graph_link_current", "graph_link_history", "hierarchy_index_coverage", "graph_link_index_coverage":
-			if len(old.Rows) != 0 {
-				t.Fatalf("raw restore unexpectedly prebuilt %s", name)
-			}
-			// Complete post-startup rows and marker payloads are independently
-			// checked against archive-derived records by assertB09Source.
+			// Main publishes typed source rows and ready coverage atomically
+			// during import; startup must retain that exact physical image.
+			b09Equal(t, "startup preserves complete source SQL "+name, old, next)
 		default:
 			b09Equal(t, "startup preserves every unrelated SQL row "+name, old, next)
 		}
@@ -756,11 +922,10 @@ func (r *b09ReplayTarget) expectedSQLStates(want driver.Record, creating bool) m
 	for _, sentinel := range []driver.Sentinel{driver.Sentinel("bead/" + want.Ref.ID), driver.SentinelGraphBlocking} {
 		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Present: true})
 	}
-	// RestoreImport does not publish a semantic graph certificate, and startup
-	// BuildSourceIndexes publishes only membership coverage. Both parentless
-	// creates and the field-only close/compact/revert preserve the graph rather
-	// than validate it completely (prepare.graph), so this sequence never gains
-	// GraphValidityReadFact. Its lock can exist without a state-history row.
+	// The imported graph certificate is retained as a durable read fact. Both
+	// parentless creates and the field-only close/compact/revert preserve the
+	// certified graph while appending their ordinary state deltas.
+	add(driver.LockState{Key: driver.LockKey{Kind: driver.LockReadFact, Fact: pipeline.GraphValidityReadFact}, Present: true})
 	if creating {
 		// Random allocation stages even an unchanged allocator inventory;
 		// both SQL drivers publish its typed fact in the same transaction.
@@ -876,7 +1041,20 @@ func (r *b09ReplayTarget) assertSQLMutation(before, after b09ReplayStage, id, op
 				t.Fatal("SQL record cardinality delta")
 			}
 			assertB09SQLRecord(t, r.engine, next, append(added, updated...)[0], want, len(before.Versions[recordKey])+1)
-		case "objects", "locks":
+		case "objects":
+			if r.engine == "sqlite" && b09SQLHasColumn(next, "query_order") && b09SQLHasColumn(next, "query_kind_order") {
+				assertB09SQLiteObjectMutation(t, operation, after, old, next, added, keys, recordKey, creating)
+				break
+			}
+			if len(updated) != 0 {
+				t.Fatalf("%s mutated existing %s rows", operation, name)
+			}
+			for _, row := range added {
+				if !keys[columnText(row, "key")] {
+					t.Fatalf("%s unexpected physical %s key %q", operation, name, columnText(row, "key"))
+				}
+			}
+		case "locks":
 			if len(updated) != 0 {
 				t.Fatalf("%s mutated existing %s rows", operation, name)
 			}
