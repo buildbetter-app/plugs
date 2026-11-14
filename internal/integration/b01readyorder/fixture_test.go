@@ -433,7 +433,13 @@ func (f *fixture) state(t *testing.T) durableState {
 		}
 		s.Receipts[scope.method] = receipt
 	}
-	s.Log, err = r.Changesets(f.ctx, nil, 1000)
+	var changesCursor *driver.Cursor
+	if !s.Meta.HistoryFloor.IsZero() {
+		// A captured snapshot starts at its authenticated history floor; asking
+		// for the discarded prefix is a truthful truncation refusal.
+		changesCursor = &driver.Cursor{Incarnation: s.Meta.Incarnation, Revision: s.Meta.HistoryFloor, Method: "changesets"}
+	}
+	s.Log, err = r.Changesets(f.ctx, changesCursor, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
