@@ -909,11 +909,10 @@ func (r *b09ReplayTarget) expectedSQLStates(want driver.Record, creating bool) m
 	for _, sentinel := range []driver.Sentinel{driver.Sentinel("bead/" + want.Ref.ID), driver.SentinelGraphBlocking} {
 		add(driver.LockState{Key: driver.LockKey{Kind: driver.LockSentinel, Sentinel: sentinel}, Present: true})
 	}
-	// RestoreImport does not publish a semantic graph certificate, and startup
-	// BuildSourceIndexes publishes only membership coverage. Both parentless
-	// creates and the field-only close/compact/revert preserve the graph rather
-	// than validate it completely (prepare.graph), so this sequence never gains
-	// GraphValidityReadFact. Its lock can exist without a state-history row.
+	// The imported graph certificate is retained as a durable read fact. Both
+	// parentless creates and the field-only close/compact/revert preserve the
+	// certified graph while appending their ordinary state deltas.
+	add(driver.LockState{Key: driver.LockKey{Kind: driver.LockReadFact, Fact: pipeline.GraphValidityReadFact}, Present: true})
 	if creating {
 		// Random allocation stages even an unchanged allocator inventory;
 		// both SQL drivers publish its typed fact in the same transaction.
