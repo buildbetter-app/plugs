@@ -63,6 +63,7 @@ type fixture struct {
 	queries   map[receiptScope]bool
 	writeKeys map[string]string
 	ontology  []byte
+	document  ontology.Document
 }
 
 func newFixture(t *testing.T, e engine) *fixture {
@@ -80,7 +81,7 @@ func newFixtureWithSetup(t *testing.T, e engine, document ontology.Document, sta
 	if err != nil {
 		t.Fatalf("parse public error catalog: %v", err)
 	}
-	f := &fixture{t: t, ctx: ctx, engine: e, catalog: catalog, work: map[string]model.Ref{}, queries: map[receiptScope]bool{}, writeKeys: map[string]string{}}
+	f := &fixture{t: t, ctx: ctx, engine: e, catalog: catalog, document: document, work: map[string]model.Ref{}, queries: map[receiptScope]bool{}, writeKeys: map[string]string{}}
 	f.open()
 	t.Cleanup(f.close)
 	f.seedOntologyDocument(document)
@@ -110,10 +111,13 @@ func newFixtureWithSetup(t *testing.T, e engine, document ontology.Document, sta
 	f.bootstrap = f.anonymousHandler()
 	for _, seed := range []struct{ title, project string }{{"a1", poolA}, {"a2", poolA}, {"b1", poolB}} {
 		fields := map[string]any{"title": seed.title, "description": "hydrated " + seed.title}
+		create := map[string]any{"type": "issue", "fields": fields}
 		if status := statuses[seed.title]; status != "" {
-			fields["status"] = status
+			// Noninitial creation statuses go through the create-status selector;
+			// fields.status is validated as an initial-status image.
+			create["targetStatus"] = status
 		}
-		r := f.request(f.bootstrap, credential{}, "bead.create", seed.project, f.key("seed-"+seed.title), "setup", map[string]any{"type": "issue", "fields": fields})
+		r := f.request(f.bootstrap, credential{}, "bead.create", seed.project, f.key("seed-"+seed.title), "setup", create)
 		commit := r.commit(t)
 		if len(commit.Results) != 1 {
 			t.Fatalf("setup create has no singular result: %s", r.raw)
@@ -191,9 +195,15 @@ func (f *fixture) install() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	compiled, problems := ontology.Compile(f.document, nil, nil)
+	if len(problems) != 0 {
+		f.t.Fatalf("compile fixture ontology: %v", problems)
+	}
+	installedOntology := service.NewOntology(compiled.Effective)
 	app, err := authzrpc.New(f.ctx, authzrpc.Config{
 		Store: f.store, Lease: f.lease, Provider: f.keys, Facts: source, Namespace: f.facts.Namespace, DefaultProject: poolA,
-		Audit: service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
+		Ontology: installedOntology,
+		Audit:    service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID))),
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -222,7 +232,11 @@ func (f *fixture) reopen() {
 
 func (f *fixture) anonymousHandler() http.Handler {
 	f.t.Helper()
-	ontology := service.NewOntology(nil)
+	compiled, problems := ontology.Compile(f.document, nil, nil)
+	if len(problems) != 0 {
+		f.t.Fatalf("compile fixture ontology: %v", problems)
+	}
+	ontology := service.NewOntology(compiled.Effective)
 	writer := pipeline.New(f.store, f.lease,
 		pipeline.WithOntology(ontology),
 		pipeline.WithOntologyAudit(service.NewTrackedOntologyAudit(service.StaticOntologySource(ref(ontologySourceID)))),

@@ -46,6 +46,7 @@ type b04NativeCapture struct {
 	EmptyJSON          json.RawMessage            `json:"emptyJSON"`
 	Inventory          map[string]any             `json:"inventory"`
 	DumpBytes          int64                      `json:"dumpBytes"`
+	LiveDumpRefusal    string                     `json:"liveDumpRefusal,omitempty"`
 	DumpRefusal        string                     `json:"dumpRefusal,omitempty"`
 	Commands           int                        `json:"commands"`
 	Output             string                     `json:"output"`
@@ -309,10 +310,47 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 		"path": databaseDir, "mode": info.Mode().String(), "pid": server.PID, "port": server.Port,
 		"dataRoot": server.DataRoot, "childEnv": env,
 	})
+	// The exporter must refuse while the observed live claims are present. Keep
+	// that refusal as its own receipt, then resolve every fixture claim and the
+	// configured custom status before the quiesced export below.
+	liveInventoryPath := filepath.Join(output, "live-inventory.json")
+	c.run("live-inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", liveInventoryPath)
+	if _, err := os.Stat(liveInventoryPath + ".sources"); err != nil {
+		t.Fatalf("native live inventory sidecar tree missing: %v", err)
+	}
+	liveBefore := b04NativeState(t, c, "live-dump-before")
+	liveDumpPath := filepath.Join(output, "live-refused.tar")
+	liveDump := c.expect("live-dump-refused", 1, "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", liveInventoryPath, "-o", liveDumpPath)
+	liveAfter := b04NativeState(t, c, "live-dump-after")
+	if liveDump.TimedOut || !reflect.DeepEqual(liveBefore, liveAfter) {
+		t.Fatal("native live-claim refusal timed out or changed the source")
+	}
+	liveDiagnostic := strings.TrimSpace(string(liveDump.Stderr))
+	if !strings.Contains(liveDiagnostic, "unsupported nonempty family leases (live claims must be resolved)") &&
+		!strings.Contains(liveDiagnostic, "unsupported nonempty family custom_statuses (live claims must be resolved)") {
+		t.Fatalf("native live-claim refusal lost its exact cause: %s", liveDiagnostic)
+	}
+	if len(bytes.TrimSpace(liveDump.Stdout)) != 0 {
+		t.Fatalf("native live-claim refusal wrote stdout: %q", liveDump.Stdout)
+	}
+	if _, err := os.Lstat(liveDumpPath); !os.IsNotExist(err) {
+		t.Fatalf("live refusal left an archive path: %v", err)
+	}
+	for _, claim := range []struct{ label, id string }{
+		{"release-direct", direct.ID}, {"release-custom-active", custom.ID},
+		{"release-next", ids["next"]}, {"release-empty", ids["empty"]},
+	} {
+		c.run(claim.label, "unclaim", claim.id, "--json")
+	}
+	// Empty custom catalogs are the producer-supported way to clear both the
+	// config value and its normalized custom_statuses rows.
+	c.run("release-foreign-held", "unclaim", held.ID, "--json")
+	c.run("config-custom-cleanup", "config", "set", "status.custom", "", "--json")
+	c.run("quiesce-commit", "dolt", "commit", "-m", "B04 native claim capture "+runID)
 	inventoryPath := filepath.Join(output, "inventory.json")
 	c.run("public-inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath)
 	if _, err := os.Stat(inventoryPath + ".sources"); err != nil {
-		t.Fatalf("native inventory sidecar tree missing: %v", err)
+		t.Fatalf("native inventory sidecar tree missing after claim release: %v", err)
 	}
 	sidecarBefore, err := b04NativeInventory(inventoryPath + ".sources")
 	if err != nil {
@@ -325,30 +363,13 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 	if dump.TimedOut || !reflect.DeepEqual(beforeDump, afterDump) {
 		t.Fatal("native readonly dump timed out or changed the source")
 	}
+	if dump.Exit != 0 || dump.TimedOut {
+		t.Fatalf("quiesced native dump failed exit=%d timeout=%v stderr=%s", dump.Exit, dump.TimedOut, strings.TrimSpace(string(dump.Stderr)))
+	}
 	dumpRefusal := ""
-	var dumpBytes int64
-	if dump.Exit != 0 {
-		// c8eb Build iterates a map and may report either unsupported family
-		// first. Both must be present in the actual preserved physical source;
-		// their refusal is a real portability dependency, never an archive.
-		diagnostic := strings.TrimSpace(string(dump.Stderr))
-		for _, family := range []string{"custom_statuses", "leases"} {
-			want := "unsupported nonempty family " + family + " (live claims must be resolved)"
-			if strings.Contains(diagnostic, want) {
-				dumpRefusal = want
-			}
-		}
-		if dump.Exit != 1 || dumpRefusal == "" || len(bytes.TrimSpace(dump.Stdout)) != 0 {
-			t.Fatalf("unexpected native dump refusal exit=%d stderr=%s", dump.Exit, diagnostic)
-		}
-		if _, err := os.Lstat(dumpPath); !os.IsNotExist(err) {
-			t.Fatal("refused dump left an archive path")
-		}
-	} else {
-		_, dumpBytes, err = b04NativeFileSHA(dumpPath)
-		if err != nil || dumpBytes == 0 {
-			t.Fatalf("successful native dump absent/empty: %v", err)
-		}
+	_, dumpBytes, err := b04NativeFileSHA(dumpPath)
+	if err != nil || dumpBytes == 0 {
+		t.Fatalf("successful native dump absent/empty: %v", err)
 	}
 	sidecarAfter, err := b04NativeInventory(inventoryPath + ".sources")
 	if err != nil || !reflect.DeepEqual(sidecarBefore, sidecarAfter) {
@@ -362,7 +383,7 @@ func recordB04NativeStore(t *testing.T, binary, root string, inputs b04NativeInp
 		NoOpStateSHA256: b04NativeSHA(b04NativeEncoded(t, beforeNoOp)), ForeignStateSHA256: b04NativeSHA(b04NativeEncoded(t, beforeForeign)),
 		ClaimNext: claimNext, ClaimNextIDs: claimNextIDs, EmptyJSON: append(json.RawMessage(nil), bytes.TrimSpace(empty)...),
 		Inventory: map[string]any{"path": inventoryPath, "sidecars": sidecarBefore, "database": databaseDir},
-		DumpBytes: dumpBytes, DumpRefusal: dumpRefusal, Commands: c.count + foreign.count, Output: output,
+		DumpBytes: dumpBytes, LiveDumpRefusal: liveDiagnostic, DumpRefusal: dumpRefusal, Commands: c.count + foreign.count, Output: output,
 	}
 	b04NativeJSON(t, filepath.Join(output, "observed-projection.json"), projection)
 	b04NativeJSON(t, filepath.Join(output, "source-to-actual-binding.json"), map[string]any{
@@ -635,7 +656,10 @@ func replayB04Native(t *testing.T, capture b04NativeCapture, e engine, output st
 	document.Statuses["awaiting_review"] = ontology.Status{Name: "Awaiting review", Category: ontology.Unstarted}
 	workflow := document.Workflows["issue"]
 	workflow.Statuses = append(workflow.Statuses, "awaiting_review")
-	workflow.Transitions = append(workflow.Transitions, ontology.Rule{From: []string{"awaiting_review"}, To: "in_progress", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}})
+	workflow.Transitions = append(workflow.Transitions,
+		ontology.Rule{From: []string{"todo"}, To: "awaiting_review", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}},
+		ontology.Rule{From: []string{"awaiting_review"}, To: "in_progress", Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}},
+	)
 	document.Workflows["issue"] = workflow
 	f := newFixtureWithSetup(t, e, document, map[string]string{"a2": "awaiting_review"})
 	owner := f.issue("agent:b04-native-owner", "user:pool-a", nil)
@@ -798,13 +822,14 @@ func b04RunContention(t *testing.T, f *fixture) {
 		wg.Add(1)
 		go func(i int, by credential) {
 			defer wg.Done()
-			params := map[string]any{"id": targetID, "_meta": map[string]any{"project": poolB, "agent": fmt.Sprintf("contender-%03d", i), "idempotencyKey": fmt.Sprintf("b04-contention-%03d", i)}}
+			params := map[string]any{"id": targetID, "_meta": map[string]any{"project": poolB, "agent": fmt.Sprintf("contender-%03d", i), "idempotencyKey": fmt.Sprintf("%032x", i+1)}}
 			raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": i + 1, "method": "bead.claim", "params": params})
 			if err != nil {
 				outcomes <- outcome{code: "encode"}
 				return
 			}
 			req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/rpc/v1", bytes.NewReader(raw)).WithContext(f.ctx)
+			req.RemoteAddr = "127.0.0.1:12345"
 			req.Header.Set("Plug-RPC", "1")
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+by.key.Token)
