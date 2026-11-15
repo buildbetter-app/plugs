@@ -331,7 +331,7 @@ func (p *NativeDeltaPrepared) Visit(ctx context.Context, visitor NativeDeltaVisi
 		}
 		cloned := cloneNativeDeltaState(state)
 		var err error
-		if visitor.Checkpoint != nil {
+		if visitor.Checkpoint != nil && !cloned.Complete {
 			err = visitor.Checkpoint(cloned.Kind, cloned.Schema, cloned.Rows, cloned.ConfigPolicy)
 		}
 		if err == nil && visitor.TableState != nil {

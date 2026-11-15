@@ -367,7 +367,7 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("prepared row readback reopened closed source: %v", err)
 	}
-	if commits != 4 || checkpoints == 0 || *opens != opened {
+	if commits != 4 || checkpoints != 6 || *opens != opened {
 		t.Fatalf("prepared readback did not use retained source: commits=%d checkpoints=%d opens=%d want=%d", commits, checkpoints, *opens, opened)
 	}
 	// Complete table-state readback must not silently use the checkpoint-only
