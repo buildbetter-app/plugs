@@ -27,6 +27,11 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
+const (
+	b11NativeParentWorkflowItemID = "workflow:item/00000000000000000000000000000011"
+	b11NativeChildWorkflowItemID  = "workflow:item/00000000000000000000000000000012"
+)
+
 // These are independent expectations from the delivered native SQL ledger,
 // including current-only rows. They are never constructed from Plug output.
 func b11NativeEdgeExpectations() map[positiveSourceTuple]string {
@@ -163,7 +168,7 @@ func b11NativeEdgePlan(t *testing.T, archive *dumpformat.Archive, store driver.S
 			}
 		}
 	}
-	activeIDs := map[string]string{"review-project-e4f": "workflow:item/b11-r5-parent", "review-project-e4f.1": "workflow:item/b11-r5-child"}
+	activeIDs := map[string]string{"review-project-e4f": b11NativeParentWorkflowItemID, "review-project-e4f.1": b11NativeChildWorkflowItemID}
 	active := driver.SourcePlaneDispositionV1{Key: "active-task", SourceType: "task", Ephemeral: true, NoHistory: false, SinkKind: "workflow:item", Schema: workflowplugin.SourceStateSchema, Lifetime: string(plan.Target.Lifetime), Statuses: []driver.SourcePlaneStringPairV1{{From: "open", To: "open"}}, RefusalPolicy: "exact-only"}
 	plan.Runs = []driver.SourcePlaneRunV1{{Project: "review-project", Key: "b11-r5", TargetID: "workflow:run/b11-r5", Template: "public captured endpoints", Schema: workflowplugin.SourceStateSchema, Mode: "ephemeral", State: "active", PrincipalKey: "owner"}}
 	records, err := archive.SourcePlaneRecords()
@@ -218,14 +223,6 @@ func b11NativeEdgePlan(t *testing.T, archive *dumpformat.Archive, store driver.S
 		}
 	}
 	plan.Dispositions = append(plan.Dispositions, active)
-	retained := plan.Origins[:0]
-	for _, origin := range plan.Origins {
-		if origin.Table == dumpformat.EphemeralEntityTable || origin.Table == dumpformat.DurableDependencyTable || origin.Table == dumpformat.EphemeralDependencyTable {
-			continue
-		}
-		retained = append(retained, origin)
-	}
-	plan.Origins = retained
 	sort.Slice(plan.Entities, func(i, j int) bool {
 		return driver.CompareSourceEntityKeys(plan.Entities[i].Source, plan.Entities[j].Source) < 0
 	})
@@ -371,7 +368,7 @@ func TestB11NativeCapturedPublicEdgesMetadataAndSQLReopen(t *testing.T) {
 					var view struct {
 						Bead struct {
 							ID     string
-							Parent *model.Ref
+							Parent string
 							Links  []workflowplugin.RelationView
 						}
 					}
@@ -381,7 +378,7 @@ func TestB11NativeCapturedPublicEdgesMetadataAndSQLReopen(t *testing.T) {
 						t.Fatal("native source alias changed its public endpoint")
 					}
 					if key.Kind == "parent-child" {
-						if view.Bead.Parent == nil || *view.Bead.Parent != ref(to) {
+						if view.Bead.Parent != to {
 							t.Fatal("captured native parent endpoint differs")
 						}
 						continue
@@ -417,7 +414,12 @@ func TestB11NativeCapturedPublicEdgesMetadataAndSQLReopen(t *testing.T) {
 			call("bead.link", "native-mixed-retype-refused", map[string]any{"from": mixedFrom, "to": mixedTo, "kind": "blocks"}, "ontology_guard_failed")
 			proof.Same(t, after, capture())
 			before = capture()
-			from, to := ref("review-project-c2d"), ref("review-project-a1b")
+			// Re-add the captured mixed relation through endpoints admitted by
+			// the active task workflow. The native durable c2d endpoint carries
+			// custom status qa_testing, which is intentionally outside that
+			// workflow and must remain source evidence rather than a writable
+			// ordinary endpoint.
+			from, to := mixedFrom, mixedTo
 			params := func(kind, token string) map[string]any {
 				params := map[string]any{"from": from, "to": to, "kind": kind}
 				if token != "" {
@@ -425,7 +427,7 @@ func TestB11NativeCapturedPublicEdgesMetadataAndSQLReopen(t *testing.T) {
 				}
 				return params
 			}
-			equalParams := params("relates-to", ` {"source":"public-stored-sql","number":4.20e1,"explicit_null":null} `)
+			equalParams := params("relates-to", ` { } `)
 			equal := call("bead.link", "native-semantic-equal", equalParams, "")
 			decode(t, equal.Result, &commit)
 			after = capture()
@@ -444,7 +446,7 @@ func TestB11NativeCapturedPublicEdgesMetadataAndSQLReopen(t *testing.T) {
 			call("bead.link", "native-retype-refused", params("blocks", ""), "ontology_guard_failed")
 			proof.Same(t, before, capture())
 			call("tx.apply", "native-late-retype-refused", map[string]any{"changeSet": model.ChangeSet{Ops: []model.Op{
-				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("workflow:item/b11-r5-child"), Fields: map[string]any{"title": "discard captured active draft"}}},
+				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref(b11NativeChildWorkflowItemID), Fields: map[string]any{"title": "discard captured active draft"}}},
 				{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref("review-project-a1b.1"), Fields: map[string]any{"title": "discard captured durable draft"}}},
 				{Kind: model.OpLink, Link: &model.LinkOp{From: from, To: to, LinkKind: "blocks"}},
 			}}}, "ontology_guard_failed")

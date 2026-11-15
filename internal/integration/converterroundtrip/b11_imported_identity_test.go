@@ -18,6 +18,40 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
+// The workflow provider exposes only branch-zero 128-bit item references.
+// Keep this admitted fixture's source identity assertion while binding it to
+// a deterministic valid public endpoint before the direct bead.link calls.
+const b11AdmittedWorkflowItemID = "workflow:item/00000000000000000000000000000001"
+
+func b11AdmittedProfile(t *testing.T, data []byte, store driver.Store, lease driver.ActiveLease) driver.RestoreImportProfile {
+	t.Helper()
+	profile := sourceReverseProfile(t, data, store, lease, true)
+	plan, err := profile.SourcePlanes.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range plan.Entities {
+		entity := &plan.Entities[i]
+		if entity.TargetKind != "workflow:item" {
+			continue
+		}
+		entity.TargetID = b11AdmittedWorkflowItemID
+		if entity.Route.ActiveTargetID != "" {
+			entity.Route.ActiveTargetID = b11AdmittedWorkflowItemID
+		}
+	}
+	// The endpoint rewrite changes the logical image; ask the binder to
+	// recalculate its commitment instead of comparing the old image bytes.
+	plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize = "", 0
+	profile.SourcePlanes = nil
+	profile.DerivedDigest = ""
+	profile, err = BindSourceImport(context.Background(), bytes.NewReader(data), profile, plan)
+	if err != nil {
+		t.Fatal("rebind valid admitted workflow endpoint", err)
+	}
+	return profile
+}
+
 // This qualifies mutations of admitted source edges, separately from native
 // capture/import qualification. The existing authored B07 fixture deliberately
 // gives two source tables the same non-UUID row ID. A metadata edit or refused
@@ -29,7 +63,7 @@ func TestB11AdmittedMixedEdgeMetadataIdentityAndReopen(t *testing.T) {
 			data := positiveSourceArchive(t)
 			proof.Write(t, root, "authored-source.tar", data)
 			store, lease, reopen := openIdentityTarget(t, engine)
-			profile := sourceReverseProfile(t, data, store, lease, true)
+			profile := b11AdmittedProfile(t, data, store, lease)
 			report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
 			if err != nil || report.SourcePlanes == nil || report.Receipt == nil || len(report.SourcePlanes.Providers) != 1 {
 				t.Fatal("admitted source import missing", err)
@@ -43,7 +77,7 @@ func TestB11AdmittedMixedEdgeMetadataIdentityAndReopen(t *testing.T) {
 				byTarget[entity.TargetID], bySource[entity.Source.ID] = entity, entity
 			}
 			active := bySource["demo-9"]
-			if active.TargetID != "workflow:item/restored" || active.TargetKind != "workflow:item" || active.Source.Plane != dumpformat.EphemeralEntityTable {
+			if active.TargetID != b11AdmittedWorkflowItemID || active.TargetKind != "workflow:item" || active.Source.Plane != dumpformat.EphemeralEntityTable {
 				t.Fatal("source alias does not identify the admitted workflow endpoint")
 			}
 			capability, err := driver.RequireWorkflowCheckpointStore(store, lease)
@@ -178,7 +212,7 @@ func TestB11AdmittedMixedEdgeMetadataIdentityAndReopen(t *testing.T) {
 			var replays []replayCase
 			for _, key := range []positiveSourceTuple{durableKey, activeKey} {
 				label := key.From + "-to-" + key.To
-				from, to := ref(key.From), ref(bySource[key.To].TargetID)
+				from, to := ref(key.From), ref(key.To)
 				params := func(kind string, value *model.LinkMetadata) map[string]any {
 					params := map[string]any{"from": from, "to": to, "kind": kind}
 					if value != nil {
