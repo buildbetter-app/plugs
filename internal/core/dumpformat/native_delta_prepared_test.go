@@ -333,3 +333,38 @@ func (r *preparedFaultReader) Close() error {
 	}
 	return err
 }
+
+func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
+	a, opens := preparedDeltaFixture(t)
+	defer a.ReleaseNativeDecoded()
+	if _, err := a.PrepareNativeDelta(context.Background()); err != nil {
+		t.Fatal("prepare authenticated native delta", err)
+	}
+	a.UseNativeDeltaPreparedReadback()
+	// Recovery can outlive the original capture reader. A readback that
+	// reopens it would report the closed-reader error even though the complete
+	// authenticated preparation is still retained.
+	a.delta.open = func(context.Context, uint64) (io.ReadCloser, error) {
+		return nil, errors.New("native capture reader closed")
+	}
+	commits := 0
+	if err := a.VisitNativeDeltaRowChanges(context.Background(), func(commit NativeDeltaRowCommit) error {
+		commits++
+		return nil
+	}, nil); err != nil {
+		t.Fatalf("prepared row readback reopened closed source: %v", err)
+	}
+	if commits != 4 || *opens != 1 {
+		t.Fatalf("prepared readback did not use retained source: commits=%d opens=%d", commits, *opens)
+	}
+	states := 0
+	if err := a.VisitNativeDeltaTableStates(context.Background(), func(state NativeDeltaTableState) error {
+		states++
+		return nil
+	}); err != nil {
+		t.Fatalf("prepared table readback reopened closed source: %v", err)
+	}
+	if states == 0 || *opens != 1 {
+		t.Fatalf("prepared table readback did not use retained source: states=%d opens=%d", states, *opens)
+	}
+}

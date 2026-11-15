@@ -268,6 +268,19 @@ func (a *Archive) PrepareNativeDelta(ctx context.Context) (*NativeDeltaPrepared,
 	return p, nil
 }
 
+// UseNativeDeltaPreparedReadback switches subsequent native-delta readback
+// traversals to the authenticated retained preparation. Recovery calls this
+// after the original capture reader may have been closed; the prepared view
+// is already authenticated by ReadNativeCaptureSet and does not reopen it.
+// If no preparation is retained, traversals continue through the normal
+// authenticated source path and report its ordinary errors.
+func (a *Archive) UseNativeDeltaPreparedReadback() {
+	if a == nil || a.delta == nil {
+		return
+	}
+	a.delta.usePreparedReadback = true
+}
+
 func (a *Archive) ClearNativeDeltaPreparation() {
 	if a != nil && a.delta != nil && a.delta.prepared != nil && a.delta.prepared.view != nil {
 		a.delta.prepared.view.Close()
@@ -390,6 +403,9 @@ func nativeDeltaFileOpener(open NativeDeltaPartOpener, owner *NativeDeltaBudget,
 func (a *Archive) VisitNativeDelta(ctx context.Context, visitor NativeDeltaVisitor) error {
 	if !a.HasNativeDelta() {
 		return fmt.Errorf("native delta stream unavailable")
+	}
+	if a.delta.usePreparedReadback && a.delta.prepared != nil && a.delta.prepared.view != nil && a.delta.prepared.view.ready {
+		return a.delta.prepared.view.Visit(ctx, visitor)
 	}
 	work := a.delta.budget.Scope()
 	defer work.Release()
