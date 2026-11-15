@@ -112,6 +112,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"internal/integration/b01readyorder/testdata/native-ready-c774-43216037385.tar.gz":      "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f",
 			"internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar": "46677d8d6021ee35611e81238fd037d33739e4e44eb5308430b90d5f0ba5f93a",
 			"internal/integration/converterroundtrip/testdata/public-multiversion-072a1a8f.tar":     "72df289c1e94535815764be53bc9f01530e683d6c7480ee06fc743e7a69a230b",
 			"internal/integration/converterroundtrip/testdata/public-own-version-d7f83c6f.tar":      "de2a032098a8b17aa3e06ac7fa445ab18bb13427a59606e4a4d66959650e62c5",

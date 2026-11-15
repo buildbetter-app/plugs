@@ -584,6 +584,16 @@ func jointPhysicalSQL(t *testing.T, db *sql.DB, engine string) map[string][]stri
 			if err := rows.Scan(ptrs...); err != nil {
 				t.Fatal(err)
 			}
+			// Lease renewal legitimately advances the heartbeat deadline while a
+			// refusal is being observed; keep the physical oracle focused on
+			// durable lease identity and all other application state.
+			if table == "active_lease" || table == "lease" {
+				for i, column := range columns {
+					if strings.EqualFold(column, "expires") {
+						values[i] = "<heartbeat>"
+					}
+				}
+			}
 			data, err := json.Marshal(values)
 			if err != nil {
 				t.Fatal(err)

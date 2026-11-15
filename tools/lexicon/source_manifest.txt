@@ -530,8 +530,15 @@ internal/integration/b01readyorder/connected_test.go
 internal/integration/b01readyorder/fixture_test.go
 internal/integration/b01readyorder/independent_clock_test.go
 internal/integration/b01readyorder/mixed_clock_test.go
+internal/integration/b01readyorder/native_capture_acceptance_test.go
+internal/integration/b01readyorder/native_capture_compare_test.go
+internal/integration/b01readyorder/native_capture_contract_test.go
+internal/integration/b01readyorder/native_capture_input_test.go
+internal/integration/b01readyorder/native_capture_plan_test.go
 internal/integration/b01readyorder/public_acceptance_test.go
 internal/integration/b01readyorder/ready_order_test.go
+internal/integration/b01readyorder/testdata/native-ready-c774-43216037385.tar.gz
+internal/integration/b01readyorder/testdata/native-ready-c774-43216037385.tar.gz.provenance.json
 internal/integration/b01readyorder/workflow_ancestor_test.go
 internal/integration/b01readyorder/workflow_query_test.go
 internal/integration/b02publicnotices/BUILD.bazel

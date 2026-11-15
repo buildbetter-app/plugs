@@ -20,6 +20,49 @@ var undoLiteralBindings = map[string][]undoLiteralBinding{
 			3221: "2648370bbc22de08c7e7dbdd1e7a78c76e85e8262a3bb5c8259ba8cc9e6544b2",
 		}},
 	},
+	// Exact native role/table/edge literals in B01 authenticated input comparisons.
+	"internal/integration/b01readyorder/native_capture_input_test.go": {
+		{name: "authenticateOrders", kind: "func", contextSHA256: "def2d6b18c5f5d130b86ebcb6a29f9b09591027fa0fe630684aadccce0cbb4f1", literals: map[int]string{
+			2061: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			2134: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			2298: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			3082: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			3217: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+		}},
+		{name: "authenticateRoles", kind: "func", contextSHA256: "cbefa3df33c2c05d965a177c1e36027451a214d55a4d18d38e680a892b097031", literals: map[int]string{
+			182: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+		}},
+		{name: "authenticateCrossPlaneChild", kind: "func", contextSHA256: "607ffaae92e2479fa14781c87bc9831808f404a3f6b1d5838f35845c01ac8740", literals: map[int]string{
+			116:  "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			968:  "59c079ce9ec72c92a350981898918652bdf0d1401d544ce378ebd5b776b67619",
+			1267: "59c079ce9ec72c92a350981898918652bdf0d1401d544ce378ebd5b776b67619",
+			1663: "7853d42458d77d5bd188bd1a1bba51e87257cbe5ec12826168bc639f95bb0a72",
+			2082: "18229c786391bca9892786301aa6e28792948cacc059a8dce6be80cd140a3fa2",
+		}},
+		{name: "authenticateSQLRows", kind: "func", contextSHA256: "d54fb6533e138ece0288a8817e3b77a4d7943546d644711f8236162da92c3310", literals: map[int]string{
+			429: "59c079ce9ec72c92a350981898918652bdf0d1401d544ce378ebd5b776b67619",
+			438: "a250fe4bfeccf35cd1f34c8eb7625ef05127294cdeb6884a04adea45796adebc",
+			459: "dc6703a8837e7e8b242f131a64f7ccb0a806c728af4150ef863f2a89c8ad3f57",
+			476: "2651723e5b0e7e98fb0a8d09ea1af6d358e7a54df1857e2111f158850c876356",
+			491: "5f3c5fb3612b7ea7e7df0cf4f21c4ad123f1603b84d03ad8605fe4b8f67c5025",
+			506: "18229c786391bca9892786301aa6e28792948cacc059a8dce6be80cd140a3fa2",
+		}},
+	},
+	"internal/integration/b01readyorder/native_capture_compare_test.go": {
+		{name: "b01CompareCapturedReady", kind: "func", contextSHA256: "3c048978849eaa00ea0c6e2b015259dd5d6f5fdc809e296b25c17f8aced3a96e", literals: map[int]string{
+			1658: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			1999: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			3784: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			3841: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			3927: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			3991: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			4086: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			5251: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			5543: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			6258: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+			6374: "687f2181e010409a3ed1b3fffab531e9aced7207dfd2f456ced081f42e4de084",
+		}},
+	},
 	// Canonical native refusal text at one exact B06 assertion site. The
 	// existing AST selector admits this node only, never the method body.
 	"spec/cardb20/b06_native_support_test.go": {
