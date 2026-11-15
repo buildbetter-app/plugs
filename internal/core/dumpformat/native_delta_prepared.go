@@ -17,7 +17,11 @@ import (
 // source close and the final original-file recheck. Callback values are owned
 // copies; changing them cannot change authenticated parser input.
 type NativeDeltaVisitor struct {
-	Commit     func(NativeDeltaRowCommit) error
+	Commit func(NativeDeltaRowCommit) error
+	// Checkpoint receives complete non-commit checkpoint tables. It mirrors
+	// the row-change visitor callback and is kept separate from TableState so
+	// prepared readback cannot silently drop checkpoint evidence.
+	Checkpoint func(string, NativeDeltaTableSchema, []NativeDeltaRow, map[string]string) error
 	TableState func(NativeDeltaTableState) error
 	File       func(string, []byte) error
 	// CheckpointsOnly omits historical table-state materializations. It never
@@ -317,7 +321,7 @@ func (p *NativeDeltaPrepared) Visit(ctx context.Context, visitor NativeDeltaVisi
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if visitor.TableState == nil {
+		if visitor.TableState == nil && visitor.Checkpoint == nil {
 			break
 		}
 		work := p.budget.Scope()
@@ -325,7 +329,14 @@ func (p *NativeDeltaPrepared) Visit(ctx context.Context, visitor NativeDeltaVisi
 			work.Release()
 			return err
 		}
-		err := visitor.TableState(cloneNativeDeltaState(state))
+		cloned := cloneNativeDeltaState(state)
+		var err error
+		if visitor.Checkpoint != nil {
+			err = visitor.Checkpoint(cloned.Kind, cloned.Schema, cloned.Rows, cloned.ConfigPolicy)
+		}
+		if err == nil && visitor.TableState != nil {
+			err = visitor.TableState(cloned)
+		}
 		work.Release()
 		if err != nil {
 			return err
@@ -403,9 +414,6 @@ func nativeDeltaFileOpener(open NativeDeltaPartOpener, owner *NativeDeltaBudget,
 func (a *Archive) VisitNativeDelta(ctx context.Context, visitor NativeDeltaVisitor) error {
 	if !a.HasNativeDelta() {
 		return fmt.Errorf("native delta stream unavailable")
-	}
-	if a.delta.usePreparedReadback && a.delta.prepared != nil && a.delta.prepared.view != nil && a.delta.prepared.view.ready {
-		return a.delta.prepared.view.Visit(ctx, visitor)
 	}
 	work := a.delta.budget.Scope()
 	defer work.Release()

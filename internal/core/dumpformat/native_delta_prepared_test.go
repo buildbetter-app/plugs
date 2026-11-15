@@ -341,30 +341,38 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 		t.Fatal("prepare authenticated native delta", err)
 	}
 	a.UseNativeDeltaPreparedReadback()
-	// Recovery can outlive the original capture reader. A readback that
-	// reopens it would report the closed-reader error even though the complete
-	// authenticated preparation is still retained.
-	a.delta.open = func(context.Context, uint64) (io.ReadCloser, error) {
-		return nil, errors.New("native capture reader closed")
-	}
-	commits := 0
-	if err := a.VisitNativeDeltaRowChanges(context.Background(), func(commit NativeDeltaRowCommit) error {
-		commits++
-		return nil
-	}, nil); err != nil {
-		t.Fatalf("prepared row readback reopened closed source: %v", err)
-	}
-	if commits != 4 || *opens != 1 {
-		t.Fatalf("prepared readback did not use retained source: commits=%d opens=%d", commits, *opens)
-	}
+	// Complete table-state readback retains its original contract, including
+	// historical commit states, while the source reader is still available.
 	states := 0
 	if err := a.VisitNativeDeltaTableStates(context.Background(), func(state NativeDeltaTableState) error {
 		states++
 		return nil
-	}); err != nil {
-		t.Fatalf("prepared table readback reopened closed source: %v", err)
+	}); err != nil || states == 0 {
+		t.Fatalf("complete table readback failed before source close: states=%d err=%v", states, err)
 	}
-	if states == 0 || *opens != 1 {
-		t.Fatalf("prepared table readback did not use retained source: states=%d opens=%d", states, *opens)
+	opened := *opens
+	// Recovery can outlive the original native capture reader. A row readback
+	// that reopens it would report the closed-reader error even though the
+	// complete authenticated preparation is still retained.
+	a.delta.open = func(context.Context, uint64) (io.ReadCloser, error) {
+		return nil, errors.New("native capture reader closed")
+	}
+	commits, checkpoints := 0, 0
+	if err := a.VisitNativeDeltaRowChanges(context.Background(), func(commit NativeDeltaRowCommit) error {
+		commits++
+		return nil
+	}, func(_ string, _ NativeDeltaTableSchema, _ []NativeDeltaRow, _ map[string]string) error {
+		checkpoints++
+		return nil
+	}); err != nil {
+		t.Fatalf("prepared row readback reopened closed source: %v", err)
+	}
+	if commits != 4 || checkpoints == 0 || *opens != opened {
+		t.Fatalf("prepared readback did not use retained source: commits=%d checkpoints=%d opens=%d want=%d", commits, checkpoints, *opens, opened)
+	}
+	// Complete table-state readback must not silently use the checkpoint-only
+	// prepared view: that would omit commit states needed by partial history.
+	if err := a.VisitNativeDeltaTableStates(context.Background(), func(NativeDeltaTableState) error { return nil }); err == nil {
+		t.Fatal("complete table readback accepted a closed source without commit states")
 	}
 }
