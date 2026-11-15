@@ -62,6 +62,7 @@ type Manifest struct {
 	Verification               map[string]string `json:"verification"`
 	SourceFieldsContract       string            `json:"source_fields_contract,omitempty"`
 	SourcePlaneAddressContract string            `json:"source_plane_address_contract,omitempty"`
+	StatusCategoryContract     string            `json:"status_category_contract,omitempty"`
 }
 
 type Provenance struct {

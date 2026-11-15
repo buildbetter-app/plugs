@@ -29,6 +29,18 @@ func Read(r io.Reader) (Dump, error) {
 
 func ReadBytes(data []byte) (Dump, error) { return Read(bytes.NewReader(data)) }
 
+// AdaptValidatedArchive detaches a dumpformat archive that has already passed
+// its canonical validator, including native capture-set validation. Native
+// capture heads are authenticated by dumpformat.ReadNativeCaptureSet rather
+// than the portable Read entry point, so this preserves that validator's
+// native disposition decisions without repacking the head into a portable tar.
+func AdaptValidatedArchive(archive *dumpformat.Archive) (Dump, error) {
+	if archive == nil {
+		return Dump{}, refusal("nil validated archive")
+	}
+	return adaptArchive(archive)
+}
+
 func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 	source := archive.Manifest()
 	manifest := Manifest{
@@ -43,6 +55,7 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 		History:                    source.History,
 		SourceFieldsContract:       source.SourceFieldsContract,
 		SourcePlaneAddressContract: source.SourcePlaneAddressContract,
+		StatusCategoryContract:     source.StatusCategoryContract,
 		Warnings:                   append([]string(nil), source.Warnings...),
 		Verification:               cloneStringMap(source.Verification),
 		Files:                      make(map[string]File, len(source.Files)),
