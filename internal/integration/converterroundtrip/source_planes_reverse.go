@@ -81,8 +81,37 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 	for _, id := range []string{"restore/archive", importBindingRecordID, driver.SourcePlaneCommitRecordID} {
 		delete(live, id) // Already checked against the original receipt on this reader.
 	}
+	if row, ok := live[driver.OfflineHistoryEvidenceID]; ok {
+		if row.Kind != "beads-archive" {
+			return ReverseRefusal{"invalid_history_binding"}
+		}
+		delete(live, driver.OfflineHistoryEvidenceID)
+	}
 	for _, project := range dump.Manifest.Projects {
 		delete(live, importProjectRecordID(project.Prefix))
+	}
+	// Native publication retains authenticated family/history and ontology
+	// records for source readback. They are restore bookkeeping, not reverse
+	// source rows.
+	if row, ok := live[nativeFamilyReportID]; ok {
+		if row.Kind != "instance_config" {
+			return ReverseRefusal{"invalid_import_binding"}
+		}
+		delete(live, nativeFamilyReportID)
+	}
+	if row, ok := live[ImportedOntologySourceID]; ok {
+		if row.Kind != "ontology" {
+			return ReverseRefusal{"invalid_import_binding"}
+		}
+		delete(live, ImportedOntologySourceID)
+	}
+	for id, row := range live {
+		if strings.HasPrefix(id, driver.NativeTableHistoryRecordPrefix) || strings.HasPrefix(id, "source/native-current/") {
+			if row.Kind != "beads-archive" {
+				return ReverseRefusal{"invalid_import_binding"}
+			}
+			delete(live, id)
+		}
 	}
 	coreDump := *dump
 	coreDump.Records = make(map[string][]reverseconverter.Record, len(dump.Records))
@@ -177,6 +206,12 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 						projected.Body[field], projected.Source.Fields[field] = source.Body[field], source.Source.Fields[field]
 					}
 				}
+				if err := projectNativeStatusForReverse(&projected, *dump); err != nil {
+					return err
+				}
+				if err := projectNativeTypeForReverse(&projected, *dump); err != nil {
+					return err
+				}
 				dump.Records[kind][i] = projected
 				continue
 			}
@@ -259,6 +294,94 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 	for i := range dump.Manifest.Kinds {
 		dump.Manifest.Kinds[i].Count = len(dump.Records[dump.Manifest.Kinds[i].Name])
 	}
+	return nil
+}
+
+// Native status catalogs retain source names and categories that the generic
+// JSONL reverse converter cannot emit as live Beads workflow values. Preserve
+// those exact native values in metadata, then project only the converter-facing
+// status/category pair for this authenticated source-plane route.
+func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump) error {
+	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract {
+		return nil
+	}
+	nativeStatus := stringValue(projected.Source.Fields["status"])
+	nativeCategory := stringValue(projected.Body["status_category"])
+	status := nativeStatus
+	switch nativeCategory {
+	case "active":
+		projected.Body["status_category"] = "unstarted"
+		if !reverseStatusSupported(status) {
+			status = "open"
+		}
+	case "wip":
+		projected.Body["status_category"] = "started"
+		if !reverseStatusSupported(status) {
+			status = "in_progress"
+		}
+	case "frozen":
+		projected.Body["status_category"] = "backlog"
+		if !reverseStatusSupported(status) {
+			status = "blocked"
+		}
+	case "done":
+		projected.Body["status_category"], projected.Body["result"] = "completed", "success"
+		if !reverseStatusSupported(status) {
+			status = "closed"
+		}
+	case "unstarted", "started", "backlog", "completed":
+		return nil
+	default:
+		return ReverseRefusal{"unsupported_native_status_category"}
+	}
+	if reverseStatusSupported(nativeStatus) {
+		projected.Source.Fields["status"] = status
+		return nil
+	}
+	metadata, err := dumpformat.SourceMetadataObject(projected.Body["metadata"])
+	if err != nil {
+		return ReverseRefusal{"invalid_source_metadata"}
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["_plug_native_status"] = nativeStatus
+	metadata["_plug_native_status_category"] = nativeCategory
+	projected.Body["metadata"] = metadata
+	projected.Source.Fields["status"] = status
+	return nil
+}
+
+func reverseStatusSupported(status string) bool {
+	switch status {
+	case "open", "in_progress", "hooked", "blocked", "deferred", "pinned", "frozen", "closed":
+		return true
+	default:
+		return false
+	}
+}
+
+func projectNativeTypeForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump) error {
+	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract {
+		return nil
+	}
+	nativeType := stringValue(projected.Source.Fields["issue_type"])
+	switch nativeType {
+	case "task", "bug", "feature", "epic", "chore":
+		return nil
+	}
+	metadata, err := dumpformat.SourceMetadataObject(projected.Body["metadata"])
+	if err != nil {
+		return ReverseRefusal{"invalid_source_metadata"}
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["_plug_native_type"] = nativeType
+	projected.Body["metadata"] = metadata
+	projected.Body["type"] = "issue"
+	projected.Body["source_type"] = "task"
+	projected.Source.Fields["issue_type"] = "task"
 	return nil
 }
 
