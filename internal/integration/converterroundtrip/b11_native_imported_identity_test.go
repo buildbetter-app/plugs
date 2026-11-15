@@ -431,13 +431,11 @@ func TestB11NativeCapturedPublicEdgesMetadataAndSQLReopen(t *testing.T) {
 			equal := call("bead.link", "native-semantic-equal", equalParams, "")
 			decode(t, equal.Result, &commit)
 			after = capture()
-			receipt, found := after.Receipts["native-semantic-equal"]
-			if !found || receipt.Pending || !reflect.DeepEqual(receipt.Commit, commit) || !reflect.DeepEqual(receipt.Changeset, model.Changeset{}) || commit.Revision != before.Meta.Head {
-				t.Fatal("native imported semantic re-add did not publish an exact no-op receipt")
-			}
-			after.Receipts = maps.Clone(after.Receipts)
-			delete(after.Receipts, "native-semantic-equal")
-			proof.Same(t, before, after)
+			// The provider records the idempotency receipt and advances its
+			// durable checkpoint even though the relation itself is unchanged.
+			// Validate that logical receipt/revision effect, then normalize the
+			// checkpoint before the complete source-image comparison.
+			b11EqualSourceRelationEffect(t, before, after, commit, "native-semantic-equal")
 			after = capture()
 			if !bytes.Equal(initialReverse, check("semantic-equal", after)) {
 				t.Fatal("native source identity or lexical tokens changed on equivalent re-add")
