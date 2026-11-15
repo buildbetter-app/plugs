@@ -437,6 +437,9 @@ func (a *Archive) VisitNativeDelta(ctx context.Context, visitor NativeDeltaVisit
 		open = nativeDeltaFileOpener(open, work, visitor.File)
 	}
 	callbacks := &nativeDeltaRowCallbacks{checkpointsOnly: visitor.CheckpointsOnly}
+	if visitor.Checkpoint != nil {
+		callbacks.checkpoint = visitor.Checkpoint
+	}
 	if visitor.Commit != nil {
 		callbacks.commit = func(commit NativeDeltaRowCommit) error {
 			copyOwner := work.Scope()

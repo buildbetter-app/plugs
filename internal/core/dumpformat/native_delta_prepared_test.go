@@ -347,7 +347,7 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 	if err := a.VisitNativeDeltaTableStates(context.Background(), func(state NativeDeltaTableState) error {
 		states++
 		return nil
-	}); err != nil || states == 0 {
+	}); err != nil || states != 8 {
 		t.Fatalf("complete table readback failed before source close: states=%d err=%v", states, err)
 	}
 	opened := *opens
