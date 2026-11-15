@@ -197,6 +197,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 			delete(fields, "native_history_contract")
 			delete(fields, "source_family_contract")
 			delete(fields, "source_identity_contract")
+			delete(fields, "source_plane_address_contract")
 			if raw, ok := fields["sources"]; ok {
 				var sources []map[string]json.RawMessage
 				if err := json.Unmarshal(raw, &sources); err != nil {
