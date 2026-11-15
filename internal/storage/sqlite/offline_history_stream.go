@@ -156,13 +156,12 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 				if e != nil {
 					return e
 				}
-				if _, err = c.ExecContext(ctx, `INSERT INTO records(key,data) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data`, id, []byte{}); err != nil {
+				if err = s.private.WithImage(ctx, image, func(body []byte) error {
+					_, e := c.ExecContext(ctx, `INSERT INTO records(key,data) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET data=excluded.data`, id, body)
+					return e
+				}); err != nil {
 					return err
 				}
-				err = s.private.Copy(ctx, image, func(part []byte) error {
-					_, e := c.ExecContext(ctx, `UPDATE records SET data=CAST(data || ? AS BLOB) WHERE key=?`, part, id)
-					return e
-				})
 			}
 			if err != nil {
 				return err
@@ -174,20 +173,12 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 			if err != nil {
 				return err
 			}
-			if _, err = c.ExecContext(ctx, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,1,?)`, id, revision, []byte{}); err != nil {
-				return err
-			}
-			if err = s.private.Copy(ctx, image, func(part []byte) error {
-				_, e := c.ExecContext(ctx, `UPDATE versions SET data=CAST(data || ? AS BLOB) WHERE key=? AND rev=?`, part, id, revision)
-				return e
+			if err = s.private.WithImage(ctx, image, func(versionData []byte) error {
+				if _, e := c.ExecContext(ctx, `INSERT INTO versions(key,rev,base,data) VALUES(?,?,1,?)`, id, revision, versionData); e != nil {
+					return e
+				}
+				return populateHistoricalQueryFields(ctx, c, id, revision, versionData)
 			}); err != nil {
-				return err
-			}
-			var versionData []byte
-			if err = c.QueryRowContext(ctx, `SELECT data FROM versions WHERE key=? AND rev=?`, id, revision).Scan(&versionData); err != nil {
-				return err
-			}
-			if err = populateHistoricalQueryFields(ctx, c, id, revision, versionData); err != nil {
 				return err
 			}
 			return publishKey(ctx, c, driver.LockState{Key: driver.LockKey{Kind: driver.LockRecord, Ref: &row.Ref}, Revision: row.Revision, Present: !row.Deleted})

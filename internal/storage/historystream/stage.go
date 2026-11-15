@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/historyverify"
@@ -427,4 +428,31 @@ func (s *Stage) Copy(ctx context.Context, image Image, write func([]byte) error)
 			return err
 		}
 	}
+}
+
+// WithImage gives one engine write a bounded image buffer. Native publication
+// carries the existing decoded budget in ctx; reserve the complete SQL value
+// for the duration of the write so the one-write path cannot outrun that
+// ceiling. The hard ceiling also bounds callers that do not carry accounting.
+func (s *Stage) WithImage(ctx context.Context, image Image, write func([]byte) error) error {
+	if image.Bytes < 0 || image.Offset < 0 {
+		return invalid("invalid staged image")
+	}
+	const maxPublicationImageBytes = uint64(2 << 30)
+	bytes := uint64(image.Bytes)
+	if bytes > maxPublicationImageBytes || bytes > uint64(^uint(0)>>1) {
+		return invalid("staged image exceeds publication budget")
+	}
+	budget := dumpformat.NativeDeltaBudgetFromContext(ctx)
+	if budget != nil {
+		if err := budget.ChargeBytes("offline_publication_image", bytes); err != nil {
+			return err
+		}
+		defer budget.ReleaseBytes("offline_publication_image", bytes)
+	}
+	data := make([]byte, int(bytes))
+	if _, err := io.ReadFull(ContextReader(ctx, s.Reader(image)), data); err != nil {
+		return err
+	}
+	return write(data)
 }
