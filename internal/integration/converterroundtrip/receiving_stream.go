@@ -297,7 +297,7 @@ func recoverNativeReceivingIndeterminate(ctx context.Context, target driver.Stor
 	if key != profile.IdempotencyKey {
 		return Report{}, cause
 	}
-	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	recovered, err := RecoverImport(recoveryCtx, target, profile, check)
 	if err != nil {
