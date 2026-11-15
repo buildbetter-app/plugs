@@ -40,12 +40,16 @@ type Row struct {
 	Image    Image
 }
 
+// Stage caches physical-preimage admission from New. Rechecking the
+// checkpoint's request hash for every physical frame would rescan the entire
+// canonical source-plane plan, which can be tens of megabytes.
 type Stage struct {
 	dir           string
 	db            *sql.DB
 	file          *os.File
 	binding       driver.OfflineHistoryStreamBinding
 	proof         historyverify.Checkpoint
+	physical      bool
 	digest        hash.Hash
 	commit        *driver.OfflineHistoryStreamCommit
 	revision      model.Revision
@@ -63,10 +67,11 @@ func invalid(reason string) error {
 }
 
 func New(ctx context.Context, binding driver.OfflineHistoryStreamBinding, proof historyverify.Checkpoint) (_ *Stage, err error) {
-	if _, _, err = proof.Check(binding, binding.Header.Source == driver.NativeTableHistorySource || binding.Profile.SourcePlanes != nil); err != nil {
+	physical := binding.Header.Source == driver.NativeTableHistorySource || binding.Profile.SourcePlanes != nil
+	if _, _, err = proof.Check(binding, physical); err != nil {
 		return nil, err
 	}
-	s := &Stage{binding: binding, proof: proof, digest: sha256.New()}
+	s := &Stage{binding: binding, proof: proof, physical: physical, digest: sha256.New()}
 	s.dir, err = os.MkdirTemp("", "plug-history-stage-")
 	if err != nil {
 		return nil, err
@@ -180,8 +185,8 @@ func (s *Stage) Stage(ctx context.Context, revision model.Revision, f driver.Off
 			return invalid("nested or missing commit")
 		}
 		if f.Commit.Physical != nil {
-			if _, _, err = s.proof.Check(s.binding, true); err != nil {
-				return err
+			if !s.physical {
+				return historyverify.ErrCheckpoint{Reason: "physical preimages were not reconciled"}
 			}
 		}
 		value := *f.Commit
@@ -211,8 +216,8 @@ func (s *Stage) Stage(ctx context.Context, revision model.Revision, f driver.Off
 			return invalid("table outside commit")
 		}
 		if f.Table.PhysicalBefore != nil || f.Table.PhysicalAfter != nil {
-			if _, _, err = s.proof.Check(s.binding, true); err != nil {
-				return err
+			if !s.physical {
+				return historyverify.ErrCheckpoint{Reason: "physical preimages were not reconciled"}
 			}
 		}
 		t := *f.Table
