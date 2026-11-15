@@ -168,7 +168,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 	// be checked when the envelope used the canonical Go writer.
 	paths := []string{}
 	for path := range evidence.Members {
-		if path != "manifest.json" {
+		if path != "manifest.json" && !strings.HasPrefix(path, "history/native-") {
 			paths = append(paths, path)
 		}
 	}
@@ -195,6 +195,8 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 				return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 			}
 			delete(fields, "native_history_contract")
+			delete(fields, "source_family_contract")
+			delete(fields, "source_identity_contract")
 			if raw, ok := fields["sources"]; ok {
 				var sources []map[string]json.RawMessage
 				if err := json.Unmarshal(raw, &sources); err != nil {
@@ -205,6 +207,8 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 					if err := json.Unmarshal(source["family"], &family); err != nil {
 						return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 					}
+					delete(source, "history")
+					delete(source, "identity")
 					switch family {
 					case "federation_peers", "interactions", "routes":
 						source["action"] = json.RawMessage(`"refuse-if-nonempty"`)
