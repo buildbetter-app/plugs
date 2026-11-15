@@ -131,13 +131,22 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 	}
 	var evidence archiveEvidence
 	if len(rows) != 1 || rows[0].Kind != "restore-archive" || json.Unmarshal(rows[0].Body, &evidence) != nil ||
-		evidence.Profile != "builtin-head/1" || !validDigest(evidence.ArchiveSHA256) {
+		(evidence.Profile != "builtin-head/1" && evidence.Profile != "beads-native-status-categories/1") || !validDigest(evidence.ArchiveSHA256) {
 		return reverseconverter.Dump{}, ReverseRefusal{"missing_source_evidence"}
 	}
 	if _, ok := evidence.Members["manifest.json"]; !ok {
 		return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 	}
-	if envelope, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256)); err == nil {
+	nativeCapture := evidence.NativeCaptureFiles != nil
+	if nativeCapture {
+		// Native restore retains the capture-set root under ArchiveSHA256, but
+		// that root is JSON, not the portable head.tar envelope consumed by the
+		// reverse converter. Authenticate the root and rebuild the head below.
+		root, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+		if err != nil || hashBytes(root) != evidence.ArchiveSHA256 {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+	} else if envelope, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256)); err == nil {
 		if hashBytes(envelope) != evidence.ArchiveSHA256 {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
@@ -175,7 +184,47 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 		if err != nil || int64(len(data)) != file.Size || hashBytes(data) != file.SHA256 {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
-		if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: file.Size, Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
+		if nativeCapture && path == "manifest.json" {
+			// A reverse export is a portable head. The retained native capture
+			// files have been authenticated above, but they are not attached to
+			// reverseconverter.ReadBytes; omit the native-history marker and
+			// carry the three opaque families with their portable refusal policy
+			// so the derived head cannot claim an unattached native delta.
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(data, &fields); err != nil {
+				return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+			}
+			delete(fields, "native_history_contract")
+			if raw, ok := fields["sources"]; ok {
+				var sources []map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &sources); err != nil {
+					return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+				}
+				for _, source := range sources {
+					var family string
+					if err := json.Unmarshal(source["family"], &family); err != nil {
+						return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+					}
+					switch family {
+					case "federation_peers", "interactions", "routes":
+						source["action"] = json.RawMessage(`"refuse-if-nonempty"`)
+					}
+				}
+				fields["sources"], err = json.Marshal(sources)
+				if err != nil {
+					return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+				}
+			}
+			data, err = json.Marshal(fields)
+			if err != nil {
+				return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+			}
+		}
+		size := int64(len(data))
+		if size > dumpformat.MaxArchiveBytes || archive.Len()+int(size) > dumpformat.MaxArchiveBytes {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: size, Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
 		if _, err := tw.Write(data); err != nil {
@@ -185,7 +234,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 	if err := tw.Close(); err != nil {
 		return reverseconverter.Dump{}, err
 	}
-	if hashBytes(archive.Bytes()) != evidence.ArchiveSHA256 {
+	if !nativeCapture && hashBytes(archive.Bytes()) != evidence.ArchiveSHA256 {
 		return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 	}
 	return reverseconverter.ReadBytes(archive.Bytes())
