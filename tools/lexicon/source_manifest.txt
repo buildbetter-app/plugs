@@ -1945,6 +1945,7 @@ spec/s1-b01-b04/b01-hierarchy-deviation.md
 spec/s1-b01-b04/b01-hierarchy-vectors.json
 spec/s1-b01-b04/b02_public_outcomes_test.go
 spec/s1-b01-b04/b02_public_support_test.go
+spec/s1-b01-b04/b04_ordinary_authority_test.go
 spec/s1-b01-b04/b04_ordinary_empty_replay_inputs.json
 spec/s1-b01-b04/b04_ordinary_empty_replay_test.go
 spec/s1-b01-b04/b04_ordinary_native_test.go
