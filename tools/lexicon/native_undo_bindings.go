@@ -2,6 +2,12 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
+	// One exact native metadata source field in the B11 roundtrip expectation.
+	"internal/integration/converterroundtrip/source_planes_reverse_test.go": {
+		{name: "TestB11AdmittedNativeReverseMetadataPreservationAndConflicts", kind: "func", contextSHA256: "af115a46d71889942aa3296bdd12c88f699b2546c7c46b2898c9af4ed4409514", literals: map[int]string{
+			5617: "d970864cb90f9999b51854fc17275db9ccf9f49ac8b2ef429dd265c005c410b3",
+		}},
+	},
 	"spec/cardb11/native_test.go": {
 		{name: "metadataAPI", kind: "func", contextSHA256: "604a8eea0e4600f8adcdccff73589e3678a3070c7c607b7b9cb76dff04ab43d0", literals: map[int]string{
 			2377: "32d6f0a5c7dd84ad27ec70dc3497538db281818520ce79b73eebf16c7672ee47",

@@ -367,7 +367,7 @@ func nativeReverseMetadataFixture(t *testing.T, metadata map[string]any) []byte 
 	edge := dumpformat.Record{Kind: "edge", ID: "metadata-edge", Project: "pl",
 		Body: dumpformat.Row{"from": "pl-42v", "to": "pl-43w", "target_kind": "depends_on_issue_id", "type": "relates-to", "metadata": map[string]any{"fixture": "metadata-roundtrip"}, "thread_id": ""},
 		Source: dumpformat.Provenance{Table: dumpformat.DurableDependencyTable, Fields: dumpformat.Row{
-			"id": "metadata-edge", "issue_id": "pl-42v", "depends_on_issue_id": "pl-43w", "depends_on_wisp_id": nil, "depends_on_external": nil,
+			"id": "metadata-edge", "issue_id": "pl-42v", "depends_on_issue_id": "pl-43w", dumpformat.EphemeralDependencyTargetField: nil, "depends_on_external": nil,
 			"type": "relates-to", "metadata": map[string]any{"fixture": "metadata-roundtrip"}, "thread_id": "", "created_at": "2026-01-01T00:00:00Z", "created_by": "fixture-author",
 		}}}
 	var beads bytes.Buffer
@@ -505,9 +505,31 @@ func TestB11AdmittedNativeReverseMetadataPreservationAndConflicts(t *testing.T) 
 					if len(rows) != 2 || rows["pl-42v"] == nil || rows["pl-43w"] == nil {
 						t.Fatal("missing admitted beads", string(result.Result.JSONL))
 					}
-					want := cloneRow(metadata)
-					for key, value := range bookkeeping {
-						want[key] = value
+					// Generic reverse also preserves source fidelity metadata:
+					// reverseconverter/convert.go:712-745, with textual pinned
+					// archived at :611-616. Keep the complete expectation literal.
+					want := map[string]any{
+						"user":                         map[string]any{"array": []any{"kept", nil, true}, "number": json.Number("9007199254740993")},
+						"_plug_native_status":          "shared",
+						"_plug_native_status_category": "wip",
+						"_plug_native_type":            "rich_kind",
+						"beads.agent_state":            nil,
+						"beads.await_id":               "",
+						"beads.await_type":             "",
+						"beads.ephemeral":              json.Number("0"),
+						"beads.event_kind":             "",
+						"beads.hook_bead":              nil,
+						"beads.is_template":            "0",
+						"beads.mol_type":               "",
+						"beads.payload":                map[string]any{"n": json.Number("9007199254740992"), "null": nil},
+						"beads.role_bead":              nil,
+						"beads.role_type":              nil,
+						"beads.target":                 "",
+						"beads.timeout_ns":             json.Number("9007199254740993"),
+						"beads.waiters":                "",
+						"beads.wisp_type":              "",
+						"beads.work_type":              "",
+						"_plug_source_fields":          `{"actor":"","compaction_level":"0","content_hash":"8c5b6000065e227a62c898d951bdbd3724ff2f1d475a2b959e742b4f2393405d","no_history":0,"pinned":"0","sender":"","source_repo":"","storage_class":"versioned"}`,
 					}
 					for _, id := range []string{"pl-42v", "pl-43w"} {
 						if !sameReverseJSON(rows[id]["metadata"], want) {
