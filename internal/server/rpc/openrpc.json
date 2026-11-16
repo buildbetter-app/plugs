@@ -124,7 +124,7 @@
       },
       "Filter": {
         "type": "object",
-        "description": "Parent selects transitive descendants for ready and direct children for the snapshot list, before pagination. The separate opt-in epic-progress view uses exactly query=parent=\u003cbare branch-zero bead ID\u003e with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
+        "description": "Parent selects transitive descendants for ready and direct children for the snapshot list, before pagination. The separate opt-in epic-progress view uses exactly query=parent=<bare branch-zero bead ID> with no additional query clauses, resources, types or events; it selects canonical direct children only, across their own projects.",
         "properties": {
           "parent": {
             "type": "string",
@@ -149,38 +149,6 @@
           },
           "types": {
             "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "labels": {
-            "type": "array",
-            "description": "All nonempty trimmed labels are required, case-sensitive. Empty sets add no constraint.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "labelsAny": {
-            "type": "array",
-            "description": "At least one nonempty trimmed label is required; an empty set adds no constraint. Clients pass directory defaults here.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "excludeLabels": {
-            "type": "array",
-            "description": "None of these nonempty trimmed labels may be present, composed with labels and labelsAny.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "unassigned": {
-            "type": "boolean",
-            "description": "Select records without an existing claim holder. False adds no ownership constraint."
-          },
-          "excludeTypes": {
-            "type": "array",
-            "description": "Exclude these canonical types. Ready/claimNext give explicit types precedence; ordinary listing intersects types and exclusions, matching the respective native surfaces.",
             "items": {
               "type": "string"
             }
@@ -453,9 +421,6 @@
           "record": {
             "type": "object",
             "additionalProperties": true
-          },
-          "replaced": {
-            "type": "boolean"
           },
           "setBy": {
             "type": "object",
@@ -1173,7 +1138,7 @@
           "filter"
         ],
         "additionalProperties": false,
-        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=\u003cbare bead ID\u003e\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
+        "description": "The trusted epic-progress capability admits groupBy=[\"epic-progress\"], explicitly present fields=[], and exactly filter.query=\"parent=<bare bead ID>\". No sort or additional filters are admitted. budgetTokens must be absent or zero: this complete count is not token-budgeted or paged. The ordinary authorized input cap is 20,000, never the 100,000 type-summary exception; at most 100 groups including total are returned. Refusals return no partial counts."
       },
       "View": {
         "type": "object",
@@ -1279,7 +1244,7 @@
             "items": {
               "$ref": "#/components/schemas/ViewGroup"
             },
-            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:\u003ccanonical status ID\u003e groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
+            "description": "Existing grouped output. Epic progress returns key=total with the visible direct-child count and status:<canonical status ID> groups counting visible children only; every items array is empty. Keys identify statuses in the ontology read from the same asOf content snapshot; they do not infer labels, readiness or completion policy. Only total may carry authorization elision. MaxGroups=100 includes total; incomplete or over-limit results refuse without truncation."
           },
           "projection": {
             "$ref": "#/components/schemas/ProjectionStatus"
@@ -3272,7 +3237,7 @@
           "details"
         ],
         "additionalProperties": false,
-        "x-validation": "resource is bead/\u003cdependent ID\u003e; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
+        "x-validation": "resource is bead/<dependent ID>; revision equals blockerAfter.revision. No mutation of the dependent is implied. Current read authorization and redaction cover dependent, blocker, ontology and optional blocker project; suppress the entire notice on any denial."
       },
       "OrdinaryEventDescriptor": {
         "type": "object",
@@ -4693,6 +4658,31 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "AsOfSelector": {
+        "description": "Input selector: exactly one revision address or RFC3339 instant. An instant resolves to the highest committed revision at or before it in one complete pinned changeset snapshot; returned addresses remain concrete revisions. Incomplete retained history refuses history_gone. Current read permission applies.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "instant": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC3339 instant, with optional nanosecond precision and offset."
+              },
+              "incarnation": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "instant"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "errors": {
