@@ -314,3 +314,28 @@ func TestJointSourceReverseEqualRawIDRefusesAcrossThreeStores(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectNativeStatusForReverseArchivesIncompatibleBuiltin(t *testing.T) {
+	projected := reverseconverter.Record{
+		Kind: "bead", ID: "review-project-c2d", Project: "review-project",
+		Body:   map[string]any{"metadata": map[string]any{}, "status_category": "wip"},
+		Source: reverseconverter.Provenance{Table: dumpformat.DurableEntityTable, Fields: map[string]any{"status": "blocked"}},
+	}
+	dump := reverseconverter.Dump{Manifest: reverseconverter.Manifest{
+		SourcePlaneAddressContract: dumpformat.SourcePlaneAddressContract,
+		StatusCategoryContract:     dumpformat.StatusCategoryContract,
+	}}
+	if err := projectNativeStatusForReverse(&projected, dump); err != nil {
+		t.Fatal(err)
+	}
+	if got := projected.Body["status_category"]; got != "started" {
+		t.Fatalf("native wip category changed to %v", got)
+	}
+	if got := projected.Source.Fields["status"]; got != "in_progress" {
+		t.Fatalf("incompatible native status was emitted as %v", got)
+	}
+	metadata, ok := projected.Body["metadata"].(map[string]any)
+	if !ok || metadata["_plug_native_status"] != "blocked" || metadata["_plug_native_status_category"] != "wip" {
+		t.Fatalf("native status provenance missing: %#v", projected.Body["metadata"])
+	}
+}
