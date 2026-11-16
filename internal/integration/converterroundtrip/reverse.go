@@ -477,7 +477,17 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	status := stringValue(source.Source.Fields["status"])
 	liveStatus := stringValue(doc.Fields["status"])
 	statusUnchanged := liveStatus == status
-	if liveStatus != status {
+	nativeStatusContract := dump.Manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && dump.Manifest.StatusCategoryContract == dumpformat.StatusCategoryContract
+	if nativeStatusContract {
+		// Native status catalogs are admitted with exact source-name
+		// correspondences. Keep the original status/category pair intact so
+		// the native reverse projection can translate it once, after the
+		// generic live document checks. A changed live status cannot be
+		// interpreted through the built-in Beads vocabulary here.
+		if !statusUnchanged {
+			return reverseconverter.Record{}, ReverseRefusal{"unsupported_live_status"}
+		}
+	} else if liveStatus != status {
 		original, ok := targetStatus(status)
 		if ok && original == liveStatus {
 			// Built-in source status projected to its canonical live spelling.

@@ -302,7 +302,7 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 // those exact native values in metadata, then project only the converter-facing
 // status/category pair for this authenticated source-plane route.
 func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump) error {
-	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract {
+	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract || dump.Manifest.StatusCategoryContract != dumpformat.StatusCategoryContract {
 		return nil
 	}
 	nativeStatus := stringValue(projected.Source.Fields["status"])
