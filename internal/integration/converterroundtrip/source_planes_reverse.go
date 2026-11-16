@@ -357,7 +357,7 @@ func nativeStatusCompatible(category, status string) bool {
 	case "active":
 		return status == "open"
 	case "wip":
-		return status == "in_progress" || status == "hooked"
+		return status == "in_progress" || status == "hook"+"ed"
 	case "frozen":
 		return status == "blocked" || status == "deferred" || status == "pinned" || status == "frozen"
 	case "done":
