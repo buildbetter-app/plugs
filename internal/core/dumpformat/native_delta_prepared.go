@@ -236,6 +236,22 @@ func (p *NativeDeltaPrepared) retainFile(name string, raw []byte) error {
 	return nil
 }
 
+// openPart borrows an original part owned by this authenticated preparation.
+// Callers must finish replay before Close releases that ownership.
+func (p *NativeDeltaPrepared) openPart(ctx context.Context, ordinal uint64) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if p == nil || !p.ready {
+		return nil, fmt.Errorf("unqualified native staging view")
+	}
+	raw, ok := p.files[fmt.Sprintf("parts/%020d.part", ordinal)]
+	if !ok {
+		return nil, fmt.Errorf("retained native delta part %d missing", ordinal)
+	}
+	return io.NopCloser(bytes.NewReader(raw)), nil
+}
+
 func (p *NativeDeltaPrepared) Close() {
 	if p == nil {
 		return
@@ -276,8 +292,8 @@ func (a *Archive) PrepareNativeDelta(ctx context.Context) (*NativeDeltaPrepared,
 // traversals to the authenticated retained preparation. Recovery calls this
 // after the original capture reader may have been closed; the prepared view
 // is already authenticated by ReadNativeCaptureSet and does not reopen it.
-// If no preparation is retained, traversals continue through the normal
-// authenticated source path and report its ordinary errors.
+// If preparation has been released, readback refuses without reopening the
+// original source reader. VisitNativeDelta still authenticates the real source.
 func (a *Archive) UseNativeDeltaPreparedReadback() {
 	if a == nil || a.delta == nil {
 		return

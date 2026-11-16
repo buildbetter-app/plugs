@@ -507,10 +507,20 @@ func (a *Archive) visitNativeDelta(ctx context.Context, visit func(NativeHistory
 	// Prepared staging retains authenticated row/checkpoint callbacks but not
 	// full commit table images. Use it only for row-change readback, whose
 	// contract does not request complete table states. Complete table-state and
-	// image visitors keep the authenticated source path so omitted commit
+	// image visitors replay authenticated original parts so omitted commit
 	// states cannot be mistaken for an empty baseline.
-	if visit == nil && rows != nil && rows.tableState == nil && a.delta.usePreparedReadback && a.delta.prepared != nil && a.delta.prepared.view != nil && a.delta.prepared.view.ready {
-		return a.delta.prepared.view.Visit(ctx, NativeDeltaVisitor{Commit: rows.commit, Checkpoint: rows.checkpoint})
+	if a.delta.usePreparedReadback {
+		if a.delta.prepared == nil || a.delta.prepared.view == nil || !a.delta.prepared.view.ready {
+			return fmt.Errorf("native delta readback preparation unavailable")
+		}
+		prepared := a.delta.prepared.view
+		if visit == nil && rows != nil && rows.tableState == nil {
+			return prepared.Visit(ctx, NativeDeltaVisitor{Commit: rows.commit, Checkpoint: rows.checkpoint})
+		}
+		// Complete states are reconstructed from the retained original parts,
+		// not the checkpoint-only staging callbacks. The usual replay still
+		// validates terminal EOF and every original stream commitment.
+		return a.visitNativeDeltaOpen(ctx, visit, rows, prepared.openPart)
 	}
 	return a.visitNativeDeltaOpen(ctx, visit, rows, a.delta.open)
 }

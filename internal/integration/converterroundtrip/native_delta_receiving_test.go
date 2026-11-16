@@ -199,9 +199,17 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			if err := VerifyNativeCaptureSetReadback(ctx, store, archive, recovered); err != nil {
 				t.Fatal("reopened every mapped native table bytes", err)
 			}
-			if recovered.Archive != nil {
-				recovered.Archive.ReleaseNativeDecoded()
+			// RecoverBoundSourceImport has closed the source snapshot before it
+			// returns. Read back through the returned archive itself, rather than
+			// the separately opened public fixture above: its authenticated
+			// preparation must outlive that snapshot until the caller releases it.
+			if recovered.Archive == nil {
+				t.Fatal("recovery did not retain the source archive")
 			}
+			if err := VerifyNativeCaptureSetReadback(ctx, store, recovered.Archive, recovered); err != nil {
+				t.Fatal("returned retained archive readback after source snapshot close", err)
+			}
+			recovered.Archive.ReleaseNativeDecoded()
 			usage, _ := archive.NativeDecodedUsage()
 			if usage.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usage.CurrentCategories, baseline.CurrentCategories) || !reflect.DeepEqual(usage.CurrentCharges, baseline.CurrentCharges) {
 				t.Fatal("recovery/readback ownership leaked", baseline, usage)

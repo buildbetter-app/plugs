@@ -105,11 +105,8 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		if owned && !keepArchive && source.collection != nil {
 			_ = source.collection.close()
 			source.collection, source.archive, source.stream, source.plan, source.logical = nil, nil, nil, nil, nil
-		} else if owned && source.archive != nil && source.collection == nil {
-			source.archive.ClearNativeDeltaPreparation()
-			if !keepArchive {
-				source.archive.ReleaseNativeDecoded()
-			}
+		} else if owned && !keepArchive && source.archive != nil && source.collection == nil {
+			source.archive.ReleaseNativeDecoded()
 		}
 	}()
 	if source == nil || source.requestHash != request {
@@ -169,7 +166,9 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	// reopening that closed reader.
 	archive.UseNativeDeltaPreparedReadback()
 	// The report retains the source archive, while prepared logical bytes and
-	// reverse inspection candidates end at this comparison boundary.
+	// reverse inspection candidates end at this comparison boundary. The retained
+	// archive keeps its authenticated preparation until the caller invokes
+	// ReleaseNativeDecoded: its source reader closes when recovery returns.
 	work, release := archive.NativeDeltaAccountingScope()
 	defer release()
 	ctx = work.WithNativeDeltaAccounting(ctx)

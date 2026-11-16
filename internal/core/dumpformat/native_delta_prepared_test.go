@@ -345,8 +345,10 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 	// every authenticated historical commit state, while the source reader is
 	// still available. Prepared staging separately retains eight checkpoints.
 	states := 0
+	var before []NativeDeltaTableState
 	if err := a.VisitNativeDeltaTableStates(context.Background(), func(state NativeDeltaTableState) error {
 		states++
+		before = append(before, cloneNativeDeltaState(state))
 		return nil
 	}); err != nil || states != 24 {
 		t.Fatalf("complete table readback failed before source close: states=%d err=%v", states, err)
@@ -355,7 +357,9 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 	// Recovery can outlive the original native capture reader. A row readback
 	// that reopens it would report the closed-reader error even though the
 	// complete authenticated preparation is still retained.
+	closedSourceOpens := 0
 	a.delta.open = func(context.Context, uint64) (io.ReadCloser, error) {
+		closedSourceOpens++
 		return nil, errors.New("native capture reader closed")
 	}
 	commits, checkpoints := 0, 0
@@ -371,9 +375,38 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 	if commits != 4 || checkpoints != 6 || *opens != opened {
 		t.Fatalf("prepared readback did not use retained source: commits=%d checkpoints=%d opens=%d want=%d", commits, checkpoints, *opens, opened)
 	}
-	// Complete table-state readback must not silently use the checkpoint-only
-	// prepared view: that would omit commit states needed by partial history.
-	if err := a.VisitNativeDeltaTableStates(context.Background(), func(NativeDeltaTableState) error { return nil }); err == nil {
-		t.Fatal("complete table readback accepted a closed source without commit states")
+	// Complete table-state readback replays the retained original parts. It
+	// must include every historical commit state, not just eight checkpoints.
+	var after []NativeDeltaTableState
+	if err := a.VisitNativeDeltaTableStates(context.Background(), func(state NativeDeltaTableState) error {
+		after = append(after, cloneNativeDeltaState(state))
+		return nil
+	}); err != nil || !reflect.DeepEqual(before, after) || *opens != opened || closedSourceOpens != 0 {
+		t.Fatalf("complete retained table readback: states=%d opens=%d closed_opens=%d err=%v", len(after), *opens, closedSourceOpens, err)
+	}
+	a.ReleaseNativeDecoded()
+	usage, _ := a.NativeDecodedUsage()
+	if usage.CurrentAccountedDecodedBytes != 0 || len(usage.CurrentCategories) != 0 || len(usage.CurrentCharges) != 0 {
+		t.Fatal("released preparation retained decoded ownership", usage)
+	}
+	if err := a.VisitNativeDeltaTableStates(context.Background(), func(NativeDeltaTableState) error { return nil }); err == nil || closedSourceOpens != 0 {
+		t.Fatal("released archive used retained parts or reopened original source", err, closedSourceOpens)
+	}
+}
+
+func TestNativeDeltaRetainedOriginalReplayRejectsCorruption(t *testing.T) {
+	a, opens := preparedDeltaFixture(t)
+	prepared, err := a.PrepareNativeDelta(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.UseNativeDeltaPreparedReadback()
+	opened := *opens
+	// The private retained bytes must still pass the real part/stream verifier;
+	// possession of an authenticated preparation never bypasses commitments.
+	part := prepared.files["parts/00000000000000000001.part"]
+	part[len(part)-1] ^= 1
+	if err := a.VisitNativeDeltaTableStates(context.Background(), func(NativeDeltaTableState) error { return nil }); err == nil || *opens != opened {
+		t.Fatal("corrupt retained original accepted or original source reopened", err)
 	}
 }
