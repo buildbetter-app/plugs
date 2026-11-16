@@ -533,6 +533,12 @@ func verifyB03PreparedArtifact(t *testing.T, input b03NativeInput, root string) 
 func retainB03Preparation(t *testing.T, input b03NativeInput, root, manifestPath, binary string, manifest b03Manifest) map[string]any {
 	t.Helper()
 	evidenceDir := filepath.Join(filepath.Dir(filepath.Dir(manifestPath)), "remote-bazel-evidence")
+	if override := os.Getenv("PLUG_PUBLIC_BUNDLE_EVIDENCE_DIR"); override != "" {
+		if !filepath.IsAbs(override) {
+			t.Fatalf("trusted preparation evidence override must be absolute: %q", override)
+		}
+		evidenceDir = override
+	}
 	bindingPath := filepath.Join(evidenceDir, "public-bundle-helper-binding.txt")
 	binding, err := os.ReadFile(bindingPath)
 	wantBinding := "trusted_preparer_sha=" + b03NativePreparerCommit + "\ntrusted_preparer_sha256=" + b03NativePreparerSHA + "\ndescriptor=" + input.Descriptor + "\n"

@@ -235,7 +235,21 @@ func b03IndependentNativeInputs(t *testing.T, inputs b03AdmittedInputs) b03Indep
 			if !reflect.DeepEqual(command.Args, []string{"ready", "--label", "category-carrier", "--limit", "1000", "--json"}) {
 				continue
 			}
-			var rows []struct{ ID string }
+			var rows []struct {
+				ID              string          `json:"id"`
+				Title           string          `json:"title"`
+				Status          string          `json:"status"`
+				Priority        json.RawMessage `json:"priority"`
+				IssueType       string          `json:"issue_type"`
+				Owner           string          `json:"owner"`
+				CreatedAt       string          `json:"created_at"`
+				CreatedBy       string          `json:"created_by"`
+				UpdatedAt       string          `json:"updated_at"`
+				Labels          []string        `json:"labels"`
+				DependencyCount json.RawMessage `json:"dependency_count"`
+				DependentCount  json.RawMessage `json:"dependent_count"`
+				CommentCount    json.RawMessage `json:"comment_count"`
+			}
 			b03DecodeJSON(t, inputs.files[strings.TrimSuffix(name, ".json")+".stdout"], &rows)
 			ids := []string{}
 			for _, row := range rows {
