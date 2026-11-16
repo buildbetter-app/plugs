@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -265,3 +266,63 @@ func assertMergeRefuses(t *testing.T, readers ...io.Reader) {
 type failingMergeReader struct{}
 
 func (failingMergeReader) Read([]byte) (int, error) { return 0, errors.New("synthetic read failure") }
+
+func TestMergeArchivedSQLObservations(t *testing.T) {
+	families := []string{"dolt-conflicts", "dolt-working-set", "dolt-remotes"}
+	queries := []string{"SELECT * FROM dolt_conflicts", "SELECT table_name, staged, status FROM dolt_status", "SELECT * FROM dolt_remotes"}
+	observation := func(f *mergeFixture, family, query string, table any) {
+		for i := range f.config {
+			if f.config[i].Input.Family == family {
+				f.config[i].Input.State = "json-config"
+				f.config[i].Values = map[string]any{"query": query, "table": table}
+			}
+		}
+	}
+	for _, nullRows := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clean-null-%v", nullRows), func(t *testing.T) {
+			a, b := newMergeFixture(t, "alpha"), newMergeFixture(t, "beta")
+			for _, f := range []*mergeFixture{a, b} {
+				for i, family := range families {
+					var rows any = []any{}
+					if nullRows {
+						rows = nil
+					}
+					observation(f, family, queries[i], map[string]any{"Columns": []string{"name"}, "Rows": rows})
+				}
+			}
+			merged, err := Merge(bytes.NewReader(a.bytes(t, nil)), bytes.NewReader(b.bytes(t, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			output := readMergeArchive(t, merged)
+			if len(output.Manifest().Projects) != 2 {
+				t.Fatal("two projects not retained")
+			}
+			for _, source := range output.Manifest().Sources {
+				for _, family := range families {
+					if source.Family == family && source.Rows != 2 {
+						t.Fatalf("configuration key census changed: %#v", source)
+					}
+				}
+			}
+		})
+	}
+	for i, family := range families {
+		for name, table := range map[string]any{
+			"dirty":             map[string]any{"Columns": []string{"name"}, "Rows": []any{map[string]any{"name": "dirty"}}},
+			"missing-table":     nil,
+			"missing-rows":      map[string]any{"Columns": []string{"name"}},
+			"wrong-rows":        map[string]any{"Columns": []string{"name"}, "Rows": map[string]any{}},
+			"ambiguous-rows":    map[string]any{"Columns": []string{"name"}, "Rows": []any{}, "rows": []any{}},
+			"duplicate-columns": map[string]any{"Columns": []string{"name", "name"}, "Rows": []any{}},
+		} {
+			t.Run(family+"/"+name, func(t *testing.T) {
+				f := newMergeFixture(t, "alpha")
+				observation(f, family, queries[i], table)
+				raw := f.bytes(t, nil)
+				readMergeArchive(t, raw)
+				assertMergeRefuses(t, bytes.NewReader(raw))
+			})
+		}
+	}
+}

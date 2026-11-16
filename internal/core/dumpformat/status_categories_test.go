@@ -202,7 +202,7 @@ func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 	}
 }
 
-func TestActualNativeProducerMergeRetainsDirtySourceAndIncompleteEvidence(t *testing.T) {
+func TestActualNativeProducerMergeRetainsIncompleteEvidence(t *testing.T) {
 	var archives []*Archive
 	for _, name := range []string{"reprocody", "reprosignals"} {
 		archive, err := Read(bytes.NewReader(nativeProducerArchive(t, name)))
@@ -216,7 +216,8 @@ func TestActualNativeProducerMergeRetainsDirtySourceAndIncompleteEvidence(t *tes
 		archives = append(archives, archive)
 	}
 	data, err := MergeArchives(archives...)
-	if data != nil || err == nil || err.Error() != `offline merge input 0: unmerged or dirty source family "dolt-conflicts"` {
-		t.Fatalf("actual dirty producer must refuse before history qualification: %v", err)
+	var gap IncompleteHistoryError
+	if data != nil || !errors.As(err, &gap) || gap.Reason == "" {
+		t.Fatalf("actual producer must retain incomplete-history refusal: %v", err)
 	}
 }

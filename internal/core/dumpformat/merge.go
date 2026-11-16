@@ -50,7 +50,7 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		if manifest.Scope != Scope {
 			return nil, fmt.Errorf("offline merge input %d has unsupported scope %q", i, manifest.Scope)
 		}
-		if err := rejectUnmerged(manifest); err != nil {
+		if err := rejectUnmerged(archive); err != nil {
 			return nil, fmt.Errorf("offline merge input %d: %w", i, err)
 		}
 		key := archiveKey(archive)
@@ -392,13 +392,52 @@ func recordIdentity(kind string, record Record) string {
 	return kind + "\x00" + record.Project + "\x00" + record.ID
 }
 
-func rejectUnmerged(manifest Manifest) error {
-	for _, source := range manifest.Sources {
-		switch source.Family {
-		case "dolt-conflicts", "dolt-working-set", "dolt-remotes":
-			if source.Rows != 0 {
-				return fmt.Errorf("unmerged or dirty source family %q", source.Family)
+// rejectUnmerged checks the archived SQL observations, not disposition Rows:
+// external dispositions count configuration keys rather than SQL result rows.
+func rejectUnmerged(archive *Archive) error {
+	var entries []externalEntry
+	if err := decodeJSON(archive.members["config/sources.json"], &entries); err != nil {
+		return fmt.Errorf("invalid merge configuration provenance: %w", err)
+	}
+	for _, entry := range entries {
+		var query string
+		switch entry.Input.Family {
+		case "dolt-conflicts":
+			query = "SELECT * FROM dolt_conflicts"
+		case "dolt-working-set":
+			query = "SELECT table_name, staged, status FROM dolt_status"
+		case "dolt-remotes":
+			query = "SELECT * FROM dolt_remotes"
+		default:
+			continue
+		}
+		if entry.Input.State == "absent" {
+			continue
+		}
+		table, ok := entry.Values["table"].(map[string]any)
+		if !ok || len(entry.Values) != 2 || entry.Values["query"] != query || len(table) != 2 {
+			return fmt.Errorf("missing or ambiguous SQL observation for source family %q", entry.Input.Family)
+		}
+		columns, ok := table["Columns"].([]any)
+		if !ok || len(columns) == 0 {
+			return fmt.Errorf("invalid SQL observation columns for source family %q", entry.Input.Family)
+		}
+		seen := map[string]bool{}
+		for _, column := range columns {
+			name, ok := column.(string)
+			if !ok || name == "" || seen[name] {
+				return fmt.Errorf("ambiguous SQL observation columns for source family %q", entry.Input.Family)
 			}
+			seen[name] = true
+		}
+		value, present := table["Rows"]
+		rows, ok := value.([]any)
+		// SQL tables with a nil result slice encode Rows as null.
+		if !present || value != nil && !ok {
+			return fmt.Errorf("invalid SQL observation rows for source family %q", entry.Input.Family)
+		}
+		if len(rows) != 0 {
+			return fmt.Errorf("unmerged or dirty source family %q", entry.Input.Family)
 		}
 	}
 	return nil
