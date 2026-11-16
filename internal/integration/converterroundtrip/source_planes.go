@@ -354,7 +354,7 @@ func validateSourceCoreMappings(archive *dumpformat.Archive, plan driver.SourceP
 				want = "type"
 			}
 			switch rule.Source {
-			case "id", "title", "description", "priority", "status", "issue_type", "metadata", "created_at":
+			case "id", "title", "description", "priority", "status", "issue_type", "metadata", "created_at", "closed_at":
 			default:
 				return driver.ErrUnsupported
 			}

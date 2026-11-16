@@ -61,8 +61,9 @@ func jointSourceFixture(t *testing.T) []byte {
 			fields := rows["bead"][i].Source.Fields
 			fields["storage_class"] = "versioned"
 			fields["ephemeral"], fields["no_history"] = json.Number("0"), json.Number("0")
+			fields["closed_at"], rows["bead"][i].Body["closed_at"] = nil, nil
 			if rows["bead"][i].ID == "demo-7" {
-				for field, value := range (dumpformat.Row{"description": "explicit durable description", "priority": json.Number("3"), "metadata": ` {"durable_only":9007199254740993,"decimal":1.0,"null":null} `, "created_at": "2026-01-01T00:00:00Z"}) {
+				for field, value := range (dumpformat.Row{"description": "explicit durable description", "priority": json.Number("3"), "metadata": ` {"durable_only":9007199254740993,"decimal":1.0,"null":null} `, "created_at": "2026-01-01T00:00:00Z", "closed_at": "2026-01-02T03:04:05.123456789+02:00"}) {
 					fields[field], rows["bead"][i].Body[field] = value, value
 				}
 			}
@@ -262,6 +263,13 @@ func jointUnboundProfileWithPlan(t *testing.T, data []byte, store driver.Store, 
 					switch field.Name {
 					case "id", "title", "status", "metadata", "created_at":
 						rule.Target, rule.Disposition = field.Name, "exact-map"
+					case "closed_at":
+						// closed_at is a durable document lifecycle field. The
+						// active workflow projection has no lifecycle slot for it;
+						// retain it as origin metadata on active rows.
+						if index == 1 {
+							rule.Target, rule.Disposition = field.Name, "exact-map"
+						}
 					case "issue_type":
 						rule.Target, rule.Disposition = "type", "exact-map"
 					case "description", "priority":
@@ -964,7 +972,7 @@ func TestJointSourceCoreFieldDispositionsAndCommitmentsAcrossThreeStores(t *test
 						if description || priority || metadata || doc.CreatedAt != nil {
 							t.Fatal("origin-only durable value acquired a live slot", doc)
 						}
-					} else if doc.Fields["description"] != "explicit durable description" || string(encode(t, doc.Fields["priority"])) != "3\n" || string(doc.Metadata["durable_only"]) != "9007199254740993" || doc.CreatedAt == nil || !doc.CreatedAt.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) {
+					} else if doc.Fields["description"] != "explicit durable description" || string(encode(t, doc.Fields["priority"])) != "3\n" || string(doc.Metadata["durable_only"]) != "9007199254740993" || doc.CreatedAt == nil || !doc.CreatedAt.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) || doc.ClosedAt == nil || !doc.ClosedAt.Equal(time.Date(2026, 1, 2, 1, 4, 5, 123456789, time.UTC)) {
 						t.Fatal("exact-map durable values were lost", doc)
 					}
 					var raw dumpformat.Row

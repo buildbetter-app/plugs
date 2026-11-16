@@ -298,6 +298,7 @@ internal/core/nativeprojection/native_delta_current.go
 internal/core/nativeprojection/native_delta_history_modes.go
 internal/core/nativeprojection/native_schema.go
 internal/core/nativeprojection/planner.go
+internal/core/nativeprojection/planner_test.go
 internal/core/nativeprojection/profile_accounting.go
 internal/core/nativeprojection/result.go
 internal/core/nativeprojection/snapshot_accounting.go

@@ -314,6 +314,13 @@ func buildPlanModeWithCurrent(archive *dumpformat.Archive, profile *driver.Resto
 			}
 			doc.CreatedAt = createdAt
 		}
+		if projection.MapsField(source, "closed_at") {
+			closedAt, err := SourceCloseTime(source)
+			if err != nil {
+				return restorePlan{}, err
+			}
+			doc.ClosedAt = closedAt
+		}
 		docs[source.ID] = doc
 	}
 
@@ -725,6 +732,23 @@ func SourceCreationTime(source dumpformat.Record) (*time.Time, error) {
 	}
 	createdAt = createdAt.UTC()
 	return &createdAt, nil
+}
+
+// SourceCloseTime accepts only the admitted row's own close field. A missing
+// value preserves an unknown close instant; no restore or version clock is
+// evidence of when a bead was closed.
+func SourceCloseTime(source dumpformat.Record) (*time.Time, error) {
+	raw := source.Source.Fields["closed_at"]
+	if raw == nil {
+		return nil, nil
+	}
+	stamp, ok := raw.(string)
+	closedAt, err := time.Parse(time.RFC3339Nano, stamp)
+	if !ok || err != nil || closedAt.IsZero() {
+		return nil, fmt.Errorf("bead %s has invalid source close instant", source.ID)
+	}
+	closedAt = closedAt.UTC()
+	return &closedAt, nil
 }
 
 // ImportedSourceLink preserves the typed endpoint before any local lookup.

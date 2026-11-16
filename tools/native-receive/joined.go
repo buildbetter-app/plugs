@@ -220,7 +220,7 @@ func rehearsalConstructionPolicy(archiveSHA256, sourceStoreID string, projects [
 		Principal:    driver.SourcePlanePrincipalV1{Key: "plug-restore-rehearsal", Source: rehearsalPolicySHA256, Authority: "restore-only-local/1", PrincipalJSON: principalJSON},
 		Provider:     driver.SourcePlaneProviderV1{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"},
 		EntityPolicy: "durable-bead-identity", TuplePolicy: "copy-observed-exact", StatusPolicy: "source-name-identity", TargetIDPolicy: "source-id", RoutePolicy: "active-first", UnmappedFields: "opaque-metadata", OtherRecords: "inert-origin", Sidecars: "retain-captured-origins", DependencyPolicy: "exact-typed",
-		FieldMappings: []driver.SourcePlaneStringPairV1{{From: "id", To: "id"}, {From: "title", To: "title"}, {From: "description", To: "description"}, {From: "priority", To: "priority"}, {From: "issue_type", To: "type"}, {From: "status", To: "status"}, {From: "metadata", To: "metadata"}, {From: "created_at", To: "created_at"}}}
+		FieldMappings: []driver.SourcePlaneStringPairV1{{From: "id", To: "id"}, {From: "title", To: "title"}, {From: "description", To: "description"}, {From: "priority", To: "priority"}, {From: "issue_type", To: "type"}, {From: "status", To: "status"}, {From: "metadata", To: "metadata"}, {From: "created_at", To: "created_at"}, {From: "closed_at", To: "closed_at"}}}
 	return json.Marshal(policy)
 }
 
