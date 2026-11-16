@@ -19,14 +19,14 @@ func TestDependencyMetadataDifferentialJCS(t *testing.T) {
 		`1e-9999`, `0e999999999`, `1e9999`, `10e9998`, `9007199254740993`,
 		`9007199254740992.0`, `9007199254740994`, `1e-6`, `0.000001`,
 		`1e21`, `1000000000000000000000`, `5e-324`, `4.9406564584124654e-324`,
-		`"x"`, `"\u0078"`, `"α"`, `"\u03b1"`, `"😀"`, `"\ud83d\ude00"`,
+		`"x"`, `"\u0078"`, `"α"`, `"\u03b1"`, `"𝄞"`, `"\ud834\udd1e"`,
 		`"a/b"`, `"a\/b"`, `"\n\t\b\f\r\\\""`, `"é"`, `"e\u0301"`,
 		`{}`, ` { } `, `[]`, `[1,2]`, `[2,1]`, `{"a":1,"b":[true,null,"x"]}`,
 		` { "b":[true,null,"\u0078"], "a":1e0 } `,
 		`{"n":-0.0}`, `{"n":0e999999999}`, `{"n":1e9999}`,
 		`{"n":1e-9999}`, `{"n":0}`, `{"x":1,"x":2}`, `{"x":2}`,
 		`{"x":1,"\u0078":2}`, `{"a":{"x":1,"x":2}}`,
-		`{"α":1,"😀":2}`, `{"\ud83d\ude00":2.0,"\u03b1":1e0}`,
+		`{"α":1,"𝄞":2}`, `{"\ud834\udd1e":2.0,"\u03b1":1e0}`,
 		`not json`, ``, ` `, `[1 2]`, `01`, `[01]`, `{"a":1,}`, `1 2`, `{}[]`,
 		`{"n":`, `"\q"`, `[true false]`, `{"a":null}`, `{"a":{}}`,
 	}
@@ -74,10 +74,10 @@ func TestDependencyMetadataDifferentialJCS(t *testing.T) {
 		number := random.Float64()*2e20 - 1e20
 		decimal := strconv.FormatFloat(number, 'f', -1, 64)
 		exponent := strconv.FormatFloat(number, 'e', -1, 64)
-		left := fmt.Sprintf(`{"n":%s,"array":[%d,{"text":"α😀x","null":null}]}`, decimal, index)
-		right := fmt.Sprintf(` {"array":[%d,{"null":null,"text":"\u03b1\ud83d\ude00\u0078"}],"n":%s} `, index, exponent)
+		left := fmt.Sprintf(`{"n":%s,"array":[%d,{"text":"α𝄞x","null":null}]}`, decimal, index)
+		right := fmt.Sprintf(` {"array":[%d,{"null":null,"text":"\u03b1\ud834\udd1e\u0078"}],"n":%s} `, index, exponent)
 		compare(left, right)
-		compare(left, fmt.Sprintf(`{"n":%s,"array":[%d,{"text":"α😀y","null":null}]}`, decimal, index))
+		compare(left, fmt.Sprintf(`{"n":%s,"array":[%d,{"text":"α𝄞y","null":null}]}`, decimal, index))
 		compare(left, left+` {}`)
 	}
 	if checked < 4000 || invalid == 0 || nativeFallback == 0 {

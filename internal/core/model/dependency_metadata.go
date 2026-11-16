@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"unicode/utf8"
 )
 
 // dependencyMetadataTokenEqual compares native metadata values without adding a
@@ -45,6 +46,9 @@ func dependencyMetadataTokenEqual(left, right string) bool {
 // dependencyMetadataValue rejects duplicate object keys rather than letting
 // encoding/json's map decoding silently keep the last value.
 func dependencyMetadataValue(text string) (any, error) {
+	if !utf8.ValidString(text) {
+		return nil, errors.New("metadata JSON must be UTF-8")
+	}
 	decoder := json.NewDecoder(bytes.NewBufferString(text))
 	value, err := dependencyMetadataElement(decoder)
 	if err != nil {

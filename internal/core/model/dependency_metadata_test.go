@@ -61,3 +61,28 @@ func TestDependencyMetadataPhysicalValueAndOpaqueTokensStayDistinct(t *testing.T
 		t.Fatal("semantic metadata rule reinterpreted another opaque field or null")
 	}
 }
+
+// RFC 8259 requires UTF-8. Raw invalid bytes must not become equal through
+// encoding/json's replacement behavior; escaped UTF-16 handling is separate.
+func TestDependencyMetadataInvalidUTF8UsesByteFallback(t *testing.T) {
+	invalidA := "{\"n\":\"" + string([]byte{0xff}) + "\"}"
+	invalidB := "{\"n\":\"" + string([]byte{0xfe}) + "\"}"
+	replacement := `{"n":"\ufffd"}`
+	for _, test := range []struct {
+		name, left, right string
+		equal             bool
+	}{
+		{"different invalid bytes", invalidA, invalidB, false},
+		{"invalid versus replacement", invalidA, replacement, false},
+		{"identical invalid bytes", invalidA, invalidA, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := dependencyMetadataTokenEqual(test.left, test.right); got != test.equal {
+				t.Fatalf("equality=%v want=%v", got, test.equal)
+			}
+			if got := dependencyMetadataTokenEqual(test.right, test.left); got != test.equal {
+				t.Fatalf("reverse equality=%v want=%v", got, test.equal)
+			}
+		})
+	}
+}
