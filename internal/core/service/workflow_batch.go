@@ -57,11 +57,6 @@ func (s *Service) prepareWorkflowRelation(ctx context.Context, staged *workflowp
 	link := *op.Link
 	link.To = to
 	op.Link = &link
-	if op.Kind == model.OpLink {
-		if err := validateWorkflowCycleLink(ctx, staged, by, meta, graph, link); err != nil {
-			return model.Op{}, nil, err
-		}
-	}
 	if !workflowRef(link.From) && !workflowRef(to) {
 		return op, nil, nil
 	}

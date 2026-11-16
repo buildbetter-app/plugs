@@ -192,7 +192,7 @@ func (s *Service) apply(ctx context.Context, by model.PrincipalRef, method strin
 	}
 	source := s.source.Load()
 	deletes := ordinaryDeletes(cs)
-	ordinaryMixed := source == nil && (method == "tx.apply" || method == "bead.link") && len(deletes) == 0 && s.workflow.CanPrepareOrdinaryOperations() && (ordinaryBatchUsesWorkflow(cs) || cycleLinkChanges(cs))
+	ordinaryMixed := source == nil && method == "tx.apply" && len(deletes) == 0 && s.workflow.CanPrepareOrdinaryOperations() && ordinaryBatchUsesWorkflow(cs)
 	if ordinaryMixed {
 		ctx = pipeline.WithSourceOperations(ctx, s.sourcePreparation(nil, by, cs, meta), ordinaryWorkflowKind)
 	}
