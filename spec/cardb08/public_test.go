@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
@@ -58,6 +59,154 @@ func (f *b08Fixture) oneWrite(label, method string, params map[string]any, id mo
 
 func (f *b08Fixture) closeOnce(label string, id model.Ref, reason string) b08Reply {
 	return f.oneWrite(label, "bead.close", map[string]any{"id": id, "reason": reason}, id)
+}
+
+func TestB08PublicAtomicMultiCloseReportsRefusedItem(t *testing.T) {
+	root := b08Root(t, "b08-indexed-multi-close")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for refusedIndex := 0; refusedIndex < 3; refusedIndex++ {
+			t.Run(fmt.Sprintf("%s/refused_index_%d", engine, refusedIndex), func(t *testing.T) {
+				f := newB08Fixture(t, engine, filepath.Join(root, engine, fmt.Sprint(refusedIndex)), false)
+				first := f.create("batch-first", "b08-item", nil, nil)
+				refused := f.create("batch-template", "b08-item", map[string]any{"template": true}, nil)
+				last := f.create("batch-last", "b08-item", nil, nil)
+				items := []model.Ref{first, refused, last}
+				items[refusedIndex], items[1] = items[1], items[refusedIndex]
+				ops := make([]map[string]any, 0, len(items))
+				for i, ref := range items {
+					ops = append(ops, map[string]any{"kind": "close", "target": ref, "reason": fmt.Sprintf("batch item %d complete", i)})
+				}
+				before := f.state()
+				out := f.call("indexed-atomic-close", "tx.apply", map[string]any{"changeSet": map[string]any{"ops": ops}}, "ontology_guard_failed")
+				after := f.state()
+				if !bytes.Equal(b08JSON(t, before), b08JSON(t, after)) {
+					t.Fatal("refused multi-close changed records, versions, history, derived rows, receipts or checkpoint")
+				}
+				var violations []struct{ Guard string }
+				if json.Unmarshal(b08JSON(t, out.Error.Data.Details["violations"]), &violations) != nil || len(violations) != 1 || violations[0].Guard != "not_template" {
+					t.Fatalf("multi-close lost its exact typed template refusal: %+v", out.Error)
+				}
+				for _, ref := range items {
+					doc := f.document(ref)
+					if doc.Fields["status"] != "b08-queued" || doc.ClosedAt != nil || len(doc.Comments) != 0 {
+						t.Fatalf("refused batch partially closed or appended a reason to %s", ref.ID)
+					}
+				}
+				// Error details are the public attribution port. Request order is
+				// the independent oracle; neither a label nor an outer JSON-RPC
+				// response position supplies the missing result attribution.
+				index, hasIndex := out.Error.Data.Details["opIndex"]
+				rawRef, hasRef := out.Error.Data.Details["ref"]
+				var gotRef model.Ref
+				refErr := json.Unmarshal(b08JSON(t, rawRef), &gotRef)
+				attributed := hasIndex && fmt.Sprint(index) == fmt.Sprint(refusedIndex) && hasRef && refErr == nil && gotRef.IsID() && gotRef.ID == refused.ID && gotRef.Branch.IsZero()
+				b08Save(t, f.root, "indexed-atomic-close-conservation.json", map[string]any{"before": before, "after": after, "request_items": items, "expected_refused_index": refusedIndex, "expected_refused_ref": refused, "actual_error": out.Error, "public_item_attribution_proved": attributed, "missing_attribution_disposition": "OPEN evidence gap; an unindexed violation does not satisfy B08"})
+				f.reopen("indexed-atomic-close-refusal")
+				if !attributed {
+					t.Errorf("atomic multi-close has no exact public item attribution: want opIndex=%d ref=%s, actual=%s", refusedIndex, refused.ID, b08JSON(t, out.Error.Data.Details))
+				}
+			})
+		}
+	}
+}
+
+func TestB08PublicExternalGateResolverSettlesAndReplays(t *testing.T) {
+	root := b08Root(t, "b08-external-gate")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			f := newB08Fixture(t, engine, filepath.Join(root, engine), false)
+			resolver := model.PrincipalRef{Kind: "service", ID: "b08-ci-resolver"}
+			gate := f.create("external-gate", "b08-item", map[string]any{"gate_kind": "b08-ci"}, nil)
+			dependent := f.create("external-dependent", "b08-item", nil, nil)
+			f.link("external-gate-blocks", dependent, gate, "blocks")
+			refs := map[string]model.Ref{"gate": gate, "dependent": dependent}
+			f.readyRoles("external-gate-pending", refs, []string{"gate"})
+			details := map[string]any{"provider": "b08-public-resolver", "result": "success", "attempt": 1}
+			params := map[string]any{"id": gate, "state": "success", "details": details}
+			before := f.state()
+			out := f.callAs(resolver, "resolve-external-gate", "gate.report", params, "")
+			var resolved struct {
+				Commit    model.Commit  `json:"commit"`
+				State     string        `json:"state"`
+				Approvals model.Natural `json:"approvals"`
+			}
+			if err := json.Unmarshal(out.Result, &resolved); err != nil {
+				t.Fatal(err)
+			}
+			after := f.state()
+			oldHead, err := before.Meta.Head.Uint64()
+			commit := resolved.Commit
+			if err != nil || commit.Revision.String() != fmt.Sprint(oldHead+1) || after.Meta.Head != commit.Revision || out.Meta.Replayed || resolved.State != "resolved" || !resolved.Approvals.IsZero() || len(commit.Results) != 1 || commit.Results[0].Ref.ID != gate.ID || commit.Results[0].Revision != commit.Revision || len(after.History) != len(before.History)+1 || len(after.Versions[gate.ID]) != len(before.Versions[gate.ID])+1 {
+				t.Fatalf("resolver did not settle exactly one gate revision: %s", out.Result)
+			}
+			doc := f.document(gate)
+			returned, err := pipeline.DecodeDocument(commit.Results[0].Record)
+			if err != nil || !reflect.DeepEqual(doc, returned) || doc.Fields["gate_kind"] != "b08-ci" || doc.Fields["gate_state"] != "resolved" || doc.Fields["status"] != "b08-finished" || !bytes.Equal(b08JSON(t, doc.Fields["gate_details"]), b08JSON(t, details)) {
+				t.Fatalf("resolver result and stored gate disagree: %+v err=%v", doc, err)
+			}
+			for _, row := range before.Records {
+				if row.Ref.ID == gate.ID {
+					continue
+				}
+				found := false
+				for _, current := range after.Records {
+					if current.Ref.ID == row.Ref.ID {
+						found = true
+						if !reflect.DeepEqual(row, current) || !reflect.DeepEqual(before.Versions[row.Ref.ID], after.Versions[row.Ref.ID]) {
+							t.Fatal("resolver changed an unrelated record/version")
+						}
+					}
+				}
+				if !found {
+					t.Fatal("resolver removed an unrelated record")
+				}
+			}
+			if len(after.Records) != len(before.Records) || !reflect.DeepEqual(before.History, after.History[:len(before.History)]) || !reflect.DeepEqual(before.Checkpoint, after.Checkpoint) {
+				t.Fatal("resolver changed record cardinality, prior history or workflow checkpoint")
+			}
+			last := after.History[len(after.History)-1]
+			if !reflect.DeepEqual(last.Principal, resolver) || last.Revision != commit.Revision || len(last.Changes) != 1 || last.Changes[0].Ref.ID != gate.ID || len(last.Events) != 2 || last.Events[0].Type != model.EventBeadClosed || last.Events[1].Type != model.EventGateReported {
+				t.Fatalf("resolver lost its single actor/image and exact close/report events: %+v", last)
+			}
+			for i, event := range last.Events {
+				if event.Index.String() != fmt.Sprint(i) || !event.ChangeIndex.IsZero() || event.Resource.Ref.ID != gate.ID || event.Provenance.Method != "gate.report" {
+					t.Fatal("resolver event lost its target/index/method")
+				}
+			}
+			b08Save(t, f.root, "external-gate-one-write.json", map[string]any{"before": before, "after": after, "resolver": resolver, "result": json.RawMessage(out.Result)})
+			f.readyRoles("external-gate-settled", refs, []string{"dependent"})
+			for _, phase := range []string{"same-process", "after-store-reopen"} {
+				if phase == "after-store-reopen" {
+					f.reopen("resolved-external-gate")
+				}
+				beforeReplay := f.state()
+				replay := f.callAs(resolver, "resolve-external-gate", "gate.report", params, "")
+				if !replay.Meta.Replayed || !bytes.Equal(out.Result, replay.Result) || !bytes.Equal(b08JSON(t, beforeReplay), b08JSON(t, f.state())) {
+					t.Fatal("external gate replay changed its original result or complete state")
+				}
+				read := f.call("read-resolved-gate-"+phase, "bead.get", map[string]any{"id": gate}, "")
+				var result struct {
+					Bead struct {
+						ID       string
+						Revision model.Revision
+						Status   string
+						Fields   map[string]any
+					}
+				}
+				if err := json.Unmarshal(read.Result, &result); err != nil || result.Bead.ID != gate.ID || result.Bead.Revision != commit.Revision || result.Bead.Status != "b08-finished" || result.Bead.Fields["gate_state"] != "resolved" || !bytes.Equal(b08JSON(t, result.Bead.Fields["gate_details"]), b08JSON(t, details)) || !bytes.Equal(b08JSON(t, beforeReplay), b08JSON(t, f.state())) {
+					t.Fatalf("public resolver readback changed values/state: %s err=%v", read.Result, err)
+				}
+				f.readyRoles("external-gate-ready-"+phase, refs, []string{"dependent"})
+			}
+			f.conserved("resolved-gate-new-report-refused", "gate.report", params, "precondition_failed", "")
+			// The external gate report is an actual supported resolver path.
+			// A separate GatesResolved guard still needs its own observations;
+			// no boolean observation or close success is fabricated here.
+			guarded := f.create("unobserved-gate-guard", "b08-gate", nil, nil)
+			f.conserved("gate-observation-still-unavailable", "bead.close", map[string]any{"id": guarded}, "ontology_guard_failed", "gates_resolved")
+			f.reopen("external-gate-final")
+		})
+	}
 }
 
 func TestB08PublicFixedGuardsAndNoWriteRefusals(t *testing.T) {
