@@ -36,7 +36,7 @@ func (o *Ontology) ValidateOrdered(ctx context.Context, images []port.Change, fi
 		latest[change.Resource.Ref.ID] = change
 	}
 	validated := make([]port.Change, 0, len(images))
-	for _, image := range images {
+	for opIndex, image := range images {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -159,6 +159,15 @@ func (o *Ontology) ValidateOrdered(ctx context.Context, images []port.Change, fi
 		}
 		graph[id] = storedBead{doc: after}
 		if err := o.validate(ctx, single, reader, graph); err != nil {
+			if refusal, ok := err.(*model.Error); ok && refusal.Data.Code == "ontology_guard_failed" {
+				details := make(map[string]any, len(refusal.Data.Details)+2)
+				for name, value := range refusal.Data.Details {
+					details[name] = value
+				}
+				details["opIndex"] = opIndex
+				details["ref"] = image.Resource.Ref
+				refusal.Data.Details = details
+			}
 			return err
 		}
 		validated = append(validated, *change)

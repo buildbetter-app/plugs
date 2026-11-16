@@ -1,5 +1,29 @@
 # B08 public close guards and settlement
 
+The post-official proof child exercises atomic three-item `tx.apply` closes
+with a template refusal at every item position on memory, SQLite and PostgreSQL.
+Each case requires the original typed guard, complete no-write conservation,
+unchanged close reasons and timestamps, and SQL reopen. The required public
+attribution is a zero-based `details.opIndex` plus the original `details.ref`.
+An unindexed violation is an explicit OPEN evidence gap and leaves the new
+assertion RED; JSON-RPC independent-call batches supply no substitute proof.
+The ordered guard refusal adds those two details while preserving the original
+typed error and its complete violations. Historical unindexed outcomes remain
+RED; the changed-source controls must prove the attribution at runtime.
+
+The external-gate control uses the public `gate.report` resolver path with a
+distinct service principal. It checks exact resolver details, one target
+revision and history entry, close/report events, unchanged unrelated records,
+dependent readiness, same-key replay and SQL reopen/readback. The separately
+unobserved `gates_resolved` guard retains its typed no-write refusal.
+
+Current qualification remains separate: official run 43205865419 is independently
+PASS, budget 1 allowed / 1 spent / 0 remaining; no second official run is used.
+PR491's positive evidence-required close depends on PR492's `OpAttach` support.
+Intermediate hosted 43181490792 remains RED and carries no standalone PR491
+success. Admission pointer R41800330346 remains unchanged, with no new rebind.
+`close-specific compare-and-set proof: deferred to B22 (paused)`.
+
 The stacked attachment child lowers the existing typed `attach` operation.
 `attachment_test` proves `link` and `commit` tuples through public JSON-RPC on
 memory, SQLite and PostgreSQL: one revision/version/event, immutable historical
@@ -86,7 +110,7 @@ The owning focus selects `public_test`, explicit manual `native_test` and the
 lexicon gate with all seven common controls. The zero-extra canonical whole
 runs concurrently. Source, focus, whole, hosted, native and full-card outcomes
 remain distinct; this source alone grants no runtime credit. Official capture
-is unspent, private capture is disabled, and no source-history mode, physical
+is preserved in the post-official disposition above, private capture is disabled, and no source-history mode, physical
 writer, real-store, full-accounting, switch or landing qualification transfers.
 
 The focused native target also forwards the trusted RunsOn `BAZEL_BIN`,

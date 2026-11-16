@@ -134,7 +134,10 @@ type b08Reply struct {
 	} `json:"_meta"`
 }
 
-type b08Call struct{ Method, Key string }
+type b08Call struct {
+	Method, Key string
+	Principal   model.PrincipalRef
+}
 
 type b08Fixture struct {
 	t                         *testing.T
@@ -287,10 +290,15 @@ func (f *b08Fixture) close() {
 
 func (f *b08Fixture) call(label, method string, params map[string]any, wantCode string) b08Reply {
 	f.t.Helper()
+	return f.callAs(b08Actor, label, method, params, wantCode)
+}
+
+func (f *b08Fixture) callAs(by model.PrincipalRef, label, method string, params map[string]any, wantCode string) b08Reply {
+	f.t.Helper()
 	f.seq++
 	sum := sha256.Sum256([]byte("b08/" + label))
 	key := hex.EncodeToString(sum[:])
-	f.calls = append(f.calls, b08Call{method, key})
+	f.calls = append(f.calls, b08Call{Method: method, Key: key, Principal: by})
 	body := map[string]any{}
 	for k, v := range params {
 		body[k] = v
@@ -298,7 +306,7 @@ func (f *b08Fixture) call(label, method string, params map[string]any, wantCode 
 	body["_meta"] = map[string]any{"project": b08Project, "agent": "b08-recorder", "idempotencyKey": key}
 	request := b08JSON(f.t, map[string]any{"jsonrpc": "2.0", "id": label, "method": method, "params": body})
 	untouched := append([]byte(nil), request...)
-	response := f.server.Dispatch(rpc.WithPrincipal(f.ctx, b08Actor), request)
+	response := f.server.Dispatch(rpc.WithPrincipal(f.ctx, by), request)
 	if !bytes.Equal(untouched, request) {
 		f.t.Fatal("public dispatcher changed caller bytes")
 	}
@@ -409,11 +417,11 @@ func (f *b08Fixture) state() b08State {
 			f.t.Fatal(err)
 		}
 	}
-	principal, err := driver.PrincipalKey(b08Actor)
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	for _, call := range f.calls {
+		principal, err := driver.PrincipalKey(call.Principal)
+		if err != nil {
+			f.t.Fatal(err)
+		}
 		receipt, err := r.IdempotencyByKey(f.ctx, principal, "b08-recorder", call.Method, call.Key)
 		if err != nil {
 			f.t.Fatal(err)
