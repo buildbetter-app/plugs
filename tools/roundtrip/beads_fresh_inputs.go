@@ -297,7 +297,7 @@ func loadFreshCommittedNativeInputs(t *testing.T) freshCommittedNativeInputs {
 			JournalTable         string          `json:"journal_table"`
 			Commits              int             `json:"commits"`
 		}
-		if err := strictTypedJSON(raw, &request); err != nil || request.Format != "public-native-capture-proof/1" || request.Capture != freshNativeInputsDirectory+"/capture-set" || request.CaptureSHA256 != provenance.CaptureSet.ManifestSHA256 || request.Oracle != freshNativeInputsDirectory+"/oracle" || request.LedgerSHA256 != provenance.Oracle.LedgerSHA256 || request.StatesSHA256 != provenance.Oracle.StatesSHA256 || request.RestoreMode != mode || request.JournalTable != "bd_events_journal" || request.Commits != capture.Totals.Commits || request.RestoreTime == "" || strings.Contains(string(raw), "/tmp/") {
+		if err := strictTypedJSON(raw, &request); err != nil || request.Format != "public-native-capture-proof/1" || request.Capture != freshNativeInputsDirectory+"/capture-set" || request.CaptureSHA256 != provenance.CaptureSet.ManifestSHA256 || request.Oracle != freshNativeInputsDirectory+"/oracle" || request.LedgerSHA256 != provenance.Oracle.LedgerSHA256 || request.StatesSHA256 != provenance.Oracle.StatesSHA256 || request.RestoreMode != mode || request.JournalTable != dumpformat.SourceEventJournalTable || request.Commits != capture.Totals.Commits || request.RestoreTime == "" || strings.Contains(string(raw), "/tmp/") {
 			t.Fatalf("committed %s request template is not repository-relative", mode)
 		}
 		if mode == "partial" && string(request.RestoreFirstSequence) != "2" || mode != "partial" && len(request.RestoreFirstSequence) != 0 {
