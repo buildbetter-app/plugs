@@ -46,3 +46,12 @@ native-history or full-card PASS is asserted by this source addition.
 The ordinary converterroundtrip test glob includes both new tests without a
 filter. Its declared `//spec/cardb11:public_native_edge_inputs` runfiles carry
 the committed input; runner paths never refer to this host's `/tmp` files.
+
+Native reverse bookkeeping fills absent `_plug_native_status`,
+`_plug_native_status_category`, and `_plug_native_type` metadata fields. These
+names remain admitted user metadata: equal existing values and unrelated user
+metadata survive; any unequal existing value, including JSON null, explicitly
+refuses reverse conversion with `conflicting_native_metadata` and no output.
+`TestB11AdmittedNativeReverseMetadataPreservationAndConflicts` covers admitted
+import through reverse JSONL across memory, SQLite and PostgreSQL using a
+separately declared synthetic history; it earns no native capture credit.

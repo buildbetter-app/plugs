@@ -339,3 +339,113 @@ func TestProjectNativeStatusForReverseArchivesIncompatibleBuiltin(t *testing.T) 
 		t.Fatalf("native status provenance missing: %#v", projected.Body["metadata"])
 	}
 }
+
+// This declared synthetic history proves admitted metadata behavior, not native
+// capture or native-history qualification. Every history image carries the same
+// user metadata and explicit custom-type mapping as its admitted head.
+func nativeReverseMetadataFixture(t *testing.T, metadata map[string]any) []byte {
+	t.Helper()
+	members := tarMembers(t, nativeHistoryFixture(t, "pl", "wip"))
+	var manifest dumpformat.Manifest
+	decode(t, members["manifest.json"], &manifest)
+	manifest.Ontology = []dumpformat.OntologyDirective{{ID: "metadata-custom-type", Kind: "map_type", Target: dumpformat.OntologyTarget{Project: "pl", Type: "rich_kind"}, From: "rich_kind", To: "issue"}}
+	convert := func(row *dumpformat.Record) {
+		if row.Kind == "bead" {
+			row.Source.Fields["issue_type"], row.Body["source_type"] = "rich_kind", "rich_kind"
+			row.Source.Fields["metadata"], row.Body["metadata"] = metadata, metadata
+		}
+	}
+	var beads bytes.Buffer
+	for _, line := range bytes.Split(bytes.TrimSpace(members["records/bead.ndjson"]), []byte{'\n'}) {
+		var row dumpformat.Record
+		decode(t, line, &row)
+		convert(&row)
+		beads.Write(encode(t, row))
+	}
+	members["records/bead.ndjson"] = beads.Bytes()
+	var history dumpformat.SourceHistory
+	decode(t, members[dumpformat.SourceHistoryMember], &history)
+	for i := range history.Range.Frames {
+		for j := range history.Range.Frames[i].Records {
+			convert(&history.Range.Frames[i].Records[j])
+		}
+	}
+	members[dumpformat.SourceHistoryMember] = encode(t, history)
+	for path, raw := range members {
+		if path != "manifest.json" {
+			manifest.Files[path] = dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
+		}
+	}
+	members["manifest.json"] = encode(t, manifest)
+	return writeTarMembers(t, members)
+}
+
+func TestB11AdmittedNativeReverseMetadataPreservationAndConflicts(t *testing.T) {
+	bookkeeping := map[string]any{"_plug_native_status": "shared", "_plug_native_status_category": "wip", "_plug_native_type": "rich_kind"}
+	type metadataCase struct {
+		name, conflictKey string
+		matching          bool
+		conflictValue     any
+	}
+	cases := []metadataCase{{name: "absent"}, {name: "matching", matching: true}}
+	for _, key := range []string{"_plug_native_status", "_plug_native_status_category", "_plug_native_type"} {
+		cases = append(cases,
+			metadataCase{name: key + "/unequal", conflictKey: key, conflictValue: "admitted-user-value"},
+			metadataCase{name: key + "/null", conflictKey: key, conflictValue: nil})
+	}
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		for _, tc := range cases {
+			t.Run(engine+"/"+tc.name, func(t *testing.T) {
+				ctx := context.Background()
+				metadata := map[string]any{"user": map[string]any{"array": []any{"kept", nil, true}, "number": json.Number("9007199254740993")}}
+				if tc.matching {
+					for key, value := range bookkeeping {
+						metadata[key] = value
+					}
+				}
+				if tc.conflictKey != "" {
+					metadata[tc.conflictKey] = tc.conflictValue
+				}
+				data := nativeReverseMetadataFixture(t, metadata)
+				store, lease, _ := openIdentityTarget(t, engine)
+				plan := nativeHistoryPlan(t, data, store, lease)
+				plan.Dispositions[0].SourceType = "rich_kind"
+				profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(plan.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: plan.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: nativeFixtureTime.Format("2006-01-02T15:04:05.999999999Z07:00")}
+				profile, err := BindSourceImport(ctx, bytes.NewReader(data), profile, plan)
+				if err != nil {
+					t.Fatal("bind admitted user metadata", err)
+				}
+				report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+				if err != nil {
+					t.Fatal("import admitted user metadata", err)
+				}
+				before := savedLabelImport(t, store, report.Archive, profile, "")
+				result, err := ReverseRestored(ctx, store)
+				if tc.conflictKey != "" {
+					var refusal ReverseRefusal
+					if !errors.As(err, &refusal) || refusal.Reason != "conflicting_native_metadata" || len(result.Result.JSONL) != 0 || result.Result.Digest != "" {
+						t.Fatalf("conflicting admitted key produced output: %v %#v", err, result.Result)
+					}
+				} else {
+					if err != nil {
+						t.Fatal("reverse admitted user metadata", err)
+					}
+					rows := sourceReverseRows(t, result.Result.JSONL)
+					if len(rows) != 1 || rows["pl-42v"] == nil {
+						t.Fatal("missing admitted bead", string(result.Result.JSONL))
+					}
+					want := cloneRow(metadata)
+					for key, value := range bookkeeping {
+						want[key] = value
+					}
+					if !sameReverseJSON(rows["pl-42v"]["metadata"], want) {
+						t.Fatalf("admitted metadata changed: got %#v want %#v", rows["pl-42v"]["metadata"], want)
+					}
+				}
+				if !reflect.DeepEqual(before, savedLabelImport(t, store, report.Archive, profile, "")) {
+					t.Fatal("reverse or conflict refusal changed imported state")
+				}
+			})
+		}
+	}
+}

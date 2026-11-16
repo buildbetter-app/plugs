@@ -338,17 +338,36 @@ func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reve
 		projected.Source.Fields["status"] = status
 		return nil
 	}
+	if err := mergeNativeReverseMetadata(projected, map[string]any{
+		"_plug_native_status": nativeStatus, "_plug_native_status_category": nativeCategory,
+	}); err != nil {
+		return err
+	}
+	projected.Source.Fields["status"] = status
+	return nil
+}
+
+// These names are admitted user metadata, so native bookkeeping may only fill
+// absent keys. A present null conflicts just like any other unequal value.
+func mergeNativeReverseMetadata(projected *reverseconverter.Record, bookkeeping map[string]any) error {
 	metadata, err := dumpformat.SourceMetadataObject(projected.Body["metadata"])
 	if err != nil {
 		return ReverseRefusal{"invalid_source_metadata"}
 	}
+	for key, value := range bookkeeping {
+		if existing, present := metadata[key]; present && !sameReverseJSON(existing, value) {
+			return ReverseRefusal{"conflicting_native_metadata"}
+		}
+	}
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
-	metadata["_plug_native_status"] = nativeStatus
-	metadata["_plug_native_status_category"] = nativeCategory
+	for key, value := range bookkeeping {
+		if _, present := metadata[key]; !present {
+			metadata[key] = value
+		}
+	}
 	projected.Body["metadata"] = metadata
-	projected.Source.Fields["status"] = status
 	return nil
 }
 
@@ -376,15 +395,9 @@ func projectNativeTypeForReverse(projected *reverseconverter.Record, dump revers
 	case "task", "bug", "feature", "epic", "chore":
 		return nil
 	}
-	metadata, err := dumpformat.SourceMetadataObject(projected.Body["metadata"])
-	if err != nil {
-		return ReverseRefusal{"invalid_source_metadata"}
+	if err := mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType}); err != nil {
+		return err
 	}
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	metadata["_plug_native_type"] = nativeType
-	projected.Body["metadata"] = metadata
 	projected.Body["type"] = "issue"
 	projected.Body["source_type"] = "task"
 	projected.Source.Fields["issue_type"] = "task"
