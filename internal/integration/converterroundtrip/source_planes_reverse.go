@@ -311,22 +311,22 @@ func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reve
 	switch nativeCategory {
 	case "active":
 		projected.Body["status_category"] = "unstarted"
-		if !reverseStatusSupported(status) {
+		if !nativeStatusCompatible(nativeCategory, status) {
 			status = "open"
 		}
 	case "wip":
 		projected.Body["status_category"] = "started"
-		if !reverseStatusSupported(status) {
+		if !nativeStatusCompatible(nativeCategory, status) {
 			status = "in_progress"
 		}
 	case "frozen":
 		projected.Body["status_category"] = "backlog"
-		if !reverseStatusSupported(status) {
+		if !nativeStatusCompatible(nativeCategory, status) {
 			status = "blocked"
 		}
 	case "done":
 		projected.Body["status_category"], projected.Body["result"] = "completed", "success"
-		if !reverseStatusSupported(status) {
+		if !nativeStatusCompatible(nativeCategory, status) {
 			status = "closed"
 		}
 	case "unstarted", "started", "backlog", "completed":
@@ -334,7 +334,7 @@ func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reve
 	default:
 		return ReverseRefusal{"unsupported_native_status_category"}
 	}
-	if reverseStatusSupported(nativeStatus) {
+	if nativeStatusCompatible(nativeCategory, nativeStatus) {
 		projected.Source.Fields["status"] = status
 		return nil
 	}
@@ -352,10 +352,16 @@ func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reve
 	return nil
 }
 
-func reverseStatusSupported(status string) bool {
-	switch status {
-	case "open", "in_progress", "hooked", "blocked", "deferred", "pinned", "frozen", "closed":
-		return true
+func nativeStatusCompatible(category, status string) bool {
+	switch category {
+	case "active":
+		return status == "open"
+	case "wip":
+		return status == "in_progress" || status == "hooked"
+	case "frozen":
+		return status == "blocked" || status == "deferred" || status == "pinned" || status == "frozen"
+	case "done":
+		return status == "closed"
 	default:
 		return false
 	}
