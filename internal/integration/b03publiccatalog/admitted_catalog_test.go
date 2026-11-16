@@ -598,7 +598,7 @@ func b03AdmittedRuntime(t *testing.T, ctx context.Context, engine string, source
 	var err error
 	switch engine {
 	case "memory":
-		store, err = memory.NewWithOptions(memory.Options{StoreID: "b03-" + source.Project, Incarnation: "b03-admitted-" + source.Project})
+		store, err = memory.NewWithOptions(memory.Options{StoreID: driver.StoreID("b03-" + source.Project), Incarnation: "b03-admitted-" + source.Project})
 	case "sqlite":
 		dsn = filepath.Join(t.TempDir(), "b03-admitted.db")
 		store, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: dsn})
