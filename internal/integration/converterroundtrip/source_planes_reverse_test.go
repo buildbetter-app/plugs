@@ -355,20 +355,58 @@ func nativeReverseMetadataFixture(t *testing.T, metadata map[string]any) []byte 
 			row.Source.Fields["metadata"], row.Body["metadata"] = metadata, metadata
 		}
 	}
+	secondBead := func(row dumpformat.Record) dumpformat.Record {
+		var second dumpformat.Record
+		decode(t, encode(t, row), &second)
+		second.ID, second.Source.Fields["id"] = "pl-43w", "pl-43w"
+		second.Body["labels"] = []any{}
+		return second
+	}
+	// Joint reverse projects a current edge collection. Supply an actual
+	// admitted relation and its two endpoints, rather than an empty kind entry.
+	edge := dumpformat.Record{Kind: "edge", ID: "metadata-edge", Project: "pl",
+		Body: dumpformat.Row{"from": "pl-42v", "to": "pl-43w", "target_kind": "depends_on_issue_id", "type": "relates-to", "metadata": map[string]any{"fixture": "metadata-roundtrip"}, "thread_id": ""},
+		Source: dumpformat.Provenance{Table: dumpformat.DurableDependencyTable, Fields: dumpformat.Row{
+			"id": "metadata-edge", "issue_id": "pl-42v", "depends_on_issue_id": "pl-43w", "depends_on_wisp_id": nil, "depends_on_external": nil,
+			"type": "relates-to", "metadata": map[string]any{"fixture": "metadata-roundtrip"}, "thread_id": "", "created_at": "2026-01-01T00:00:00Z", "created_by": "fixture-author",
+		}}}
 	var beads bytes.Buffer
 	for _, line := range bytes.Split(bytes.TrimSpace(members["records/bead.ndjson"]), []byte{'\n'}) {
 		var row dumpformat.Record
 		decode(t, line, &row)
 		convert(&row)
 		beads.Write(encode(t, row))
+		beads.Write(encode(t, secondBead(row)))
 	}
 	members["records/bead.ndjson"] = beads.Bytes()
+	members["records/edge.ndjson"] = encode(t, edge)
+	for i := range manifest.Kinds {
+		if manifest.Kinds[i].Name == "bead" {
+			manifest.Kinds[i].Count = 2
+		}
+	}
+	manifest.Kinds = append(manifest.Kinds, dumpformat.Kind{Name: "edge", Version: dumpformat.EdgeVersionLocalOpaque, File: "records/edge.ndjson", Count: 1})
+	sort.Slice(manifest.Kinds, func(i, j int) bool { return manifest.Kinds[i].Name < manifest.Kinds[j].Name })
+	for i := range manifest.Sources {
+		switch manifest.Sources[i].Family {
+		case "issues", "issues.row_lock", "issues.is_blocked":
+			manifest.Sources[i].Rows = 2
+		case dumpformat.DurableDependencyTable:
+			manifest.Sources[i].Rows = 1
+		}
+	}
 	var history dumpformat.SourceHistory
 	decode(t, members[dumpformat.SourceHistoryMember], &history)
 	for i := range history.Range.Frames {
+		var second dumpformat.Record
 		for j := range history.Range.Frames[i].Records {
-			convert(&history.Range.Frames[i].Records[j])
+			row := &history.Range.Frames[i].Records[j]
+			convert(row)
+			if row.Kind == "bead" {
+				second = secondBead(*row)
+			}
 		}
+		history.Range.Frames[i].Records = append(history.Range.Frames[i].Records, second, edge)
 	}
 	members[dumpformat.SourceHistoryMember] = encode(t, history)
 	for path, raw := range members {
@@ -410,8 +448,39 @@ func TestB11AdmittedNativeReverseMetadataPreservationAndConflicts(t *testing.T) 
 				store, lease, _ := openIdentityTarget(t, engine)
 				plan := nativeHistoryPlan(t, data, store, lease)
 				plan.Dispositions[0].SourceType = "rich_kind"
+				archive, err := dumpformat.Read(bytes.NewReader(data))
+				if err != nil {
+					t.Fatal("metadata fixture", err)
+				}
+				records, err := archive.SourcePlaneRecords()
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, record := range records {
+					if record.Kind != "edge" {
+						continue
+					}
+					var origins []driver.SourcePlaneOriginV1
+					for _, origin := range plan.Origins {
+						if origin.Table != record.Table || origin.ID != record.ID {
+							origins = append(origins, origin)
+						}
+					}
+					plan.Origins = origins
+					from := driver.SourceEntityKey{Project: "pl", Plane: dumpformat.DurableEntityTable, ID: "pl-42v"}
+					to := driver.SourceEntityKey{Project: "pl", Plane: dumpformat.DurableEntityTable, ID: "pl-43w"}
+					predicate, err := dumpformat.SourceEdgeMetadata(dumpformat.EdgeVersionLocalOpaque, record.ID, "relates-to", map[string]any{"fixture": "metadata-roundtrip"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					predicateJSON, err := json.Marshal(predicate)
+					if err != nil {
+						t.Fatal(err)
+					}
+					plan.Relations = append(plan.Relations, driver.SourcePlaneRelationV1{Source: driver.SourceEdgeKey{Project: "pl", Table: record.Table, ID: record.ID}, From: from, To: &to, Kind: "relates-to", PredicateContract: "beads-typed-metadata/1", PredicateJSON: predicateJSON, Origin: jointCommitment(record.Raw, "object"), Fields: jointFields(t, record)})
+				}
 				profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"}, Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64)}, SourceStoreID: driver.StoreID(plan.SourceStoreID), Method: "offline.restore.import", IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: plan.ArchiveSHA256, HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: nativeFixtureTime.Format("2006-01-02T15:04:05.999999999Z07:00")}
-				profile, err := BindSourceImport(ctx, bytes.NewReader(data), profile, plan)
+				profile, err = BindSourceImport(ctx, bytes.NewReader(data), profile, plan)
 				if err != nil {
 					t.Fatal("bind admitted user metadata", err)
 				}
@@ -431,15 +500,28 @@ func TestB11AdmittedNativeReverseMetadataPreservationAndConflicts(t *testing.T) 
 						t.Fatal("reverse admitted user metadata", err)
 					}
 					rows := sourceReverseRows(t, result.Result.JSONL)
-					if len(rows) != 1 || rows["pl-42v"] == nil {
-						t.Fatal("missing admitted bead", string(result.Result.JSONL))
+					if len(rows) != 2 || rows["pl-42v"] == nil || rows["pl-43w"] == nil {
+						t.Fatal("missing admitted beads", string(result.Result.JSONL))
 					}
 					want := cloneRow(metadata)
 					for key, value := range bookkeeping {
 						want[key] = value
 					}
-					if !sameReverseJSON(rows["pl-42v"]["metadata"], want) {
-						t.Fatalf("admitted metadata changed: got %#v want %#v", rows["pl-42v"]["metadata"], want)
+					for _, id := range []string{"pl-42v", "pl-43w"} {
+						if !sameReverseJSON(rows[id]["metadata"], want) {
+							t.Fatalf("%s admitted metadata changed: got %#v want %#v", id, rows[id]["metadata"], want)
+						}
+					}
+					dependencies, ok := rows["pl-42v"]["dependencies"].([]any)
+					if !ok || len(dependencies) != 1 {
+						t.Fatal("JSONL lost admitted durable edge", rows["pl-42v"])
+					}
+					dependency, ok := dependencies[0].(map[string]any)
+					if !ok || dependency["issue_id"] != "pl-42v" || dependency["depends_on_id"] != "pl-43w" || dependency["type"] != "relates-to" {
+						t.Fatal("JSONL changed admitted durable edge", dependencies)
+					}
+					if len(result.Result.Projection.Edges) != 1 || result.Result.Projection.Edges[0].From != "pl-42v" || result.Result.Projection.Edges[0].To != "pl-43w" || result.Result.Projection.Edges[0].Type != "relates-to" {
+						t.Fatal("admitted durable edge changed", result.Result.Projection.Edges)
 					}
 				}
 				if !reflect.DeepEqual(before, savedLabelImport(t, store, report.Archive, profile, "")) {
