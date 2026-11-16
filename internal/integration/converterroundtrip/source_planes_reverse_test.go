@@ -402,11 +402,13 @@ func nativeReverseMetadataFixture(t *testing.T, metadata map[string]any) []byte 
 		for j := range history.Range.Frames[i].Records {
 			row := &history.Range.Frames[i].Records[j]
 			convert(row)
-			if row.Kind == "bead" {
+			if row.Kind == "bead" && row.ID == "pl-42v" {
 				second = secondBead(*row)
 			}
 		}
-		history.Range.Frames[i].Records = append(history.Range.Frames[i].Records, second, edge)
+		if second.Kind == "bead" {
+			history.Range.Frames[i].Records = append(history.Range.Frames[i].Records, second, edge)
+		}
 	}
 	members[dumpformat.SourceHistoryMember] = encode(t, history)
 	for path, raw := range members {
