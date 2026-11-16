@@ -408,11 +408,12 @@ func TestActualNativeFamilyProducerRetainsNamedIncompleteEvidence(t *testing.T) 
 	if portable.Range.Status != "unverified" || portable.Range.Complete || len(portable.Range.Frames) != 0 {
 		t.Fatal("actual producer portable state promoted")
 	}
-	// This exact diagnostic also retains dirty-source declarations. Preserve
-	// their precedence; the clean synthetic control asserts the typed gap.
+	// SQL observations are clean even though config dispositions count two keys.
+	// The actual named history gap must remain the refusal.
 	merged, err := MergeArchives(a)
-	if merged != nil || err == nil || !strings.Contains(err.Error(), `unmerged or dirty source family "dolt-conflicts"`) {
-		t.Fatalf("actual dirty-source precedence changed: %v", err)
+	var gap IncompleteHistoryError
+	if merged != nil || !errors.As(err, &gap) || gap.First != 42 || gap.Last != 42 || gap.CommitID != h[0].Gaps[0].CommitID || gap.Reason != h[0].Gaps[0].Reason || gap.Family != h[0].Gaps[0].Family {
+		t.Fatalf("actual named incomplete-history refusal changed: %v", err)
 	}
 }
 
