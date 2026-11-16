@@ -527,7 +527,18 @@ func TestB15PublicEphemeralFractionalNewestAfterLegacyCheckpoint(t *testing.T) {
 			f := newFixture(t, engine)
 			f.create()
 			anchor, history := f.document(), f.changes()
-			raw := f.success("x.workflow.invoke", map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "historical fractional comments", "type": "task"}}}, true)
+			request := map[string]any{"template": "b15-public", "project": project, "mode": "ephemeral", "checklist": []map[string]any{{"label": "step", "title": "historical fractional comments", "type": "task"}}}
+			if engine == "memory" {
+				got := f.call("x.workflow.invoke", request, true)
+				if got.Error == nil || got.Error.Data.Code != "plugin_durable_state_unavailable" {
+					t.Fatalf("memory ephemeral refusal: %+v", got)
+				}
+				if !reflect.DeepEqual(anchor, f.document()) || !reflect.DeepEqual(history, f.changes()) {
+					t.Fatal("memory ephemeral refusal changed durable anchor/history")
+				}
+				return
+			}
+			raw := f.success("x.workflow.invoke", request, true)
 			var invoked workflow.InvokeResult
 			if err := json.Unmarshal(raw, &invoked); err != nil || len(invoked.Items) != 1 {
 				t.Fatalf("ephemeral invocation: %v %s", err, raw)
