@@ -290,7 +290,7 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 			}
 			continue
 		}
-		issue, issueReasons := convertBead(record, &report, &typeSet)
+		issue, issueReasons := convertBead(record, dump.Manifest, &report, &typeSet)
 		reasons = append(reasons, issueReasons...)
 		if issue != nil {
 			if _, exists := working[issue.Line.ID]; exists {
@@ -577,11 +577,11 @@ func validateDumpShape(dump Dump, report *Report, converter *Converter) error {
 	return nil
 }
 
-func convertBead(record Record, report *Report, directives *typeDirectives) (*workingIssue, []string) {
+func convertBead(record Record, manifest Manifest, report *Report, directives *typeDirectives) (*workingIssue, []string) {
 	body := record.Body
 	var reasons []string
-	reasons = append(reasons, unsupportedSourceFields(record, report)...)
-	archivedSource := archivedSourceFields(record, report)
+	reasons = append(reasons, unsupportedSourceFieldsForManifest(record, report, manifest)...)
+	archivedSource := archivedSourceFields(record, report, manifest)
 	if record.Source.Table != dumpformat.DurableEntityTable && record.Source.Table != dumpformat.EphemeralEntityTable {
 		reasons = append(reasons, fmt.Sprintf("bead %q has source table %q, want issues", record.ID, record.Source.Table))
 	}
@@ -1150,13 +1150,17 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 }
 
 func unsupportedSourceFields(record Record, report *Report) []string {
+	return unsupportedSourceFieldsForManifest(record, report, Manifest{})
+}
+
+func unsupportedSourceFieldsForManifest(record Record, report *Report, manifest Manifest) []string {
 	allowed := representedSourceFields(record.Kind)
 	var reasons []string
 	for name, value := range record.Source.Fields {
 		if value == nil || allowed[name] {
 			continue
 		}
-		if record.Kind == "bead" && archivableBeadSourceFields[name] {
+		if archivableSourceField(record, name, manifest) {
 			continue
 		}
 		field := fmt.Sprintf("%s/%s/source/%s", record.Kind, record.ID, name)
@@ -1208,14 +1212,29 @@ func representedSourceFields(kind string) map[string]bool {
 	return fields
 }
 
-func archivedSourceFields(record Record, report *Report) map[string]any {
+func archivableSourceField(record Record, name string, manifest Manifest) bool {
+	if record.Kind != "bead" {
+		return false
+	}
+	if archivableBeadSourceFields[name] {
+		return true
+	}
+	// Native current-only rows retain these operational cells as disclosed
+	// source evidence. They do not become live workflow state or physical
+	// importer destinations.
+	return manifest.StatusCategoryContract == dumpformat.StatusCategoryContract &&
+		record.Source.Table == dumpformat.EphemeralEntityTable &&
+		(name == "row_lock" || name == "is_blocked")
+}
+
+func archivedSourceFields(record Record, report *Report, manifest Manifest) map[string]any {
 	if record.Kind != "bead" {
 		return nil
 	}
 	allowed := representedSourceFields(record.Kind)
 	archived := map[string]any{}
 	for name, value := range record.Source.Fields {
-		if value == nil || allowed[name] || !archivableBeadSourceFields[name] {
+		if value == nil || allowed[name] || !archivableSourceField(record, name, manifest) {
 			continue
 		}
 		archived[name] = cloneValue(value)

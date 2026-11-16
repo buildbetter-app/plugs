@@ -618,15 +618,22 @@ func positiveReverseSourceEdges(t *testing.T, data []byte, entities map[string]d
 					tokens["beads."+name] = string(value)
 				}
 			}
+			metadataBytes := []byte(text("metadata"))
 			var metadata map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(text("metadata")), &metadata); err != nil {
+			if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
 				t.Fatal("reverse edge lacks metadata identity envelope", err)
 			}
 			var id string
 			if err := json.Unmarshal(metadata["_plug_edge_id"], &id); err != nil || id != key.ID {
 				t.Fatal("reverse metadata lost exact raw source edge ID")
 			}
-			if token, present := metadata["_plug_metadata"]; present {
+			if token, present, err := positiveRawObjectMember(metadataBytes, "_plug_metadata"); err != nil {
+				t.Fatal("reverse edge metadata token decode", err)
+			} else if present {
+				var semantic any
+				if err := json.Unmarshal(token, &semantic); err != nil {
+					t.Fatal("reverse edge metadata token is not valid JSON", err)
+				}
 				tokens["beads.metadata"] = string(token)
 			}
 			if _, duplicate := result[key]; duplicate {
@@ -636,4 +643,49 @@ func positiveReverseSourceEdges(t *testing.T, data []byte, entities map[string]d
 		}
 	}
 	return result
+}
+
+// positiveRawObjectMember returns a top-level object member with the exact
+// bytes between its colon and the next delimiter. encoding/json's
+// RawMessage path trims that surrounding whitespace, which is part of the
+// native token contract under test here.
+func positiveRawObjectMember(data []byte, want string) ([]byte, bool, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return nil, false, fmt.Errorf("metadata envelope is not an object")
+	}
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, false, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return nil, false, fmt.Errorf("metadata envelope key is not text")
+		}
+		colon := int(decoder.InputOffset())
+		for colon < len(data) && data[colon] != ':' {
+			colon++
+		}
+		if colon == len(data) {
+			return nil, false, fmt.Errorf("metadata envelope member lacks colon")
+		}
+		start := colon + 1
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false, err
+		}
+		end := int(decoder.InputOffset())
+		for end < len(data) && (data[end] == ' ' || data[end] == '\t' || data[end] == '\r' || data[end] == '\n') {
+			end++
+		}
+		if key == want {
+			return append([]byte(nil), data[start:end]...), true, nil
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
 }

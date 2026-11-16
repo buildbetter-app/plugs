@@ -2,6 +2,21 @@ package lexicon
 
 // Exact compiled AST contexts and decoded literal digests; no file exemptions.
 var undoLiteralBindings = map[string][]undoLiteralBinding{
+	// One exact native metadata source field in the B11 roundtrip expectation.
+	"internal/integration/converterroundtrip/source_planes_reverse_test.go": {
+		{name: "TestB11AdmittedNativeReverseMetadataPreservationAndConflicts", kind: "func", contextSHA256: "af115a46d71889942aa3296bdd12c88f699b2546c7c46b2898c9af4ed4409514", literals: map[int]string{
+			5617: "d970864cb90f9999b51854fc17275db9ccf9f49ac8b2ef429dd265c005c410b3",
+		}},
+	},
+	"spec/cardb11/native_test.go": {
+		{name: "metadataAPI", kind: "func", contextSHA256: "604a8eea0e4600f8adcdccff73589e3678a3070c7c607b7b9cb76dff04ab43d0", literals: map[int]string{
+			2377: "32d6f0a5c7dd84ad27ec70dc3497538db281818520ce79b73eebf16c7672ee47",
+		}},
+		{name: "metadataDelta", kind: "func", contextSHA256: "b8e06a4d7738a575fe0811b273f206eecb230340708d573d3c9aec53cbfb5f06", literals: map[int]string{
+			1044: "91f880d51578af7df6289315f0b8e9e7e5c44e86b33f48900c26f031a0cc6f75",
+			1958: "93602e05a1bff1bd127187c713caaeab338848eb4a6cba051123440a912cdf26",
+		}},
+	},
 	"spec/cardb21/native_test.go": {
 		{name: "TestB21NativePublicBatchHTTP", kind: "func", contextSHA256: "e827740efb30bb0b611feac84bdf9a81418e95cb6c76c695149d22b603178ca9", literals: map[int]string{
 			5818: "1b33ef30c9997fefc19db8f8a8264323e582559a6225fbb08b82a21ae8696b37",

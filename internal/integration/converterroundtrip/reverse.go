@@ -32,6 +32,8 @@ type LiveReverse struct {
 	Result   reverseconverter.Result
 }
 
+const nativeFamilyReportID = "instance_config/restore-import/native-families"
+
 // ReverseRestored reads one immutable store snapshot, including its retained
 // source evidence. It exports the live title, description, priority, status,
 // labels, metadata and opaque fields of imported beads. Unknown/new/deleted
@@ -124,20 +126,102 @@ func reverseLiveCensus(ctx context.Context, r driver.Reader) (map[string]driver.
 	return live, nil
 }
 
-func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter.Dump, error) {
+func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...driver.RestoreImportProfile) (reverseconverter.Dump, error) {
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil {
 		return reverseconverter.Dump{}, err
 	}
 	var evidence archiveEvidence
 	if len(rows) != 1 || rows[0].Kind != "restore-archive" || json.Unmarshal(rows[0].Body, &evidence) != nil ||
-		evidence.Profile != "builtin-head/1" || !validDigest(evidence.ArchiveSHA256) {
+		(evidence.Profile != "builtin-head/1" && evidence.Profile != "beads-native-status-categories/1") || !validDigest(evidence.ArchiveSHA256) {
 		return reverseconverter.Dump{}, ReverseRefusal{"missing_source_evidence"}
 	}
 	if _, ok := evidence.Members["manifest.json"]; !ok {
 		return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 	}
-	if envelope, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256)); err == nil {
+	nativeCapture := evidence.NativeCaptureFiles != nil
+	if nativeCapture {
+		// Native restore retains a capture-set root under ArchiveSHA256. Reopen
+		// and authenticate the complete native set, then adapt its detached head
+		// directly; repacking it as a portable tar would discard native
+		// disposition semantics that were already validated by the capture reader.
+		root, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+		if err != nil || hashBytes(root) != evidence.ArchiveSHA256 {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		// Native collection receipts retain a joined-input binding at the root
+		// and source files under sources/<ordinal>/..., rather than the single
+		// capture-set head.tar/parts layout below. Reopen that authenticated
+		// collection through the same bounded reader used by recovery before
+		// adapting its detached archive for reverse conversion.
+		if len(profiles) != 0 && profiles[0].SourcePlanes != nil {
+			var format struct {
+				Format string `json:"format"`
+			}
+			if json.Unmarshal(root, &format) == nil && format.Format == dumpformat.NativeJoinedInputsFormatV2 {
+				archive, collection, err := readRetainedReceivingArchive(ctx, r, root, evidence, profiles[0])
+				if err != nil {
+					return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+				}
+				dump, err := reverseconverter.AdaptValidatedArchive(archive)
+				if collection != nil {
+					_ = collection.close()
+				} else {
+					archive.ReleaseNativeDecoded()
+				}
+				if err != nil {
+					return reverseconverter.Dump{}, err
+				}
+				return dump, nil
+			}
+		}
+		read := func(name string) ([]byte, error) {
+			file, ok := evidence.NativeCaptureFiles[name]
+			if !ok || !validDigest(file.SHA256) || file.Size < 0 || file.Size > dumpformat.MaxArchiveBytes {
+				return nil, ReverseRefusal{"invalid_source_evidence"}
+			}
+			data, err := r.Blob(ctx, driver.Hash(file.SHA256))
+			if err != nil || int64(len(data)) != file.Size || hashBytes(data) != file.SHA256 {
+				return nil, ReverseRefusal{"invalid_source_evidence"}
+			}
+			return data, nil
+		}
+		head, err := read("head.tar")
+		if err != nil {
+			return reverseconverter.Dump{}, err
+		}
+		parts := map[uint64][]byte{}
+		for name := range evidence.NativeCaptureFiles {
+			if !strings.HasPrefix(name, "parts/") || !strings.HasSuffix(name, ".part") {
+				continue
+			}
+			var ordinal uint64
+			if _, err := fmt.Sscanf(name, "parts/%020d.part", &ordinal); err != nil || ordinal == 0 {
+				return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+			}
+			data, err := read(name)
+			if err != nil {
+				return reverseconverter.Dump{}, err
+			}
+			parts[ordinal] = data
+		}
+		native, err := dumpformat.ReadNativeCaptureSet(ctx, bytes.NewReader(root), bytes.NewReader(head), func(_ context.Context, ordinal uint64) (io.ReadCloser, error) {
+			data, ok := parts[ordinal]
+			if !ok {
+				return nil, driver.ErrNotFound
+			}
+			return io.NopCloser(bytes.NewReader(data)), nil
+		}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained reverse native capture"})
+		if err != nil {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		dump, err := reverseconverter.AdaptValidatedArchive(native)
+		native.ReleaseNativeDecoded()
+		if err != nil {
+			return reverseconverter.Dump{}, err
+		}
+		return dump, nil
+	} else if envelope, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256)); err == nil {
 		if hashBytes(envelope) != evidence.ArchiveSHA256 {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
@@ -175,7 +259,11 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 		if err != nil || int64(len(data)) != file.Size || hashBytes(data) != file.SHA256 {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
-		if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: file.Size, Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
+		size := int64(len(data))
+		if size > dumpformat.MaxArchiveBytes || archive.Len()+int(size) > dumpformat.MaxArchiveBytes {
+			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: size, Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
 		if _, err := tw.Write(data); err != nil {
@@ -185,7 +273,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 	if err := tw.Close(); err != nil {
 		return reverseconverter.Dump{}, err
 	}
-	if hashBytes(archive.Bytes()) != evidence.ArchiveSHA256 {
+	if !nativeCapture && hashBytes(archive.Bytes()) != evidence.ArchiveSHA256 {
 		return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 	}
 	return reverseconverter.ReadBytes(archive.Bytes())
@@ -222,6 +310,34 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 				return ReverseRefusal{"invalid_import_binding"}
 			}
 			delete(live, id)
+		}
+		// Native publication retains one authenticated family/history report for
+		// source readback. It is restore bookkeeping, not a reverse source row.
+		if row, ok := live[nativeFamilyReportID]; ok {
+			if row.Kind != "instance_config" {
+				return ReverseRefusal{"invalid_import_binding"}
+			}
+			delete(live, nativeFamilyReportID)
+		}
+		if row, ok := live[driver.SourcePlaneCommitRecordID]; ok {
+			if row.Kind != "instance_config" {
+				return ReverseRefusal{"invalid_import_binding"}
+			}
+			delete(live, driver.SourcePlaneCommitRecordID)
+		}
+		if row, ok := live[ImportedOntologySourceID]; ok {
+			if row.Kind != "ontology" {
+				return ReverseRefusal{"invalid_import_binding"}
+			}
+			delete(live, ImportedOntologySourceID)
+		}
+		for id, row := range live {
+			if strings.HasPrefix(id, driver.NativeTableHistoryRecordPrefix) || strings.HasPrefix(id, "source/native-current/") {
+				if row.Kind != "beads-archive" {
+					return ReverseRefusal{"invalid_import_binding"}
+				}
+				delete(live, id)
+			}
 		}
 	}
 	for kind, records := range dump.Records {
@@ -385,36 +501,56 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	}
 	source.Body["labels"] = labels
 	status := stringValue(source.Source.Fields["status"])
-	if original, ok := targetStatus(status); !ok || original != stringValue(doc.Fields["status"]) {
-		switch stringValue(doc.Fields["status"]) {
-		case "todo":
-			status = "open"
-		case "in_progress":
-			status = "in_progress"
-		case "backlog":
-			status = "blocked"
-		case "done":
-			status = "closed"
-		default:
+	liveStatus := stringValue(doc.Fields["status"])
+	statusUnchanged := liveStatus == status
+	nativeStatusContract := dump.Manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && dump.Manifest.StatusCategoryContract == dumpformat.StatusCategoryContract
+	if nativeStatusContract {
+		// Native status catalogs are admitted with exact source-name
+		// correspondences. Keep the original status/category pair intact so
+		// the native reverse projection can translate it once, after the
+		// generic live document checks. A changed live status cannot be
+		// interpreted through the built-in Beads vocabulary here.
+		if !statusUnchanged {
 			return reverseconverter.Record{}, ReverseRefusal{"unsupported_live_status"}
+		}
+	} else if liveStatus != status {
+		original, ok := targetStatus(status)
+		if ok && original == liveStatus {
+			// Built-in source status projected to its canonical live spelling.
+		} else {
+			switch liveStatus {
+			case "todo":
+				status = "open"
+			case "in_progress":
+				status = "in_progress"
+			case "backlog":
+				status = "blocked"
+			case "done":
+				status = "closed"
+			default:
+				return reverseconverter.Record{}, ReverseRefusal{"unsupported_live_status"}
+			}
 		}
 	}
 	source.Source.Fields["status"] = status
 	originalOutcome := stringValue(source.Body["result"])
-	originalCompleted := source.Body["status_category"] == "completed"
-	delete(source.Body, "result")
-	switch stringValue(doc.Fields["status"]) {
-	case "todo":
-		source.Body["status_category"] = "unstarted"
-	case "in_progress":
-		source.Body["status_category"] = "started"
-	case "done":
-		source.Body["status_category"], source.Body["result"] = "completed", "success"
-		if originalCompleted && (originalOutcome == "success" || originalOutcome == "failure") {
-			source.Body["result"] = originalOutcome
+	originalCategory := stringValue(source.Body["status_category"])
+	originalCompleted := originalCategory == "completed"
+	if !statusUnchanged {
+		delete(source.Body, "result")
+		switch liveStatus {
+		case "todo":
+			source.Body["status_category"] = "unstarted"
+		case "in_progress":
+			source.Body["status_category"] = "started"
+		case "done":
+			source.Body["status_category"], source.Body["result"] = "completed", "success"
+			if originalCompleted && (originalOutcome == "success" || originalOutcome == "failure") {
+				source.Body["result"] = originalOutcome
+			}
+		default:
+			source.Body["status_category"] = "backlog"
 		}
-	default:
-		source.Body["status_category"] = "backlog"
 	}
 	return source, nil
 }

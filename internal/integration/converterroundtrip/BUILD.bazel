@@ -38,6 +38,7 @@ go_test(
         "//internal/core/dumpformat:testdata/native-tables-synthetic.tar",
         "testdata/synthetic-plug-dump-1.tar",
         ":public_source_fixtures",
+        "//spec/cardb11:public_native_edge_inputs",
         "//internal/integration/offlinehistory:lexicon_files",
         "//tools/native-receive",
     ],

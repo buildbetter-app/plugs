@@ -1,0 +1,82 @@
+{
+  "admission": "Complete single-part native capture set via the existing native capture-set reader and receiver; legacy portable input remains separate.",
+  "archive": {
+    "bytes": 226697,
+    "path": "spec/cardb11/testdata/public-r5-edge-inputs.tar.gz",
+    "sha256": "80d21b1573730cb0b44d9984e3bf1f39b3f57a5da6988ff2bb04c067cc100b66"
+  },
+  "decoded_file_bytes": 2813676,
+  "files": {
+    "capture-set/capture-set.json": {
+      "bytes": 713,
+      "sha256": "a63f4a39ab3579301be116a8ba13a0b4af76b728f6a440da484d662fb374cc06",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/capture-set/capture-set.json"
+    },
+    "capture-set/head.tar": {
+      "bytes": 277504,
+      "sha256": "f82ab7b8b97da0a3322c8fd47d3f40024fe7d64d3c9f99f6a2b07b79b7a8917b",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/capture-set/head.tar"
+    },
+    "capture-set/parts/00000000000000000001.part": {
+      "bytes": 2400679,
+      "sha256": "775633d7234e5d676766e5a7abbe9095964c85ea003be1479a5efa6ef85760c6",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/capture-set/parts/00000000000000000001.part"
+    },
+    "source/a9d11febd181f8c2b61a865ad014d2b054a79980eb4cd6c78ee7b50b7f94180b.table.json": {
+      "bytes": 1863,
+      "sha256": "a9d11febd181f8c2b61a865ad014d2b054a79980eb4cd6c78ee7b50b7f94180b",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/oracle/a9d11febd181f8c2b61a865ad014d2b054a79980eb4cd6c78ee7b50b7f94180b.table.json"
+    },
+    "source/capture-set-provenance.json": {
+      "bytes": 909,
+      "sha256": "955a9b4d085adc0724e6a2937c4939ef9aa2d04af7ecff41ef12c63b6330ac42",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/capture-set-provenance.json"
+    },
+    "source/d2990693f7174eb563f11cf43870e57cf1454f702fa8267950a0870506e2e3f0.table.json": {
+      "bytes": 943,
+      "sha256": "d2990693f7174eb563f11cf43870e57cf1454f702fa8267950a0870506e2e3f0",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/oracle/d2990693f7174eb563f11cf43870e57cf1454f702fa8267950a0870506e2e3f0.table.json"
+    },
+    "source/payload-manifest.json": {
+      "bytes": 19052,
+      "sha256": "84e47cb5b52d8424a37cca328143d69bad14294adfdcf76108edf0096e8da516",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/MANIFEST.json"
+    },
+    "source/physical-current-schema.json": {
+      "bytes": 22969,
+      "sha256": "b83f812aa0fa81b951f2aa125f689d3b1bfe2a3bef5bae1f59f2fc615be4e841",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/physical-current-schema.json"
+    },
+    "source/typed-current.json": {
+      "bytes": 89044,
+      "sha256": "c946aa47f3ff4a28801c3f2a5c01fbf4eaa30bb54583d9fe8edd45736a48f623",
+      "source_path": "internal/plugdump/testdata/native-rich-r5/review-project/typed-current.json"
+    }
+  },
+  "format": "b11-public-native-edge-inputs/1",
+  "native_metadata_witness": "The selected durable related edge has number42/source/public-stored-sql/explicit-null metadata, recorded as a native stored SQL witness. Existing independent public metadata comparison recordings qualify writer semantics separately.",
+  "payload_commit": "26027831bada7a85c764f066d39712e26fa81eee",
+  "payload_tree": "825736783c65ca5d6573d09afd2b1747699932fc",
+  "producer_commit": "046f972c64ec0875664cc1a907a4d85b67eb427f",
+  "producer_original_run": 43100856893,
+  "project": "review-project",
+  "scope": "Unchanged existing public capture bytes and independent native stored-row witnesses; no recapture or new native/public runtime qualification.",
+  "source_commits": 122,
+  "source_dependency": {
+    "boundary": "Frozen B11 parent lacks the shared reader correction. Compose through its owner/train; never retag the capture or copy/fork the reader.",
+    "focus_disposition": "PASS_BOUNDED; qualification not transferred",
+    "focus_original": 43099035214,
+    "head": "73d8ef4b45377119fda0b8d5ce9ae31c27a2f4db",
+    "owner": "B14 shared gate reader, sole writer63d; composition by owner/train",
+    "parent": "378bcfe29331312818b82d07048aac9045612e12",
+    "source_review": "SOURCE_PASS_BOUNDED",
+    "source_review_path": "/tmp/plug-swarm/reviews/69929f66-b14-pr494-73d8-source-20261111.md",
+    "source_review_sha256": "d9a8a17a92b2d70246fb7e8657b35388a554124278277cd9db1f23cd54945bdf",
+    "tree": "7e0279296de311683e7d2448549abcb57433e94d",
+    "whole_disposition": "RED sole lexicon target; original preserved",
+    "whole_original": 43099035225
+  },
+  "source_head": "rvtlh6asapkuhii6i08fg128dcmirb2h",
+  "source_root": "internal/plugdump/testdata/native-rich-r5/review-project",
+  "store_id": "native/2b6da2db2dd34017be9ac3878b39ce1ae036add2d4c76f95a6e0921d104ec362"
+}

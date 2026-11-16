@@ -13,6 +13,7 @@ go_test(
     embed = [":model"],
     embedsrcs = ["testdata/openrpc-components.json"],
     size = "small",
+    deps = ["@com_github_gowebpki_jcs//:jcs"],
 )
 
 filegroup(

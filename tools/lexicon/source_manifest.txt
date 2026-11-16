@@ -267,6 +267,9 @@ internal/core/model/checkpoint_test.go
 internal/core/model/codes.go
 internal/core/model/commit.go
 internal/core/model/condition.go
+internal/core/model/dependency_metadata.go
+internal/core/model/dependency_metadata_jcs_test.go
+internal/core/model/dependency_metadata_test.go
 internal/core/model/doc.go
 internal/core/model/edge_extensions_test.go
 internal/core/model/encodings_test.go
@@ -637,6 +640,8 @@ internal/integration/converterroundtrip/BUILD.bazel
 internal/integration/converterroundtrip/allocator.go
 internal/integration/converterroundtrip/b07_opaque_source_test.go
 internal/integration/converterroundtrip/b07_positive_source_test.go
+internal/integration/converterroundtrip/b11_imported_identity_test.go
+internal/integration/converterroundtrip/b11_native_imported_identity_test.go
 internal/integration/converterroundtrip/b13_fullcard_search_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
 internal/integration/converterroundtrip/b19_native_modes_test.go
@@ -1789,6 +1794,13 @@ spec/cardb08/attachment_test.go
 spec/cardb08/native_test.go
 spec/cardb08/public_fixture_test.go
 spec/cardb08/public_test.go
+spec/cardb11/BUILD.bazel
+spec/cardb11/IMPORTED.md
+spec/cardb11/move_test.go
+spec/cardb11/native_test.go
+spec/cardb11/public_test.go
+spec/cardb11/testdata/public-r5-edge-inputs.provenance.json
+spec/cardb11/testdata/public-r5-edge-inputs.tar.gz
 spec/cardb16/BUILD.bazel
 spec/cardb16/README.md
 spec/cardb16/native_reference_test.go
