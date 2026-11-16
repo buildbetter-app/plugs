@@ -164,6 +164,10 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	// Comparing the schema's original source member permits ordinary mutations
 	// while refusing a namespace that retained its origin tag but lost raw data.
 	archive := source.archive
+	// Recovery may run after the original native capture reader was closed.
+	// Reuse the archive's authenticated prepared view for readback rather than
+	// reopening that closed reader.
+	archive.UseNativeDeltaPreparedReadback()
 	// The report retains the source archive, while prepared logical bytes and
 	// reverse inspection candidates end at this comparison boundary.
 	work, release := archive.NativeDeltaAccountingScope()

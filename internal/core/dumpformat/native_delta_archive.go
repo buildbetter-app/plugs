@@ -21,6 +21,9 @@ type nativeDeltaAttachment struct {
 	budget    *NativeDeltaBudget
 	recheck   func(context.Context) error
 	prepared  *nativeDeltaPreparation
+	// usePreparedReadback reuses the authenticated retained staging view when
+	// recovery needs to read back after the original source reader is closed.
+	usePreparedReadback bool
 }
 
 type NativeCaptureSetOptions struct {
@@ -500,6 +503,14 @@ func (a *Archive) VisitNativeDeltaImages(ctx context.Context, visit func(NativeH
 func (a *Archive) visitNativeDelta(ctx context.Context, visit func(NativeHistoryImage, []string) error, rows *nativeDeltaRowCallbacks) error {
 	if a == nil || a.delta == nil {
 		return fmt.Errorf("native delta stream unavailable")
+	}
+	// Prepared staging retains authenticated row/checkpoint callbacks but not
+	// full commit table images. Use it only for row-change readback, whose
+	// contract does not request complete table states. Complete table-state and
+	// image visitors keep the authenticated source path so omitted commit
+	// states cannot be mistaken for an empty baseline.
+	if visit == nil && rows != nil && rows.tableState == nil && a.delta.usePreparedReadback && a.delta.prepared != nil && a.delta.prepared.view != nil && a.delta.prepared.view.ready {
+		return a.delta.prepared.view.Visit(ctx, NativeDeltaVisitor{Commit: rows.commit, Checkpoint: rows.checkpoint})
 	}
 	return a.visitNativeDeltaOpen(ctx, visit, rows, a.delta.open)
 }
