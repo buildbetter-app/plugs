@@ -41,7 +41,7 @@ func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, me
 	if err != nil || initial.OriginSHA256 != current.OriginSHA256 {
 		return LiveReverse{}, ReverseRefusal{"changed_source_origin"}
 	}
-	dump, err := retainedReverseDump(ctx, r)
+	dump, err := retainedReverseDump(ctx, r, bound)
 	if err != nil {
 		return LiveReverse{}, err
 	}

@@ -126,7 +126,7 @@ func reverseLiveCensus(ctx context.Context, r driver.Reader) (map[string]driver.
 	return live, nil
 }
 
-func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter.Dump, error) {
+func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...driver.RestoreImportProfile) (reverseconverter.Dump, error) {
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil {
 		return reverseconverter.Dump{}, err
@@ -148,6 +148,32 @@ func retainedReverseDump(ctx context.Context, r driver.Reader) (reverseconverter
 		root, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
 		if err != nil || hashBytes(root) != evidence.ArchiveSHA256 {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		// Native collection receipts retain a joined-input binding at the root
+		// and source files under sources/<ordinal>/..., rather than the single
+		// capture-set head.tar/parts layout below. Reopen that authenticated
+		// collection through the same bounded reader used by recovery before
+		// adapting its detached archive for reverse conversion.
+		if len(profiles) != 0 && profiles[0].SourcePlanes != nil {
+			var format struct {
+				Format string `json:"format"`
+			}
+			if json.Unmarshal(root, &format) == nil && format.Format == dumpformat.NativeJoinedInputsFormatV2 {
+				archive, collection, err := readRetainedReceivingArchive(ctx, r, root, evidence, profiles[0])
+				if err != nil {
+					return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+				}
+				dump, err := reverseconverter.AdaptValidatedArchive(archive)
+				if collection != nil {
+					_ = collection.close()
+				} else {
+					archive.ReleaseNativeDecoded()
+				}
+				if err != nil {
+					return reverseconverter.Dump{}, err
+				}
+				return dump, nil
+			}
 		}
 		read := func(name string) ([]byte, error) {
 			file, ok := evidence.NativeCaptureFiles[name]
