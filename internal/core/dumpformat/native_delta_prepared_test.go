@@ -342,12 +342,13 @@ func TestNativeDeltaPreparedReadbackAfterSourceReaderClosed(t *testing.T) {
 	}
 	a.UseNativeDeltaPreparedReadback()
 	// Complete table-state readback retains its original contract, including
-	// historical commit states, while the source reader is still available.
+	// every authenticated historical commit state, while the source reader is
+	// still available. Prepared staging separately retains eight checkpoints.
 	states := 0
 	if err := a.VisitNativeDeltaTableStates(context.Background(), func(state NativeDeltaTableState) error {
 		states++
 		return nil
-	}); err != nil || states != 8 {
+	}); err != nil || states != 24 {
 		t.Fatalf("complete table readback failed before source close: states=%d err=%v", states, err)
 	}
 	opened := *opens
