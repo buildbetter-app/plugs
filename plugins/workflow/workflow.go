@@ -1323,7 +1323,7 @@ func (p *Provider) OrdinaryCloseSnapshot(ctx context.Context, by model.Principal
 	// Without a declared workflow checkpoint capability or admitted binding,
 	// no active workflow facts can exist for this provider.
 	if !p.checkpointAvailable() && p.source == nil {
-		return map[string]bool{}, driver.CheckpointExpectation{}, nil
+		return map[string]bool{}, map[string]bool{}, driver.CheckpointExpectation{}, nil
 	}
 	// An ordinary pre-publication guard must never garbage collect or publish
 	// metadata on its own, including when the core write is later refused.
