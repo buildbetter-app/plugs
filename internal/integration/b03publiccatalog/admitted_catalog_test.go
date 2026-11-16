@@ -248,8 +248,9 @@ func b03AdmittedPlan(t *testing.T, ctx context.Context, engine string, source b0
 	}
 	principal, _ := json.Marshal(model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
 	fields := []driver.SourcePlaneStringPairV1{{From: "id", To: "id"}, {From: "title", To: "title"}, {From: "issue_type", To: "type"}, {From: "status", To: "status"}, {From: "metadata", To: "metadata"}, {From: "created_at", To: "created_at"}, {From: "priority", To: "priority"}, {From: "description", To: "description"}}
+	archiveBytes := a.TarBytes()
 	policy := map[string]any{
-		"format": "plug-native-receiving-policy/1", "archive_sha256": a.SHA256(), "source_store_id": a.Manifest().StoreID, "projects": projects, "sources": sources,
+		"format": "plug-native-receiving-policy/1", "archive_sha256": b03Digest(archiveBytes), "source_store_id": a.Manifest().StoreID, "projects": projects, "sources": sources,
 		"admission": b03AdmittedAdmission(), "idempotency_key": "b03-public-native-catalog-000001",
 		"principal":     driver.SourcePlanePrincipalV1{Key: "owner", Source: "B03 explicit public host policy", Authority: "trusted-explicit/1", PrincipalJSON: principal},
 		"provider":      driver.SourcePlaneProviderV1{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"},
@@ -264,12 +265,16 @@ func b03AdmittedPlan(t *testing.T, ctx context.Context, engine string, source b0
 	if err := os.WriteFile(policyPath, policyBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
+	archivePath := filepath.Join(root, "native-head.tar")
+	if err := os.WriteFile(archivePath, archiveBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
 	binary := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("B03_NATIVE_RECEIVE_BINARY"))
 	binaryBytes, err := os.ReadFile(binary)
 	if err != nil {
 		t.Fatal("existing source-built receiver executable required", err)
 	}
-	cmd := exec.CommandContext(ctx, binary, "prepare-request", "--driver", engine, "--capture-set", source.directory, "--policy", policyPath, "--expected-binary-sha256", b03Digest(binaryBytes))
+	cmd := exec.CommandContext(ctx, binary, "prepare-request", "--driver", engine, "--archive", archivePath, "--policy", policyPath, "--expected-binary-sha256", b03Digest(binaryBytes))
 	cmd.Env = append(os.Environ(), "PATH=/tmp/plug-swarm/bin/worker-safe:/usr/local/bin:"+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -282,9 +287,12 @@ func b03AdmittedPlan(t *testing.T, ctx context.Context, engine string, source b0
 		ArchiveSHA256 string                   `json:"archive_sha256"`
 		SourcePlan    driver.SourcePlanePlanV1 `json:"source_plan"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &request); err != nil || request.ArchiveSHA256 != a.SHA256() || request.SourcePlan.Target.StoreID != "" || request.SourcePlan.Target.Incarnation != "" || !request.SourcePlan.Target.RequireEmpty || request.SourcePlan.Target.Lifetime != lifetime {
+	if err := json.Unmarshal(stdout.Bytes(), &request); err != nil || request.ArchiveSHA256 != b03Digest(archiveBytes) || request.SourcePlan.ArchiveSHA256 != b03Digest(archiveBytes) || request.SourcePlan.Target.StoreID != "" || request.SourcePlan.Target.Incarnation != "" || !request.SourcePlan.Target.RequireEmpty || request.SourcePlan.Target.Lifetime != lifetime {
 		t.Fatalf("existing request constructor lost exact source or target boundary: %v", err)
 	}
+	// The receiver validates the exact head envelope; the authenticated
+	// capture-set binder below rebinds that plan to the capture-set root.
+	request.SourcePlan.ArchiveSHA256 = a.SHA256()
 	return request.SourcePlan
 }
 
