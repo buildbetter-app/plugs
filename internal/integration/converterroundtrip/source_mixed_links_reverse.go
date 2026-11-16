@@ -76,11 +76,23 @@ func projectMixedSourceLinks(ctx context.Context, edges []reverseconverter.Recor
 		key := driver.SourceEdgeKey{Project: edge.Project, Table: edge.Source.Table, ID: edge.ID}
 		if projection.inertRelations[key] {
 			// A native plan may retain the same edge as an inert origin for
-			// accounting while also declaring its typed relation. The explicit
-			// relation is authoritative for reverse projection.
-			if _, declared := projection.relations[key]; !declared {
+			// accounting while also declaring its typed relation. Preserve the
+			// original edge when that relation is unchanged; a live edit must
+			// still flow through the declared relation below.
+			relation, declared := projection.relations[key]
+			if !declared {
 				result = append(result, edge)
 				continue
+			}
+			if relation.To != nil {
+				pair := sourceLinkPair{projection.entities[relation.From].TargetID, projection.entities[*relation.To].TargetID}
+				original, hadInitial := before[pair]
+				live, present := after[pair]
+				if hadInitial && present && sameReverseJSON(original, live) {
+					result = append(result, edge)
+					consumed[pair]++
+					continue
+				}
 			}
 		}
 		relation := projection.relations[key]
