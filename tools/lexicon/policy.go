@@ -131,7 +131,7 @@ func DefaultTreePolicy() TreePolicy {
 			"internal/integration/b01readyorder/testdata/native-ready-c774-43216037385.tar.gz":      "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f",
 			"spec/cardb11/testdata/public-r5-edge-inputs.tar.gz":                                    "80d21b1573730cb0b44d9984e3bf1f39b3f57a5da6988ff2bb04c067cc100b66",
 			"tools/roundtrip/testdata/fresh-native/id-style-a-inputs.tar.gz":                        "d948a03670d1f0a1dcad68ba9a682dc8b7b3e51407e5756b6d0f77d347ab2745",
-			"tools/roundtrip/testdata/fresh-native/beads-1a75f7.tar.gz":                             "76ae171a1c7c1d2904a258807d94cbe15bba15bce24742dd5d5f5c5c5bd01340925",
+			"tools/roundtrip/testdata/fresh-native/beads-1a75f7.tar.gz":                             "76ae171a1c7c1d2904a258807d94cbe15bba15bce24742dd5d5f5cbd01340925",
 			"tools/roundtrip/testdata/fresh-native/independent-row-replay.tar.gz":                   "b826c9e069e000007cc1f3a7c5c137a2d5113cb51276b84ceec433636076ff02",
 			"tools/roundtrip/testdata/fresh-native/beads-ef3f15.tar.gz":                             "034e39dba83ce13eaa4af01feb753bf4f2fe360551f49de40094573d7dd330cd",
 			"tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz":                             "89d43f0bc3e8f0ed58393d8982bbd5f290739c9af1228683c5338c08efa36fb6",
