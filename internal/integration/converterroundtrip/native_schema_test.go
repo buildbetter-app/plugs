@@ -194,7 +194,13 @@ func TestNativeSchema66ReceivingCountsOmissionsAndPreservesSources(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); !errors.Is(err, ErrTargetNotEmpty) {
+			replayed, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+			if err != nil || !replayed.Recovered || !reflect.DeepEqual(report.Receipt, replayed.Receipt) {
+				t.Fatalf("exact native import replay did not return its original receipt: err=%v", err)
+			}
+			newKey := profile
+			newKey.IdempotencyKey = "native-schema-new-key"
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, newKey); !errors.Is(err, ErrTargetNotEmpty) {
 				t.Fatal("repeated import bypassed the populated-target guard", err)
 			}
 			after, err := capability.LoadCheckpoint(ctx, plan.Providers[0].Namespace)

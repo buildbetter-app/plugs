@@ -446,7 +446,9 @@ func exerciseNativeHistoryReceivingLibrary(t *testing.T, input []byte, label str
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(input), store, lease, profile); !errors.Is(err, ErrTargetNotEmpty) {
+			newKey := profile
+			newKey.IdempotencyKey = profile.IdempotencyKey + "-new"
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(input), store, lease, newKey); !errors.Is(err, ErrTargetNotEmpty) {
 				t.Fatal("populated genuine multi-version destination must refuse", err)
 			}
 			after, err := capability.LoadCheckpoint(ctx, namespace)
