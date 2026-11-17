@@ -66,6 +66,8 @@ func newB17B18MetadataNative(t *testing.T) (*metadataNative,string) {
 	root:=os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	checkout:=os.Getenv("PLUG_SOURCE_MODULE_ROOT")
 	if !filepath.IsAbs(root) || !filepath.IsAbs(checkout) { t.Fatal("original RunsOn source/output roots required") }
+	root=filepath.Join(root,t.Name())
+	if err:=os.MkdirAll(root,0700);err!=nil { t.Fatal(err) }
 	r:=&nativeRecorder{t:t,root:root,target:"//cmd/bd:bd"}
 	actual:=strings.TrimSpace(string(r.buildCommand(checkout,"candidate-head","/usr/bin/git",[]string{"rev-parse","HEAD"})))
 	if actual!=os.Getenv("PLUG_B17_B18_REQUEST_SHA") || actual=="" { t.Fatal("exact candidate request mismatch") }
