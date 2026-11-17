@@ -63,7 +63,11 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 	if !allowed {
 		return service.GetResult{}, notFound()
 	}
-	content, _, closeContent, err := s.current(ctx, req.AsOf)
+	readCurrent := s.current
+	if req.AsOf != nil && req.AsOf.Instant != nil {
+		readCurrent = s.currentAsOf
+	}
+	content, _, closeContent, err := readCurrent(ctx, req.AsOf)
 	if err != nil {
 		return service.GetResult{}, err
 	}
@@ -775,7 +779,21 @@ func (s *GuardedService) current(ctx context.Context, asOf *service.AsOf) (drive
 		return nil, nil, func() {}, &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "active storage lease was lost"}}
 	default:
 	}
-	reader, err := service.ReadAsOf(ctx, s.checker.store, asOf)
+	meta, err := s.checker.store.Meta(ctx)
+	if err != nil {
+		return nil, nil, func() {}, err
+	}
+	view := driver.View{Incarnation: meta.Incarnation}
+	if asOf != nil {
+		if err := asOf.Revision.Validate(); err != nil {
+			return nil, nil, func() {}, &model.Error{Message: "invalid asOf revision", Data: model.ErrorData{Code: "invalid_params"}}
+		}
+		view.At = &asOf.Revision
+		if asOf.Incarnation != "" {
+			view.Incarnation = asOf.Incarnation
+		}
+	}
+	reader, err := s.checker.store.Read(ctx, view)
 	if err != nil {
 		return nil, nil, func() {}, err
 	}

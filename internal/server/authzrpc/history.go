@@ -2,9 +2,11 @@ package authzrpc
 
 import (
 	"context"
+	"errors"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 var _ service.HistoryReader = (*GuardedService)(nil)
@@ -16,7 +18,7 @@ func (s *GuardedService) historyRead(ctx context.Context, by model.PrincipalRef,
 	if err := ref.Validate(); err != nil {
 		return nil, "", &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "invalid history reference"}}
 	}
-	current, snapshot, closeReader, err := s.current(ctx, nil)
+	current, snapshot, closeReader, err := s.currentAsOf(ctx, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -84,4 +86,24 @@ func (s *GuardedService) HistoryDiff(ctx context.Context, by model.PrincipalRef,
 		}
 	}
 	return result, nil
+}
+
+// currentAsOf resolves history content and Get's explicit instant selector.
+// The shared current reader remains identical to main for claim-next callers.
+func (s *GuardedService) currentAsOf(ctx context.Context, asOf *service.AsOf) (driver.Reader, Snapshot, func(), error) {
+	if s == nil || s.checker == nil || s.checker.store == nil || s.lease == nil {
+		return nil, nil, func() {}, errors.New("authorization store is unavailable")
+	}
+	// Authorization and idempotency reads can precede the domain service's
+	// lease guard. Fence them before touching storage after lease loss too.
+	select {
+	case <-s.lease.Lost():
+		return nil, nil, func() {}, &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "active storage lease was lost"}}
+	default:
+	}
+	reader, err := service.ReadAsOf(ctx, s.checker.store, asOf)
+	if err != nil {
+		return nil, nil, func() {}, err
+	}
+	return reader, reader, func() { _ = reader.Close() }, nil
 }
