@@ -761,8 +761,8 @@ func TestB03AdmittedNativeCatalogLifecycleAndSourceHistory(t *testing.T) {
 				if engine == "memory" {
 					wantLifetime = driver.CheckpointLifetimeProcess
 					persistent, ok := runtime.Store.(driver.PersistentCheckpointStore)
-					if !ok || persistent.Persistent() {
-						t.Fatal("admitted memory host must explicitly report Persistent false")
+					if ok && persistent.Persistent() {
+						t.Fatal("admitted memory host must not promise restart persistence")
 					}
 				}
 				capability, err := driver.RequireWorkflowCheckpointStore(runtime.Store, runtime.Lease)

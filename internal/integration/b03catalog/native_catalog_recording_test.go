@@ -1282,7 +1282,7 @@ func (r *b03ReplayRPC) call(method string, params map[string]any, wantCode strin
 	return envelope.Result
 }
 
-func applyB03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, doc ontology.Document) {
+func applyB03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, doc ontology.Document) ontologyops.PlanResult {
 	t.Helper()
 	planRaw := rpc.call("ontology.plan", map[string]any{"document": doc}, "")
 	var plan ontologyops.PlanResult
@@ -1295,6 +1295,7 @@ func applyB03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, doc ontology.Documen
 		t.Fatalf("replay ontology.apply did not publish: %s", applyRaw)
 	}
 	b03ReplayCatalog(t, rpc, doc)
+	return plan
 }
 
 func b03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, want ontology.Document) {
@@ -1382,11 +1383,31 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	// The first public adoption uses exactly the production migration document
 	// from this archive. Slot edits below are a separate public catalog action,
 	// never an assertion about what the native producer's slots implemented.
-	applyB03ReplayCatalog(t, rpc, imported)
-	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, typ, "todo")
-	if !equalB03JSON(original, adopted) {
-		t.Fatal("public adoption changed the pre-bootstrap imported native document")
+	// The raw imported image stays intact. Public adoption deliberately adds
+	// the core template default; no other document change is permitted.
+	encodedOriginal, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
 	}
+	expectedAdopted, err := pipeline.DecodeDocument(encodedOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := expectedAdopted.Fields["template"]; present {
+		t.Fatal("native fixture must independently exercise the missing template default")
+	}
+	expectedAdopted.Fields["template"] = false
+	plan := applyB03ReplayCatalog(t, rpc, imported)
+	migration := plan.Changes.Migration
+	if migration.Affected != 1 || len(migration.Rows) != 1 || migration.Rows[0].Before.State.ID != rootID || !equalB03JSON(migration.Rows[0].Defaults, []string{"template"}) {
+		t.Fatalf("public adoption must plan exactly one template default: %+v", migration)
+	}
+	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, typ, "todo")
+	if !equalB03JSON(expectedAdopted, adopted) {
+		t.Fatal("public adoption changed more than the exact template default")
+	}
+	assertB03ImportedConservation(t, original, adopted)
+	writeB03JSON(t, filepath.Join(rpc.root, "expected-adopted-root.json"), expectedAdopted)
 	b03ReplayReady(t, rpc, rootID, true)
 	docBytes, err := json.Marshal(imported)
 	if err != nil {
@@ -1403,7 +1424,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	doc.Workflows[workflowKey] = workflow
 	applyB03ReplayCatalog(t, rpc, doc)
 	initial := b03ReplayPublicRoot(t, rpc, store, rootID, typ, "todo")
-	if !equalB03JSON(original, initial) {
+	if !equalB03JSON(expectedAdopted, initial) {
 		t.Fatal("public slot adoption changed the original imported native document")
 	}
 	if initial.CreatedAt == nil || initial.CreatedAt.IsZero() || initial.StartedAt != nil || initial.ClosedAt != nil {

@@ -577,7 +577,7 @@ func b03PublicNativeMilestone(t *testing.T, f *b03Public, source b03AdmittedSour
 			t.Fatal("independent native milestone issue is absent from public source history")
 		}
 	}
-	b03Write(t, fmt.Sprintf("b03-native-history-%s-%s-%s-%s", meta.StoreID, source.Project, milestone.Name, milestone.CommitID), map[string]any{"source": identity, "milestone": milestone.Name, "commit": milestone.CommitID, "revision": at, "tables": actualTables, "stored_catalog": milestone.Catalog, "historical_filesystem_catalog": "NOT_VERSIONED_BY_NATIVE_SQL_HISTORY"})
+	b03Write(t, fmt.Sprintf("b03-native-history-%s-%s-%s-%s", base64.RawURLEncoding.EncodeToString([]byte(meta.StoreID)), source.Project, milestone.Name, milestone.CommitID), map[string]any{"source": identity, "milestone": milestone.Name, "commit": milestone.CommitID, "revision": at, "tables": actualTables, "stored_catalog": milestone.Catalog, "historical_filesystem_catalog": "NOT_VERSIONED_BY_NATIVE_SQL_HISTORY"})
 	after, err := f.store.Meta(f.ctx)
 	if err != nil || meta != after {
 		t.Fatal("public native historical reads changed graph metadata", err)
