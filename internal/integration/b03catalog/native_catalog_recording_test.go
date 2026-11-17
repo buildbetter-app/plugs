@@ -1586,6 +1586,90 @@ type b03ReplayState struct {
 	ByKey        map[string]*model.Changeset
 }
 
+// b03ReplayChangesetJSON preserves the durable changeset shape while allowing
+// the driver's documented zero-value changeset for a CommitNoop receipt to be
+// written as JSON. A non-empty kind still goes through ChangesetKind.Validate,
+// so an unknown kind remains a hard fixture failure.
+type b03ReplayChangesetJSON struct {
+	Revision       model.Revision          `json:"revision"`
+	Branch         model.Branch            `json:"branch"`
+	Incarnation    string                  `json:"incarnation"`
+	Kind           string                  `json:"kind"`
+	Time           time.Time               `json:"time"`
+	Principal      model.PrincipalRef      `json:"principal"`
+	Chain          []string                `json:"chain"`
+	IdempotencyKey string                  `json:"idempotencyKey,omitempty"`
+	Mutators       []string                `json:"mutators,omitempty"`
+	Changes        []model.ChangeRecord    `json:"changes"`
+	Events         []model.EventDescriptor `json:"events,omitempty"`
+}
+
+type b03ReplayReceiptJSON struct {
+	RequestHash     string                 `json:"RequestHash"`
+	Commit          model.Commit           `json:"Commit"`
+	Changeset       b03ReplayChangesetJSON `json:"Changeset"`
+	ResponsePending bool                   `json:"ResponsePending"`
+}
+
+type b03ReplayStateJSON struct {
+	Meta         driver.Meta                                 `json:"Meta"`
+	Records      []driver.Record                             `json:"Records"`
+	Versions     map[string][]driver.Version                 `json:"Versions"`
+	Log          []model.Changeset                           `json:"Log"`
+	Derived      map[driver.DerivedTable][]driver.DerivedRow `json:"Derived"`
+	Observations []driver.LockState                          `json:"Observations"`
+	Allocator    *driver.OfflineAllocator                    `json:"Allocator"`
+	Receipts     map[string]*b03ReplayReceiptJSON            `json:"Receipts"`
+	ByKey        map[string]*b03ReplayChangesetJSON          `json:"ByKey"`
+}
+
+func b03ReplayChangesetJSONValue(changeset model.Changeset) (b03ReplayChangesetJSON, error) {
+	if changeset.Kind == "" {
+		// CommitNoop deliberately stores the zero Changeset; its Commit carries
+		// the authoritative unchanged revision. No operation or log revision may
+		// be smuggled through the empty-kind representation.
+		if !changeset.Revision.IsZero() || len(changeset.Changes) != 0 || len(changeset.Events) != 0 {
+			return b03ReplayChangesetJSON{}, fmt.Errorf("empty changeset kind is not a no-op")
+		}
+	} else if err := changeset.Kind.Validate(); err != nil {
+		return b03ReplayChangesetJSON{}, err
+	}
+	return b03ReplayChangesetJSON{
+		Revision: changeset.Revision, Branch: changeset.Branch, Incarnation: changeset.Incarnation,
+		Kind: string(changeset.Kind), Time: changeset.Time, Principal: changeset.Principal,
+		Chain: changeset.Chain, IdempotencyKey: changeset.IdempotencyKey, Mutators: changeset.Mutators,
+		Changes: changeset.Changes, Events: changeset.Events,
+	}, nil
+}
+
+func (state b03ReplayState) MarshalJSON() ([]byte, error) {
+	receipts := make(map[string]*b03ReplayReceiptJSON, len(state.Receipts))
+	for key, receipt := range state.Receipts {
+		if receipt == nil {
+			receipts[key] = nil
+			continue
+		}
+		changeset, err := b03ReplayChangesetJSONValue(receipt.Changeset)
+		if err != nil {
+			return nil, fmt.Errorf("receipt %s changeset: %w", key, err)
+		}
+		receipts[key] = &b03ReplayReceiptJSON{RequestHash: receipt.RequestHash, Commit: receipt.Commit, Changeset: changeset, ResponsePending: receipt.ResponsePending}
+	}
+	byKey := make(map[string]*b03ReplayChangesetJSON, len(state.ByKey))
+	for key, changeset := range state.ByKey {
+		if changeset == nil {
+			byKey[key] = nil
+			continue
+		}
+		encoded, err := b03ReplayChangesetJSONValue(*changeset)
+		if err != nil {
+			return nil, fmt.Errorf("changeset %s: %w", key, err)
+		}
+		byKey[key] = &encoded
+	}
+	return json.Marshal(b03ReplayStateJSON{Meta: state.Meta, Records: state.Records, Versions: state.Versions, Log: state.Log, Derived: state.Derived, Observations: state.Observations, Allocator: state.Allocator, Receipts: receipts, ByKey: byKey})
+}
+
 // b03ReplaySnapshot observes one pinned durable image. Limits are assertions:
 // an incomplete inventory cannot establish refusal or reopen conservation.
 func b03ReplaySnapshot(t *testing.T, store driver.Store, project string, calls []b03RPCCall) b03ReplayState {
