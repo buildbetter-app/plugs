@@ -1605,10 +1605,10 @@ type b03ReplayChangesetJSON struct {
 }
 
 type b03ReplayReceiptJSON struct {
-	RequestHash     string                 `json:"RequestHash"`
-	Commit          model.Commit           `json:"Commit"`
-	Changeset       b03ReplayChangesetJSON `json:"Changeset"`
-	ResponsePending bool                   `json:"ResponsePending"`
+	RequestHash     string                  `json:"RequestHash"`
+	Commit          model.Commit            `json:"Commit"`
+	Changeset       *b03ReplayChangesetJSON `json:"Changeset,omitempty"`
+	ResponsePending bool                    `json:"ResponsePending"`
 }
 
 type b03ReplayStateJSON struct {
@@ -1623,18 +1623,19 @@ type b03ReplayStateJSON struct {
 	ByKey        map[string]*b03ReplayChangesetJSON          `json:"ByKey"`
 }
 
-func b03ReplayChangesetJSONValue(changeset model.Changeset) (b03ReplayChangesetJSON, error) {
+func b03ReplayChangesetJSONValue(changeset model.Changeset) (*b03ReplayChangesetJSON, error) {
 	if changeset.Kind == "" {
-		// CommitNoop deliberately stores the zero Changeset; its Commit carries
-		// the authoritative unchanged revision. No operation or log revision may
-		// be smuggled through the empty-kind representation.
+		// CommitNoop deliberately stores no Changeset; its Commit carries the
+		// authoritative unchanged revision. A non-zero value here would be a
+		// malformed fixture observation, not a wire changeset to encode.
 		if !changeset.Revision.IsZero() || len(changeset.Changes) != 0 || len(changeset.Events) != 0 {
-			return b03ReplayChangesetJSON{}, fmt.Errorf("empty changeset kind is not a no-op")
+			return nil, fmt.Errorf("empty changeset kind is not a no-op")
 		}
+		return nil, nil
 	} else if err := changeset.Kind.Validate(); err != nil {
-		return b03ReplayChangesetJSON{}, err
+		return nil, err
 	}
-	return b03ReplayChangesetJSON{
+	return &b03ReplayChangesetJSON{
 		Revision: changeset.Revision, Branch: changeset.Branch, Incarnation: changeset.Incarnation,
 		Kind: string(changeset.Kind), Time: changeset.Time, Principal: changeset.Principal,
 		Chain: changeset.Chain, IdempotencyKey: changeset.IdempotencyKey, Mutators: changeset.Mutators,
@@ -1665,7 +1666,7 @@ func (state b03ReplayState) MarshalJSON() ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("changeset %s: %w", key, err)
 		}
-		byKey[key] = &encoded
+		byKey[key] = encoded
 	}
 	return json.Marshal(b03ReplayStateJSON{Meta: state.Meta, Records: state.Records, Versions: state.Versions, Log: state.Log, Derived: state.Derived, Observations: state.Observations, Allocator: state.Allocator, Receipts: receipts, ByKey: byKey})
 }
