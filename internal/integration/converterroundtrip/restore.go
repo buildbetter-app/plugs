@@ -224,7 +224,15 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	// continues through the normal empty-target check below.
 	if profile != nil {
 		report.IdempotencyKey = profile.IdempotencyKey
-		report.RequestHash, err = profile.RequestHash()
+		// Native receiving stores the request hash with the archive's admitted
+		// accounting profile. Use that same binding for replay lookup; the
+		// generic profile hash omits the native accounting payload and would
+		// falsely classify an exact native retry as a conflict.
+		if profile.SourcePlanes != nil {
+			report.RequestHash, err = nativeReceivingRequestHash(archive, *profile)
+		} else {
+			report.RequestHash, err = profile.RequestHash()
+		}
 		if err != nil {
 			return report, err
 		}
