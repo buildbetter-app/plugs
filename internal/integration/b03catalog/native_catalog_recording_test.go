@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -1140,7 +1141,7 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 				defer runtime.Close(context.Background())
 				afterReopen := b03ReplaySnapshot(t, runtime.Store, project, rpc.calls)
 				writeB03JSON(t, filepath.Join(engineRoot, "after-reopen.json"), afterReopen)
-				if !equalB03JSON(beforeClose, afterReopen) {
+				if !equalB03ReplayState(beforeClose, afterReopen) {
 					t.Fatalf("%s reopen changed complete records/versions/log/derived/allocator/receipt census", engine)
 				}
 				engineEvidence["after_reopen_sha256"] = b03FileHash(filepath.Join(engineRoot, "after-reopen.json"))
@@ -1455,7 +1456,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	rpc.call("bead.claim", map[string]any{"id": ref}, "invalid_params")
 	rpc.call("ontology.plan", map[string]any{"document": json.RawMessage(`{"statuses":{"broken":{"name":"broken","category":"unsupported"}}}`)}, "invalid_params")
 	rpc.call("ontology.plan", map[string]any{"document": json.RawMessage(`{"map_status":[{"from":"broken","to":"todo"}]}`)}, "invalid_params")
-	if !equalB03JSON(beforeRefusals, b03ReplaySnapshot(t, store, rpc.project, refusalScopes)) {
+	if !equalB03ReplayState(beforeRefusals, b03ReplaySnapshot(t, store, rpc.project, refusalScopes)) {
 		t.Fatal("closed claim/malformed/unsupported catalog refusal changed durable state")
 	}
 	writeB03JSON(t, filepath.Join(rpc.root, "closed-catalog-refusal-conserved.json"), beforeRefusals)
@@ -1471,7 +1472,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	frozenRefusalScopes := b03RefusalScopes(rpc, "bead.claim")
 	beforeFrozenRefusal := b03ReplaySnapshot(t, store, rpc.project, frozenRefusalScopes)
 	rpc.call("bead.claim", map[string]any{"id": ref}, "invalid_params")
-	if !equalB03JSON(beforeFrozenRefusal, b03ReplaySnapshot(t, store, rpc.project, frozenRefusalScopes)) {
+	if !equalB03ReplayState(beforeFrozenRefusal, b03ReplaySnapshot(t, store, rpc.project, frozenRefusalScopes)) {
 		t.Fatal("frozen claim refusal changed durable state")
 	}
 	writeB03JSON(t, filepath.Join(rpc.root, "frozen-refusal-conserved.json"), beforeFrozenRefusal)
@@ -1843,6 +1844,14 @@ func equalB03JSON(left, right any) bool {
 	}
 	b, err := json.Marshal(right)
 	return err == nil && bytes.Equal(a, b)
+}
+
+// Replay snapshots contain typed model changesets, including valid no-op
+// receipts whose zero Changeset.Kind cannot be JSON-marshaled. Compare the
+// durable image structurally so the refusal/reopen assertions do not reject
+// an otherwise identical snapshot because of that representation detail.
+func equalB03ReplayState(left, right b03ReplayState) bool {
+	return reflect.DeepEqual(left, right)
 }
 
 func b03OutputRoot(t *testing.T) string {
