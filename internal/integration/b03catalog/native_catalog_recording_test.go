@@ -342,8 +342,8 @@ type b03PhysicalCensus struct {
 	Bytes  int                   `json:"bytes"`
 }
 
-// TestB03NativeCatalogRecording records the admitted producer only after its
-// fixture live catalog families have been resolved before canonical capture.
+// TestB03NativeCatalogRecording retains and verifies the complete custom
+// catalogs while recording a root with a producer-supported built-in status.
 func TestB03NativeCatalogRecording(t *testing.T) {
 	input := readB03NativeInput(t)
 	verifyB03NativeInput(t, input)
@@ -630,7 +630,7 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 	if typeReceipt.Exit != 0 {
 		blockers = append(blockers, exactNativeRefusal(runner, typeReceipt, "type catalog"))
 	} else {
-		_, createReceipt := command("catalog-root-create", "--json", "create", "--id", rootID, "--type", input.Catalog.Type, "--status", "awaiting_review", "--title", "B03 native catalog root", "--description", "fresh native catalog source")
+		_, createReceipt := command("catalog-root-create", "--json", "create", "--id", rootID, "--type", input.Catalog.Type, "--status", "open", "--title", "B03 native catalog root", "--description", "fresh native catalog source")
 		if createReceipt.Exit != 0 {
 			blockers = append(blockers, exactNativeRefusal(runner, createReceipt, "catalog root create"))
 		} else {
@@ -643,7 +643,7 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 					Status string `json:"status"`
 					Type   string `json:"issue_type"`
 				}
-				if err := json.Unmarshal(row, &shown); err != nil || len(shown) != 1 || shown[0].ID != rootID || shown[0].Status != "awaiting_review" || shown[0].Type != input.Catalog.Type {
+				if err := json.Unmarshal(row, &shown); err != nil || len(shown) != 1 || shown[0].ID != rootID || shown[0].Status != "open" || shown[0].Type != input.Catalog.Type {
 					blockers = append(blockers, fmt.Sprintf("native catalog root did not retain requested ID/status/type store=%s raw=%s", id, row))
 				}
 			}
@@ -652,14 +652,31 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 	if _, receipt = command("config-list", "--json", "config", "list"); receipt.Exit != 0 {
 		blockers = append(blockers, exactNativeRefusal(runner, receipt, "config list"))
 	}
-	// The pinned producer deliberately refuses nonempty live catalog families.
-	// Resolve those fixture rows through the native config API before capture.
-	for _, key := range []string{"status.custom", "types.custom"} {
-		if _, receipt = command("resolve-"+key, "--json", "config", "set", key, ""); receipt.Exit != 0 {
-			blockers = append(blockers, exactNativeRefusal(runner, receipt, "resolve live catalog "+key))
+	before := recordB03PhysicalCensus(t, runner, binary, "before")
+	// These source catalog rows are acceptance inputs, never live-claim cleanup.
+	wantStatuses := []any{}
+	for _, declaration := range strings.Split(input.Catalog.Status, ",") {
+		name, category, ok := strings.Cut(declaration, ":")
+		if !ok || name == "" || category == "" {
+			t.Fatalf("invalid fixture status declaration %q", declaration)
+		}
+		wantStatuses = append(wantStatuses, map[string]any{"name": name, "category": category})
+	}
+	wantCatalogs := map[string]any{
+		"custom_statuses": normalizeB03Rows(wantStatuses),
+		"custom_types":    []any{map[string]any{"name": input.Catalog.Type}},
+	}
+	for _, table := range before.Tables {
+		if want, ok := wantCatalogs[table.Table]; ok {
+			if !equalB03JSON(table.Rows, want) {
+				t.Fatalf("source %s catalog differs: got=%v want=%v", table.Table, table.Rows, want)
+			}
+			delete(wantCatalogs, table.Table)
 		}
 	}
-	before := recordB03PhysicalCensus(t, runner, binary, "before")
+	if len(wantCatalogs) != 0 {
+		t.Fatalf("source catalog census missing tables: %v", wantCatalogs)
+	}
 	inventoryPath := filepath.Join(storeRoot, "native-inventory.json")
 	_, inventoryReceipt := command("inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath)
 	if inventoryReceipt.Exit == 0 {
@@ -855,14 +872,43 @@ func validateB03CanonicalArchive(input b03NativeInput, archive *dumpformat.Archi
 		return errors.New("canonical native catalog lacks the production strict-union ImportMigration; no input-derived document may substitute")
 	}
 	beads := archive.Records("bead")
-	if len(beads) != 1 || beads[0].ID != rootID || beads[0].Project != prefix || beads[0].Source.Table != "issues" || beads[0].Source.Fields["status"] != "awaiting_review" || beads[0].Source.Fields["issue_type"] != input.Catalog.Type {
+	if len(beads) != 1 || beads[0].ID != rootID || beads[0].Project != prefix || beads[0].Source.Table != "issues" || beads[0].Source.Fields["status"] != "open" || beads[0].Source.Fields["issue_type"] != input.Catalog.Type {
 		return fmt.Errorf("canonical native root ID/project/status/type differs from physical source: %+v", beads)
 	}
-	// Canonical capture follows resolution, so live catalog rows must be empty.
-	for _, table := range []string{"custom_statuses", "custom_types"} {
-		if rows := b03CatalogRows(archive, table); len(rows) != 0 {
-			return fmt.Errorf("unresolved live catalog %s rows=%d", table, len(rows))
+	statusWant := map[string]string{}
+	for _, item := range strings.Split(input.Catalog.Status, ",") {
+		name, category, ok := strings.Cut(item, ":")
+		if !ok || name == "" || category == "" {
+			return fmt.Errorf("invalid input status declaration %q", item)
 		}
+		statusWant[name] = category
+	}
+	statusRows := b03CatalogRows(archive, "custom_statuses")
+	if len(statusRows) != len(statusWant) {
+		return fmt.Errorf("custom status row count=%d want=%d", len(statusRows), len(statusWant))
+	}
+	seenStatus := map[string]bool{}
+	for _, row := range statusRows {
+		if row.Kind != "beads-archive" || row.Source.Table != "custom_statuses" || !equalB03JSON(row.Body, map[string]any{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false}) || len(row.Source.Fields) != 2 {
+			return fmt.Errorf("custom status row metadata is not canonical: %+v", row)
+		}
+		name, nameOK := row.Source.Fields["name"].(string)
+		category, categoryOK := row.Source.Fields["category"].(string)
+		if !nameOK || !categoryOK || statusWant[name] != category || seenStatus[name] {
+			return fmt.Errorf("custom status value/category mismatch: %+v", row.Source.Fields)
+		}
+		seenStatus[name] = true
+	}
+	if len(seenStatus) != len(statusWant) {
+		return fmt.Errorf("custom status catalog omitted a declared value")
+	}
+	typeRows := b03CatalogRows(archive, "custom_types")
+	if len(typeRows) != 1 {
+		return fmt.Errorf("custom type row count=%d want=1", len(typeRows))
+	}
+	typeRow := typeRows[0]
+	if typeRow.Kind != "beads-archive" || typeRow.Source.Table != "custom_types" || !equalB03JSON(typeRow.Body, map[string]any{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false}) || len(typeRow.Source.Fields) != 1 || typeRow.Source.Fields["name"] != input.Catalog.Type {
+		return fmt.Errorf("custom type value/metadata mismatch: %+v", typeRow)
 	}
 	for _, want := range []string{"custom_statuses", "custom_types"} {
 		found := false
@@ -981,7 +1027,7 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 				t.Fatalf("native archive replay on %s: %v", engine, err)
 			}
 			imported := b03ReplayDocumentAt(t, store, rootID)
-			if imported.Project != project || imported.Type != input.Catalog.Type || imported.Fields["status"] != "awaiting_review" {
+			if imported.Project != project || imported.Type != input.Catalog.Type || imported.Fields["status"] != "todo" {
 				t.Fatalf("restore lost actual native root/project/catalog: %+v", imported)
 			}
 			assertB03ImportedSource(t, imported, nativeRoot)
@@ -1242,7 +1288,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	// from this archive. Slot edits below are a separate public catalog action,
 	// never an assertion about what the native producer's slots implemented.
 	applyB03ReplayCatalog(t, rpc, imported)
-	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "todo")
 	if !equalB03JSON(original, adopted) {
 		t.Fatal("public adoption changed the pre-bootstrap imported native document")
 	}
@@ -1261,7 +1307,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	workflow.Slots[ontology.Claim], workflow.Slots[ontology.Close], workflow.Slots[ontology.Reopen], workflow.Slots[ontology.Defer] = "qa_testing", "archived", "awaiting_review", "on_hold"
 	doc.Workflows[workflowKey] = workflow
 	applyB03ReplayCatalog(t, rpc, doc)
-	initial := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	initial := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "todo")
 	if !equalB03JSON(original, initial) {
 		t.Fatal("public slot adoption changed the original imported native document")
 	}

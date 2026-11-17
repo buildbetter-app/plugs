@@ -314,6 +314,8 @@ func b03AdmittedPlan(t *testing.T, engine string, source b03AdmittedSource) driv
 			fieldsByType[typ] = fields
 		}
 	}
+	// Authenticated task/rich_kind/gate rows have SQL NULL storage_class and
+	// false ephemeral/no_history flags; empty plan storage matches SQL NULL.
 	for typ, fields := range fieldsByType {
 		statuses := []driver.SourcePlaneStringPairV1{}
 		for _, project := range a.Manifest().Projects {
@@ -322,7 +324,7 @@ func b03AdmittedPlan(t *testing.T, engine string, source b03AdmittedSource) driv
 			}
 		}
 		sort.Slice(statuses, func(i, j int) bool { return statuses[i].From < statuses[j].From })
-		plan.Dispositions = append(plan.Dispositions, driver.SourcePlaneDispositionV1{Key: typ, SourceType: typ, StorageClass: "versioned", SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Statuses: statuses, Fields: fields, RefusalPolicy: "exact-only"})
+		plan.Dispositions = append(plan.Dispositions, driver.SourcePlaneDispositionV1{Key: typ, SourceType: typ, StorageClass: "", SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Statuses: statuses, Fields: fields, RefusalPolicy: "exact-only"})
 	}
 	sort.Slice(plan.Dispositions, func(i, j int) bool { return plan.Dispositions[i].Key < plan.Dispositions[j].Key })
 	sidecars, err := a.SourcePlaneSidecarOrigins()
