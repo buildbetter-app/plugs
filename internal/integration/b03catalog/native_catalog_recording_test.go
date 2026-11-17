@@ -342,9 +342,8 @@ type b03PhysicalCensus struct {
 	Bytes  int                   `json:"bytes"`
 }
 
-// TestB03NativeCatalogRecording is manual and intentionally fails closed when
-// the admitted c8eb producer cannot emit a canonical catalog archive. That
-// failure is the producer-owned dependency, not a successful fixture or skip.
+// TestB03NativeCatalogRecording records the admitted producer only after its
+// fixture live catalog families have been resolved before canonical capture.
 func TestB03NativeCatalogRecording(t *testing.T) {
 	input := readB03NativeInput(t)
 	verifyB03NativeInput(t, input)
@@ -653,6 +652,13 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 	if _, receipt = command("config-list", "--json", "config", "list"); receipt.Exit != 0 {
 		blockers = append(blockers, exactNativeRefusal(runner, receipt, "config list"))
 	}
+	// The pinned producer deliberately refuses nonempty live catalog families.
+	// Resolve those fixture rows through the native config API before capture.
+	for _, key := range []string{"status.custom", "types.custom"} {
+		if _, receipt = command("resolve-"+key, "--json", "config", "set", key, ""); receipt.Exit != 0 {
+			blockers = append(blockers, exactNativeRefusal(runner, receipt, "resolve live catalog "+key))
+		}
+	}
 	before := recordB03PhysicalCensus(t, runner, binary, "before")
 	inventoryPath := filepath.Join(storeRoot, "native-inventory.json")
 	_, inventoryReceipt := command("inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath)
@@ -852,40 +858,11 @@ func validateB03CanonicalArchive(input b03NativeInput, archive *dumpformat.Archi
 	if len(beads) != 1 || beads[0].ID != rootID || beads[0].Project != prefix || beads[0].Source.Table != "issues" || beads[0].Source.Fields["status"] != "awaiting_review" || beads[0].Source.Fields["issue_type"] != input.Catalog.Type {
 		return fmt.Errorf("canonical native root ID/project/status/type differs from physical source: %+v", beads)
 	}
-	statusWant := map[string]string{}
-	for _, item := range strings.Split(input.Catalog.Status, ",") {
-		name, category, ok := strings.Cut(item, ":")
-		if !ok || name == "" || category == "" {
-			return fmt.Errorf("invalid input status declaration %q", item)
+	// Canonical capture follows resolution, so live catalog rows must be empty.
+	for _, table := range []string{"custom_statuses", "custom_types"} {
+		if rows := b03CatalogRows(archive, table); len(rows) != 0 {
+			return fmt.Errorf("unresolved live catalog %s rows=%d", table, len(rows))
 		}
-		statusWant[name] = category
-	}
-	statusRows := b03CatalogRows(archive, "custom_statuses")
-	if len(statusRows) != len(statusWant) {
-		return fmt.Errorf("custom status row count=%d want=%d", len(statusRows), len(statusWant))
-	}
-	seenStatus := map[string]bool{}
-	for _, row := range statusRows {
-		if row.Kind != "beads-archive" || row.Source.Table != "custom_statuses" || !equalB03JSON(row.Body, map[string]any{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false}) || len(row.Source.Fields) != 2 {
-			return fmt.Errorf("custom status row metadata is not canonical: %+v", row)
-		}
-		name, nameOK := row.Source.Fields["name"].(string)
-		category, categoryOK := row.Source.Fields["category"].(string)
-		if !nameOK || !categoryOK || statusWant[name] != category || seenStatus[name] {
-			return fmt.Errorf("custom status value/category mismatch: %+v", row.Source.Fields)
-		}
-		seenStatus[name] = true
-	}
-	if len(seenStatus) != len(statusWant) {
-		return fmt.Errorf("custom status catalog omitted a declared value")
-	}
-	typeRows := b03CatalogRows(archive, "custom_types")
-	if len(typeRows) != 1 {
-		return fmt.Errorf("custom type row count=%d want=1", len(typeRows))
-	}
-	typeRow := typeRows[0]
-	if typeRow.Kind != "beads-archive" || typeRow.Source.Table != "custom_types" || !equalB03JSON(typeRow.Body, map[string]any{"read_only": true, "redactable": true, "history_verified": false, "attribution_verified": false}) || len(typeRow.Source.Fields) != 1 || typeRow.Source.Fields["name"] != input.Catalog.Type {
-		return fmt.Errorf("custom type value/metadata mismatch: %+v", typeRow)
 	}
 	for _, want := range []string{"custom_statuses", "custom_types"} {
 		found := false

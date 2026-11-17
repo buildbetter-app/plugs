@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -227,73 +226,123 @@ func b03AdmittedArchive(t *testing.T) b03AdmittedInputs {
 	return inputs
 }
 
-// Request construction remains in the single existing receiver executable.
-// This is explicit disposable host policy, not a parallel source planner.
-func b03AdmittedPlan(t *testing.T, ctx context.Context, engine string, source b03AdmittedSource) driver.SourcePlanePlanV1 {
+// Bind disposable host policy directly to the complete authenticated capture set.
+func b03AdmittedPlan(t *testing.T, engine string, source b03AdmittedSource) driver.SourcePlanePlanV1 {
 	t.Helper()
 	a := source.archive
-	projects, sources := []string{}, []dumpformat.SourceIdentity{}
-	for _, project := range a.Manifest().Projects {
-		projects = append(projects, project.Prefix)
+	if a == nil || !a.HasNativeDelta() {
+		t.Fatal("complete authenticated capture-set archive required")
 	}
-	for _, source := range a.NativeSourceHistories() {
-		if len(source.Projects) != 1 {
-			t.Fatal("native source must retain its one original project")
-		}
-		sources = append(sources, dumpformat.SourceIdentity{StoreID: source.StoreID, Project: source.Projects[0]})
-	}
+	// The plan is intentionally built from the already authenticated capture
+	// set. Archive-only prepare-request cannot validate native history.
 	lifetime := driver.CheckpointLifetimeProcess
 	if engine != "memory" {
 		lifetime = driver.CheckpointLifetimeRestart
 	}
 	principal, _ := json.Marshal(model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
-	fields := []driver.SourcePlaneStringPairV1{{From: "id", To: "id"}, {From: "title", To: "title"}, {From: "issue_type", To: "type"}, {From: "status", To: "status"}, {From: "metadata", To: "metadata"}, {From: "created_at", To: "created_at"}, {From: "priority", To: "priority"}, {From: "description", To: "description"}}
-	archiveBytes := a.TarBytes()
-	policy := map[string]any{
-		"format": "plug-native-receiving-policy/1", "archive_sha256": b03Digest(archiveBytes), "source_store_id": a.Manifest().StoreID, "projects": projects, "sources": sources,
-		"admission": b03AdmittedAdmission(), "idempotency_key": "b03-public-native-catalog-000001",
-		"principal":     driver.SourcePlanePrincipalV1{Key: "owner", Source: "B03 explicit public host policy", Authority: "trusted-explicit/1", PrincipalJSON: principal},
-		"provider":      driver.SourcePlaneProviderV1{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"},
-		"entity_policy": "durable-bead-identity", "tuple_policy": "copy-observed-exact", "status_policy": "source-name-identity", "target_id_policy": "source-id", "route_policy": "active-first", "field_mappings": fields, "unmapped_fields": "opaque-metadata", "other_records": "inert-origin", "sidecars": "retain-captured-origins", "dependency_policy": "exact-typed",
-	}
-	root := t.TempDir()
-	policyPath := filepath.Join(root, "public-policy.json")
-	policyBytes, err := json.Marshal(policy)
+	plan := driver.SourcePlanePlanV1{Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1, SourceStoreID: a.Manifest().StoreID, ArchiveSHA256: a.SHA256(), Target: driver.SourcePlaneTargetV1{RequireEmpty: true, Lifetime: lifetime, RuntimeContract: driver.SourcePlaneRuntimeContractV1}, Principals: []driver.SourcePlanePrincipalV1{{Key: "owner", Source: "B03 authenticated capture-set", Authority: "trusted-explicit/1", PrincipalJSON: principal}}, Providers: []driver.SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: "workflow/source-state/1", Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: lifetime, OriginAdapter: "beads-workflow-origins/1"}}}
+	rows, err := a.SourcePlaneRecords()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("capture-set source-plane records", err)
 	}
-	if err := os.WriteFile(policyPath, policyBytes, 0600); err != nil {
-		t.Fatal(err)
+	fieldsByType := map[string][]driver.SourcePlaneFieldRuleV1{}
+	for _, record := range rows {
+		var row dumpformat.Record
+		if err := json.Unmarshal(record.Raw, &row); err != nil {
+			t.Fatal("decode capture-set source-plane record", err)
+		}
+		var wire struct {
+			Source struct {
+				Fields map[string]json.RawMessage `json:"fields"`
+			} `json:"source"`
+		}
+		if err := json.Unmarshal(record.Raw, &wire); err != nil {
+			t.Fatal("decode capture-set source fields", err)
+		}
+		origin := driver.SourcePlaneBytesV1{Presence: "object", Size: uint64(len(record.Raw)), SHA256: b03Digest(record.Raw)}
+		var census []driver.SourcePlaneFieldV1
+		for name, raw := range wire.Source.Fields {
+			presence := "null"
+			switch bytes.TrimSpace(raw)[0] {
+			case '{':
+				presence = "object"
+			case '[':
+				presence = "array"
+			case '"':
+				presence = "text"
+				var text string
+				if err := json.Unmarshal(raw, &text); err != nil {
+					t.Fatal(err)
+				}
+				raw = []byte(text)
+			case 't', 'f':
+				presence = "boolean"
+			case 'n':
+			default:
+				presence = "number"
+			}
+			census = append(census, driver.SourcePlaneFieldV1{Name: name, Value: driver.SourcePlaneBytesV1{Presence: presence, Size: uint64(len(raw)), SHA256: b03Digest(raw)}})
+		}
+		sort.Slice(census, func(i, j int) bool { return census[i].Name < census[j].Name })
+		if row.Kind != "bead" {
+			project := row.Project
+			if row.Source.Identity != nil {
+				project = row.Source.Identity.Project
+			}
+			plan.Origins = append(plan.Origins, driver.SourcePlaneOriginV1{Project: project, Table: row.Source.Table, ID: row.ID, Action: "inert-origin", Raw: origin, Fields: census, Parsed: driver.SourcePlaneBytesV1{Presence: "absent"}})
+			continue
+		}
+		typ, ok := row.Source.Fields["issue_type"].(string)
+		if !ok || typ == "" {
+			t.Fatal("capture-set bead type missing")
+		}
+		key := driver.SourceEntityKey{Project: row.Project, Plane: row.Source.Table, ID: row.ID}
+		plan.Entities = append(plan.Entities, driver.SourcePlaneEntityV1{Source: key, TargetKind: "bead", TargetID: row.ID, DispositionKey: typ, PrincipalKey: "owner", Route: driver.SourcePlaneRouteV1{Project: row.Project, SourceID: row.ID, DurableTargetID: row.ID, Preference: "active-first"}, Origin: origin, Fields: census})
+		if _, present := fieldsByType[typ]; !present {
+			var fields []driver.SourcePlaneFieldRuleV1
+			for name := range wire.Source.Fields {
+				disposition, target := "origin-only", ""
+				switch name {
+				case "id", "title", "status", "metadata", "created_at", "priority", "description":
+					disposition, target = "exact-map", name
+				case "issue_type":
+					disposition, target = "exact-map", "type"
+				}
+				fields = append(fields, driver.SourcePlaneFieldRuleV1{Source: name, Target: target, Disposition: disposition})
+			}
+			sort.Slice(fields, func(i, j int) bool { return fields[i].Source < fields[j].Source })
+			fieldsByType[typ] = fields
+		}
 	}
-	archivePath := filepath.Join(root, "native-head.tar")
-	if err := os.WriteFile(archivePath, archiveBytes, 0600); err != nil {
-		t.Fatal(err)
+	for typ, fields := range fieldsByType {
+		statuses := []driver.SourcePlaneStringPairV1{}
+		for _, project := range a.Manifest().Projects {
+			for _, status := range project.Statuses {
+				statuses = append(statuses, driver.SourcePlaneStringPairV1{From: status.Name, To: status.Name})
+			}
+		}
+		sort.Slice(statuses, func(i, j int) bool { return statuses[i].From < statuses[j].From })
+		plan.Dispositions = append(plan.Dispositions, driver.SourcePlaneDispositionV1{Key: typ, SourceType: typ, StorageClass: "versioned", SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Statuses: statuses, Fields: fields, RefusalPolicy: "exact-only"})
 	}
-	binary := filepath.Join(os.Getenv("TEST_SRCDIR"), os.Getenv("B03_NATIVE_RECEIVE_BINARY"))
-	binaryBytes, err := os.ReadFile(binary)
+	sort.Slice(plan.Dispositions, func(i, j int) bool { return plan.Dispositions[i].Key < plan.Dispositions[j].Key })
+	sidecars, err := a.SourcePlaneSidecarOrigins()
 	if err != nil {
-		t.Fatal("existing source-built receiver executable required", err)
+		t.Fatal("capture-set sidecar origins", err)
 	}
-	cmd := exec.CommandContext(ctx, binary, "prepare-request", "--driver", engine, "--archive", archivePath, "--policy", policyPath, "--expected-binary-sha256", b03Digest(binaryBytes))
-	cmd.Env = append(os.Environ(), "PATH=/tmp/plug-swarm/bin/worker-safe:/usr/local/bin:"+os.Getenv("PATH"))
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err = cmd.Run()
-	b03Write(t, "b03-admitted-prepare-"+engine+"-"+source.Project, map[string]any{"argv": cmd.Args, "binary_sha256": b03Digest(binaryBytes), "policy": policy, "stdout": stdout.String(), "stderr": stderr.String(), "error": fmt.Sprint(err)})
-	if err != nil {
-		t.Fatalf("single receiver's explicit policy construction refused: %v %s", err, stderr.Bytes())
-	}
-	var request struct {
-		ArchiveSHA256 string                   `json:"archive_sha256"`
-		SourcePlan    driver.SourcePlanePlanV1 `json:"source_plan"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &request); err != nil || request.ArchiveSHA256 != b03Digest(archiveBytes) || request.SourcePlan.ArchiveSHA256 != b03Digest(archiveBytes) || request.SourcePlan.Target.StoreID != "" || request.SourcePlan.Target.Incarnation != "" || !request.SourcePlan.Target.RequireEmpty || request.SourcePlan.Target.Lifetime != lifetime {
-		t.Fatalf("existing request constructor lost exact source or target boundary: %v", err)
-	}
-	// The receiver validates the exact head envelope; the authenticated
-	// capture-set binder below rebinds that plan to the capture-set root.
-	request.SourcePlan.ArchiveSHA256 = a.SHA256()
-	return request.SourcePlan
+	plan.Origins = append(plan.Origins, sidecars...)
+	sort.Slice(plan.Entities, func(i, j int) bool {
+		return driver.CompareSourceEntityKeys(plan.Entities[i].Source, plan.Entities[j].Source) < 0
+	})
+	sort.Slice(plan.Origins, func(i, j int) bool {
+		left, right := []string{plan.Origins[i].Project, plan.Origins[i].Table, plan.Origins[i].ID, plan.Origins[i].Path, plan.Origins[i].Layer}, []string{plan.Origins[j].Project, plan.Origins[j].Table, plan.Origins[j].ID, plan.Origins[j].Path, plan.Origins[j].Layer}
+		for k := range left {
+			if left[k] != right[k] {
+				return left[k] < right[k]
+			}
+		}
+		return false
+	})
+	return plan
 }
 
 func b03AdmittedCatalog(t *testing.T, f *b03Public, project string, want map[string]string) ontologyops.Result {
@@ -638,7 +687,7 @@ func b03AdmittedRuntime(t *testing.T, ctx context.Context, engine string, source
 			}
 		}
 	}()
-	plan := b03AdmittedPlan(t, op, engine, source)
+	plan := b03AdmittedPlan(t, engine, source)
 	meta, err := store.Meta(op)
 	if err != nil {
 		t.Fatal(err)
