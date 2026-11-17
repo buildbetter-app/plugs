@@ -1705,7 +1705,14 @@ func b03ReplaySnapshot(t *testing.T, store driver.Store, project string, calls [
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Log, err = r.Changesets(ctx, nil, 10000)
+	var changesCursor *driver.Cursor
+	if !s.Meta.HistoryFloor.IsZero() {
+		// A restored native image begins at its authenticated history floor.
+		// Reading from nil asks for the discarded prefix and correctly returns
+		// history-is-truncated; begin the census at the retained floor instead.
+		changesCursor = &driver.Cursor{Incarnation: s.Meta.Incarnation, Revision: s.Meta.HistoryFloor, Method: "changesets"}
+	}
+	s.Log, err = r.Changesets(ctx, changesCursor, 10000)
 	if err != nil || len(s.Log) >= 10000 {
 		t.Fatalf("incomplete replay changeset inventory: %v", err)
 	}
