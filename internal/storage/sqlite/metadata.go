@@ -47,6 +47,42 @@ type receiptResponse struct {
 	AttemptID string `json:"attemptID,omitempty"`
 }
 
+func (r receiptResponse) MarshalJSON() ([]byte, error) {
+	if err := r.Commit.Validate(); err != nil {
+		return nil, err
+	}
+	// Alias suppresses Commit.MarshalJSON, which would hide sibling fields.
+	type commitFields model.Commit
+	return json.Marshal(struct {
+		commitFields
+		AttemptID string `json:"attemptID,omitempty"`
+	}{commitFields: commitFields(r.Commit), AttemptID: r.AttemptID})
+}
+
+func (r *receiptResponse) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var attemptID string
+	if raw, ok := fields["attemptID"]; ok {
+		if err := json.Unmarshal(raw, &attemptID); err != nil {
+			return err
+		}
+		delete(fields, "attemptID")
+	}
+	public, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	var commit model.Commit
+	if err := json.Unmarshal(public, &commit); err != nil {
+		return err
+	}
+	*r = receiptResponse{Commit: commit, AttemptID: attemptID}
+	return nil
+}
+
 func responseBytes(h driver.ChangesetHeader, revision model.Revision) ([]byte, error) {
 	response := h.Response
 	response.Revision = revision
