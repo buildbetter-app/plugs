@@ -121,6 +121,7 @@ func responseAt(input model.Commit, revision model.Revision) (model.Commit, erro
 // A no-op has no changeset. The public zero Changeset is deliberately not a
 // valid wire ChangesetKind, so its durable representation uses absence.
 type receiptValue struct {
+	AttemptID       string `json:",omitempty"`
 	RequestHash     string
 	Commit          model.Commit
 	Changeset       *model.Changeset `json:",omitempty"`
@@ -128,7 +129,7 @@ type receiptValue struct {
 }
 
 func encodeReceipt(value driver.IdempotencyRecord) ([]byte, error) {
-	disk := receiptValue{RequestHash: value.RequestHash, Commit: value.Commit, ResponsePending: value.ResponsePending}
+	disk := receiptValue{AttemptID: value.AttemptID, RequestHash: value.RequestHash, Commit: value.Commit, ResponsePending: value.ResponsePending}
 	if value.Changeset.Kind != "" {
 		disk.Changeset = &value.Changeset
 	}
@@ -137,7 +138,7 @@ func encodeReceipt(value driver.IdempotencyRecord) ([]byte, error) {
 func decodeReceipt(raw []byte) (driver.IdempotencyRecord, error) {
 	var disk receiptValue
 	err := decode(raw, &disk)
-	value := driver.IdempotencyRecord{RequestHash: disk.RequestHash, Commit: disk.Commit, ResponsePending: disk.ResponsePending}
+	value := driver.IdempotencyRecord{AttemptID: disk.AttemptID, RequestHash: disk.RequestHash, Commit: disk.Commit, ResponsePending: disk.ResponsePending}
 	if disk.Changeset != nil {
 		value.Changeset = *disk.Changeset
 	}

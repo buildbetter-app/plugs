@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -128,6 +129,12 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 	if err != nil {
 		return port.WriteOutcome{}, failure("invalid_params", err.Error())
 	}
+	// Keep invocation identity separate from the deterministic request hash.
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return port.WriteOutcome{}, err
+	}
+	attemptID := hex.EncodeToString(token[:])
 	preCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for attempt := 0; attempt <= 3; attempt++ {
@@ -223,7 +230,7 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		var commit model.Commit
 		if err == nil {
 			phaseStarted = time.Now()
-			commit, err = w.transact(preCtx, p, by, meta, principal, hash, terminalProbe)
+			commit, err = w.transact(preCtx, p, by, meta, principal, hash, attemptID, terminalProbe)
 			w.observePhaseSince(preCtx, PhaseCommit, phaseStarted, err)
 			if err == nil {
 				committed = true
@@ -253,11 +260,16 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 					result, found, e := w.replay(resolveCtx, fresh, principal, by, cs, meta, hash)
 					w.observePhaseSince(resolveCtx, PhaseReplay, phaseStarted, e)
 					if found || e != nil {
-						// transact rechecks receipt absence after Head serializes
-						// all writers. A preexisting receipt restarts admission;
-						// an uncertain publication here is our own attempt.
-						committed = found && e == nil
-						return port.WriteOutcome{Commit: result}, e
+						// Locks have been released: another invocation may have
+						// won after our uncertain rollback. Only a matching
+						// private receipt token proves this attempt committed.
+						entry, identityErr := fresh.IdempotencyByKey(resolveCtx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
+						if identityErr != nil {
+							return port.WriteOutcome{}, identityErr
+						}
+						own := entry != nil && entry.AttemptID == attemptID
+						committed = found && e == nil && own
+						return port.WriteOutcome{Commit: result, Replayed: found && e == nil && !own}, e
 					}
 				}
 			}
@@ -453,7 +465,7 @@ func (p *prepared) response(revision model.Revision, meta model.WriteMeta) (mode
 	return clone(commit)
 }
 
-func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
+func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRef, meta model.WriteMeta, principal, hash, attemptID string, terminalProbe port.ClaimNextReadyProbe) (model.Commit, error) {
 	sentinels := p.sentinels()
 	writes := map[string]*pending{}
 	for id, pending := range p.writes {
@@ -670,7 +682,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 		if err != nil {
 			return model.Commit{}, err
 		}
-		commit, err := noop.CommitNoop(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		commit, err := noop.CommitNoop(ctx, driver.ChangesetHeader{AttemptID: attemptID, Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return model.Commit{}, errStale
 		}
@@ -727,7 +739,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 	}
-	entry, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
+	entry, err := tx.Commit(ctx, driver.ChangesetHeader{AttemptID: attemptID, Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return model.Commit{}, errStale

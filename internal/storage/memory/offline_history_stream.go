@@ -219,7 +219,7 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 		return zero, err
 	}
 	key := normalizedScope(principal, h.AgentLabel, h.Method, h.IdempotencyKey)
-	next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: final}, at: store.now()}
+	next.replays[key] = replay{value: driver.IdempotencyRecord{AttemptID: h.AttemptID, RequestHash: h.RequestHash, Commit: response, Changeset: final}, at: store.now()}
 	if err = next.publishAllocatorImage(store.state, true); err != nil {
 		return zero, err
 	}

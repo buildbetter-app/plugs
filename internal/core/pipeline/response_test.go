@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
 
 type applyResult struct {
@@ -344,7 +346,17 @@ func TestLeaseLossDuringPostLeavesRecoverablePendingResponse(t *testing.T) {
 // Cancelling the transaction context also proves resolution does not reuse it.
 type indeterminateCommitStore struct {
 	driver.Store
-	calls int
+	calls             int
+	abortThen         func()
+	resolutionBounded bool
+}
+
+func (s *indeterminateCommitStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	if s.calls > 0 {
+		deadline, ok := ctx.Deadline()
+		s.resolutionBounded = ok && time.Until(deadline) <= 2*time.Second && ctx.Err() == nil
+	}
+	return s.Store.Read(ctx, view)
 }
 
 func (s *indeterminateCommitStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
@@ -369,6 +381,14 @@ func (tx *indeterminateCommitTx) Close() error {
 }
 
 func (tx *indeterminateCommitTx) Commit(ctx context.Context, header driver.ChangesetHeader) (model.Changeset, error) {
+	if tx.store.abortThen != nil {
+		if err := tx.WriteTx.Rollback(ctx); err != nil {
+			return model.Changeset{}, err
+		}
+		tx.store.calls++
+		tx.store.abortThen()
+		return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
+	}
 	_, err := tx.WriteTx.Commit(ctx, header)
 	if err != nil {
 		return model.Changeset{}, err
@@ -378,36 +398,111 @@ func (tx *indeterminateCommitTx) Commit(ctx context.Context, header driver.Chang
 	return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
 }
 
-func TestIndeterminateOwnCommitIsNotReplay(t *testing.T) {
-	h := setup(t)
-	fault := &indeterminateCommitStore{Store: h.store}
-	w := h.writer()
-	w.store = fault
-	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(901)
-	outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
-	if err != nil || outcome.Replayed || fault.calls != 1 {
-		t.Fatalf("outcome=%+v err=%v commits=%d", outcome, err, fault.calls)
+func TestIndeterminateReceiptOwnership(t *testing.T) {
+	for _, backend := range []string{"memory", "sqlite"} {
+		for _, mode := range []string{"own", "concurrent", "concurrent-legacy", "prior", "legacy", "prior-post"} {
+			t.Run(backend+"/"+mode, func(t *testing.T) {
+				h := setup(t)
+				var store driver.Store = h.store
+				lease := h.lease
+				if backend == "sqlite" {
+					var err error
+					store, err = (sqlite.Driver{}).Open(context.Background(), driver.Config{DSN: filepath.Join(t.TempDir(), "receipt.db")})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = store.Close() })
+					lease, err = store.Lease(context.Background(), "receipt-test", time.Hour)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = lease.Release(context.Background()) })
+				}
+				winner := h.writer()
+				if mode == "prior-post" {
+					winner = h.writer(WithPostSubscribers(PostBinding{ID: "post", Subscriber: postFunc(func(context.Context, port.CommittedChange, port.SnapshotReader) error { return nil })}))
+				}
+				winner.store, winner.lease = store, lease
+				cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(901)
+				var expected model.Commit
+				if mode == "prior" || mode == "legacy" || mode == "prior-post" {
+					if mode == "legacy" {
+						winner.store = &legacyReceiptStore{Store: store}
+					}
+					var err error
+					expected, err = winner.Apply(context.Background(), by, cs, m)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				fault := &indeterminateCommitStore{Store: store}
+				if mode == "concurrent" || mode == "concurrent-legacy" {
+					if mode == "concurrent-legacy" {
+						winner.store = &legacyReceiptStore{Store: store}
+					}
+					fault.abortThen = func() {
+						var err error
+						expected, err = winner.Apply(context.Background(), by, cs, m)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				w := h.writer()
+				w.store, w.lease = fault, lease
+				outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+				if err != nil || outcome.Replayed != (mode != "own") {
+					t.Fatalf("outcome=%+v err=%v", outcome, err)
+				}
+				wantCalls := 1
+				if mode == "prior" || mode == "legacy" || mode == "prior-post" {
+					wantCalls = 0
+				}
+				if fault.calls != wantCalls || (wantCalls > 0 && !fault.resolutionBounded) {
+					t.Fatalf("calls=%d bounded=%v", fault.calls, fault.resolutionBounded)
+				}
+				reader, err := w.reader(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reader.Close()
+				principal, _ := driver.PrincipalKey(by)
+				entry, err := reader.IdempotencyByKey(context.Background(), principal, "", m.Method, m.IdempotencyKey)
+				if err != nil || entry == nil {
+					t.Fatalf("receipt=%+v err=%v", entry, err)
+				}
+				if entry.ResponsePending || !reflect.DeepEqual(outcome.Commit, entry.Commit) || len(outcome.Commit.Results) != 1 || len(outcome.Commit.Results[0].Record) == 0 {
+					t.Fatalf("outcome=%+v receipt=%+v", outcome, entry)
+				}
+				if mode != "own" && !reflect.DeepEqual(outcome.Commit, expected) {
+					t.Fatalf("outcome=%+v winner=%+v", outcome.Commit, expected)
+				}
+				if (entry.AttemptID == "") != (mode == "legacy" || mode == "concurrent-legacy") {
+					t.Fatalf("attemptID=%q mode=%s", entry.AttemptID, mode)
+				}
+				log, err := reader.Changesets(context.Background(), nil, 100)
+				if err != nil || len(log) != 1 || outcome.Commit.Revision.String() != "1" {
+					t.Fatalf("log=%+v err=%v", log, err)
+				}
+			})
+		}
 	}
-	stored := receipt(t, h, m)
-	if stored.ResponsePending || !reflect.DeepEqual(outcome.Commit, stored.Commit) || len(outcome.Commit.Results) != 1 || len(outcome.Commit.Results[0].Record) == 0 {
-		t.Fatalf("outcome=%+v receipt=%+v", outcome, stored)
-	}
-	assertSingleGraphWrite(t, h, outcome.Commit)
 }
 
-func TestIndeterminateStorePreservesPriorReceiptReplay(t *testing.T) {
-	h := setup(t)
-	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(902)
-	original, err := h.writer().Apply(context.Background(), by, cs, m)
+// Emulate a receipt persisted by a binary predating invocation metadata.
+type legacyReceiptStore struct{ driver.Store }
+
+func (s *legacyReceiptStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	tx, err := s.Store.Write(ctx, lease)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	fault := &indeterminateCommitStore{Store: h.store}
-	w := h.writer()
-	w.store = fault
-	outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
-	if err != nil || !outcome.Replayed || fault.calls != 0 || !reflect.DeepEqual(outcome.Commit, original) {
-		t.Fatalf("outcome=%+v err=%v commits=%d original=%+v", outcome, err, fault.calls, original)
-	}
-	assertSingleGraphWrite(t, h, original)
+	return &legacyReceiptTx{tx}, nil
+}
+
+type legacyReceiptTx struct{ driver.WriteTx }
+
+func (tx *legacyReceiptTx) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
+	h.AttemptID = ""
+	return tx.WriteTx.Commit(ctx, h)
 }

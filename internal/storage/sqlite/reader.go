@@ -916,9 +916,11 @@ func (s *Store) readReplay(ctx context.Context, q queryer, scope string) (*store
 		return nil, nil
 	}
 	value := &storedReplay{IdempotencyRecord: driver.IdempotencyRecord{RequestHash: request, ResponsePending: pending}, finalized: finalized, post: post}
-	if err = json.Unmarshal(data, &value.Commit); err != nil {
+	var response receiptResponse
+	if err = json.Unmarshal(data, &response); err != nil {
 		return nil, err
 	}
+	value.Commit, value.AttemptID = response.Commit, response.AttemptID
 	if len(entry) > 0 {
 		if err = json.Unmarshal(entry, &value.Changeset); err != nil {
 			return nil, err

@@ -39,6 +39,14 @@ func (t *transaction) replay(ctx context.Context, c *sql.Conn, h driver.Changese
 	}
 	return value, nil
 }
+
+// receiptResponse keeps legacy flat Commit JSON readable and carries private
+// invocation metadata outside the public Commit type.
+type receiptResponse struct {
+	model.Commit
+	AttemptID string `json:"attemptID,omitempty"`
+}
+
 func responseBytes(h driver.ChangesetHeader, revision model.Revision) ([]byte, error) {
 	response := h.Response
 	response.Revision = revision
@@ -48,7 +56,7 @@ func responseBytes(h driver.ChangesetHeader, revision model.Revision) ([]byte, e
 	if response.Warnings == nil {
 		response.Warnings = []model.Warning{}
 	}
-	return json.Marshal(response)
+	return json.Marshal(receiptResponse{Commit: response, AttemptID: h.AttemptID})
 }
 func (s *Store) saveReplay(ctx context.Context, c *sql.Conn, h driver.ChangesetHeader, revision model.Revision, entry []byte) error {
 	// Validate the response even without a replay key; invalid nested values must
@@ -287,7 +295,7 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 			return nil
 		}
 		previous.Commit.Warnings = append(previous.Commit.Warnings, warnings...)
-		data, err := json.Marshal(previous.Commit)
+		data, err := json.Marshal(receiptResponse{Commit: previous.Commit, AttemptID: previous.AttemptID})
 		if err != nil {
 			return err
 		}

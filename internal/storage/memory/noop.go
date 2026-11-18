@@ -86,7 +86,7 @@ func (t *transaction) CommitNoop(ctx context.Context, header driver.ChangesetHea
 	next := s.state
 	if header.IdempotencyKey != "" {
 		next = s.state.fork()
-		next.replays[id] = replay{value: driver.IdempotencyRecord{RequestHash: header.RequestHash, Commit: durable}, at: s.now()}
+		next.replays[id] = replay{value: driver.IdempotencyRecord{AttemptID: header.AttemptID, RequestHash: header.RequestHash, Commit: durable}, at: s.now()}
 	}
 	checkpoints := t.prepareCheckpointPublication()
 	if err := t.check(ctx); err != nil {

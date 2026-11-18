@@ -397,6 +397,9 @@ const (
 )
 
 type ChangesetHeader struct {
+	// AttemptID identifies an invocation, independently of request equivalence.
+	// It is private receipt metadata, never public changeset provenance.
+	AttemptID      string
 	Branch         model.Branch
 	Incarnation    string
 	Kind           model.ChangesetKind
@@ -507,6 +510,7 @@ type DumpOptions struct {
 // digest checks, authorization and bounded polling through fresh readers.
 // False means Commit is final and immutable, including all post warnings.
 type IdempotencyRecord struct {
+	AttemptID       string
 	RequestHash     string
 	Commit          model.Commit
 	Changeset       model.Changeset

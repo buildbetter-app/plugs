@@ -200,7 +200,7 @@ func (t *transaction) saveReceipt(ctx context.Context, scope []byte, h driver.Ch
 	if scope == nil {
 		return nil
 	}
-	raw, err := encodeReceipt(driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: entry, ResponsePending: h.ResponsePending})
+	raw, err := encodeReceipt(driver.IdempotencyRecord{AttemptID: h.AttemptID, RequestHash: h.RequestHash, Commit: response, Changeset: entry, ResponsePending: h.ResponsePending})
 	if err != nil {
 		return err
 	}
