@@ -655,6 +655,9 @@ func (s *Server) retainFiles() error {
 // Stop terminates and reaps the owned process group. It is idempotent so a
 // consumer may stop explicitly and still retain the registered test cleanup.
 func (s *Server) Stop() error {
+	if err := s.stopBeadsProxy(); err != nil {
+		return err
+	}
 	s.stopOnce.Do(func() {
 		if s.cmd == nil || s.done == nil {
 			return
@@ -704,4 +707,44 @@ func (s *Server) Stop() error {
 		s.stopErr = errors.Join(removeErr, recordErr, s.logErr)
 	})
 	return s.stopErr
+}
+
+func (s *Server) stopBeadsProxy() error {
+	pids, err := beadsProxyPIDs(s.DataRoot)
+	if err != nil {
+		return err
+	}
+	for _, pid := range pids {
+		match, err := beadsProxyPIDMatches(pid, s.DataRoot)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return err
+		}
+		if match {
+			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return err
+			}
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		left, err := beadsProxyPIDs(s.DataRoot)
+		if err != nil {
+			return err
+		}
+		if len(left) == 0 {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	left, err := beadsProxyPIDs(s.DataRoot)
+	if err != nil {
+		return err
+	}
+	if len(left) > 0 {
+		return fmt.Errorf("Beads proxy survived direct termination: pids=%v", left)
+	}
+	return nil
 }
