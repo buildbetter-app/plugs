@@ -227,3 +227,11 @@ func TestServerStopReapsDoltWhenProxyDrainFails(t *testing.T) {
 		t.Fatalf("events after second stop=%v", events)
 	}
 }
+
+func TestServerStopJoinsProxyAndDoltErrors(t *testing.T) {
+	s := &Server{drainProxy: func() error { return errors.New("drain") }, reapDolt: func() error { return errors.New("reap") }}
+	err := s.Stop()
+	if err == nil || !strings.Contains(err.Error(), "drain") || !strings.Contains(err.Error(), "reap") {
+		t.Fatalf("error=%v", err)
+	}
+}

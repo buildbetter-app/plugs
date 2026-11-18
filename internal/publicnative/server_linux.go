@@ -207,14 +207,7 @@ func beadsProxyArgsMatchErr(raw, root string) (bool, error) {
 		return false, err
 	}
 	args := strings.Split(raw, "\x00")
-	hasProxy := false
-	for _, arg := range args {
-		if arg == "db-proxy-child" {
-			hasProxy = true
-			break
-		}
-	}
-	if !hasProxy {
+	if len(args) < 2 || args[1] != "db-proxy-child" {
 		return false, nil
 	}
 	for j := 0; j < len(args); j++ {
@@ -718,10 +711,7 @@ func (s *Server) Stop() error {
 			"retained_log": s.logPath, "retained_config": s.configPath})
 		s.stopErr = errors.Join(removeErr, recordErr, s.logErr)
 	})
-	if s.proxyErr != nil {
-		return s.proxyErr
-	}
-	return s.stopErr
+	return errors.Join(s.proxyErr, s.stopErr)
 }
 
 func (s *Server) stopBeadsProxy() error {
