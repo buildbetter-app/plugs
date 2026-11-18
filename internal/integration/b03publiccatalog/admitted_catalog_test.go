@@ -748,7 +748,15 @@ func b03AdmittedAdmission() driver.RestoreImportAdmission {
 // evidence only; they do not declare the target task workflow.
 func b03InstallAdmittedTaskOntology(t *testing.T, f *b03Public, project string, projectLocal ontology.Category) {
 	t.Helper()
-	d := ontology.DefaultDocument()
+	var current ontologyops.Result
+	f.call(t, "ontology.get", map[string]any{"project": project, "_meta": b03ProjectMeta(project)}, false, "", &current)
+	if current.Drifted || current.Document == nil || current.Revision.IsZero() {
+		t.Fatalf("admitted task ontology current project read failed: %+v", current)
+	}
+	// Start from the durable project document so imported source statuses and
+	// source metadata remain present; this fixture adds only the ordinary task
+	// workflow needed by the lifecycle below.
+	d := *current.Document
 	statuses := map[string]ontology.Status{
 		"open":          {Name: "Open", Category: ontology.Active},
 		"in_progress":   {Name: "In progress", Category: ontology.WIP},
