@@ -54,8 +54,8 @@ type Server struct {
 	stopErr    error
 }
 
-// RegisterBeadsCleanup registers the documented `bd dolt stop` route for a
-// disposable external Beads workspace. The cleanup is registered after
+// RegisterBeadsCleanup registers direct cleanup for a disposable external
+// Beads workspace. The cleanup is registered after
 // StartDolt, so it runs first (LIFO) and stops the Beads proxy/backend before
 // the owned Dolt server is reaped. The command and workspace are caller-owned
 // and are matched again in /proc to prove no proxy for this root survived.
@@ -96,7 +96,7 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 		}
 		pids, _ = beadsProxyPIDs(root)
 		if len(pids) != 0 {
-			t.Errorf("Beads proxy survived documented stop for %s: pids=%v", dir, pids)
+			t.Errorf("Beads proxy survived direct termination for %s: pids=%v", dir, pids)
 		}
 	})
 }
@@ -130,13 +130,15 @@ func beadsProxyPIDs(root string) ([]int, error) {
 
 func beadsProxyArgsMatch(raw, root string) bool {
 	args := strings.Split(raw, "\x00")
-	for i, arg := range args {
-		if arg == "db-proxy-child" {
-			for j := i + 1; j < len(args); j++ {
-				if args[j] == "--root" && j+1 < len(args) && args[j+1] == root {
-					return true
-				}
-			}
+	if len(args) < 2 || args[1] != "db-proxy-child" {
+		return false
+	}
+	for j := 2; j < len(args); j++ {
+		if args[j] == "--root" && j+1 < len(args) && args[j+1] == root {
+			return true
+		}
+		if strings.HasPrefix(args[j], "--root=") && strings.TrimPrefix(args[j], "--root=") == root {
+			return true
 		}
 	}
 	return false
