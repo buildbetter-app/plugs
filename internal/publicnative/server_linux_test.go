@@ -3,6 +3,7 @@
 package publicnative
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -206,5 +207,23 @@ func TestServerStopDrainsProxyBeforeDoltAndIsIdempotent(t *testing.T) {
 	want := []string{"proxy-drain", "dolt-reap"}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events=%v want %v", events, want)
+	}
+}
+
+func TestServerStopReapsDoltWhenProxyDrainFails(t *testing.T) {
+	var events []string
+	s := &Server{drainProxy: func() error { return errors.New("drain") }, reapDolt: func() error { events = append(events, "dolt-reap"); return nil }}
+	err := s.Stop()
+	if err == nil || !strings.Contains(err.Error(), "drain") {
+		t.Fatalf("error=%v", err)
+	}
+	if !reflect.DeepEqual(events, []string{"dolt-reap"}) {
+		t.Fatalf("events=%v", events)
+	}
+	if err2 := s.Stop(); err2 == nil || err2.Error() != err.Error() {
+		t.Fatalf("second error=%v", err2)
+	}
+	if !reflect.DeepEqual(events, []string{"dolt-reap"}) {
+		t.Fatalf("events after second stop=%v", events)
 	}
 }

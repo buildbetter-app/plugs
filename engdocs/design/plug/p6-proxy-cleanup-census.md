@@ -1,6 +1,6 @@
 # P6 Beads proxy cleanup census
 
-All tracked external/native sites use the centralized StartDolt cleanup helper (`internal/publicnative/server_linux.go:243`), which scans the real DataRoot. Existing direct registrations remain explicit where present.
+All tracked external/native sites use the centralized StartDolt cleanup helper (`internal/publicnative/server_linux.go:273`), which scans the real DataRoot. Existing direct registrations remain explicit where present.
 
 | Site | Evidence |
 |---|---|
