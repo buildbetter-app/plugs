@@ -53,6 +53,9 @@ func TestSourceCheckpointCapabilitiesAndAtomicSnapshotsAllDrivers(t *testing.T) 
 				t.Fatal("snapshot guard wrote core state")
 			}
 			assertSourceCheckpoint(t, pinned, namespace, 1, "initial")
+			if _, ok := pinned.(driver.AllocatorReader); !ok {
+				t.Fatalf("%s snapshot dropped allocator capability", engine)
+			}
 			missing, err := pinned.SourcePlaneCheckpoint("missing")
 			if err != nil || missing.Generation != 0 || missing.Payload != nil {
 				t.Fatal("missing namespace was not pinned", err)

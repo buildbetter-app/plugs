@@ -131,7 +131,14 @@ func (s *workflowCheckpointAdapter) ReadSourcePlaneSnapshot(ctx context.Context,
 		return nil, err
 	}
 	keep = true
-	return &checkedSourcePlaneSnapshot{Reader: r, checkpoints: checkpoints}, nil
+	checked := &checkedSourcePlaneSnapshot{Reader: r, checkpoints: checkpoints}
+	// Optional reader capabilities belong to the pinned observation. Preserve
+	// them only when the underlying reader actually provides them; an adapter
+	// must never advertise a capability that it cannot satisfy.
+	if allocators, ok := r.(AllocatorReader); ok {
+		return &allocatorSourcePlaneSnapshot{checkedSourcePlaneSnapshot: checked, AllocatorReader: allocators}, nil
+	}
+	return checked, nil
 }
 
 type checkedSourcePlaneSnapshot struct {
@@ -139,6 +146,11 @@ type checkedSourcePlaneSnapshot struct {
 	mu          sync.RWMutex
 	checkpoints map[string]Checkpoint
 	closed      bool
+}
+
+type allocatorSourcePlaneSnapshot struct {
+	*checkedSourcePlaneSnapshot
+	AllocatorReader
 }
 
 func (r *checkedSourcePlaneSnapshot) SourcePlaneCheckpoint(key string) (Checkpoint, error) {
