@@ -138,12 +138,15 @@ func TestBeadsProxyPIDsFakeProc(t *testing.T) {
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"self", "abc", "12"} {
+	for _, name := range []string{"self", "abc", "12", "13"} {
 		if err := os.Mkdir(filepath.Join(proc, name), 0700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := os.WriteFile(filepath.Join(proc, "12", "cmdline"), []byte("dolt\x00db-proxy-child\x00--root\x00"+root+"\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "13", "cmdline"), []byte("python3\x00worker.py\x00db-proxy-child\x00--root\x00"+root+"\x00"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	pids, err := beadsProxyPIDsIn(proc, root)
