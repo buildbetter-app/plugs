@@ -115,6 +115,52 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 	})
 }
 
+// RegisterDoltProxyCleanup covers external initializers that use StartDolt
+// without a site-specific registration; all such proxies use DataRoot.
+func (s *Server) RegisterDoltProxyCleanup(t testing.TB) {
+	t.Helper()
+	t.Cleanup(func() {
+		pids, err := beadsProxyPIDs(s.DataRoot)
+		if err != nil {
+			t.Errorf("scanning Beads proxy processes for %s: %v", s.DataRoot, err)
+			return
+		}
+		for _, pid := range pids {
+			match, err := beadsProxyPIDMatches(pid, s.DataRoot)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+					continue
+				}
+				t.Errorf("rechecking Beads proxy pid %d: %v", pid, err)
+				continue
+			}
+			if match {
+				if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+					t.Errorf("stopping Beads proxy pid %d: %v", pid, err)
+				}
+			}
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			current, err := beadsProxyPIDs(s.DataRoot)
+			if err != nil {
+				t.Errorf("scanning Beads proxy processes: %v", err)
+				return
+			}
+			if len(current) == 0 {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		current, err := beadsProxyPIDs(s.DataRoot)
+		if err != nil {
+			t.Errorf("final Beads proxy scan: %v", err)
+		} else if len(current) > 0 {
+			t.Errorf("Beads proxy survived direct termination: pids=%v", current)
+		}
+	})
+}
+
 func beadsProxyPIDs(root string) ([]int, error) { return beadsProxyPIDsIn("/proc", root) }
 
 func beadsProxyPIDsIn(procDir, root string) ([]int, error) {
@@ -222,6 +268,7 @@ func StartDolt(t testing.TB, evidenceDir string) *Server {
 		}
 		t.Logf("NATIVE_DOLT_CLEANUP receipt=%s pid=%d port=%d", s.receipt, s.PID, s.Port)
 	})
+	s.RegisterDoltProxyCleanup(t)
 	t.Logf("NATIVE_DOLT_READY receipt=%s pid=%d port=%d data_root=%s", s.receipt, s.PID, s.Port, s.DataRoot)
 	return s
 }
