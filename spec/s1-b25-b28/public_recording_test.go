@@ -668,6 +668,8 @@ func recordPublicRun(t *testing.T, root, storeRoot, name string, artifact public
 	}
 	baseEnv := recordingEnv(server.DataRoot)
 	env := func(dir string) []string { return server.provider.ChildEnv(baseEnv(dir)) }
+	server.provider.RegisterBeadsCleanup(t, artifact.Binary, source, env(source))
+	server.provider.RegisterBeadsCleanup(t, artifact.Binary, target, env(target))
 	commandGit := func(label, store string, dir string, argv []string) []byte {
 		return runCommand(t, run.Root, &run.Commands, label, store, dir, env(dir), append([]string{"git"}, argv...), nil)
 	}
