@@ -6,7 +6,6 @@ package publicnative
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -65,7 +64,11 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 	_ = binary
 	_ = env
 	t.Cleanup(func() {
-		for _, pid := range beadsProxyPIDs(dir) {
+		pids, scanErr := beadsProxyPIDs(dir)
+		if scanErr != nil {
+			t.Errorf("scanning Beads proxy processes for %s: %v", dir, scanErr)
+		}
+		for _, pid := range pids {
 			if !beadsProxyPIDMatches(pid, dir) {
 				continue
 			}
@@ -74,35 +77,52 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 			}
 		}
 		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) && len(beadsProxyPIDs(dir)) != 0 {
+		for time.Now().Before(deadline) {
+			current, err := beadsProxyPIDs(dir)
+			if err != nil {
+				t.Errorf("scanning Beads proxy processes for %s: %v", dir, err)
+				break
+			}
+			if len(current) == 0 {
+				break
+			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		if pids := beadsProxyPIDs(dir); len(pids) != 0 {
+		pids, _ = beadsProxyPIDs(dir)
+		if len(pids) != 0 {
 			t.Errorf("Beads proxy survived documented stop for %s: pids=%v", dir, pids)
 		}
 	})
 }
 
-func beadsProxyPIDs(root string) []int {
+func beadsProxyPIDs(root string) ([]int, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var pids []int
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return nil, err
 			continue
 		}
 		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return nil, err
 			continue
 		}
 		if beadsProxyArgsMatch(string(cmdline), root) {
 			pids = append(pids, pid)
 		}
 	}
-	return pids
+	return pids, nil
 }
 
 func beadsProxyArgsMatch(raw, root string) bool {
