@@ -323,9 +323,6 @@ func TestB03CanonicalNativeNonemptyCatalog(t *testing.T) {
 	if !reflect.DeepEqual(r.b03Statuses(w, binary, "b03-final-catalog"), catalog) {
 		t.Fatal("lifecycle changed installed native catalog")
 	}
-	if err = server.Stop(); err != nil {
-		t.Fatal(err)
-	}
 	r.writeJSON(filepath.Join(root, "b03-native-outcomes.json"), map[string]any{"complete": !t.Failed(), "catalog": catalog, "initials": initials, "default_ready": ready, "default_custom_active_ready": readySet[primary], "lifecycle": trace, "configured_done_reopen": "open", "native_boundary": map[string]bool{"50_accepted": true, "51_rejected": true}, "scope": "ACTUAL_CANONICAL_PUBLIC_OPERATIONAL_NATIVE_NOT_OFFICIAL_ADMISSION", "claims": "EXCLUDED"})
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run("paired_"+engine, func(t *testing.T) {
