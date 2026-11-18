@@ -64,13 +64,16 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 	_ = binary
 	_ = env
 	t.Cleanup(func() {
-		root := dir
+		root := ""
 		for _, e := range env {
 			if strings.HasPrefix(e, "BEADS_DOLT_DATA_DIR=") {
 				root = strings.TrimPrefix(e, "BEADS_DOLT_DATA_DIR=")
 			}
 		}
-		root = canonicalProxyRoot(root)
+		if root == "" {
+			t.Errorf("BEADS_DOLT_DATA_DIR is required for proxy ownership")
+			return
+		}
 		pids, scanErr := beadsProxyPIDs(root)
 		if scanErr != nil {
 			t.Errorf("scanning Beads proxy processes for %s: %v", dir, scanErr)
@@ -112,8 +115,10 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 	})
 }
 
-func beadsProxyPIDs(root string) ([]int, error) {
-	entries, err := os.ReadDir("/proc")
+func beadsProxyPIDs(root string) ([]int, error) { return beadsProxyPIDsIn("/proc", root) }
+
+func beadsProxyPIDsIn(procDir, root string) ([]int, error) {
+	entries, err := os.ReadDir(procDir)
 	if err != nil {
 		return nil, err
 	}
@@ -123,14 +128,18 @@ func beadsProxyPIDs(root string) ([]int, error) {
 		if err != nil {
 			continue
 		}
-		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		cmdline, err := os.ReadFile(filepath.Join(procDir, entry.Name(), "cmdline"))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
 				continue
 			}
 			return nil, err
 		}
-		if beadsProxyArgsMatch(string(cmdline), root) {
+		match, err := beadsProxyArgsMatchErr(string(cmdline), root)
+		if err != nil {
+			return nil, err
+		}
+		if match {
 			pids = append(pids, pid)
 		}
 	}
@@ -138,20 +147,40 @@ func beadsProxyPIDs(root string) ([]int, error) {
 }
 
 func beadsProxyArgsMatch(raw, root string) bool {
-	root = canonicalProxyRoot(root)
+	match, _ := beadsProxyArgsMatchErr(raw, root)
+	return match
+}
+
+func beadsProxyArgsMatchErr(raw, root string) (bool, error) {
+	root, err := canonicalProxyRoot(root)
+	if err != nil {
+		return false, err
+	}
 	args := strings.Split(raw, "\x00")
 	if len(args) < 2 || args[1] != "db-proxy-child" {
-		return false
+		return false, nil
 	}
 	for j := 2; j < len(args); j++ {
 		if args[j] == "--root" && j+1 < len(args) && args[j+1] == root {
-			return true
+			candidate, err := canonicalProxyRoot(args[j+1])
+			if err != nil {
+				return false, err
+			}
+			if candidate == root {
+				return true, nil
+			}
 		}
 		if strings.HasPrefix(args[j], "--root=") && strings.TrimPrefix(args[j], "--root=") == root {
-			return true
+			candidate, err := canonicalProxyRoot(strings.TrimPrefix(args[j], "--root="))
+			if err != nil {
+				return false, err
+			}
+			if candidate == root {
+				return true, nil
+			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 func beadsProxyPIDMatches(pid int, root string) (bool, error) {
@@ -162,12 +191,15 @@ func beadsProxyPIDMatches(pid int, root string) (bool, error) {
 	return beadsProxyArgsMatch(string(b), root), nil
 }
 
-func canonicalProxyRoot(root string) string {
+func canonicalProxyRoot(root string) (string, error) {
 	clean := filepath.Clean(root)
 	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-		return filepath.Clean(resolved)
+		return filepath.Clean(resolved), nil
+	} else if errors.Is(err, os.ErrNotExist) {
+		return clean, nil
+	} else {
+		return "", fmt.Errorf("resolving proxy root %q: %w", root, err)
 	}
-	return clean
 }
 
 // StartDolt starts exactly one pinned Dolt 2.2.0 process in a fresh 0700

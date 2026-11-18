@@ -109,6 +109,9 @@ func TestRetainStartupFailureEvidence(t *testing.T) {
 
 func TestBeadsProxyArgsMatchExactRootAndShape(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name, raw string
 		want      bool
@@ -124,6 +127,38 @@ func TestBeadsProxyArgsMatchExactRootAndShape(t *testing.T) {
 				t.Fatalf("match=%v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBeadsProxyPIDsFakeProc(t *testing.T) {
+	proc := t.TempDir()
+	root := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"self", "abc", "12"} {
+		if err := os.Mkdir(filepath.Join(proc, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(proc, "12", "cmdline"), []byte("dolt\x00db-proxy-child\x00--root\x00"+root+"\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pids, err := beadsProxyPIDsIn(proc, root)
+	if err != nil || len(pids) != 1 || pids[0] != 12 {
+		t.Fatalf("pids=%v err=%v", pids, err)
+	}
+	if err := os.Remove(filepath.Join(proc, "12", "cmdline")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := beadsProxyPIDsIn(proc, root); err != nil {
+		t.Fatalf("vanished pid should be ignored: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(proc, "12", "cmdline"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := beadsProxyPIDsIn(proc, root); err == nil {
+		t.Fatal("unreadable cmdline did not fail closed")
 	}
 }
 
