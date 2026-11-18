@@ -757,6 +757,19 @@ func b03InstallAdmittedTaskOntology(t *testing.T, f *b03Public, project string, 
 	// source metadata remain present; this fixture adds only the ordinary task
 	// workflow needed by the lifecycle below.
 	d := *current.Document
+	preStatuses := make(map[string]struct{}, len(d.Statuses))
+	for key := range d.Statuses {
+		preStatuses[key] = struct{}{}
+	}
+	if d.Statuses == nil {
+		d.Statuses = map[string]ontology.Status{}
+	}
+	if d.Workflows == nil {
+		d.Workflows = map[string]ontology.Workflow{}
+	}
+	if d.Types == nil {
+		d.Types = map[string]ontology.Type{}
+	}
 	statuses := map[string]ontology.Status{
 		"open":          {Name: "Open", Category: ontology.Active},
 		"in_progress":   {Name: "In progress", Category: ontology.WIP},
@@ -767,18 +780,57 @@ func b03InstallAdmittedTaskOntology(t *testing.T, f *b03Public, project string, 
 		"project_local": {Name: "project_local", Category: projectLocal},
 	}
 	for key, status := range statuses {
-		d.Statuses[key] = status
+		if _, exists := d.Statuses[key]; !exists {
+			d.Statuses[key] = status
+		}
 	}
 	projectLocalGuards := []ontology.Guard{{Kind: ontology.Permission}}
 	if projectLocal == ontology.Done {
 		projectLocalGuards = []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}
 	}
-	states := []string{"open", "in_progress", b03Active, b03WIP, b03Done, b03Frozen, "project_local"}
-	d.Workflows["b03-admitted-task"] = ontology.Workflow{
-		Initial:  "open",
-		Statuses: states,
-		Slots:    map[ontology.Slot]string{ontology.Claim: "in_progress", ontology.Close: b03Done, ontology.Reopen: b03Active, ontology.Defer: b03Frozen},
-		Transitions: []ontology.Rule{
+	taskType := d.Types["task"]
+	if taskType.Name == "" {
+		taskType.Name = "Task"
+	}
+	if taskType.Fields == nil {
+		taskType.Fields = map[string]ontology.Field{}
+	}
+	if _, exists := taskType.Fields["title"]; !exists {
+		taskType.Fields["title"] = ontology.Field{Type: "string"}
+	}
+	workflowName := taskType.Workflow
+	if workflowName == "" {
+		workflowName = "b03-admitted-task"
+		taskType.Workflow = workflowName
+	}
+	workflow := d.Workflows[workflowName]
+	if workflow.Initial == "" {
+		workflow.Initial = "open"
+	}
+	if workflow.Slots == nil {
+		workflow.Slots = map[ontology.Slot]string{}
+	}
+	for slot, status := range map[ontology.Slot]string{ontology.Claim: "in_progress", ontology.Close: b03Done, ontology.Reopen: b03Active, ontology.Defer: b03Frozen} {
+		if _, exists := workflow.Slots[slot]; !exists {
+			workflow.Slots[slot] = status
+		}
+	}
+	states := append([]string{}, workflow.Statuses...)
+	for _, state := range []string{"open", "in_progress", b03Active, b03WIP, b03Done, b03Frozen, "project_local"} {
+		found := false
+		for _, existing := range states {
+			if existing == state {
+				found = true
+				break
+			}
+		}
+		if !found {
+			states = append(states, state)
+		}
+	}
+	workflow.Statuses = states
+	workflow.Transitions = append(workflow.Transitions,
+		[]ontology.Rule{
 			{From: []string{"open", b03Active}, To: "in_progress", Guards: []ontology.Guard{{Kind: ontology.Permission}}},
 			{From: []string{"open"}, To: b03Active, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
 			{From: []string{"open"}, To: b03WIP, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
@@ -786,10 +838,29 @@ func b03InstallAdmittedTaskOntology(t *testing.T, f *b03Public, project string, 
 			{From: []string{"open"}, To: "project_local", Guards: projectLocalGuards},
 			{To: b03Done, Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}},
 			{From: []string{b03Done}, To: b03Active, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
-		},
-	}
-	d.Types["task"] = ontology.Type{Name: "Task", Workflow: "b03-admitted-task", Fields: map[string]ontology.Field{"title": {Type: "string"}}}
+		}...)
+	d.Workflows[workflowName] = workflow
+	d.Types["task"] = taskType
 	b03InstallProject(t, f, project, d)
+	var installed ontologyops.Result
+	f.call(t, "ontology.get", map[string]any{"project": project, "_meta": b03ProjectMeta(project)}, false, "", &installed)
+	if installed.Document == nil {
+		t.Fatal("admitted task ontology disappeared after install")
+	}
+	for key := range preStatuses {
+		if _, exists := installed.Document.Statuses[key]; !exists {
+			t.Fatalf("admitted task ontology dropped pre-install status %q", key)
+		}
+	}
+	installedTask, exists := installed.Document.Types["task"]
+	if !exists {
+		t.Fatal("admitted task ontology dropped task type")
+	}
+	for key := range taskType.Fields {
+		if _, exists := installedTask.Fields[key]; !exists {
+			t.Fatalf("admitted task ontology dropped pre-install task field %q", key)
+		}
+	}
 }
 
 func TestB03AdmittedNativeCatalogLifecycleAndSourceHistory(t *testing.T) {
