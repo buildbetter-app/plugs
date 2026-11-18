@@ -17,6 +17,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontology"
 	"github.com/buildbetter-app/plugs/internal/core/ontologyops"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
@@ -742,6 +743,47 @@ func b03AdmittedAdmission() driver.RestoreImportAdmission {
 	return driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "b03-public-restore-host"}, Authority: "restore-admin", AdmissionDigest: b03Digest([]byte("B03 public disposable host admission"))}
 }
 
+// Install the ordinary target ontology through the same public plan/apply
+// path a user would use. Native source-plane status declarations remain
+// evidence only; they do not declare the target task workflow.
+func b03InstallAdmittedTaskOntology(t *testing.T, f *b03Public, project string, projectLocal ontology.Category) {
+	t.Helper()
+	d := ontology.DefaultDocument()
+	statuses := map[string]ontology.Status{
+		"open":          {Name: "Open", Category: ontology.Active},
+		"in_progress":   {Name: "In progress", Category: ontology.WIP},
+		b03Active:       {Name: b03Active, Category: ontology.Active},
+		b03WIP:          {Name: b03WIP, Category: ontology.WIP},
+		b03Done:         {Name: b03Done, Category: ontology.Done, Outcome: ontology.Success},
+		b03Frozen:       {Name: b03Frozen, Category: ontology.Frozen},
+		"project_local": {Name: "project_local", Category: projectLocal},
+	}
+	for key, status := range statuses {
+		d.Statuses[key] = status
+	}
+	projectLocalGuards := []ontology.Guard{{Kind: ontology.Permission}}
+	if projectLocal == ontology.Done {
+		projectLocalGuards = []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}
+	}
+	states := []string{"open", "in_progress", b03Active, b03WIP, b03Done, b03Frozen, "project_local"}
+	d.Workflows["b03-admitted-task"] = ontology.Workflow{
+		Initial:  "open",
+		Statuses: states,
+		Slots:    map[ontology.Slot]string{ontology.Claim: "in_progress", ontology.Close: b03Done, ontology.Reopen: b03Active, ontology.Defer: b03Frozen},
+		Transitions: []ontology.Rule{
+			{From: []string{"open", b03Active}, To: "in_progress", Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+			{From: []string{"open"}, To: b03Active, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+			{From: []string{"open"}, To: b03WIP, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+			{From: []string{"open"}, To: b03Frozen, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+			{From: []string{"open"}, To: "project_local", Guards: projectLocalGuards},
+			{To: b03Done, Guards: []ontology.Guard{{Kind: ontology.NotTemplate}, {Kind: ontology.NoOpenChildren}, {Kind: ontology.NoOpenBlockers}, {Kind: ontology.Permission}}},
+			{From: []string{b03Done}, To: b03Active, Guards: []ontology.Guard{{Kind: ontology.Permission}}},
+		},
+	}
+	d.Types["task"] = ontology.Type{Name: "Task", Workflow: "b03-admitted-task", Fields: map[string]ontology.Field{"title": {Type: "string"}}}
+	b03InstallProject(t, f, project, d)
+}
+
 func TestB03AdmittedNativeCatalogLifecycleAndSourceHistory(t *testing.T) {
 	inputs := b03AdmittedArchive(t)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -816,6 +858,11 @@ func TestB03AdmittedNativeCatalogLifecycleAndSourceHistory(t *testing.T) {
 					}
 				}
 				f := &b03Public{ctx: ctx, store: runtime.Store, lease: runtime.Lease, source: model.Ref{ID: converterroundtrip.ImportedOntologySourceID}, transport: inprocess.New(runtime.RPC)}
+				projectLocalCategory := ontology.Active
+				if source.Catalog["project_local"] == "done" {
+					projectLocalCategory = ontology.Done
+				}
+				b03InstallAdmittedTaskOntology(t, f, source.Project, projectLocalCategory)
 				sourceBefore := f.row(t, f.source)
 				points := b03AdmittedLifecycle(t, f, source)
 				if source.Catalog["project_local"] == "active" {
