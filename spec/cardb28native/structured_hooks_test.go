@@ -200,6 +200,7 @@ func b28RecordNative(t *testing.T, binary, root, name string) []b28NativeHook {
 	// ChildEnv deliberately keeps only the public native runtime variables.
 	// Add this disposable recording destination after that filtering step.
 	env := append(server.ChildEnv(base), "B28_HOOK_ROOT="+root, "B28_HOOK_BINARY="+binary)
+	server.RegisterBeadsCleanup(t, binary, filepath.Join(workspace, "project"), env)
 	for i, entry := range env {
 		if strings.HasPrefix(entry, "PATH=") {
 			env[i] = "PATH=/tmp/plug-swarm/bin/worker-safe:" + strings.TrimPrefix(entry, "PATH=")
