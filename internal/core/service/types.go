@@ -22,9 +22,13 @@ type GateResult = port.GateResult
 type GateOutcome = port.GateOutcome
 type GateService = port.GateService
 
+// AsOf selects either a revision address or an instant. Instant is input-only;
+// returned pages and PagePosition always carry the resolved Revision. When
+// Instant is present, Revision must retain its unset Go value.
 type AsOf struct {
 	Revision    model.Revision
 	Incarnation string
+	Instant     *time.Time
 }
 
 type Memory struct {

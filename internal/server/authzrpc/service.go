@@ -63,7 +63,11 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 	if !allowed {
 		return service.GetResult{}, notFound()
 	}
-	content, _, closeContent, err := s.current(ctx, req.AsOf)
+	readCurrent := s.current
+	if req.AsOf != nil && req.AsOf.Instant != nil {
+		readCurrent = s.currentAsOf
+	}
+	content, _, closeContent, err := readCurrent(ctx, req.AsOf)
 	if err != nil {
 		return service.GetResult{}, err
 	}
@@ -345,7 +349,16 @@ func (s *GuardedService) History(ctx context.Context, by model.PrincipalRef, req
 	if s == nil || s.delegate == nil || s.checker == nil {
 		return service.BeadPage{}, &model.Error{Message: "authorization service is unavailable", Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
 	}
+	if err := service.ValidateAsOf(req.AsOf); err != nil {
+		return service.BeadPage{}, err
+	}
 	full := req
+	// RPC validates the original selector against the signed cursor scope.
+	// Position is trusted domain state; retain its concrete snapshot before
+	// restarting the full postfilter walk from offset zero.
+	if req.AsOf.Instant != nil && req.Position != nil {
+		full.AsOf = req.Position.AsOf
+	}
 	full.Limit = 1000
 	full.Cursor = ""
 	full.Position = nil

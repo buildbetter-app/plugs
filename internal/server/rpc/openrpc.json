@@ -4693,6 +4693,31 @@
           "asOf"
         ],
         "additionalProperties": false
+      },
+      "AsOfSelector": {
+        "description": "Input selector: exactly one revision address or RFC3339 instant. An instant resolves to the highest committed revision at or before it in one complete pinned changeset snapshot; returned addresses remain concrete revisions. Incomplete retained history refuses history_gone. Current read permission applies.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/AsOf"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "instant": {
+                "type": "string",
+                "format": "date-time",
+                "description": "RFC3339 instant, with optional nanosecond precision and offset."
+              },
+              "incarnation": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "instant"
+            ],
+            "additionalProperties": false
+          }
+        ]
       }
     },
     "errors": {

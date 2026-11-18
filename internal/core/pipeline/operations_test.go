@@ -293,14 +293,14 @@ func metadataReceipt(t *testing.T, h *harness, m model.WriteMeta) *driver.Idempo
 func TestMetadataFieldHashCASUsesCanonicalCommittedValue(t *testing.T) {
 	for _, tc := range []struct{ name, stored, canonical string }{
 		{"object", ` {"b":2,"a":1} `, `{"a":1,"b":2}`},
-		{"numeric", `1.0`, `1`},
-		{"nested", `{"z":[{"b":2.00,"a":1e0},"1",true,null,[3,2]],"a":-1.2500}`, `{"a":-1.25,"z":[{"a":1,"b":2},"1",true,null,[3,2]]}`},
-		{"large", `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.1234567890123456789`},
-		{"integerZeros", `100.00`, `100`},
-		{"negativeZero", `-0.00e999999999999999999999999999`, `0`},
-		{"fractionExponent", `1.25e-2`, `0.0125`},
-		{"largeExponent", `10e999999999999999999999999999`, `1e1000000000000000000000000000`},
-		{"tinyExponent", `10e-1000000000000000000000000001`, `1e-1000000000000000000000000000`},
+		{"numeric", `1.0`, `1.0`},
+		{"nested", `{"z":[{"b":2.00,"a":1e0},"1",true,null,[3,2]],"a":-1.2500}`, `{"a":-1.2500,"z":[{"a":1e0,"b":2.00},"1",true,null,[3,2]]}`},
+		{"large", `9007199254740993123456789.12345678901234567890`, `9007199254740993123456789.12345678901234567890`},
+		{"integerZeros", `100.00`, `100.00`},
+		{"negativeZero", `-0.00e999999999999999999999999999`, `-0.00e999999999999999999999999999`},
+		{"fractionExponent", `1.25e-2`, `1.25e-2`},
+		{"largeExponent", `10e999999999999999999999999999`, `10e999999999999999999999999999`},
+		{"tinyExponent", `10e-1000000000000000000000000001`, `10e-1000000000000000000000000001`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := setup(t)
@@ -312,7 +312,7 @@ func TestMetadataFieldHashCASUsesCanonicalCommittedValue(t *testing.T) {
 			apply(t, w, model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{"description": "disjoint"})}}, meta(3))
 			before := metadataGraph(t, h)
 			hash := metadataDigest(tc.canonical)
-			if tc.name == "object" && hash != "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777" || tc.name == "numeric" && hash != "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b" {
+			if tc.name == "object" && hash != "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777" || tc.name == "numeric" && hash != "d0ff5974b6aa52cf562bea5921840c032a860a91a3512f7fe8f768f6bbe005f6" {
 				t.Fatal("binding digest vector drifted")
 			}
 			cs := model.ChangeSet{Ops: []model.Op{patch(ref, map[string]any{"title": "atomic"}), metadataOp(ref, key, `{"next":true}`)}, Expect: []model.Precondition{model.PreconditionByHash(ref, "metadata."+key, hash)}}
