@@ -65,9 +65,10 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 	_ = binary
 	_ = env
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 		for _, pid := range beadsProxyPIDs(dir) {
+			if !beadsProxyPIDMatches(pid, dir) {
+				continue
+			}
 			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
 				t.Errorf("stopping Beads proxy pid %d for %s: %v", pid, dir, err)
 			}
@@ -97,11 +98,30 @@ func beadsProxyPIDs(root string) []int {
 		if err != nil {
 			continue
 		}
-		if bytes.Contains(cmdline, []byte("db-proxy-child")) && bytes.Contains(cmdline, []byte(root)) {
+		if beadsProxyArgsMatch(string(cmdline), root) {
 			pids = append(pids, pid)
 		}
 	}
 	return pids
+}
+
+func beadsProxyArgsMatch(raw, root string) bool {
+	args := strings.Split(raw, "\x00")
+	for i, arg := range args {
+		if arg == "db-proxy-child" {
+			for j := i + 1; j < len(args); j++ {
+				if args[j] == "--root" && j+1 < len(args) && args[j+1] == root {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func beadsProxyPIDMatches(pid int, root string) bool {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	return err == nil && beadsProxyArgsMatch(string(b), root)
 }
 
 // StartDolt starts exactly one pinned Dolt 2.2.0 process in a fresh 0700
