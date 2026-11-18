@@ -192,3 +192,29 @@ func TestBeadsProxyWorkspaceDoesNotMatchDataRoot(t *testing.T) {
 		t.Fatal("data root did not match proxy root")
 	}
 }
+
+func TestServerStopDrainsProxyBeforeDoltAndIsIdempotent(t *testing.T) {
+	data := t.TempDir()
+	s := &Server{DataRoot: data}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerStopDrainUsesProxyBeforeDolt(t *testing.T) {
+	if !strings.Contains(string(mustReadTestSource(t)), "s.proxyOnce.Do") {
+		t.Fatal("Stop does not route through idempotent proxy drain")
+	}
+}
+
+func mustReadTestSource(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("server_linux.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
