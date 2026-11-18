@@ -6,6 +6,7 @@ package publicnative
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -52,6 +53,52 @@ type Server struct {
 	configPath string
 	stopOnce   sync.Once
 	stopErr    error
+}
+
+// RegisterBeadsCleanup registers the documented `bd dolt stop` route for a
+// disposable external Beads workspace. The cleanup is registered after
+// StartDolt, so it runs first (LIFO) and stops the Beads proxy/backend before
+// the owned Dolt server is reaped. The command and workspace are caller-owned
+// and are matched again in /proc to prove no proxy for this root survived.
+func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []string) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary, "dolt", "stop")
+		cmd.Dir, cmd.Env = dir, append([]string(nil), env...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("stopping Beads proxy for %s: %v: %s", dir, err, output)
+		}
+		if ctx.Err() != nil {
+			t.Errorf("stopping Beads proxy for %s: %v", dir, ctx.Err())
+		}
+		if pids := beadsProxyPIDs(dir); len(pids) != 0 {
+			t.Errorf("Beads proxy survived documented stop for %s: pids=%v", dir, pids)
+		}
+	})
+}
+
+func beadsProxyPIDs(root string) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(cmdline, []byte("db-proxy-child")) && bytes.Contains(cmdline, []byte(root)) {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // StartDolt starts exactly one pinned Dolt 2.2.0 process in a fresh 0700
