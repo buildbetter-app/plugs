@@ -177,3 +177,18 @@ func TestBeadsProxyArgsMatchNormalizesSymlinks(t *testing.T) {
 		t.Fatal("normalized equivalent roots did not match")
 	}
 }
+
+func TestBeadsProxyWorkspaceDoesNotMatchDataRoot(t *testing.T) {
+	workspace := t.TempDir()
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw := "dolt\x00db-proxy-child\x00--root\x00" + data + "\x00"
+	if beadsProxyArgsMatch(raw, workspace) {
+		t.Fatal("workspace unexpectedly matched proxy data root")
+	}
+	if !beadsProxyArgsMatch(raw, data) {
+		t.Fatal("data root did not match proxy root")
+	}
+}

@@ -152,26 +152,30 @@ func beadsProxyArgsMatch(raw, root string) bool {
 }
 
 func beadsProxyArgsMatchErr(raw, root string) (bool, error) {
-	root, err := canonicalProxyRoot(root)
+	root, err := canonicalRoot(root)
 	if err != nil {
 		return false, err
 	}
 	args := strings.Split(raw, "\x00")
-	if len(args) < 2 || args[1] != "db-proxy-child" {
+	hasProxy := false
+	for _, arg := range args {
+		if arg == "db-proxy-child" {
+			hasProxy = true
+			break
+		}
+	}
+	if !hasProxy {
 		return false, nil
 	}
-	for j := 2; j < len(args); j++ {
-		if args[j] == "--root" && j+1 < len(args) && args[j+1] == root {
-			candidate, err := canonicalProxyRoot(args[j+1])
-			if err != nil {
-				return false, err
-			}
-			if candidate == root {
-				return true, nil
-			}
+	for j := 0; j < len(args); j++ {
+		var value string
+		if args[j] == "--root" && j+1 < len(args) {
+			value = args[j+1]
+		} else if strings.HasPrefix(args[j], "--root=") {
+			value = strings.TrimPrefix(args[j], "--root=")
 		}
-		if strings.HasPrefix(args[j], "--root=") && strings.TrimPrefix(args[j], "--root=") == root {
-			candidate, err := canonicalProxyRoot(strings.TrimPrefix(args[j], "--root="))
+		if value != "" {
+			candidate, err := canonicalRoot(value)
 			if err != nil {
 				return false, err
 			}
@@ -188,10 +192,10 @@ func beadsProxyPIDMatches(pid int, root string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return beadsProxyArgsMatch(string(b), root), nil
+	return beadsProxyArgsMatchErr(string(b), root)
 }
 
-func canonicalProxyRoot(root string) (string, error) {
+func canonicalRoot(root string) (string, error) {
 	clean := filepath.Clean(root)
 	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
 		return filepath.Clean(resolved), nil
