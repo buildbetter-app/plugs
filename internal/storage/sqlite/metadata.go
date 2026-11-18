@@ -153,9 +153,11 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 		if err != nil {
 			return err
 		}
-		if err = json.Unmarshal(data, &result); err != nil {
+		var response receiptResponse
+		if err = json.Unmarshal(data, &response); err != nil {
 			return err
 		}
+		result = response.Commit
 		return t.store.saveReplay(ctx, c, h, m.Head, nil)
 	})
 	if err == nil {

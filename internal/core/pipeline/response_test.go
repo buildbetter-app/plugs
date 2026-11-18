@@ -398,9 +398,23 @@ func (tx *indeterminateCommitTx) Commit(ctx context.Context, header driver.Chang
 	return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
 }
 
+func (tx *indeterminateCommitTx) CommitNoop(ctx context.Context, header driver.ChangesetHeader) (model.Commit, error) {
+	noop, ok := tx.WriteTx.(driver.NoopCommitter)
+	if !ok {
+		return model.Commit{}, driver.ErrUnsupported
+	}
+	_, err := noop.CommitNoop(ctx, header)
+	if err != nil {
+		return model.Commit{}, err
+	}
+	tx.store.calls++
+	tx.cancel()
+	return model.Commit{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
+}
+
 func TestIndeterminateReceiptOwnership(t *testing.T) {
 	for _, backend := range []string{"memory", "sqlite"} {
-		for _, mode := range []string{"own", "concurrent", "concurrent-legacy", "prior", "legacy", "prior-post"} {
+		for _, mode := range []string{"own", "concurrent", "concurrent-legacy", "prior", "legacy", "prior-post", "own-noop"} {
 			t.Run(backend+"/"+mode, func(t *testing.T) {
 				h := setup(t)
 				var store driver.Store = h.store
@@ -425,6 +439,13 @@ func TestIndeterminateReceiptOwnership(t *testing.T) {
 				winner.store, winner.lease = store, lease
 				cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(901)
 				var expected model.Commit
+				if mode == "own-noop" {
+					seed, err := winner.Apply(context.Background(), by, cs, meta(900))
+					if err != nil {
+						t.Fatal(err)
+					}
+					cs = model.ChangeSet{Ops: []model.Op{patch(seed.Results[0].Ref, map[string]any{"title": "initial"})}}
+				}
 				if mode == "prior" || mode == "legacy" || mode == "prior-post" {
 					if mode == "legacy" {
 						winner.store = &legacyReceiptStore{Store: store}
@@ -451,7 +472,7 @@ func TestIndeterminateReceiptOwnership(t *testing.T) {
 				w := h.writer()
 				w.store, w.lease = fault, lease
 				outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
-				if err != nil || outcome.Replayed != (mode != "own") {
+				if err != nil || outcome.Replayed != (mode != "own" && mode != "own-noop") {
 					t.Fatalf("outcome=%+v err=%v", outcome, err)
 				}
 				wantCalls := 1
@@ -474,7 +495,7 @@ func TestIndeterminateReceiptOwnership(t *testing.T) {
 				if entry.ResponsePending || !reflect.DeepEqual(outcome.Commit, entry.Commit) || len(outcome.Commit.Results) != 1 || len(outcome.Commit.Results[0].Record) == 0 {
 					t.Fatalf("outcome=%+v receipt=%+v", outcome, entry)
 				}
-				if mode != "own" && !reflect.DeepEqual(outcome.Commit, expected) {
+				if mode != "own" && mode != "own-noop" && !reflect.DeepEqual(outcome.Commit, expected) {
 					t.Fatalf("outcome=%+v winner=%+v", outcome.Commit, expected)
 				}
 				if (entry.AttemptID == "") != (mode == "legacy" || mode == "concurrent-legacy") {
