@@ -140,8 +140,10 @@ func listMembership(t *testing.T, open storeFactory) {
 				got := f.call(t, row.by, "bead.get", map[string]any{"id": fixtureRef(n)}, 1000+n)
 				if want[fixtureRef(n).ID] {
 					success(t, got)
-				} else if got.Error == nil || got.Error.Data.Code != "not_found" {
-					t.Fatalf("denied point read leaked a result: %+v", got)
+				} else if got.Error == nil {
+					t.Fatalf("denied point read returned no error: result=%s; want not_found", got.Result)
+				} else if got.Error.Data.Code != "not_found" {
+					t.Fatalf("denied point read returned code=%q message=%q retryable=%t; want not_found", got.Error.Data.Code, got.Error.Message, got.Error.Data.Retryable)
 				}
 			}
 			for _, scope := range []struct {
