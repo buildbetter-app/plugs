@@ -217,6 +217,35 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, policyErr
 		}
 	}
+	// A completed import is idempotent even though its target is now populated.
+	// Resolve the keyed receipt before enforcing the first-import empty-target
+	// guard; otherwise an exact retry is incorrectly refused as "target not
+	// empty". A mismatched request hash remains a conflict, while an unseen key
+	// continues through the normal empty-target check below.
+	if profile != nil {
+		report.IdempotencyKey = profile.IdempotencyKey
+		// Native receiving stores the request hash with the archive's admitted
+		// accounting profile. Use that same binding for replay lookup; the
+		// generic profile hash omits the native accounting payload and would
+		// falsely classify an exact native retry as a conflict.
+		if profile.SourcePlanes != nil {
+			report.RequestHash, err = nativeReceivingRequestHash(archive, *profile)
+		} else {
+			report.RequestHash, err = profile.RequestHash()
+		}
+		if err != nil {
+			return report, err
+		}
+		replayed, found, replayErr := restoreImportReplay(ctx, target, meta, *profile, report.RequestHash)
+		if replayErr != nil {
+			return report, replayErr
+		}
+		if found {
+			replayed.Archive = archive
+			replayed.Target = meta
+			return replayed, nil
+		}
+	}
 	if !meta.Head.IsZero() {
 		return report, ErrTargetNotEmpty
 	}
@@ -285,13 +314,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		history = &lowered
 		lockPlan = historyLockPlan(plan, lowered)
 	}
-	if profile != nil {
-		report.IdempotencyKey = profile.IdempotencyKey
-		report.RequestHash, err = profile.RequestHash()
-		if err != nil {
-			return report, err
-		}
-	} else {
+	if profile == nil {
 		report.IdempotencyKey, report.RequestHash = recoveryScope(checks[0])
 	}
 
@@ -549,6 +572,47 @@ const importBindingRecordID = nativeprojection.ImportBindingRecordID
 
 func recoveryScope(check Verification) (string, string) {
 	return "restore/" + check.ArchiveSHA256, hashBytes([]byte("beads-head/1\x00" + check.ArchiveSHA256 + "\x00" + check.DerivedSHA256))
+}
+
+// restoreImportReplay looks up the admitted import receipt before the caller's
+// first-import empty-target guard. A missing key is a normal first attempt; an
+// existing key must carry the same request hash, and a matching final receipt
+// is recovered without opening a writer or reapplying the import.
+func restoreImportReplay(ctx context.Context, target driver.Store, meta driver.Meta, profile driver.RestoreImportProfile, request string) (Report, bool, error) {
+	principal, err := driver.PrincipalKey(profile.Admission.Actor)
+	if err != nil {
+		return Report{}, false, err
+	}
+	r, err := target.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return Report{}, false, err
+	}
+	receipt, err := r.IdempotencyByKey(ctx, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey)
+	if err != nil {
+		_ = r.Close()
+		return Report{}, false, err
+	}
+	closeErr := r.Close()
+	if closeErr != nil {
+		return Report{}, false, closeErr
+	}
+	if receipt == nil {
+		return Report{}, false, nil
+	}
+	if receipt.RequestHash != request {
+		return Report{}, false, driver.ErrConflict
+	}
+	if receipt.ResponsePending {
+		return Report{}, false, driver.ErrConflict
+	}
+	recovered, err := RecoverImport(ctx, target, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
+	if err != nil {
+		return Report{}, false, err
+	}
+	// RecoverImport validates and returns the durable receipt. Keep the direct
+	// lookup as the authority for the same request that selected this branch.
+	recovered.Receipt = receipt
+	return recovered, true, nil
 }
 
 // Recover is read-only and can run after restart or lease takeover. A normal

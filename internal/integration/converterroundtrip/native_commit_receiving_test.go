@@ -446,7 +446,9 @@ func exerciseNativeHistoryReceivingLibrary(t *testing.T, input []byte, label str
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(input), store, lease, profile); !errors.Is(err, ErrTargetNotEmpty) {
+			newKey := profile
+			newKey.IdempotencyKey = profile.IdempotencyKey + "-new"
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(input), store, lease, newKey); !errors.Is(err, ErrTargetNotEmpty) {
 				t.Fatal("populated genuine multi-version destination must refuse", err)
 			}
 			after, err := capability.LoadCheckpoint(ctx, namespace)
@@ -607,8 +609,12 @@ func exerciseNativeHistoryReceivingExecutable(t *testing.T, input []byte, label 
 			}
 			before := inspectNativeHistoryReceivingTarget(t, engine, target, input, result.Report, complete)
 			stdout, stderr, err = executeReceiving(t, binary, binaryHash, engine, target, input, request, label+"-elf-"+engine+"-populated", policy)
-			if err == nil || len(stdout) != 0 || !strings.Contains(string(stderr), "not empty") {
-				t.Fatal("populated multi-version destination must refuse without receipt", err, string(stderr))
+			// The disposable executable binds a fresh restore clock on each
+			// invocation. Reusing the key therefore carries a different full
+			// request hash and must take the idempotency conflict path before
+			// the populated-target guard.
+			if err == nil || len(stdout) != 0 || !strings.Contains(string(stderr), "transaction conflict") {
+				t.Fatal("populated multi-version destination must refuse the changed request without receipt", err, string(stderr))
 			}
 			after := inspectNativeHistoryReceivingTarget(t, engine, target, input, result.Report, complete)
 			if !bytes.Equal(before, after) {

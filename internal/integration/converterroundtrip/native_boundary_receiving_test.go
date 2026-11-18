@@ -180,7 +180,9 @@ func TestSyntheticNativeBoundaryPublicationAndRecoveryAcrossDrivers(t *testing.T
 						}
 						checkpoints[provider.Namespace] = encode(t, checkpoint)
 					}
-					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(input), store, lease, profile); !errors.Is(err, ErrTargetNotEmpty) {
+					newKey := profile
+					newKey.IdempotencyKey = profile.IdempotencyKey + "-new"
+					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(input), store, lease, newKey); !errors.Is(err, ErrTargetNotEmpty) {
 						t.Fatal("populated boundary destination must refuse", err)
 					}
 					if !reflect.DeepEqual(before, reverseState(t, store)) {

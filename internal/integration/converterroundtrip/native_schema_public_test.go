@@ -355,7 +355,9 @@ func TestActualNativeOwnVersionReceivingAcrossThreeDrivers(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); !errors.Is(err, ErrTargetNotEmpty) {
+					newKey := profile
+					newKey.IdempotencyKey = profile.IdempotencyKey + "-new"
+					if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, newKey); !errors.Is(err, ErrTargetNotEmpty) {
 						t.Fatal("populated target import must refuse", err)
 					}
 					after, err := capability.LoadCheckpoint(ctx, namespace)

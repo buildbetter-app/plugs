@@ -271,6 +271,24 @@ func TestAdmittedImportRestoresCommentAndServesWorkload(t *testing.T) {
 			if report.Archive.SHA256() != archive.SHA256() || report.Restored.Head.String() != "1" || report.IdempotencyKey != profile.IdempotencyKey {
 				t.Fatalf("restore report=%+v", report)
 			}
+			original, err := RecoverImport(ctx, store, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
+			if err != nil || original.Receipt == nil {
+				t.Fatalf("stored import receipt unavailable: %+v err=%v", original, err)
+			}
+			replayReport, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+			if err != nil || !replayReport.Recovered || !reflect.DeepEqual(original.Receipt, replayReport.Receipt) {
+				t.Fatalf("exact import replay did not return its original receipt: original=%+v replay=%+v err=%v", original, replayReport, err)
+			}
+			conflicting := profile
+			conflicting.Admission.AdmissionDigest = strings.Repeat("d", 64)
+			if _, err = RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, conflicting); !errors.Is(err, driver.ErrConflict) {
+				t.Fatalf("different-hash import replay was accepted: %v", err)
+			}
+			newKey := profile
+			newKey.IdempotencyKey = strings.Repeat("e", 32)
+			if _, err = RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, newKey); !errors.Is(err, ErrTargetNotEmpty) {
+				t.Fatalf("new-key import into populated target was not refused: %v", err)
+			}
 			recovered, err := RecoverImport(ctx, store, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
 			if err != nil || !recovered.Recovered || recovered.Restored.Head.String() != "1" {
 				t.Fatalf("import recovery=%+v err=%v", recovered, err)

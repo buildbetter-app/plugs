@@ -369,8 +369,12 @@ func TestNativeReceivingExecutableSynthetic66AndActual66And72(t *testing.T) {
 					}
 					before := inspectReceivingTarget(t, engine, target, data, version, result.Report)
 					stdout, stderr, err = executeReceiving(t, binary, binaryHash, engine, target, data, request, name+"-"+engine+"-populated", policy)
-					if err == nil || len(stdout) != 0 || !strings.Contains(string(stderr), "not empty") {
-						t.Fatal("populated target must refuse without success receipt", err, string(stderr))
+					// The disposable executable binds a fresh restore clock on each
+					// invocation. Reusing the key therefore carries a different full
+					// request hash and must take the idempotency conflict path before
+					// the populated-target guard.
+					if err == nil || len(stdout) != 0 || !strings.Contains(string(stderr), "transaction conflict") {
+						t.Fatal("populated target must refuse the changed request without success receipt", err, string(stderr))
 					}
 					after := inspectReceivingTarget(t, engine, target, data, version, result.Report)
 					if !bytes.Equal(before, after) {
