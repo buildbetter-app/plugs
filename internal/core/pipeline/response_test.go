@@ -339,3 +339,75 @@ func TestLeaseLossDuringPostLeavesRecoverablePendingResponse(t *testing.T) {
 	}
 	assertSingleGraphWrite(t, h, a.Commit)
 }
+
+// Report an uncertain outcome only after the real driver durably publishes.
+// Cancelling the transaction context also proves resolution does not reuse it.
+type indeterminateCommitStore struct {
+	driver.Store
+	calls int
+}
+
+func (s *indeterminateCommitStore) Write(ctx context.Context, lease driver.ActiveLease) (driver.WriteTx, error) {
+	txCtx, cancel := context.WithCancel(ctx)
+	tx, err := s.Store.Write(txCtx, lease)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return &indeterminateCommitTx{WriteTx: tx, store: s, cancel: cancel}, nil
+}
+
+type indeterminateCommitTx struct {
+	driver.WriteTx
+	store  *indeterminateCommitStore
+	cancel context.CancelFunc
+}
+
+func (tx *indeterminateCommitTx) Close() error {
+	defer tx.cancel()
+	return tx.WriteTx.Close()
+}
+
+func (tx *indeterminateCommitTx) Commit(ctx context.Context, header driver.ChangesetHeader) (model.Changeset, error) {
+	_, err := tx.WriteTx.Commit(ctx, header)
+	if err != nil {
+		return model.Changeset{}, err
+	}
+	tx.store.calls++
+	tx.cancel()
+	return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: header.IdempotencyKey}
+}
+
+func TestIndeterminateOwnCommitIsNotReplay(t *testing.T) {
+	h := setup(t)
+	fault := &indeterminateCommitStore{Store: h.store}
+	w := h.writer()
+	w.store = fault
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(901)
+	outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+	if err != nil || outcome.Replayed || fault.calls != 1 {
+		t.Fatalf("outcome=%+v err=%v commits=%d", outcome, err, fault.calls)
+	}
+	stored := receipt(t, h, m)
+	if stored.ResponsePending || !reflect.DeepEqual(outcome.Commit, stored.Commit) || len(outcome.Commit.Results) != 1 || len(outcome.Commit.Results[0].Record) == 0 {
+		t.Fatalf("outcome=%+v receipt=%+v", outcome, stored)
+	}
+	assertSingleGraphWrite(t, h, outcome.Commit)
+}
+
+func TestIndeterminateStorePreservesPriorReceiptReplay(t *testing.T) {
+	h := setup(t)
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(902)
+	original, err := h.writer().Apply(context.Background(), by, cs, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault := &indeterminateCommitStore{Store: h.store}
+	w := h.writer()
+	w.store = fault
+	outcome, err := w.ApplyWithOutcome(context.Background(), by, cs, m)
+	if err != nil || !outcome.Replayed || fault.calls != 0 || !reflect.DeepEqual(outcome.Commit, original) {
+		t.Fatalf("outcome=%+v err=%v commits=%d original=%+v", outcome, err, fault.calls, original)
+	}
+	assertSingleGraphWrite(t, h, original)
+}

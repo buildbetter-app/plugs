@@ -242,16 +242,22 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			if errors.As(err, &unknown) {
 				// Only a durable receipt can resolve an uncertain outcome. Never
 				// execute another attempt merely because its response was lost.
+				resolveCtx, resolveCancel := context.WithTimeout(ctx, 2*time.Second)
+				defer resolveCancel()
 				phaseStarted = time.Now()
-				fresh, e := w.reader(ctx)
-				w.observePhaseSince(ctx, PhaseAdmission, phaseStarted, e)
+				fresh, e := w.reader(resolveCtx)
+				w.observePhaseSince(resolveCtx, PhaseAdmission, phaseStarted, e)
 				if e == nil {
 					defer fresh.Close()
 					phaseStarted = time.Now()
-					result, found, e := w.replay(ctx, fresh, principal, by, cs, meta, hash)
-					w.observePhaseSince(ctx, PhaseReplay, phaseStarted, e)
+					result, found, e := w.replay(resolveCtx, fresh, principal, by, cs, meta, hash)
+					w.observePhaseSince(resolveCtx, PhaseReplay, phaseStarted, e)
 					if found || e != nil {
-						return port.WriteOutcome{Commit: result, Replayed: found && e == nil}, e
+						// transact rechecks receipt absence after Head serializes
+						// all writers. A preexisting receipt restarts admission;
+						// an uncertain publication here is our own attempt.
+						committed = found && e == nil
+						return port.WriteOutcome{Commit: result}, e
 					}
 				}
 			}
