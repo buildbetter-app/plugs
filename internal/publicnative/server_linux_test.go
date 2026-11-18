@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -194,27 +195,16 @@ func TestBeadsProxyWorkspaceDoesNotMatchDataRoot(t *testing.T) {
 }
 
 func TestServerStopDrainsProxyBeforeDoltAndIsIdempotent(t *testing.T) {
-	data := t.TempDir()
-	s := &Server{DataRoot: data}
+	var events []string
+	s := &Server{drainProxy: func() error { events = append(events, "proxy-drain"); return nil }, reapDolt: func() error { events = append(events, "dolt-reap"); return nil }}
 	if err := s.Stop(); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Stop(); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestServerStopDrainUsesProxyBeforeDolt(t *testing.T) {
-	if !strings.Contains(string(mustReadTestSource(t)), "s.proxyOnce.Do") {
-		t.Fatal("Stop does not route through idempotent proxy drain")
+	want := []string{"proxy-drain", "dolt-reap"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%v want %v", events, want)
 	}
-}
-
-func mustReadTestSource(t *testing.T) []byte {
-	t.Helper()
-	b, err := os.ReadFile("server_linux.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
 }

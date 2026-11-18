@@ -54,6 +54,8 @@ type Server struct {
 	stopErr    error
 	proxyOnce  sync.Once
 	proxyErr   error
+	drainProxy func() error
+	reapDolt   func() error
 }
 
 // RegisterBeadsCleanup registers direct cleanup for a disposable external
@@ -657,11 +659,21 @@ func (s *Server) retainFiles() error {
 // Stop terminates and reaps the owned process group. It is idempotent so a
 // consumer may stop explicitly and still retain the registered test cleanup.
 func (s *Server) Stop() error {
-	s.proxyOnce.Do(func() { s.proxyErr = s.stopBeadsProxy() })
+	s.proxyOnce.Do(func() {
+		if s.drainProxy != nil {
+			s.proxyErr = s.drainProxy()
+		} else {
+			s.proxyErr = s.stopBeadsProxy()
+		}
+	})
 	if s.proxyErr != nil {
 		return s.proxyErr
 	}
 	s.stopOnce.Do(func() {
+		if s.reapDolt != nil {
+			s.stopErr = s.reapDolt()
+			return
+		}
 		if s.cmd == nil || s.done == nil {
 			return
 		}
