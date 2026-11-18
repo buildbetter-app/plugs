@@ -1829,8 +1829,6 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
-spec/cardb20/b13_fullcard_controls_test.go
-spec/cardb20/caller_closure_test.go
 spec/cardb21/BUILD.bazel
 spec/cardb21/README.md
 spec/cardb21/acceptance_test.go
