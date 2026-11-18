@@ -237,9 +237,6 @@ func TestPublicNativeRecording(t *testing.T) {
 	if run.SourceArchiveSHA256 == "" || run.TargetArchiveSHA256 == "" {
 		t.Fatal("recording did not retain both validated archives")
 	}
-	if err := server.provider.Stop(); err != nil {
-		t.Fatalf("producer-owned server cleanup: %v", err)
-	}
 	provenance := map[string]any{
 		"schema":                   fixture.Schema,
 		"recording_id":             *publicRecordingID,

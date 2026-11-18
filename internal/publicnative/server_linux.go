@@ -64,21 +64,27 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 	_ = binary
 	_ = env
 	t.Cleanup(func() {
-		pids, scanErr := beadsProxyPIDs(dir)
+		root := dir
+		for _, e := range env {
+			if strings.HasPrefix(e, "BEADS_DOLT_DATA_DIR=") {
+				root = strings.TrimPrefix(e, "BEADS_DOLT_DATA_DIR=")
+			}
+		}
+		pids, scanErr := beadsProxyPIDs(root)
 		if scanErr != nil {
 			t.Errorf("scanning Beads proxy processes for %s: %v", dir, scanErr)
 		}
 		for _, pid := range pids {
-			if !beadsProxyPIDMatches(pid, dir) {
+			if !beadsProxyPIDMatches(pid, root) {
 				continue
 			}
 			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-				t.Errorf("stopping Beads proxy pid %d for %s: %v", pid, dir, err)
+				t.Errorf("stopping Beads proxy pid %d for %s: %v", pid, root, err)
 			}
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
-			current, err := beadsProxyPIDs(dir)
+			current, err := beadsProxyPIDs(root)
 			if err != nil {
 				t.Errorf("scanning Beads proxy processes for %s: %v", dir, err)
 				break
@@ -88,7 +94,7 @@ func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []st
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-		pids, _ = beadsProxyPIDs(dir)
+		pids, _ = beadsProxyPIDs(root)
 		if len(pids) != 0 {
 			t.Errorf("Beads proxy survived documented stop for %s: pids=%v", dir, pids)
 		}
@@ -104,10 +110,7 @@ func beadsProxyPIDs(root string) ([]int, error) {
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
-				continue
-			}
-			return nil, err
+			continue
 			continue
 		}
 		cmdline, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
