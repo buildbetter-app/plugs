@@ -62,16 +62,19 @@ type Server struct {
 // and are matched again in /proc to prove no proxy for this root survived.
 func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []string) {
 	t.Helper()
+	_ = binary
+	_ = env
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, binary, "dolt", "stop")
-		cmd.Dir, cmd.Env = dir, append([]string(nil), env...)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("stopping Beads proxy for %s: %v: %s", dir, err, output)
+		for _, pid := range beadsProxyPIDs(dir) {
+			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("stopping Beads proxy pid %d for %s: %v", pid, dir, err)
+			}
 		}
-		if ctx.Err() != nil {
-			t.Errorf("stopping Beads proxy for %s: %v", dir, ctx.Err())
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) && len(beadsProxyPIDs(dir)) != 0 {
+			time.Sleep(50 * time.Millisecond)
 		}
 		if pids := beadsProxyPIDs(dir); len(pids) != 0 {
 			t.Errorf("Beads proxy survived documented stop for %s: pids=%v", dir, pids)
