@@ -135,6 +135,7 @@ func b02RecordGraph(t *testing.T, binary string, plan b02GraphPlan, dir string) 
 	}
 	base := []string{"PATH=/tmp/plug-swarm/bin/worker-safe:" + filepath.Dir(server.DoltBinary) + ":" + os.Getenv("PATH"), "HOME=" + home, "USER=b02-public", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B02 Public", "GIT_AUTHOR_EMAIL=b02@example.invalid", "GIT_COMMITTER_NAME=B02 Public", "GIT_COMMITTER_EMAIL=b02@example.invalid", "TMPDIR=" + filepath.Join(workspace, "tmp"), "BEADS_ACTOR=b02-recorder", "BEADS_NO_DAEMON=1"}
 	w := nativeWorkspace{dir: project, env: server.ChildEnv(base)}
+	server.RegisterBeadsCleanup(t, binary, project, w.env)
 	r.command(w, "git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="}, false)
 	version := r.command(w, "version", binary, []string{"version", "--json"}, false)
 	var identity struct{ Commit, Build string }
@@ -219,9 +220,6 @@ func b02RecordGraph(t *testing.T, binary string, plan b02GraphPlan, dir string) 
 		}
 	}
 	b02Save(t, filepath.Join(dir, "native-observations.json"), observations)
-	if err := server.Stop(); err != nil {
-		t.Fatal(err)
-	}
 	return observations
 }
 

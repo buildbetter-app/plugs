@@ -343,6 +343,7 @@ func newB02DeltaCLI(t *testing.T, cli, root string) *b02DeltaCLI {
 		}
 	}
 	w := &b02DeltaCLI{t: t, rec: &nativeRecorder{t: t, root: root}, cli: cli, dir: dir, env: env, ids: map[string]string{}, ephemeral: map[string]bool{}, server: server}
+	server.RegisterBeadsCleanup(t, cli, dir, env)
 	w.command("git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="})
 	var identity struct{ Commit, Build string }
 	if raw := w.run("version", "version", "--json"); json.Unmarshal(raw, &identity) != nil || identity.Commit != pinnedSource.Commit || identity.Build != "b20-public-fixture-"+pinnedSource.Commit {

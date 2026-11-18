@@ -106,3 +106,39 @@ func TestRetainStartupFailureEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestBeadsProxyArgsMatchExactRootAndShape(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	cases := []struct {
+		name, raw string
+		want      bool
+	}{
+		{"split", "dolt\x00db-proxy-child\x00--root\x00" + root + "\x00", true},
+		{"equals", "dolt\x00db-proxy-child\x00--root=" + root + "\x00", true},
+		{"prefix", "dolt\x00db-proxy-child\x00--root\x00" + root + "-other\x00", false},
+		{"wrong-command", "dolt\x00other\x00--root\x00" + root + "\x00", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := beadsProxyArgsMatch(tc.raw, root); got != tc.want {
+				t.Fatalf("match=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBeadsProxyArgsMatchNormalizesSymlinks(t *testing.T) {
+	base := t.TempDir()
+	data := filepath.Join(base, "data")
+	if err := os.Mkdir(data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "alias")
+	if err := os.Symlink(data, link); err != nil {
+		t.Fatal(err)
+	}
+	raw := "dolt\x00db-proxy-child\x00--root=" + link + "/.\x00"
+	if !beadsProxyArgsMatch(raw, data) {
+		t.Fatal("normalized equivalent roots did not match")
+	}
+}
