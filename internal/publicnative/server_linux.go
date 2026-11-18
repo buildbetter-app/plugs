@@ -666,9 +666,6 @@ func (s *Server) Stop() error {
 			s.proxyErr = s.stopBeadsProxy()
 		}
 	})
-	if s.proxyErr != nil {
-		return s.proxyErr
-	}
 	s.stopOnce.Do(func() {
 		if s.reapDolt != nil {
 			s.stopErr = s.reapDolt()
@@ -721,6 +718,9 @@ func (s *Server) Stop() error {
 			"retained_log": s.logPath, "retained_config": s.configPath})
 		s.stopErr = errors.Join(removeErr, recordErr, s.logErr)
 	})
+	if s.proxyErr != nil {
+		return s.proxyErr
+	}
 	return s.stopErr
 }
 
