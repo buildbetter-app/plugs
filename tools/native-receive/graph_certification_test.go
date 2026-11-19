@@ -25,6 +25,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/jackc/pgx/v5"
 )
 
 type graphDeadline struct {
@@ -111,6 +112,31 @@ type graphObservedDerivedReader struct {
 	driver.DerivedPrefixReader
 }
 
+type graphPostgresConnectionError struct {
+	err error
+}
+
+func (e *graphPostgresConnectionError) Error() string { return e.err.Error() }
+
+func (e *graphPostgresConnectionError) Unwrap() error { return e.err }
+
+func graphPostgresReadinessProbe(ctx context.Context, dsn string) error {
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		return &graphPostgresConnectionError{err: err}
+	}
+	defer conn.Close(ctx)
+	if err := conn.Ping(ctx); err != nil {
+		return fmt.Errorf("postgres readiness query: %w", err)
+	}
+	return nil
+}
+
+func graphPostgresReadinessRetryable(err error) bool {
+	var connectionErr *graphPostgresConnectionError
+	return errors.As(err, &connectionErr)
+}
+
 // These are the optional Reader capabilities checked by pipeline preparation
 // and hierarchy application. WriteTx continuations are returned by Write and
 // are not hidden by this read observer.
@@ -182,17 +208,36 @@ func graphPostgres(t *testing.T) string {
 		t.Fatal(err)
 	}
 	dsn := "postgres://postgres@" + strings.TrimSpace(string(out)) + "/graph_cert?sslmode=disable"
+	var lastErr error
 	for {
-		out, err = docker("exec", name, "pg_isready", "-U", "postgres", "-d", "graph_cert")
-		if err == nil {
+		if err := graphPostgresReadinessProbe(ctx, dsn); err == nil {
 			break
+		} else {
+			lastErr = err
+			if !graphPostgresReadinessRetryable(err) {
+				t.Fatal(err)
+			}
+			t.Logf("postgres host readiness connection establishment not ready, retrying: %v", err)
 		}
 		if ctx.Err() != nil {
-			t.Fatal(err, string(out))
+			t.Fatal(lastErr)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	return dsn
+}
+
+func TestGraphPostgresReadinessRetryable(t *testing.T) {
+	connectionErr := &graphPostgresConnectionError{err: errors.New("connection reset by peer")}
+	if !graphPostgresReadinessRetryable(connectionErr) {
+		t.Fatal("connection-establishment errors must be retryable")
+	}
+	if !graphPostgresReadinessRetryable(fmt.Errorf("wrapped probe: %w", connectionErr)) {
+		t.Fatal("wrapped connection-establishment errors must be retryable")
+	}
+	if graphPostgresReadinessRetryable(errors.New("postgres readiness query failed")) {
+		t.Fatal("readiness query errors must not be retried")
+	}
 }
 
 func graphArtifact(t *testing.T, name string, value any) {
