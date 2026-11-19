@@ -344,6 +344,18 @@ func nativeCollectionReportCommitment(budget *dumpformat.NativeDeltaBudget, repo
 // Unsupported custom values in open-ended details or event plans still refuse
 // through the ordinary counter; there is no shared accounting exception.
 type nativeCollectionReceiptJSON driver.IdempotencyRecord
+
+// MarshalJSON is the borrowed public receipt view. AttemptID is private
+// storage metadata and must not alter native/public receipt byte identity.
+func (r nativeCollectionReceiptJSON) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		RequestHash     string
+		Commit          nativeCollectionCommitJSON
+		Changeset       nativeCollectionChangesetJSON
+		ResponsePending bool
+	}{r.RequestHash, nativeCollectionCommitJSON(r.Commit), nativeCollectionChangesetJSON(r.Changeset), r.ResponsePending})
+}
+
 type nativeCollectionCommitJSON model.Commit
 type nativeCollectionChangesetJSON model.Changeset
 type nativeCollectionResultsJSON []model.OpResult
