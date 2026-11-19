@@ -61,3 +61,53 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//visibility:public"],
 )
+
+# Project-target and source-history controls remain separate from the ordinary
+# catalog target and do not recapture native data.
+go_test(
+    name = "b03_catalog_targets_test",
+    srcs = [
+        "catalog_test.go",
+        "catalog_targets_fixture_test.go",
+        "catalog_targets_test.go",
+        "//spec/cardb20:native_postgres_support",
+    ],
+    args = ["-test.v"],
+    deps = B03_DEPS,
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)
+
+# Authenticated two-project native capture-set acceptance. Input bytes and
+# typed expectations are supplied beside the tests; the existing reader and
+# receiver/composition APIs perform the import.
+go_test(
+    name = "b03_admitted_catalog_test",
+    srcs = [
+        "admitted_catalog_test.go",
+        "admitted_history_test.go",
+        "admitted_inputs_test.go",
+        "catalog_test.go",
+        "catalog_targets_fixture_test.go",
+        "//spec/cardb20:native_postgres_support",
+    ],
+    data = [
+        "testdata/b03-rich-catalog.inputs.json",
+        "testdata/b03-rich-r4-inputs.tar.gz",
+        "testdata/b03-rich-r5-catalog.inputs.json",
+        "testdata/b03-rich-r5-inputs.tar.gz",
+        "//tools/native-receive:native-receive",
+    ],
+    env = {"B03_NATIVE_RECEIVE_BINARY": "$(rlocationpath //tools/native-receive:native-receive)"},
+    args = ["-test.v"],
+    deps = B03_DEPS + [
+        "//internal/core/dumpformat",
+        "//internal/core/restore",
+        "//internal/integration/converterroundtrip",
+        "//internal/server/composition",
+    ],
+    size = "large",
+    tags = ["local", "requires-network"],
+    timeout = "long",
+)

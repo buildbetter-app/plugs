@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -294,6 +295,8 @@ func (r *b03CommandRunner) runRace(label string, commands map[string][]string) m
 }
 
 type b03StoreEvidence struct {
+	Fixture               string                `json:"fixture"`
+	RefusalReason         string                `json:"refusal_reason,omitempty"`
 	ID                    string                `json:"id"`
 	Database              string                `json:"database"`
 	Prefix                string                `json:"prefix"`
@@ -342,9 +345,14 @@ type b03PhysicalCensus struct {
 	Bytes  int                   `json:"bytes"`
 }
 
-// TestB03NativeCatalogRecording is manual and intentionally fails closed when
-// the admitted c8eb producer cannot emit a canonical catalog archive. That
-// failure is the producer-owned dependency, not a successful fixture or skip.
+// The pinned producer refuses nonempty custom catalogs at plugdump/catalog.go
+// (actionFor) and plugdump/build.go (the nonempty-family guard).
+// Refusal evidence stays separate from a fresh positive built-in source.
+// Plug's positive strict union/map_status coverage remains in dumpformat's
+// TestStrictConfigUnionCompleteRawAndEffectiveImage and
+// TestStrictConfigUnionExplicitResolutionRetainsConflictingLayers. B03 public
+// custom catalog acceptance remains TestB03CanonicalNativeNonemptyCatalog and
+// TestB03AdmittedNativeCatalogLifecycleAndSourceHistory, never this refusal.
 func TestB03NativeCatalogRecording(t *testing.T) {
 	input := readB03NativeInput(t)
 	verifyB03NativeInput(t, input)
@@ -352,59 +360,85 @@ func TestB03NativeCatalogRecording(t *testing.T) {
 	binary, manifest := verifyB03PreparedArtifact(t, input, root)
 	server := publicnative.StartDolt(t, root)
 
-	all := make([]b03StoreEvidence, 0, len(input.Stores))
-	for _, spec := range input.Stores {
-		all = append(all, recordB03NativeStore(t, root, input, spec.ID, spec.Database, spec.Prefix, spec.RootID, binary, server))
-	}
-	writeB03JSON(t, filepath.Join(root, "stores.json"), map[string]any{
-		"schema":   "plug-s1-b03-native-recording/1",
-		"consumer": input.Consumer, "consumer_tree": input.ConsumerTree,
-		"descriptor": input.Descriptor, "prepared_manifest": manifest,
-		"stores": all,
+	t.Run("nonempty_custom_catalog_refusal", func(t *testing.T) {
+		refusalRoot := filepath.Join(root, "nonempty-custom-catalog-refusal")
+		all := make([]b03StoreEvidence, 0, len(input.Stores))
+		for _, spec := range input.Stores {
+			t.Run(spec.ID, func(t *testing.T) {
+				evidence := recordB03NativeStore(t, refusalRoot, input, spec.ID, spec.Database+"_custom", spec.Prefix, spec.RootID, binary, server, true)
+				all = append(all, evidence)
+				if len(evidence.Blockers) != 0 || evidence.RefusalReason == "" || evidence.InventoryPath == "" || evidence.ArchivePath != "" || evidence.ArchiveSHA256 != "" || evidence.ArchiveBytes != 0 {
+					t.Fatalf("custom catalog refusal did not preserve source evidence and zero recorded archive: %+v", evidence)
+				}
+			})
+		}
+		writeB03JSON(t, filepath.Join(refusalRoot, "stores.json"), map[string]any{
+			"schema":   "plug-s1-b03-native-refusal/1",
+			"consumer": input.Consumer, "consumer_tree": input.ConsumerTree,
+			"descriptor": input.Descriptor, "prepared_manifest": manifest,
+			"stores": all,
+		})
 	})
-	var blockers []string
-	var archives []string
-	for _, evidence := range all {
-		blockers = append(blockers, evidence.Blockers...)
-		if evidence.ArchivePath != "" {
-			archives = append(archives, evidence.ArchivePath)
+	t.Run("builtin_catalog_recording", func(t *testing.T) {
+		positiveRoot := filepath.Join(root, "builtin-catalog-recording")
+		// A separate database/workspace starts with built-ins. The custom source
+		// above is neither cleared nor reused as this positive fixture.
+		builtin := input
+		builtin.Catalog.Status, builtin.Catalog.Type = "", "task"
+		all := make([]b03StoreEvidence, 0, len(input.Stores))
+		for _, spec := range input.Stores {
+			all = append(all, recordB03NativeStore(t, positiveRoot, builtin, spec.ID, spec.Database+"_builtin", spec.Prefix, spec.RootID, binary, server, false))
 		}
-	}
-	if len(blockers) != 0 {
-		t.Fatalf("PRODUCER_DEPENDENCY_B03_NATIVE_CATALOG: %s", strings.Join(blockers, " | "))
-	}
-	if len(archives) != len(input.Stores) {
-		t.Fatalf("B03 native recording produced %d canonical archives, want %d", len(archives), len(input.Stores))
-	}
-	if len(all) == len(input.Stores) {
-		wantNormalized := all[0].NormalizedCatalogSHA
-		seenIDs := map[string]bool{}
-		seenStores := map[string]bool{}
-		seenNormalized := map[string]bool{}
+		writeB03JSON(t, filepath.Join(positiveRoot, "stores.json"), map[string]any{
+			"schema":   "plug-s1-b03-native-recording/1",
+			"consumer": input.Consumer, "consumer_tree": input.ConsumerTree,
+			"descriptor": input.Descriptor, "prepared_manifest": manifest,
+			"stores": all,
+		})
+		var blockers []string
+		var archives []string
 		for _, evidence := range all {
-			if evidence.RootID == "" || seenIDs[evidence.RootID] || evidence.InventoryStoreID == "" || seenStores[evidence.InventoryStoreID] {
-				t.Fatalf("native stores did not retain distinct root IDs: %+v", all)
+			blockers = append(blockers, evidence.Blockers...)
+			if evidence.ArchivePath != "" {
+				archives = append(archives, evidence.ArchivePath)
 			}
-			seenIDs[evidence.RootID] = true
-			seenStores[evidence.InventoryStoreID] = true
-			if evidence.NormalizedCatalogSHA == "" || evidence.NormalizedCatalogSHA != wantNormalized {
-				t.Fatalf("normalized canonical catalog vectors diverged across distinct stores: %+v", all)
+		}
+		if len(blockers) != 0 {
+			t.Fatalf("B03 built-in native recording failed: %s", strings.Join(blockers, " | "))
+		}
+		if len(archives) != len(input.Stores) {
+			t.Fatalf("B03 native recording produced %d canonical archives, want %d", len(archives), len(input.Stores))
+		}
+		if len(all) == len(input.Stores) {
+			wantNormalized := all[0].NormalizedCatalogSHA
+			seenIDs := map[string]bool{}
+			seenStores := map[string]bool{}
+			seenNormalized := map[string]bool{}
+			for _, evidence := range all {
+				if evidence.RootID == "" || seenIDs[evidence.RootID] || evidence.InventoryStoreID == "" || seenStores[evidence.InventoryStoreID] {
+					t.Fatalf("native stores did not retain distinct root IDs: %+v", all)
+				}
+				seenIDs[evidence.RootID] = true
+				seenStores[evidence.InventoryStoreID] = true
+				if evidence.NormalizedCatalogSHA == "" || evidence.NormalizedCatalogSHA != wantNormalized {
+					t.Fatalf("normalized canonical catalog vectors diverged across distinct stores: %+v", all)
+				}
+				seenNormalized[evidence.NormalizedCatalogSHA] = true
 			}
-			seenNormalized[evidence.NormalizedCatalogSHA] = true
+			if len(seenNormalized) != 1 {
+				t.Fatalf("native stores did not produce one normalized catalog image: %+v", all)
+			}
 		}
-		if len(seenNormalized) != 1 {
-			t.Fatalf("native stores did not produce one normalized catalog image: %+v", all)
+		for i, path := range archives {
+			all[i].Replay = replayB03Archive(t, positiveRoot, builtin.Stores[i].ID, builtin.Stores[i].RootID, path, builtin)
 		}
-	}
-	for i, path := range archives {
-		all[i].Replay = replayB03Archive(t, root, input.Stores[i].ID, input.Stores[i].RootID, path, input)
-	}
-	compareB03ReplayVectors(t, root, all)
-	writeB03JSON(t, filepath.Join(root, "stores.json"), map[string]any{
-		"schema":   "plug-s1-b03-native-recording/1",
-		"consumer": input.Consumer, "consumer_tree": input.ConsumerTree,
-		"descriptor": input.Descriptor, "prepared_manifest": manifest,
-		"stores": all,
+		compareB03ReplayVectors(t, positiveRoot, all)
+		writeB03JSON(t, filepath.Join(positiveRoot, "stores.json"), map[string]any{
+			"schema":   "plug-s1-b03-native-recording/1",
+			"consumer": input.Consumer, "consumer_tree": input.ConsumerTree,
+			"descriptor": input.Descriptor, "prepared_manifest": manifest,
+			"stores": all,
+		})
 	})
 }
 
@@ -533,6 +567,12 @@ func verifyB03PreparedArtifact(t *testing.T, input b03NativeInput, root string) 
 func retainB03Preparation(t *testing.T, input b03NativeInput, root, manifestPath, binary string, manifest b03Manifest) map[string]any {
 	t.Helper()
 	evidenceDir := filepath.Join(filepath.Dir(filepath.Dir(manifestPath)), "remote-bazel-evidence")
+	if override := os.Getenv("PLUG_PUBLIC_BUNDLE_EVIDENCE_DIR"); override != "" {
+		if !filepath.IsAbs(override) {
+			t.Fatalf("trusted preparation evidence override must be absolute: %q", override)
+		}
+		evidenceDir = override
+	}
 	bindingPath := filepath.Join(evidenceDir, "public-bundle-helper-binding.txt")
 	binding, err := os.ReadFile(bindingPath)
 	wantBinding := "trusted_preparer_sha=" + b03NativePreparerCommit + "\ntrusted_preparer_sha256=" + b03NativePreparerSHA + "\ndescriptor=" + input.Descriptor + "\n"
@@ -573,7 +613,7 @@ func retainB03Preparation(t *testing.T, input b03NativeInput, root, manifestPath
 	return result
 }
 
-func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, database, prefix, rootID, binary string, server *publicnative.Server) b03StoreEvidence {
+func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, database, prefix, rootID, binary string, server *publicnative.Server, expectCustomRefusal bool) b03StoreEvidence {
 	t.Helper()
 	storeRoot := filepath.Join(root, id)
 	workspace := filepath.Join(storeRoot, "workspace")
@@ -583,7 +623,11 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 	baseEnv := []string{"PATH=/usr/bin:/bin", "HOME=" + filepath.Join(workspace, "home"), "XDG_CONFIG_HOME=" + filepath.Join(workspace, "home", ".config"), "LANG=C.UTF-8", "TZ=UTC", "CI=true", "DO_NOT_TRACK=1", "BEADS_NO_DAEMON=1", "BEADS_ACTOR=b03-native-recorder", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B03 native recorder", "GIT_AUTHOR_EMAIL=b03@example.invalid", "GIT_COMMITTER_NAME=B03 native recorder", "GIT_COMMITTER_EMAIL=b03@example.invalid"}
 	env := server.ChildEnv(baseEnv)
 	runner := &b03CommandRunner{t: t, root: storeRoot, store: id, dir: workspace, env: env}
-	evidence := b03StoreEvidence{ID: id, Database: database, Prefix: prefix, RootID: rootID}
+	fixture := "builtin-catalog-recording"
+	if expectCustomRefusal {
+		fixture = "nonempty-custom-catalog-refusal"
+	}
+	evidence := b03StoreEvidence{Fixture: fixture, ID: id, Database: database, Prefix: prefix, RootID: rootID}
 	blockers := []string{}
 	git := func(label string, args ...string) ([]byte, b03CommandReceipt) {
 		return runner.run(label, append([]string{"git"}, args...))
@@ -615,32 +659,30 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 	if _, receipt = command("config-export-auto", "--json", "config", "set", "export.auto", "false"); receipt.Exit != 0 {
 		blockers = append(blockers, exactNativeRefusal(runner, receipt, "export.auto config"))
 	}
-	if _, receipt = command("status-catalog", "--json", "config", "set", "status.custom", input.Catalog.Status); receipt.Exit != 0 {
-		blockers = append(blockers, exactNativeRefusal(runner, receipt, "status catalog"))
+	if expectCustomRefusal {
+		for _, config := range []struct{ label, key, value string }{
+			{"status-catalog", "status.custom", input.Catalog.Status},
+			{"type-catalog", "types.custom", input.Catalog.Type},
+		} {
+			if _, receipt = command(config.label, "--json", "config", "set", config.key, config.value); receipt.Exit != 0 {
+				blockers = append(blockers, exactNativeRefusal(runner, receipt, config.label))
+			}
+		}
 	}
-	// `types.custom=delivery` is the native producer's actual catalog input. A
-	// task fallback would be a synthetic substitute, so a refusal is retained
-	// and never relabelled as B03 success.
-	_, typeReceipt := command("type-catalog", "--json", "config", "set", "types.custom", input.Catalog.Type)
-	if typeReceipt.Exit != 0 {
-		blockers = append(blockers, exactNativeRefusal(runner, typeReceipt, "type catalog"))
+	if _, receipt = command("catalog-root-create", "--json", "create", "--id", rootID, "--type", input.Catalog.Type, "--status", "open", "--title", "B03 native catalog root", "--description", "fresh native catalog source"); receipt.Exit != 0 {
+		blockers = append(blockers, exactNativeRefusal(runner, receipt, "catalog root create"))
 	} else {
-		_, createReceipt := command("catalog-root-create", "--json", "create", "--id", rootID, "--type", input.Catalog.Type, "--status", "awaiting_review", "--title", "B03 native catalog root", "--description", "fresh native catalog source")
-		if createReceipt.Exit != 0 {
-			blockers = append(blockers, exactNativeRefusal(runner, createReceipt, "catalog root create"))
+		row, showReceipt := command("catalog-root-show", "--json", "show", "--include-comments", rootID)
+		if showReceipt.Exit != 0 {
+			blockers = append(blockers, exactNativeRefusal(runner, showReceipt, "catalog root show"))
 		} else {
-			row, showReceipt := command("catalog-root-show", "--json", "show", "--include-comments", rootID)
-			if showReceipt.Exit != 0 {
-				blockers = append(blockers, exactNativeRefusal(runner, showReceipt, "catalog root show"))
-			} else {
-				var shown []struct {
-					ID     string `json:"id"`
-					Status string `json:"status"`
-					Type   string `json:"issue_type"`
-				}
-				if err := json.Unmarshal(row, &shown); err != nil || len(shown) != 1 || shown[0].ID != rootID || shown[0].Status != "awaiting_review" || shown[0].Type != input.Catalog.Type {
-					blockers = append(blockers, fmt.Sprintf("native catalog root did not retain requested ID/status/type store=%s raw=%s", id, row))
-				}
+			var shown []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+				Type   string `json:"issue_type"`
+			}
+			if err := json.Unmarshal(row, &shown); err != nil || len(shown) != 1 || shown[0].ID != rootID || shown[0].Status != "open" || shown[0].Type != input.Catalog.Type {
+				blockers = append(blockers, fmt.Sprintf("native catalog root did not retain requested ID/status/type store=%s raw=%s", id, row))
 			}
 		}
 	}
@@ -648,6 +690,34 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 		blockers = append(blockers, exactNativeRefusal(runner, receipt, "config list"))
 	}
 	before := recordB03PhysicalCensus(t, runner, binary, "before")
+	// These source catalog rows are acceptance inputs, never live-claim cleanup.
+	wantStatuses := []any{}
+	for _, declaration := range strings.FieldsFunc(input.Catalog.Status, func(r rune) bool { return r == ',' }) {
+		name, category, ok := strings.Cut(declaration, ":")
+		if !ok || name == "" || category == "" {
+			t.Fatalf("invalid fixture status declaration %q", declaration)
+		}
+		wantStatuses = append(wantStatuses, map[string]any{"name": name, "category": category})
+	}
+	wantTypes := []any{}
+	if expectCustomRefusal {
+		wantTypes = append(wantTypes, map[string]any{"name": input.Catalog.Type})
+	}
+	wantCatalogs := map[string]any{
+		"custom_statuses": normalizeB03Rows(wantStatuses),
+		"custom_types":    normalizeB03Rows(wantTypes),
+	}
+	for _, table := range before.Tables {
+		if want, ok := wantCatalogs[table.Table]; ok {
+			if !equalB03JSON(table.Rows, want) {
+				t.Fatalf("source %s catalog differs: got=%v want=%v", table.Table, table.Rows, want)
+			}
+			delete(wantCatalogs, table.Table)
+		}
+	}
+	if len(wantCatalogs) != 0 {
+		t.Fatalf("source catalog census missing tables: %v", wantCatalogs)
+	}
 	inventoryPath := filepath.Join(storeRoot, "native-inventory.json")
 	_, inventoryReceipt := command("inventory", "--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "-o", inventoryPath)
 	if inventoryReceipt.Exit == 0 {
@@ -664,8 +734,23 @@ func recordB03NativeStore(t *testing.T, root string, input b03NativeInput, id, d
 		}
 	}
 	archivePath := filepath.Join(storeRoot, "native-plug-dump.tar")
-	_, archiveReceipt := command("canonical-plug-dump", "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "-o", archivePath)
-	if archiveReceipt.Exit != 0 {
+	archiveOutput, archiveReceipt := command("canonical-plug-dump", "--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventoryPath, "-o", archivePath)
+	if expectCustomRefusal {
+		stderr, err := os.ReadFile(archiveReceipt.StderrPath)
+		// The producer iterates a map, so either complete family diagnostic is
+		// exact; no other failure or partial output is accepted as this control.
+		wantStatus := "Error: plug-dump/1 refused: unsupported nonempty family custom_statuses (live claims must be resolved)\n"
+		wantType := "Error: plug-dump/1 refused: unsupported nonempty family custom_types (live claims must be resolved)\n"
+		_, pathErr := os.Lstat(archivePath)
+		if err != nil || archiveReceipt.Exit != 1 || (string(stderr) != wantStatus && string(stderr) != wantType) || len(archiveOutput) != 0 || !os.IsNotExist(pathErr) {
+			blockers = append(blockers, fmt.Sprintf("custom catalog refusal mismatch exit=%d stderr=%q stdout_bytes=%d archive_error=%v", archiveReceipt.Exit, stderr, len(archiveOutput), pathErr))
+		} else {
+			evidence.RefusalReason = string(stderr)
+		}
+		if inventoryReceipt.Exit != 0 {
+			blockers = append(blockers, exactNativeRefusal(runner, inventoryReceipt, "native inventory"))
+		}
+	} else if archiveReceipt.Exit != 0 {
 		stderr, _ := os.ReadFile(archiveReceipt.StderrPath)
 		if len(stderr) == 0 {
 			blockers = append(blockers, exactNativeRefusal(runner, archiveReceipt, "canonical plug-dump"))
@@ -839,11 +924,35 @@ func validateB03CanonicalArchive(input b03NativeInput, archive *dumpformat.Archi
 	if manifest.StoreID != storeID || len(manifest.Projects) != 1 || manifest.Projects[0].Prefix != prefix {
 		return fmt.Errorf("archive identity/project does not match its own native inventory: %+v", manifest.Projects)
 	}
+	if input.Catalog.Status == "" {
+		beads := archive.Records("bead")
+		if len(beads) != 1 || beads[0].ID != rootID || beads[0].Project != prefix || beads[0].Source.Table != "issues" || beads[0].Source.Fields["status"] != "open" || beads[0].Source.Fields["issue_type"] != "task" {
+			return fmt.Errorf("built-in native root differs from source: %+v", beads)
+		}
+		for _, table := range []string{"custom_statuses", "custom_types"} {
+			if len(b03CatalogRows(archive, table)) != 0 {
+				return fmt.Errorf("built-in source unexpectedly has %s rows", table)
+			}
+			found := false
+			for _, disposition := range manifest.Sources {
+				if disposition.Family == table {
+					found = true
+					if disposition.Rows != 0 || disposition.Action != "refuse-if-nonempty" || disposition.Reason == "" {
+						return fmt.Errorf("built-in catalog disposition differs: %+v", disposition)
+					}
+				}
+			}
+			if !found {
+				return fmt.Errorf("missing built-in catalog disposition %s", table)
+			}
+		}
+		return nil
+	}
 	if _, ok := archive.ImportMigration(); !ok {
 		return errors.New("canonical native catalog lacks the production strict-union ImportMigration; no input-derived document may substitute")
 	}
 	beads := archive.Records("bead")
-	if len(beads) != 1 || beads[0].ID != rootID || beads[0].Project != prefix || beads[0].Source.Table != "issues" || beads[0].Source.Fields["status"] != "awaiting_review" || beads[0].Source.Fields["issue_type"] != input.Catalog.Type {
+	if len(beads) != 1 || beads[0].ID != rootID || beads[0].Project != prefix || beads[0].Source.Table != "issues" || beads[0].Source.Fields["status"] != "open" || beads[0].Source.Fields["issue_type"] != input.Catalog.Type {
 		return fmt.Errorf("canonical native root ID/project/status/type differs from physical source: %+v", beads)
 	}
 	statusWant := map[string]string{}
@@ -961,12 +1070,16 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 		t.Fatal(err)
 	}
 	migration, ok := archive.ImportMigration()
-	if !ok {
+	if !ok && input.Catalog.Status != "" {
 		t.Fatal("native archive has no admitted production catalog migration")
 	}
-	// Only the production validator may derive the custom document. The input
-	// manifest supplies expected values, never a replacement ontology fixture.
-	document := migration.Document()
+	// Built-in source uses the production built-in document. A custom source
+	// still requires the validated strict importer document, never input-derived.
+	document := ontology.DefaultDocument()
+	replayType := "issue"
+	if input.Catalog.Status != "" {
+		document, replayType = migration.Document(), input.Catalog.Type
+	}
 	project := archive.Manifest().Projects[0].Prefix
 	var nativeRoot dumpformat.Record
 	for _, row := range archive.Records("bead") {
@@ -998,7 +1111,7 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 				t.Fatalf("native archive replay on %s: %v", engine, err)
 			}
 			imported := b03ReplayDocumentAt(t, store, rootID)
-			if imported.Project != project || imported.Type != input.Catalog.Type || imported.Fields["status"] != "awaiting_review" {
+			if imported.Project != project || imported.Type != replayType || imported.Fields["status"] != "todo" {
 				t.Fatalf("restore lost actual native root/project/catalog: %+v", imported)
 			}
 			assertB03ImportedSource(t, imported, nativeRoot)
@@ -1028,12 +1141,12 @@ func replayB03Archive(t *testing.T, root, id, rootID, path string, input b03Nati
 				defer runtime.Close(context.Background())
 				afterReopen := b03ReplaySnapshot(t, runtime.Store, project, rpc.calls)
 				writeB03JSON(t, filepath.Join(engineRoot, "after-reopen.json"), afterReopen)
-				if !equalB03JSON(beforeClose, afterReopen) {
+				if !equalB03ReplayState(beforeClose, afterReopen) {
 					t.Fatalf("%s reopen changed complete records/versions/log/derived/allocator/receipt census", engine)
 				}
 				engineEvidence["after_reopen_sha256"] = b03FileHash(filepath.Join(engineRoot, "after-reopen.json"))
 				rpc.transport = transport
-				reopenedRoot := b03ReplayPublicRoot(t, rpc, runtime.Store, rootID, input.Catalog.Type, "awaiting_review")
+				reopenedRoot := b03ReplayPublicRoot(t, rpc, runtime.Store, rootID, replayType, b03ReplayStatuses(input)[2])
 				assertB03ImportedConservation(t, imported, reopenedRoot)
 				b03ReplayReady(t, rpc, rootID, true)
 				b03ReplayCatalog(t, rpc, lifecycle["document"].(ontology.Document))
@@ -1170,7 +1283,7 @@ func (r *b03ReplayRPC) call(method string, params map[string]any, wantCode strin
 	return envelope.Result
 }
 
-func applyB03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, doc ontology.Document) {
+func applyB03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, doc ontology.Document) ontologyops.PlanResult {
 	t.Helper()
 	planRaw := rpc.call("ontology.plan", map[string]any{"document": doc}, "")
 	var plan ontologyops.PlanResult
@@ -1183,6 +1296,7 @@ func applyB03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, doc ontology.Documen
 		t.Fatalf("replay ontology.apply did not publish: %s", applyRaw)
 	}
 	b03ReplayCatalog(t, rpc, doc)
+	return plan
 }
 
 func b03ReplayCatalog(t *testing.T, rpc *b03ReplayRPC, want ontology.Document) {
@@ -1253,16 +1367,48 @@ func b03ReplayReady(t *testing.T, rpc *b03ReplayRPC, rootID string, want bool) {
 	}
 }
 
+func b03ReplayStatuses(input b03NativeInput) [4]string {
+	if input.Catalog.Status == "" {
+		return [4]string{"in_progress", "done", "todo", "backlog"}
+	}
+	return [4]string{"qa_testing", "archived", "awaiting_review", "on_hold"}
+}
+
 func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Store, input b03NativeInput, rootID string, imported ontology.Document, original pipeline.Document) map[string]any {
 	t.Helper()
+	typ := input.Catalog.Type
+	if input.Catalog.Status == "" {
+		typ = "issue"
+	}
+	slots := b03ReplayStatuses(input)
 	// The first public adoption uses exactly the production migration document
 	// from this archive. Slot edits below are a separate public catalog action,
 	// never an assertion about what the native producer's slots implemented.
-	applyB03ReplayCatalog(t, rpc, imported)
-	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
-	if !equalB03JSON(original, adopted) {
-		t.Fatal("public adoption changed the pre-bootstrap imported native document")
+	// The raw imported image stays intact. Public adoption deliberately adds
+	// the core template default; no other document change is permitted.
+	encodedOriginal, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
 	}
+	expectedAdopted, err := pipeline.DecodeDocument(encodedOriginal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := expectedAdopted.Fields["template"]; present {
+		t.Fatal("native fixture must independently exercise the missing template default")
+	}
+	expectedAdopted.Fields["template"] = false
+	plan := applyB03ReplayCatalog(t, rpc, imported)
+	migration := plan.Changes.Migration
+	if migration.Affected != 1 || len(migration.Rows) != 1 || migration.Rows[0].Before.State.ID != rootID || !equalB03JSON(migration.Rows[0].Defaults, []string{"template"}) {
+		t.Fatalf("public adoption must plan exactly one template default: %+v", migration)
+	}
+	adopted := b03ReplayPublicRoot(t, rpc, store, rootID, typ, "todo")
+	if !equalB03JSON(expectedAdopted, adopted) {
+		t.Fatal("public adoption changed more than the exact template default")
+	}
+	assertB03ImportedConservation(t, original, adopted)
+	writeB03JSON(t, filepath.Join(rpc.root, "expected-adopted-root.json"), expectedAdopted)
 	b03ReplayReady(t, rpc, rootID, true)
 	docBytes, err := json.Marshal(imported)
 	if err != nil {
@@ -1272,14 +1418,14 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	if err != nil {
 		t.Fatal(err)
 	}
-	workflowKey := doc.Types[input.Catalog.Type].Workflow
+	workflowKey := doc.Types[typ].Workflow
 	workflow := doc.Workflows[workflowKey]
-	workflow.Initial = "awaiting_review"
-	workflow.Slots[ontology.Claim], workflow.Slots[ontology.Close], workflow.Slots[ontology.Reopen], workflow.Slots[ontology.Defer] = "qa_testing", "archived", "awaiting_review", "on_hold"
+	workflow.Initial = slots[2]
+	workflow.Slots[ontology.Claim], workflow.Slots[ontology.Close], workflow.Slots[ontology.Reopen], workflow.Slots[ontology.Defer] = slots[0], slots[1], slots[2], slots[3]
 	doc.Workflows[workflowKey] = workflow
 	applyB03ReplayCatalog(t, rpc, doc)
-	initial := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
-	if !equalB03JSON(original, initial) {
+	initial := b03ReplayPublicRoot(t, rpc, store, rootID, typ, "todo")
+	if !equalB03JSON(expectedAdopted, initial) {
 		t.Fatal("public slot adoption changed the original imported native document")
 	}
 	if initial.CreatedAt == nil || initial.CreatedAt.IsZero() || initial.StartedAt != nil || initial.ClosedAt != nil {
@@ -1287,20 +1433,20 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	}
 	ref := model.Ref{ID: rootID}
 	rpc.call("bead.claim", map[string]any{"id": ref}, "")
-	claimed := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "qa_testing")
+	claimed := b03ReplayPublicRoot(t, rpc, store, rootID, typ, slots[0])
 	if claimed.StartedAt == nil || claimed.StartedAt.IsZero() || claimed.ClosedAt != nil || claimed.CreatedAt == nil || !claimed.CreatedAt.Equal(*initial.CreatedAt) {
 		t.Fatalf("native root claim timestamps: %+v", claimed)
 	}
 	startedAt := *claimed.StartedAt
 	b03ReplayReady(t, rpc, rootID, false)
 	rpc.call("bead.close", map[string]any{"id": ref, "reason": "native catalog replay close"}, "")
-	closed := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "archived")
+	closed := b03ReplayPublicRoot(t, rpc, store, rootID, typ, slots[1])
 	if closed.ClosedAt == nil || closed.ClosedAt.IsZero() || closed.StartedAt == nil || !closed.StartedAt.Equal(startedAt) {
 		t.Fatalf("native root close timestamps: %+v", closed)
 	}
 	closedAt := *closed.ClosedAt
 	rpc.call("bead.close", map[string]any{"id": ref, "reason": "native catalog repeated close"}, "")
-	repeated := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "archived")
+	repeated := b03ReplayPublicRoot(t, rpc, store, rootID, typ, slots[1])
 	if repeated.ClosedAt == nil || !repeated.ClosedAt.Equal(closedAt) {
 		t.Fatal("native root repeated close changed its first terminal timestamp")
 	}
@@ -1310,28 +1456,28 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	rpc.call("bead.claim", map[string]any{"id": ref}, "invalid_params")
 	rpc.call("ontology.plan", map[string]any{"document": json.RawMessage(`{"statuses":{"broken":{"name":"broken","category":"unsupported"}}}`)}, "invalid_params")
 	rpc.call("ontology.plan", map[string]any{"document": json.RawMessage(`{"map_status":[{"from":"broken","to":"todo"}]}`)}, "invalid_params")
-	if !equalB03JSON(beforeRefusals, b03ReplaySnapshot(t, store, rpc.project, refusalScopes)) {
+	if !equalB03ReplayState(beforeRefusals, b03ReplaySnapshot(t, store, rpc.project, refusalScopes)) {
 		t.Fatal("closed claim/malformed/unsupported catalog refusal changed durable state")
 	}
 	writeB03JSON(t, filepath.Join(rpc.root, "closed-catalog-refusal-conserved.json"), beforeRefusals)
 	rpc.call("bead.reopen", map[string]any{"id": ref, "reason": "native catalog replay reopen"}, "")
-	reopened := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	reopened := b03ReplayPublicRoot(t, rpc, store, rootID, typ, slots[2])
 	if reopened.ClosedAt != nil || reopened.StartedAt == nil || !reopened.StartedAt.Equal(startedAt) || reopened.CreatedAt == nil || !reopened.CreatedAt.Equal(*initial.CreatedAt) {
 		t.Fatalf("native root reopen timestamps: %+v", reopened)
 	}
 	b03ReplayReady(t, rpc, rootID, true)
 	rpc.call("bead.defer", map[string]any{"id": ref}, "")
-	frozen := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "on_hold")
+	frozen := b03ReplayPublicRoot(t, rpc, store, rootID, typ, slots[3])
 	b03ReplayReady(t, rpc, rootID, false)
 	frozenRefusalScopes := b03RefusalScopes(rpc, "bead.claim")
 	beforeFrozenRefusal := b03ReplaySnapshot(t, store, rpc.project, frozenRefusalScopes)
 	rpc.call("bead.claim", map[string]any{"id": ref}, "invalid_params")
-	if !equalB03JSON(beforeFrozenRefusal, b03ReplaySnapshot(t, store, rpc.project, frozenRefusalScopes)) {
+	if !equalB03ReplayState(beforeFrozenRefusal, b03ReplaySnapshot(t, store, rpc.project, frozenRefusalScopes)) {
 		t.Fatal("frozen claim refusal changed durable state")
 	}
 	writeB03JSON(t, filepath.Join(rpc.root, "frozen-refusal-conserved.json"), beforeFrozenRefusal)
 	rpc.call("bead.reopen", map[string]any{"id": ref, "reason": "native catalog replay final reopen"}, "")
-	final := b03ReplayPublicRoot(t, rpc, store, rootID, input.Catalog.Type, "awaiting_review")
+	final := b03ReplayPublicRoot(t, rpc, store, rootID, typ, slots[2])
 	b03ReplayReady(t, rpc, rootID, true)
 	if final.ClosedAt != nil || final.StartedAt == nil || !final.StartedAt.Equal(startedAt) || final.CreatedAt == nil || !final.CreatedAt.Equal(*initial.CreatedAt) {
 		t.Fatal("final reopen lost the imported creation/started instants")
@@ -1345,7 +1491,7 @@ func exerciseB03ReplayRuntime(t *testing.T, rpc *b03ReplayRPC, store driver.Stor
 	// instants. The actual semantic field images are compared across all twelve
 	// replays; exact provenance and timestamps remain in raw/state receipts and
 	// are conserved within each replay above and through durable reopen.
-	return map[string]any{"root": "$ROOT", "project": "$PROJECT", "type": input.Catalog.Type, "document": doc, "archive_document_sha256": b03Hash(docBytes), "images": images, "ready": []bool{true, false, false, true, false, true}, "claim_refusal_code": "invalid_params", "malformed_catalog_code": "invalid_params", "unsupported_catalog_code": "invalid_params", "created_time_preserved": true, "started_time_preserved": true, "first_close_preserved": true, "reopen_clears_close": true, "imported_metadata_conserved": true}
+	return map[string]any{"root": "$ROOT", "project": "$PROJECT", "type": typ, "document": doc, "archive_document_sha256": b03Hash(docBytes), "images": images, "ready": []bool{true, false, false, true, false, true}, "claim_refusal_code": "invalid_params", "malformed_catalog_code": "invalid_params", "unsupported_catalog_code": "invalid_params", "created_time_preserved": true, "started_time_preserved": true, "first_close_preserved": true, "reopen_clears_close": true, "imported_metadata_conserved": true}
 }
 
 // Bind the pre-bootstrap imported image to the actual validated archive row.
@@ -1438,6 +1584,91 @@ type b03ReplayState struct {
 	Allocator    *driver.OfflineAllocator
 	Receipts     map[string]*driver.IdempotencyRecord
 	ByKey        map[string]*model.Changeset
+}
+
+// b03ReplayChangesetJSON preserves the durable changeset shape while allowing
+// the driver's documented zero-value changeset for a CommitNoop receipt to be
+// written as JSON. A non-empty kind still goes through ChangesetKind.Validate,
+// so an unknown kind remains a hard fixture failure.
+type b03ReplayChangesetJSON struct {
+	Revision       model.Revision          `json:"revision"`
+	Branch         model.Branch            `json:"branch"`
+	Incarnation    string                  `json:"incarnation"`
+	Kind           string                  `json:"kind"`
+	Time           time.Time               `json:"time"`
+	Principal      model.PrincipalRef      `json:"principal"`
+	Chain          []string                `json:"chain"`
+	IdempotencyKey string                  `json:"idempotencyKey,omitempty"`
+	Mutators       []string                `json:"mutators,omitempty"`
+	Changes        []model.ChangeRecord    `json:"changes"`
+	Events         []model.EventDescriptor `json:"events,omitempty"`
+}
+
+type b03ReplayReceiptJSON struct {
+	RequestHash     string                  `json:"RequestHash"`
+	Commit          model.Commit            `json:"Commit"`
+	Changeset       *b03ReplayChangesetJSON `json:"Changeset,omitempty"`
+	ResponsePending bool                    `json:"ResponsePending"`
+}
+
+type b03ReplayStateJSON struct {
+	Meta         driver.Meta                                 `json:"Meta"`
+	Records      []driver.Record                             `json:"Records"`
+	Versions     map[string][]driver.Version                 `json:"Versions"`
+	Log          []model.Changeset                           `json:"Log"`
+	Derived      map[driver.DerivedTable][]driver.DerivedRow `json:"Derived"`
+	Observations []driver.LockState                          `json:"Observations"`
+	Allocator    *driver.OfflineAllocator                    `json:"Allocator"`
+	Receipts     map[string]*b03ReplayReceiptJSON            `json:"Receipts"`
+	ByKey        map[string]*b03ReplayChangesetJSON          `json:"ByKey"`
+}
+
+func b03ReplayChangesetJSONValue(changeset model.Changeset) (*b03ReplayChangesetJSON, error) {
+	if changeset.Kind == "" {
+		// CommitNoop deliberately stores no Changeset; its Commit carries the
+		// authoritative unchanged revision. A non-zero value here would be a
+		// malformed fixture observation, not a wire changeset to encode.
+		if !changeset.Revision.IsZero() || len(changeset.Changes) != 0 || len(changeset.Events) != 0 {
+			return nil, fmt.Errorf("empty changeset kind is not a no-op")
+		}
+		return nil, nil
+	} else if err := changeset.Kind.Validate(); err != nil {
+		return nil, err
+	}
+	return &b03ReplayChangesetJSON{
+		Revision: changeset.Revision, Branch: changeset.Branch, Incarnation: changeset.Incarnation,
+		Kind: string(changeset.Kind), Time: changeset.Time, Principal: changeset.Principal,
+		Chain: changeset.Chain, IdempotencyKey: changeset.IdempotencyKey, Mutators: changeset.Mutators,
+		Changes: changeset.Changes, Events: changeset.Events,
+	}, nil
+}
+
+func (state b03ReplayState) MarshalJSON() ([]byte, error) {
+	receipts := make(map[string]*b03ReplayReceiptJSON, len(state.Receipts))
+	for key, receipt := range state.Receipts {
+		if receipt == nil {
+			receipts[key] = nil
+			continue
+		}
+		changeset, err := b03ReplayChangesetJSONValue(receipt.Changeset)
+		if err != nil {
+			return nil, fmt.Errorf("receipt %s changeset: %w", key, err)
+		}
+		receipts[key] = &b03ReplayReceiptJSON{RequestHash: receipt.RequestHash, Commit: receipt.Commit, Changeset: changeset, ResponsePending: receipt.ResponsePending}
+	}
+	byKey := make(map[string]*b03ReplayChangesetJSON, len(state.ByKey))
+	for key, changeset := range state.ByKey {
+		if changeset == nil {
+			byKey[key] = nil
+			continue
+		}
+		encoded, err := b03ReplayChangesetJSONValue(*changeset)
+		if err != nil {
+			return nil, fmt.Errorf("changeset %s: %w", key, err)
+		}
+		byKey[key] = encoded
+	}
+	return json.Marshal(b03ReplayStateJSON{Meta: state.Meta, Records: state.Records, Versions: state.Versions, Log: state.Log, Derived: state.Derived, Observations: state.Observations, Allocator: state.Allocator, Receipts: receipts, ByKey: byKey})
 }
 
 // b03ReplaySnapshot observes one pinned durable image. Limits are assertions:
@@ -1560,7 +1791,14 @@ func b03ReplaySnapshot(t *testing.T, store driver.Store, project string, calls [
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Log, err = r.Changesets(ctx, nil, 10000)
+	var changesCursor *driver.Cursor
+	if !s.Meta.HistoryFloor.IsZero() {
+		// A restored native image begins at its authenticated history floor.
+		// Reading from nil asks for the discarded prefix and correctly returns
+		// history-is-truncated; begin the census at the retained floor instead.
+		changesCursor = &driver.Cursor{Incarnation: s.Meta.Incarnation, Revision: s.Meta.HistoryFloor, Method: "changesets"}
+	}
+	s.Log, err = r.Changesets(ctx, changesCursor, 10000)
 	if err != nil || len(s.Log) >= 10000 {
 		t.Fatalf("incomplete replay changeset inventory: %v", err)
 	}
@@ -1691,6 +1929,14 @@ func equalB03JSON(left, right any) bool {
 	}
 	b, err := json.Marshal(right)
 	return err == nil && bytes.Equal(a, b)
+}
+
+// Replay snapshots contain typed model changesets, including valid no-op
+// receipts whose zero Changeset.Kind cannot be JSON-marshaled. Compare the
+// durable image structurally so the refusal/reopen assertions do not reject
+// an otherwise identical snapshot because of that representation detail.
+func equalB03ReplayState(left, right b03ReplayState) bool {
+	return reflect.DeepEqual(left, right)
 }
 
 func b03OutputRoot(t *testing.T) string {
