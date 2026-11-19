@@ -1,4 +1,10 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("//internal/server/pluginbuild:test_sdk.bzl", "test_go_sdk")
+
+test_go_sdk(
+    name = "test_go_sdk",
+    testonly = True,
+)
 
 go_test(
     name = "acceptance",
@@ -151,17 +157,19 @@ go_test(
     name = "native_b23_count_test",
     size = "large",
     srcs = _NATIVE_ACCEPTANCE_SRCS + ["native_count_matrix_test.go"],
-    args = ["-test.v", "-test.run=^TestNativeB23CountMatrix$$"],
+    args = ["-test.v", "-test.run=^TestNativeB23CountMatrix$$", "-native_recording=recording1"],
     data = [
         "native_testdata/profile.json",
         "native_testdata/protocol.json",
         "//internal/publicnative:dolt_runtime",
+        ":test_go_sdk",
     ],
     env = {
         "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+        "PLUG_TEST_GO_BINARY": "$(rlocationpath :test_go_sdk)",
     },
-    tags = ["local", "manual", "requires-network"],
-    timeout = "long",
+    tags = ["exclusive", "local", "manual", "requires-network"],
+    timeout = "eternal",
     deps = _NATIVE_ACCEPTANCE_DEPS,
 )
 

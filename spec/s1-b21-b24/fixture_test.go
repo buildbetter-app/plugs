@@ -44,9 +44,11 @@ type frame struct {
 }
 
 type rpcError struct {
-	Data struct {
+	Message string `json:"message"`
+	Data    struct {
 		Code      string         `json:"code"`
 		Retryable bool           `json:"retryable"`
+		Hint      string         `json:"hint"`
 		Details   map[string]any `json:"details"`
 	} `json:"data"`
 }

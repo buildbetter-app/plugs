@@ -207,8 +207,25 @@ func nativeWriteRecordingBytes(t *testing.T, path string, data []byte) {
 	}
 }
 
+func nativeUseBazelGoSDK(t *testing.T) {
+	t.Helper()
+	binary := os.Getenv("PLUG_TEST_GO_BINARY")
+	if binary == "" {
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Join(os.Getenv("TEST_SRCDIR"), filepath.FromSlash(binary)))
+	if err != nil {
+		t.Fatalf("resolve Bazel Go SDK: %v", err)
+	}
+	root := filepath.Dir(filepath.Dir(resolved))
+	t.Setenv("GOROOT", root)
+	t.Setenv("PATH", filepath.Join(root, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Logf("B23 tests use Bazel Go SDK: %s", root)
+}
+
 func nativeRecordBuildInfo(t *testing.T, root string, artifact nativePublicArtifact, profile nativeRecordingProfile) []byte {
 	t.Helper()
+	nativeUseBazelGoSDK(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	output, runErr := exec.CommandContext(ctx, "go", "version", "-m", artifact.Binary).CombinedOutput()

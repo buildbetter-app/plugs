@@ -8,6 +8,7 @@ go_library(
         "//internal:__subpackages__",
         "//spec/cardb16:__pkg__",
         "//spec/cardb23full:__pkg__",
+        "//spec/cardb23query:__pkg__",
         "//spec/cardb24:__pkg__",
         "//spec/s1-b21-b24:__pkg__",
     ],

@@ -66,7 +66,13 @@ type MemoryService interface {
 	Brief(context.Context, model.PrincipalRef, service.BriefRequest) (service.BriefResult, error)
 }
 
+// ReadyCounter is additive so older service wrappers keep their inventory.
+type ReadyCounter interface {
+	ReadyCount(context.Context, model.PrincipalRef, service.ReadyRequest) (service.ReadyCount, error)
+}
+
 type serviceParams struct {
+	CountOnly    bool                           `json:"countOnly"`
 	TargetKind   model.LinkTargetKind           `json:"targetKind"`
 	ID           json.RawMessage                `json:"id"`
 	Ref          model.Ref                      `json:"ref"`
@@ -156,7 +162,7 @@ func (p *filter) domain() *service.Filter {
 	if p == nil {
 		return nil
 	}
-	return &service.Filter{Parent: p.Parent, Priority: p.Priority, Query: p.Query, Resources: p.Resources, Types: p.Types, Labels:p.Labels, LabelsAny:p.LabelsAny, ExcludeLabels:p.ExcludeLabels, Unassigned:p.Unassigned, ExcludeTypes:p.ExcludeTypes, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
+	return &service.Filter{Parent: p.Parent, Priority: p.Priority, Query: p.Query, Resources: p.Resources, Types: p.Types, Labels: p.Labels, LabelsAny: p.LabelsAny, ExcludeLabels: p.ExcludeLabels, Unassigned: p.Unassigned, ExcludeTypes: p.ExcludeTypes, Events: p.Events, ViewID: p.ViewID, IncludeEphemeral: p.IncludeEphemeral}
 }
 
 func (p serviceParams) refID() (model.Ref, error) {
@@ -299,6 +305,24 @@ func dispatchService(ctx context.Context, svc Service, c Call) (any, error) {
 		}
 		return dispatchBlocked(ctx, blocked, c, p, int(limit))
 	case "bead.ready":
+		if p.CountOnly {
+			var supplied map[string]json.RawMessage
+			if err := json.Unmarshal(c.Params, &supplied); err != nil {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params"}}
+			}
+			if _, ok := supplied["cursor"]; ok {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "countOnly cannot be combined with a cursor"}}
+			}
+			counter, ok := svc.(ReadyCounter)
+			if !ok {
+				return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: "ready count is unavailable"}}
+			}
+			result, err := counter.ReadyCount(ctx, c.Principal, service.ReadyRequest{Project: c.Meta.Project, Agent: c.Meta.Agent, ViewID: p.ViewID, Filter: p.Filter.domain(), Limit: int(limit)})
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"items": []any{}, "asOf": asOf{result.AsOf.Revision, result.AsOf.Incarnation}, "count": result.Count}, nil
+		}
 		position, err := c.paging.decode(c, p)
 		if err != nil {
 			return nil, err

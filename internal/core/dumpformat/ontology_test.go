@@ -39,6 +39,39 @@ func TestReadExplicitSourceTypeDirective(t *testing.T) {
 	}
 }
 
+func TestLegacyGateReaderStillRequiresExplicitDirective(t *testing.T) {
+	for _, test := range []struct {
+		name, targetType string
+		explicit, refuse bool
+	}{
+		{name: "explicit-to-issue", targetType: "issue", explicit: true},
+		{name: "missing-directive", targetType: "issue", refuse: true},
+		{name: "literal-without-catalog", targetType: "gate", refuse: true},
+		{name: "literal-despite-directive", targetType: "gate", explicit: true, refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := decisionFixture(t)
+			record := &f.records["bead"][0]
+			record.Source.Fields["issue_type"] = "gate"
+			record.Body["source_type"], record.Body["type"] = "gate", test.targetType
+			f.manifest.Ontology[0].Target.Type, f.manifest.Ontology[0].From = "gate", "gate"
+			if !test.explicit {
+				f.manifest.Ontology = nil
+			}
+			archive, err := Read(bytes.NewReader(f.bytes(t, nil)))
+			if test.refuse {
+				if err == nil {
+					t.Fatal("legacy type refusal was bypassed")
+				}
+				return
+			}
+			if err != nil || !equalJSON(archive.Records("bead")[0], *record) {
+				t.Fatal("explicit legacy mapping or original cells changed", err)
+			}
+		})
+	}
+}
+
 func TestReadOldAndNewBuiltInOntologyDeclarations(t *testing.T) {
 	for _, declaration := range []string{verificationLimits["ontology"], explicitOntologyVerification} {
 		f := newMergeFixture(t, "pl")
