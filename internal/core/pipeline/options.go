@@ -137,10 +137,11 @@ func WithReverseConverter(converter *reverseconverter.Converter) Option {
 func WithObserver(observer Observer) Option { return func(c *config) { c.observer = observer } }
 
 type Writer struct {
-	store driver.Store
-	lease driver.ActiveLease
-	cfg   config
-	err   error
+	population populationCache
+	store      driver.Store
+	lease      driver.ActiveLease
+	cfg        config
+	err        error
 }
 
 var _ model.Writer = (*Writer)(nil)

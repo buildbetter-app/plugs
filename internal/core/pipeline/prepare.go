@@ -59,9 +59,10 @@ func memoryMethod(method string) bool {
 }
 
 type prepared struct {
-	snapshot *snapshotReader
-	writes   map[string]*pending
-	proposal port.ProposedChange
+	population *populationCache
+	snapshot   *snapshotReader
+	writes     map[string]*pending
+	proposal   port.ProposedChange
 	// Ordered images are private core input for typed close guard validation.
 	ordered []port.Change
 	closes  map[string]bool
@@ -190,7 +191,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 	if _, err := snapshot.observe(ctx, []driver.LockKey{driver.OntologySentinelLock, driver.PluginsSentinelLock}); err != nil {
 		return nil, err
 	}
-	p := &prepared{snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}, allocatorCounts: map[string]uint64{}, maxHierarchyDepth: w.cfg.hierarchyMaxDepth}
+	p := &prepared{population: &w.population, snapshot: snapshot, writes: map[string]*pending{}, release: release, proposal: port.ProposedChange{RequestID: meta.IdempotencyKey, Principal: by, BaseRevision: *reader.Snapshot().At, DryRun: meta.DryRun, Meta: meta, Changes: []port.Change{}}, warnings: []model.Warning{}, allocatorCursors: map[string]uint64{}, allocatorSeen: map[string]bool{}, allocatorCounts: map[string]uint64{}, maxHierarchyDepth: w.cfg.hierarchyMaxDepth}
 	aliases := map[string]model.Ref{}
 	for _, op := range cs.Ops {
 		if op.Kind == model.OpClose {
@@ -1240,14 +1241,11 @@ func (p *prepared) nextAllocatorID(ctx context.Context, project string, input dr
 		}
 		return id, project, id, nil, nil
 	case driver.AllocatorHash:
-		count, occupied, _, err := p.allocatorObservations(ctx, project, "")
+		count, err := p.hashPopulation(ctx, project)
 		if err != nil {
 			return "", "", "", nil, err
 		}
 		id, err := state.MintHashID(input, count, func(candidate string) (bool, error) {
-			if occupied[candidate] {
-				return true, nil
-			}
 			for _, pending := range p.writes {
 				if !pending.deleted && pending.ref.ID == candidate {
 					return true, nil

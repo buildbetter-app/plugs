@@ -749,6 +749,7 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	if entry.Revision.String() != revision.String() {
 		return model.Commit{}, driver.ErrIndeterminate{IdempotencyKey: meta.IdempotencyKey}
 	}
+	w.advancePopulation(p, head, entry.Revision)
 	return commit, nil
 }
 

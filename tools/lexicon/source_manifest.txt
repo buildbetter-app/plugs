@@ -345,8 +345,10 @@ internal/core/ontologyops/service_test.go
 internal/core/ontologyops/source.go
 internal/core/ontologyops/types.go
 internal/core/pipeline/BUILD.bazel
+internal/core/pipeline/allocator_population.go
 internal/core/pipeline/allocator_reservations.go
 internal/core/pipeline/allocator_reservations_test.go
+internal/core/pipeline/allocator_scaling_test.go
 internal/core/pipeline/allocator_test.go
 internal/core/pipeline/ancestor.go
 internal/core/pipeline/apply.go
@@ -1340,6 +1342,7 @@ internal/storage/conformance/responses.go
 internal/storage/conformance/selection.go
 internal/storage/conformance/sourceactivation/BUILD.bazel
 internal/storage/conformance/sourceactivation/activation.go
+internal/storage/conformance/sourceactivation/allocator_cache.go
 internal/storage/conformance/sourceactivation/independent.go
 internal/storage/conformance/sourceactivation/native.go
 internal/storage/conformance/sourceactivation/upgrade.go
@@ -1427,6 +1430,7 @@ internal/storage/historyverify/native_test.go
 internal/storage/historyverify/planner_dependency_test.go
 internal/storage/memory/BUILD.bazel
 internal/storage/memory/allocator.go
+internal/storage/memory/allocator_cache_test.go
 internal/storage/memory/allocator_snapshot.go
 internal/storage/memory/allocator_snapshot_test.go
 internal/storage/memory/audit_test.go
@@ -1490,6 +1494,7 @@ internal/storage/physicalrestore/undo_test.go
 internal/storage/postgres/BUILD.bazel
 internal/storage/postgres/README.md
 internal/storage/postgres/allocator.go
+internal/storage/postgres/allocator_cache_test.go
 internal/storage/postgres/allocator_snapshot.go
 internal/storage/postgres/allocator_test.go
 internal/storage/postgres/b05_expired_renew_test.go
@@ -1551,6 +1556,7 @@ internal/storage/sourceindex/source.go
 internal/storage/sqlite/BUILD.bazel
 internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
+internal/storage/sqlite/allocator_cache_test.go
 internal/storage/sqlite/allocator_snapshot.go
 internal/storage/sqlite/b05_persisted_clock_test.go
 internal/storage/sqlite/boundaries_test.go

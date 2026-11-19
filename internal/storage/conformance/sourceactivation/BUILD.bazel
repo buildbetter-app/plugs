@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library")
 go_library(
     name = "sourceactivation",
     testonly = True,
-    srcs = ["activation.go", "independent.go", "native.go", "upgrade.go"],
+    srcs = ["allocator_cache.go", "activation.go", "independent.go", "native.go", "upgrade.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/storage/conformance/sourceactivation",
     visibility = ["//internal/storage:__subpackages__"],
     deps = [
