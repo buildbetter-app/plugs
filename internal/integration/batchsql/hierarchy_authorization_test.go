@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,6 +19,44 @@ import (
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type hierarchyNamedReply struct {
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
+		Data    model.ErrorData `json:"data"`
+		Message string          `json:"message"`
+	} `json:"error"`
+	Meta struct {
+		Replayed bool `json:"replayed"`
+	} `json:"_meta"`
+}
+
+func hierarchyNamedSummary(reply hierarchyNamedReply) string {
+	if reply.Error == nil {
+		return fmt.Sprintf("result=%s replay=%t error=<nil>", reply.Result, reply.Meta.Replayed)
+	}
+	return fmt.Sprintf("result=%s replay=%t error={code=%q message=%q retryable=%t}", reply.Result, reply.Meta.Replayed, reply.Error.Data.Code, reply.Error.Message, reply.Error.Data.Retryable)
+}
+
+func TestRPCResponseDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"success", `{"result":{"id":"bead"},"_meta":{"replayed":true}}`, `result={"id":"bead"} replay=true error=<nil>`},
+		{"retryable", `{"error":{"message":"authorization unavailable","data":{"code":"authz_unavailable","retryable":true}},"_meta":{"replayed":false}}`, `result= replay=false error={code="authz_unavailable" message="authorization unavailable" retryable=true}`},
+		{"refusal", `{"error":{"message":"denied","data":{"code":"forbidden","retryable":false}}}`, `result= replay=false error={code="forbidden" message="denied" retryable=false}`},
+	} {
+		var reply hierarchyNamedReply
+		if err := json.Unmarshal([]byte(tc.raw), &reply); err != nil {
+			t.Fatalf("%s decode: %v", tc.name, err)
+		}
+		if got := hierarchyNamedSummary(reply); got != tc.want {
+			t.Errorf("%s diagnostics=%q want=%q", tc.name, got, tc.want)
+		}
+	}
+}
 
 // Exercise the real EP2 checker on EP3's complete ordered Writer proposal and
 // persisted graph, rather than constructing proposed images in a policy test.
@@ -93,16 +132,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			type namedReply struct {
-				Result json.RawMessage `json:"result"`
-				Error  *struct {
-					Data model.ErrorData `json:"data"`
-				} `json:"error"`
-				Meta struct {
-					Replayed bool `json:"replayed"`
-				} `json:"_meta"`
-			}
-			namedCreate := func(app *authzrpc.Composition, destination model.Ref, key string) namedReply {
+			namedCreate := func(app *authzrpc.Composition, destination model.Ref, key string) hierarchyNamedReply {
 				t.Helper()
 				body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "bead.create", "params": map[string]any{
 					"type": "issue", "fields": map[string]any{"title": "named child"}, "parent": destination,
@@ -118,7 +148,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				req.Header.Set("Authorization", "Bearer "+issued.Token)
 				recorder := httptest.NewRecorder()
 				app.Handler.ServeHTTP(recorder, req)
-				var reply namedReply
+				var reply hierarchyNamedReply
 				if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &reply) != nil {
 					t.Fatalf("named create HTTP response: %d %s", recorder.Code, recorder.Body.Bytes())
 				}
@@ -132,7 +162,7 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 				before, rows, predicates := f.state(t), hierarchyRows(t, f), hierarchyFacts(t, f)
 				reply := namedCreate(app, destination, key)
 				if reply.Error == nil || reply.Error.Data.Code != code {
-					t.Fatalf("named create refusal: %+v, want %s", reply, code)
+					t.Fatalf("named create refusal: %s, want %s", hierarchyNamedSummary(reply), code)
 				}
 				requireSameState(t, before, f.state(t))
 				if !reflect.DeepEqual(rows, hierarchyRows(t, f)) || !reflect.DeepEqual(predicates, hierarchyFacts(t, f)) {
@@ -148,14 +178,14 @@ func TestHierarchyFixedAuthorizationAtWriterAcrossStores(t *testing.T) {
 			named := namedCreate(namedApp, parent, namedMeta.IdempotencyKey)
 			var namedCommit model.Commit
 			if named.Error != nil || json.Unmarshal(named.Result, &namedCommit) != nil || len(namedCommit.Results) != 1 {
-				t.Fatalf("authorized named parent create: %+v", named)
+				t.Fatalf("authorized named parent create: %s", hierarchyNamedSummary(named))
 			}
 			namedDoc := decodeDocument(t, f.state(t).Records[namedCommit.Results[0].Ref.ID])
 			if namedDoc.Project != "child-project" || namedDoc.Parent == nil || namedDoc.Parent.ID != parent.ID {
 				t.Fatalf("named create lost parent or child ownership: %+v", namedDoc)
 			}
 			if replay := namedCreate(namedApp, parent, namedMeta.IdempotencyKey); replay.Error != nil || !replay.Meta.Replayed || !bytes.Equal(replay.Result, named.Result) {
-				t.Fatalf("named parent create replay differs: %+v", replay)
+				t.Fatalf("named parent create replay differs: %s", hierarchyNamedSummary(replay))
 			}
 			verifyHierarchy(t, f)
 			batch := model.ChangeSet{Ops: []model.Op{

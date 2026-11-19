@@ -41,11 +41,39 @@ func worker() model.PrincipalRef {
 type response struct {
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Data model.ErrorData `json:"data"`
+		Data    model.ErrorData `json:"data"`
+		Message string          `json:"message"`
 	} `json:"error"`
 	Meta struct {
 		Replayed bool `json:"replayed"`
 	} `json:"_meta"`
+}
+
+func responseSummary(reply response) string {
+	if reply.Error == nil {
+		return fmt.Sprintf("result=%s replay=%t error=<nil>", reply.Result, reply.Meta.Replayed)
+	}
+	return fmt.Sprintf("result=%s replay=%t error={code=%q message=%q retryable=%t}", reply.Result, reply.Meta.Replayed, reply.Error.Data.Code, reply.Error.Message, reply.Error.Data.Retryable)
+}
+
+func TestRPCResponseDiagnostics(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"success", `{"result":{"id":"bead"},"_meta":{"replayed":true}}`, `result={"id":"bead"} replay=true error=<nil>`},
+		{"retryable", `{"error":{"message":"authorization unavailable","data":{"code":"authz_unavailable","retryable":true}},"_meta":{"replayed":false}}`, `result= replay=false error={code="authz_unavailable" message="authorization unavailable" retryable=true}`},
+		{"refusal", `{"error":{"message":"denied","data":{"code":"forbidden","retryable":false}}}`, `result= replay=false error={code="forbidden" message="denied" retryable=false}`},
+	} {
+		var reply response
+		if err := json.Unmarshal([]byte(tc.raw), &reply); err != nil {
+			t.Fatalf("%s decode: %v", tc.name, err)
+		}
+		if got := responseSummary(reply); got != tc.want {
+			t.Errorf("%s diagnostics=%q want=%q", tc.name, got, tc.want)
+		}
+	}
 }
 
 type host struct {
@@ -234,7 +262,7 @@ func (h *host) callToken(token, method string, params map[string]any, key string
 func accepted(t *testing.T, reply response, replay bool) model.Commit {
 	t.Helper()
 	if reply.Error != nil || reply.Meta.Replayed != replay || len(reply.Result) == 0 {
-		t.Fatalf("want accepted replay=%v: %+v", replay, reply)
+		t.Fatalf("want accepted replay=%v: %s", replay, responseSummary(reply))
 	}
 	var commit model.Commit
 	if err := json.Unmarshal(reply.Result, &commit); err != nil || len(commit.Results) != 1 {
@@ -246,7 +274,7 @@ func accepted(t *testing.T, reply response, replay bool) model.Commit {
 func refused(t *testing.T, reply response, code string) {
 	t.Helper()
 	if reply.Error == nil || reply.Error.Data.Code != model.ErrorCode(code) || len(reply.Result) != 0 || reply.Meta.Replayed {
-		t.Fatalf("want %s without result/replay: %+v", code, reply)
+		t.Fatalf("want %s without result/replay: %s", code, responseSummary(reply))
 	}
 }
 
@@ -364,7 +392,7 @@ func (h *host) fields(id, title string, template bool) {
 	by := model.PrincipalRef{Kind: "user", ID: "user:b14-reader"}
 	reply := h.call(by, "bead.get", map[string]any{"id": ref(id)}, "")
 	if reply.Error != nil {
-		h.t.Fatalf("public get refused: %+v", reply)
+		h.t.Fatalf("public get refused: %s", responseSummary(reply))
 	}
 	var result struct {
 		Bead struct {
@@ -384,7 +412,7 @@ func (h *host) ready(want ...string) {
 	h.t.Helper()
 	reply := h.call(model.PrincipalRef{Kind: "user", ID: "user:b14-reader"}, "bead.ready", map[string]any{"limit": 1000}, "")
 	if reply.Error != nil {
-		h.t.Fatalf("public readiness refused: %+v", reply)
+		h.t.Fatalf("public readiness refused: %s", responseSummary(reply))
 	}
 	var page struct {
 		Items []struct {
