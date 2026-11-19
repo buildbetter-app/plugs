@@ -263,6 +263,7 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "USER=public-native-b01",
 		"TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1",
 	})
+	server.RegisterBeadsCleanup(t, binary, workspace, env)
 	c := &nativeCommand{t: t, binary: binary, workspace: workspace, output: output, env: env}
 	var version struct{ Commit, Build string }
 	nativeDecode(t, c.run("version", "version", "--json"), &version)
@@ -437,9 +438,6 @@ func recordNativeVector(t *testing.T, binary, output string, inputs nativeInputs
 	checkNativeExclusionInventory(t, filepath.Join(output, "exclusions-inventory.json"), output)
 	if c.count != 433 {
 		t.Fatal("complete native hierarchy/category/type command set differs")
-	}
-	if err := server.Stop(); err != nil {
-		t.Fatalf("owned server shutdown: %v", err)
 	}
 	capture := nativeCapture{Vector: vector, Run: run, Before: before, After: after, Transitions: transitions, Membership: membership, Exclusions: exclusions, Output: output}
 	nativeJSON(t, filepath.Join(output, "observed-projection.json"), capture)

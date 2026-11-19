@@ -177,6 +177,7 @@ func b11NewNative(t *testing.T, binary, name string) *b11Native {
 	}
 	server := publicnative.StartDolt(t, root)
 	n := &b11Native{t: t, root: root, dir: dir, binary: binary, env: server.ChildEnv([]string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + home, "USER=b11-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B11 Public", "GIT_AUTHOR_EMAIL=b11@example.invalid", "GIT_COMMITTER_NAME=B11 Public", "GIT_COMMITTER_EMAIL=b11@example.invalid", "TMPDIR=" + tmp})}
+	server.RegisterBeadsCleanup(t, binary, dir, n.env)
 	n.binary = "/usr/bin/git"
 	n.command("git-init", false, "-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template=")
 	n.binary = binary

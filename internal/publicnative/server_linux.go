@@ -52,6 +52,201 @@ type Server struct {
 	configPath string
 	stopOnce   sync.Once
 	stopErr    error
+	proxyOnce  sync.Once
+	proxyErr   error
+	drainProxy func() error
+	reapDolt   func() error
+}
+
+// RegisterBeadsCleanup registers direct cleanup for a disposable external
+// Beads workspace. The cleanup is registered after
+// StartDolt, so it runs first (LIFO) and stops the Beads proxy/backend before
+// the owned Dolt server is reaped. The command and workspace are caller-owned
+// and are matched again in /proc to prove no proxy for this root survived.
+func (s *Server) RegisterBeadsCleanup(t testing.TB, binary, dir string, env []string) {
+	t.Helper()
+	_ = binary
+	_ = env
+	t.Cleanup(func() {
+		root := ""
+		for _, e := range env {
+			if strings.HasPrefix(e, "BEADS_DOLT_DATA_DIR=") {
+				root = strings.TrimPrefix(e, "BEADS_DOLT_DATA_DIR=")
+			}
+		}
+		if root == "" {
+			t.Errorf("BEADS_DOLT_DATA_DIR is required for proxy ownership")
+			return
+		}
+		pids, scanErr := beadsProxyPIDs(root)
+		if scanErr != nil {
+			t.Errorf("scanning Beads proxy processes for %s: %v", dir, scanErr)
+		}
+		for _, pid := range pids {
+			matches, err := beadsProxyPIDMatches(pid, root)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+					continue
+				}
+				t.Errorf("rechecking Beads proxy pid %d for %s: %v", pid, dir, err)
+				continue
+			}
+			if !matches {
+				continue
+			}
+			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Errorf("stopping Beads proxy pid %d for %s: %v", pid, root, err)
+			}
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			current, err := beadsProxyPIDs(root)
+			if err != nil {
+				t.Errorf("scanning Beads proxy processes for %s: %v", dir, err)
+				break
+			}
+			if len(current) == 0 {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		pids, scanErr = beadsProxyPIDs(root)
+		if scanErr != nil {
+			t.Errorf("final Beads proxy scan for %s: %v", dir, scanErr)
+		} else if len(pids) != 0 {
+			t.Errorf("Beads proxy survived direct termination for %s: pids=%v", dir, pids)
+		}
+	})
+}
+
+// RegisterDoltProxyCleanup covers external initializers that use StartDolt
+// without a site-specific registration; all such proxies use DataRoot.
+func (s *Server) RegisterDoltProxyCleanup(t testing.TB) {
+	t.Helper()
+	t.Cleanup(func() {
+		pids, err := beadsProxyPIDs(s.DataRoot)
+		if err != nil {
+			t.Errorf("scanning Beads proxy processes for %s: %v", s.DataRoot, err)
+			return
+		}
+		for _, pid := range pids {
+			match, err := beadsProxyPIDMatches(pid, s.DataRoot)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+					continue
+				}
+				t.Errorf("rechecking Beads proxy pid %d: %v", pid, err)
+				continue
+			}
+			if match {
+				if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+					t.Errorf("stopping Beads proxy pid %d: %v", pid, err)
+				}
+			}
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			current, err := beadsProxyPIDs(s.DataRoot)
+			if err != nil {
+				t.Errorf("scanning Beads proxy processes: %v", err)
+				return
+			}
+			if len(current) == 0 {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		current, err := beadsProxyPIDs(s.DataRoot)
+		if err != nil {
+			t.Errorf("final Beads proxy scan: %v", err)
+		} else if len(current) > 0 {
+			t.Errorf("Beads proxy survived direct termination: pids=%v", current)
+		}
+	})
+}
+
+func beadsProxyPIDs(root string) ([]int, error) { return beadsProxyPIDsIn("/proc", root) }
+
+func beadsProxyPIDsIn(procDir, root string) ([]int, error) {
+	entries, err := os.ReadDir(procDir)
+	if err != nil {
+		return nil, err
+	}
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join(procDir, entry.Name(), "cmdline"))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return nil, err
+		}
+		match, err := beadsProxyArgsMatchErr(string(cmdline), root)
+		if err != nil {
+			return nil, err
+		}
+		if match {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, nil
+}
+
+func beadsProxyArgsMatch(raw, root string) bool {
+	match, _ := beadsProxyArgsMatchErr(raw, root)
+	return match
+}
+
+func beadsProxyArgsMatchErr(raw, root string) (bool, error) {
+	root, err := canonicalRoot(root)
+	if err != nil {
+		return false, err
+	}
+	args := strings.Split(raw, "\x00")
+	if len(args) < 2 || args[1] != "db-proxy-child" {
+		return false, nil
+	}
+	for j := 0; j < len(args); j++ {
+		var value string
+		if args[j] == "--root" && j+1 < len(args) {
+			value = args[j+1]
+		} else if strings.HasPrefix(args[j], "--root=") {
+			value = strings.TrimPrefix(args[j], "--root=")
+		}
+		if value != "" {
+			candidate, err := canonicalRoot(value)
+			if err != nil {
+				return false, err
+			}
+			if candidate == root {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func beadsProxyPIDMatches(pid int, root string) (bool, error) {
+	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return false, err
+	}
+	return beadsProxyArgsMatchErr(string(b), root)
+}
+
+func canonicalRoot(root string) (string, error) {
+	clean := filepath.Clean(root)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if errors.Is(err, os.ErrNotExist) {
+		return clean, nil
+	} else {
+		return "", fmt.Errorf("resolving proxy root %q: %w", root, err)
+	}
 }
 
 // StartDolt starts exactly one pinned Dolt 2.2.0 process in a fresh 0700
@@ -70,6 +265,7 @@ func StartDolt(t testing.TB, evidenceDir string) *Server {
 		}
 		t.Logf("NATIVE_DOLT_CLEANUP receipt=%s pid=%d port=%d", s.receipt, s.PID, s.Port)
 	})
+	s.RegisterDoltProxyCleanup(t)
 	t.Logf("NATIVE_DOLT_READY receipt=%s pid=%d port=%d data_root=%s", s.receipt, s.PID, s.Port, s.DataRoot)
 	return s
 }
@@ -456,7 +652,18 @@ func (s *Server) retainFiles() error {
 // Stop terminates and reaps the owned process group. It is idempotent so a
 // consumer may stop explicitly and still retain the registered test cleanup.
 func (s *Server) Stop() error {
+	s.proxyOnce.Do(func() {
+		if s.drainProxy != nil {
+			s.proxyErr = s.drainProxy()
+		} else {
+			s.proxyErr = s.stopBeadsProxy()
+		}
+	})
 	s.stopOnce.Do(func() {
+		if s.reapDolt != nil {
+			s.stopErr = s.reapDolt()
+			return
+		}
 		if s.cmd == nil || s.done == nil {
 			return
 		}
@@ -504,5 +711,45 @@ func (s *Server) Stop() error {
 			"retained_log": s.logPath, "retained_config": s.configPath})
 		s.stopErr = errors.Join(removeErr, recordErr, s.logErr)
 	})
-	return s.stopErr
+	return errors.Join(s.proxyErr, s.stopErr)
+}
+
+func (s *Server) stopBeadsProxy() error {
+	pids, err := beadsProxyPIDs(s.DataRoot)
+	if err != nil {
+		return err
+	}
+	for _, pid := range pids {
+		match, err := beadsProxyPIDMatches(pid, s.DataRoot)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+				continue
+			}
+			return err
+		}
+		if match {
+			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+				return err
+			}
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		left, err := beadsProxyPIDs(s.DataRoot)
+		if err != nil {
+			return err
+		}
+		if len(left) == 0 {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	left, err := beadsProxyPIDs(s.DataRoot)
+	if err != nil {
+		return err
+	}
+	if len(left) > 0 {
+		return fmt.Errorf("Beads proxy survived direct termination: pids=%v", left)
+	}
+	return nil
 }

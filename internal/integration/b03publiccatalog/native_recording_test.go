@@ -162,6 +162,7 @@ func TestB03CanonicalNativeNonemptyCatalog(t *testing.T) {
 		}
 	}
 	w := b03NativeWorkspace{project, server.ChildEnv([]string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + home, "USER=b03-public", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B03 Public", "GIT_AUTHOR_EMAIL=b03@example.invalid", "GIT_COMMITTER_NAME=B03 Public", "GIT_COMMITTER_EMAIL=b03@example.invalid", "TMPDIR=" + tmp, "BEADS_ACTOR=b03-recorder", "BEADS_NO_DAEMON=1"})}
+	server.RegisterBeadsCleanup(t, binary, project, w.env)
 	r.b03Command(w, "b03-git-init", "/usr/bin/git", []string{"-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template="}, false)
 	version := r.b03Command(w, "b03-version", binary, []string{"version", "--json"}, false)
 	var identity struct{ Commit, Build string }
@@ -321,9 +322,6 @@ func TestB03CanonicalNativeNonemptyCatalog(t *testing.T) {
 	// Each call above is a fresh process against the actual owned Dolt root.
 	if !reflect.DeepEqual(r.b03Statuses(w, binary, "b03-final-catalog"), catalog) {
 		t.Fatal("lifecycle changed installed native catalog")
-	}
-	if err = server.Stop(); err != nil {
-		t.Fatal(err)
 	}
 	r.writeJSON(filepath.Join(root, "b03-native-outcomes.json"), map[string]any{"complete": !t.Failed(), "catalog": catalog, "initials": initials, "default_ready": ready, "default_custom_active_ready": readySet[primary], "lifecycle": trace, "configured_done_reopen": "open", "native_boundary": map[string]bool{"50_accepted": true, "51_rejected": true}, "scope": "ACTUAL_CANONICAL_PUBLIC_OPERATIONAL_NATIVE_NOT_OFFICIAL_ADMISSION", "claims": "EXCLUDED"})
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {

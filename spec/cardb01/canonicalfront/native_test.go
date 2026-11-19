@@ -235,6 +235,7 @@ func recordNativeFront(t *testing.T, r *nativeRecorder, server *publicnative.Ser
 	}
 	env := []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + home, "USER=b01-native", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B01 Public", "GIT_AUTHOR_EMAIL=b01@example.invalid", "GIT_COMMITTER_NAME=B01 Public", "GIT_COMMITTER_EMAIL=b01@example.invalid", "TMPDIR=" + filepath.Join(workspace, "tmp"), "BEADS_ACTOR=b01-recorder", "BEADS_NO_DAEMON=1"}
 	n := &nativeFront{r: r, dir: dir, binary: "/usr/bin/git", env: server.ChildEnv(env)}
+	server.RegisterBeadsCleanup(t, binary, dir, n.env)
 	n.command("git-init", "-c", "core.hooksPath=/dev/null", "init", "--quiet", "--template=")
 	n.binary = binary
 	version := n.command("version", "version", "--json")
@@ -391,9 +392,6 @@ func TestB01CanonicalNativeReadyAndPublicCounterparts(t *testing.T) {
 					}
 					twins[name][c.Name] = recordNativeFront(t, &nativeRecorder{t: t, root: dir, target: r.target}, server, binary, name, c, anchor)
 				})
-			}
-			if err := server.Stop(); err != nil {
-				t.Fatal(err)
 			}
 		})
 	}

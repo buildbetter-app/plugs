@@ -351,6 +351,7 @@ func b02Record(t *testing.T, binary, output string, inputs nativeInputs, plan b0
 		"PATH=" + filepath.Dir(server.DoltBinary) + ":/usr/bin:/bin", "HOME=" + home, "USERPROFILE=" + home,
 		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "USER=public-native-b02", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "GIT_CONFIG_NOSYSTEM=1",
 	})
+	server.RegisterBeadsCleanup(t, binary, workspace, env)
 	c := &nativeCommand{t: t, binary: binary, workspace: workspace, output: output, env: env}
 	t.Cleanup(func() { b02ExportStates(t, output, "cleanup") })
 	var version struct{ Commit, Build string }
@@ -473,9 +474,6 @@ func b02Record(t *testing.T, binary, output string, inputs nativeInputs, plan b0
 	}
 	b02Export(t, c, "final", false, plan.CustomStatuses)
 	nativeJSON(t, filepath.Join(output, "observed-projection.json"), capture)
-	if err := server.Stop(); err != nil {
-		t.Fatalf("owned B02 producer stop: %v", err)
-	}
 	t.Logf("B02_NATIVE_CAPTURE case=%s run=%s phases=%d commands=%d output=%s", plan.Name, run, len(capture.Phases), c.count, output)
 	return capture
 }

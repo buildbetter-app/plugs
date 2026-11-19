@@ -3,11 +3,13 @@
 package publicnative
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -104,5 +106,135 @@ func TestRetainStartupFailureEvidence(t *testing.T) {
 		if err != nil || string(got) != want {
 			t.Fatalf("retained startup artifact %s=%q, error=%v", path, got, err)
 		}
+	}
+}
+
+func TestBeadsProxyArgsMatchExactRootAndShape(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, raw string
+		want      bool
+	}{
+		{"split", "dolt\x00db-proxy-child\x00--root\x00" + root + "\x00", true},
+		{"equals", "dolt\x00db-proxy-child\x00--root=" + root + "\x00", true},
+		{"prefix", "dolt\x00db-proxy-child\x00--root\x00" + root + "-other\x00", false},
+		{"wrong-command", "dolt\x00other\x00--root\x00" + root + "\x00", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := beadsProxyArgsMatch(tc.raw, root); got != tc.want {
+				t.Fatalf("match=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBeadsProxyPIDsFakeProc(t *testing.T) {
+	proc := t.TempDir()
+	root := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"self", "abc", "12", "13"} {
+		if err := os.Mkdir(filepath.Join(proc, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(proc, "12", "cmdline"), []byte("dolt\x00db-proxy-child\x00--root\x00"+root+"\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proc, "13", "cmdline"), []byte("python3\x00worker.py\x00db-proxy-child\x00--root\x00"+root+"\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pids, err := beadsProxyPIDsIn(proc, root)
+	if err != nil || len(pids) != 1 || pids[0] != 12 {
+		t.Fatalf("pids=%v err=%v", pids, err)
+	}
+	if err := os.Remove(filepath.Join(proc, "12", "cmdline")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := beadsProxyPIDsIn(proc, root); err != nil {
+		t.Fatalf("vanished pid should be ignored: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(proc, "12", "cmdline"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := beadsProxyPIDsIn(proc, root); err == nil {
+		t.Fatal("unreadable cmdline did not fail closed")
+	}
+}
+
+func TestBeadsProxyArgsMatchNormalizesSymlinks(t *testing.T) {
+	base := t.TempDir()
+	data := filepath.Join(base, "data")
+	if err := os.Mkdir(data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "alias")
+	if err := os.Symlink(data, link); err != nil {
+		t.Fatal(err)
+	}
+	raw := "dolt\x00db-proxy-child\x00--root=" + link + "/.\x00"
+	if !beadsProxyArgsMatch(raw, data) {
+		t.Fatal("normalized equivalent roots did not match")
+	}
+}
+
+func TestBeadsProxyWorkspaceDoesNotMatchDataRoot(t *testing.T) {
+	workspace := t.TempDir()
+	data := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw := "dolt\x00db-proxy-child\x00--root\x00" + data + "\x00"
+	if beadsProxyArgsMatch(raw, workspace) {
+		t.Fatal("workspace unexpectedly matched proxy data root")
+	}
+	if !beadsProxyArgsMatch(raw, data) {
+		t.Fatal("data root did not match proxy root")
+	}
+}
+
+func TestServerStopDrainsProxyBeforeDoltAndIsIdempotent(t *testing.T) {
+	var events []string
+	s := &Server{drainProxy: func() error { events = append(events, "proxy-drain"); return nil }, reapDolt: func() error { events = append(events, "dolt-reap"); return nil }}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"proxy-drain", "dolt-reap"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%v want %v", events, want)
+	}
+}
+
+func TestServerStopReapsDoltWhenProxyDrainFails(t *testing.T) {
+	var events []string
+	s := &Server{drainProxy: func() error { return errors.New("drain") }, reapDolt: func() error { events = append(events, "dolt-reap"); return nil }}
+	err := s.Stop()
+	if err == nil || !strings.Contains(err.Error(), "drain") {
+		t.Fatalf("error=%v", err)
+	}
+	if !reflect.DeepEqual(events, []string{"dolt-reap"}) {
+		t.Fatalf("events=%v", events)
+	}
+	if err2 := s.Stop(); err2 == nil || err2.Error() != err.Error() {
+		t.Fatalf("second error=%v", err2)
+	}
+	if !reflect.DeepEqual(events, []string{"dolt-reap"}) {
+		t.Fatalf("events after second stop=%v", events)
+	}
+}
+
+func TestServerStopJoinsProxyAndDoltErrors(t *testing.T) {
+	s := &Server{drainProxy: func() error { return errors.New("drain") }, reapDolt: func() error { return errors.New("reap") }}
+	err := s.Stop()
+	if err == nil || !strings.Contains(err.Error(), "drain") || !strings.Contains(err.Error(), "reap") {
+		t.Fatalf("error=%v", err)
 	}
 }
