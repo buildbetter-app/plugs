@@ -245,11 +245,7 @@ func b25MixedDeleteAndDemotion(t *testing.T, open func() driver.Store, db *sql.D
 	b25AssertEdges(t, items[id].Links, beforeItems[id].Links)
 	b25AssertEdges(t, items[id].Inbound, beforeItems[id].Inbound)
 	checkpoint := workflowCheckpoint(t, h.store.(driver.CheckpointStore)).Checkpoint
-	h.server.Close()
-	if err := h.lease.Release(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.store.Close(); err != nil {
+	if err := h.close(); err != nil {
 		t.Fatal(err)
 	}
 	h = b26Host(t, open())
