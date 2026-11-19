@@ -15,6 +15,20 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
 
 ## Answered
 
+- **P13 HASH allocator population cache (2026-11-19, root deb51809):**
+  use a reversible, process-local Writer cache keyed by store incarnation and
+  exact snapshot head. The first request for a HASH prefix at a cold or changed
+  head runs the existing census; warm requests reuse only the count. Successful
+  commits from this Writer apply their own staged population deltas and advance
+  the cache only from their actual precommit head. Other writers, restores and
+  lost commit acknowledgements cause a revision mismatch and a fresh census.
+  Retain one integer per requested live HASH prefix, with no record bodies,
+  persistent metadata, schema, storage capability or restore changes. Candidate
+  identity checks remain targeted and include staged IDs and tombstones.
+  Noncanonical ID-derived prefix candidates are skipped consistently. Future
+  cross-process caching may revisit persistence in a separate reviewed card;
+  this choice supplies no runtime qualification by itself.
+
 - **B02 pinned-producer stale projection (2026-11-19, root ruling
   ROOT959a61e5):** the native-only recorder observes pinned Beads, whose `ready`
   trusts stored `is_blocked`. Record that answer before explicitly invoking the
