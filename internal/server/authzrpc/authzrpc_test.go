@@ -170,7 +170,8 @@ func worker(sponsor string) model.PrincipalRef {
 type reply struct {
 	Result json.RawMessage `json:"result"`
 	Error  *struct {
-		Data model.ErrorData `json:"data"`
+		Data    model.ErrorData `json:"data"`
+		Message string          `json:"message"`
 	} `json:"error"`
 	Meta struct {
 		Replayed bool `json:"replayed"`
