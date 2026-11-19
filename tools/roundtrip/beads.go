@@ -31,18 +31,90 @@ import (
 const beadsCommit = "682ca798dab448803ea9b74f7da3715c21d8c3ae"
 const beadsTree = "9d026de307ee915953b247cf42758d0c53303574"
 
+// This existing public fixture is a separate capture component. It is not an
+// admitted successor to the importer or the canonical same-executable route.
+const publicCaptureCommit = "446dbbdaf978385099aeb8625e08016889fffccf"
+const publicCaptureTree = "64f0d22c8622c2a20da2bfe8c3ad49458fd12b06"
+
 type beadsOptions struct {
-	Binary, SHA256, BuildRun, Inventory string
+	Binary, SHA256, BuildRun, Inventory           string
+	CapturePublicInventory                        bool
+	CaptureBinary, CaptureSHA256, CaptureBuildRun string
 }
 
 type commandEvidence struct {
-	Args         []string `json:"args"`
-	Exit         int      `json:"exit"`
-	StdoutSHA256 string   `json:"stdout_sha256"`
-	StderrSHA256 string   `json:"stderr_sha256"`
+	ExecutableSHA256 string   `json:"executable_sha256,omitempty"`
+	Directory        string   `json:"directory"`
+	Environment      []string `json:"environment"`
+	Args             []string `json:"args"`
+	Exit             int      `json:"exit"`
+	StdoutSHA256     string   `json:"stdout_sha256"`
+	StderrSHA256     string   `json:"stderr_sha256"`
 }
 
 func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+
+func beadsChildEnv(workspace, childHome string) []string {
+	return []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+}
+
+func pinPublicCapture(options beadsOptions, output string) (string, error) {
+	buildRun, err := strconv.ParseUint(options.CaptureBuildRun, 10, 64)
+	if err != nil || buildRun == 0 || strconv.FormatUint(buildRun, 10) != options.CaptureBuildRun || len(options.CaptureSHA256) != 64 || !filepath.IsAbs(options.CaptureBinary) {
+		return "", fmt.Errorf("invalid public capture provenance")
+	}
+	info, err := os.Lstat(options.CaptureBinary)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("invalid public capture executable")
+	}
+	input, err := os.Open(options.CaptureBinary)
+	if err != nil {
+		return "", err
+	}
+	defer input.Close()
+	pinned := filepath.Join(output, "beads-capture-pinned")
+	target, err := os.OpenFile(pinned, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0500)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(target, digest), input)
+	closeErr := target.Close()
+	if copyErr != nil || closeErr != nil || hex.EncodeToString(digest.Sum(nil)) != options.CaptureSHA256 {
+		_ = os.Remove(pinned)
+		return "", fmt.Errorf("public capture executable digest mismatch")
+	}
+	return pinned, nil
+}
+
+// The capture fixture resolves Git's actual hook directory. Initialize only
+// this owned target, with no ambient templates or inherited user settings.
+func initializeBeadsGitWorkspace(ctx context.Context, output, workspace, childHome string) error {
+	args := []string{"/usr/bin/git", "init", "--quiet", "--template="}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd.Dir, cmd.Env = workspace, beadsChildEnv(workspace, childHome)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr := cmd.Run()
+	exit := 0
+	if runErr != nil {
+		exit = -1
+		if cmd.ProcessState != nil {
+			exit = cmd.ProcessState.ExitCode()
+		}
+	}
+	evidence := commandEvidence{Directory: cmd.Dir, Environment: cmd.Env, Args: args, Exit: exit, StdoutSHA256: hash(stdout.Bytes()), StderrSHA256: hash(stderr.Bytes())}
+	data, err := json.Marshal(evidence)
+	if err != nil {
+		return err
+	}
+	for name, raw := range map[string][]byte{"json": data, "stdout": stdout.Bytes(), "stderr": stderr.Bytes()} {
+		if err := writePrivate(output, "beads-workspace-init."+name, raw); err != nil {
+			return err
+		}
+	}
+	return runErr
+}
 
 // runBeads has no build, download, workflow or PATH fallback. It consumes an
 // independently delivered, hash-pinned public executable on the runtime host.
@@ -93,6 +165,17 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		return
 	}
 	binary = pinned
+	captureBinary := ""
+	if options.CapturePublicInventory {
+		result.Stage = "beads_capture_artifact"
+		captureBinary, err = pinPublicCapture(options, output)
+		if err != nil {
+			result.Status, result.Reason = "BLOCK", "beads_capture_artifact_refused"
+			return
+		}
+		result.BeadsCaptureCommit, result.BeadsCaptureTree = publicCaptureCommit, publicCaptureTree
+		result.BeadsCaptureBinarySHA256, result.BeadsCaptureBuildRun = options.CaptureSHA256, options.CaptureBuildRun
+	}
 	projects := source.Manifest().Projects
 	if len(projects) != 1 {
 		result.Status, result.Reason = "BLOCK", "beads_single_project_required"
@@ -111,11 +194,11 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	result.BeadsBinarySHA256, result.BeadsBuildRun = options.SHA256, options.BuildRun
 	result.BeadsCommit, result.BeadsTree = beadsCommit, beadsTree
 	commands := []commandEvidence{}
-	run := func(args ...string) ([]byte, error) {
-		cmd := exec.CommandContext(ctx, binary, args...)
+	runWith := func(executable, executableSHA256 string, args ...string) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, executable, args...)
 		cmd.Dir = workspace
 		// Do not inherit a user's workspace, credentials, config or plugins.
-		cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + childHome, "XDG_CONFIG_HOME=" + filepath.Join(childHome, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+		cmd.Env = beadsChildEnv(workspace, childHome)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()
@@ -126,7 +209,7 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 				exitCode = cmd.ProcessState.ExitCode()
 			}
 		}
-		commands = append(commands, commandEvidence{Args: args, Exit: exitCode, StdoutSHA256: hash(stdout.Bytes()), StderrSHA256: hash(stderr.Bytes())})
+		commands = append(commands, commandEvidence{ExecutableSHA256: executableSHA256, Directory: cmd.Dir, Environment: cmd.Env, Args: args, Exit: exitCode, StdoutSHA256: hash(stdout.Bytes()), StderrSHA256: hash(stderr.Bytes())})
 		n := len(commands)
 		if e := writePrivate(output, fmt.Sprintf("beads-%d.stdout", n), stdout.Bytes()); e != nil {
 			return nil, e
@@ -136,6 +219,8 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		}
 		return stdout.Bytes(), err
 	}
+	run := func(args ...string) ([]byte, error) { return runWith(binary, options.SHA256, args...) }
+	capture := func(args ...string) ([]byte, error) { return runWith(captureBinary, options.CaptureSHA256, args...) }
 	defer func() {
 		data, err := json.Marshal(commands)
 		if err != nil || writePrivate(output, "beads-commands.json", data) != nil {
@@ -165,10 +250,32 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	// Its absence must not hide artifact failures or discard a real import.
 	result.Stage = "beads_inventory"
 	result.Reason = "beads_inventory_required"
-	if options.Inventory == "" {
+	inventoryInput := options.Inventory
+	export := run
+	if options.CapturePublicInventory {
+		// The separately pinned fixture observes the actual importer's target.
+		// Neither a source inventory nor a prior capture attests to this target.
+		if err := initializeBeadsGitWorkspace(ctx, output, workspace, childHome); err != nil {
+			result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_capture_workspace_refused", "FAIL"
+			return
+		}
+		version, versionErr := capture("version", "--json")
+		var identity struct{ Commit, Build string }
+		if versionErr != nil || json.Unmarshal(version, &identity) != nil || identity.Commit != publicCaptureCommit || identity.Build != "id-style-a-fixture-"+publicCaptureCommit {
+			result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_capture_pin_mismatch", "FAIL"
+			return
+		}
+		inventoryInput = filepath.Join(output, "beads-generated-inventory.json")
+		if _, err = capture("--readonly", "export", "--format", "beads-inventory/1", "--plug-capture-public", "--output", inventoryInput); err != nil {
+			result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_inventory_capture_refused", "FAIL"
+			return
+		}
+		export = capture
+	}
+	if inventoryInput == "" {
 		return
 	}
-	inventory, err := filepath.Abs(options.Inventory)
+	inventory, err := filepath.Abs(inventoryInput)
 	if err != nil {
 		result.Status = "BLOCK"
 		return
@@ -185,18 +292,40 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 	inventory = filepath.Join(output, "beads-inventory.json")
 	result.Stage = "beads_readback"
 	readback := filepath.Join(output, "beads-raw-readback.tar")
-	if _, err = run("--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventory, "--output", readback); err != nil {
+	if _, err = export("--readonly", "export", "--format", "plug-dump/1", "--plug-inventory", inventory, "--output", readback); err != nil {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_raw_export_refused", "FAIL"
 		return
 	}
-	actual, err := dumpformat.ReadFile(readback)
+	assessBeadsReadback(output, source, live.JSONL, result)
+}
+
+// Assessment is also exercised against immutable, originally executed public
+// outputs. Replaying those bytes is a parser/refusal control, not a native run.
+func assessBeadsReadback(output string, source *dumpformat.Archive, submitted []byte, result *outcome) {
+	readback, err := readProducedBeadsArchive(filepath.Join(output, "beads-raw-readback.tar"))
+	var actual *dumpformat.Archive
+	if err == nil {
+		actual, err = dumpformat.Read(bytes.NewReader(readback))
+	}
+	// Write the refusal after deciding the ordinary outcome, so a metadata
+	// mismatch cannot conceal independently measured opaque cell differences.
+	defer func() {
+		if result.BeadsReadback == "FAIL" {
+			retainBeadsReadbackRefusal(output, source, submitted, readback, actual, err, result)
+		}
+	}()
 	if err != nil {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_raw_readback_invalid", "FAIL"
+		// Preserve the actual decoder refusal without granting an invalid
+		// archive a validated readback digest or any native comparison credit.
+		if writePrivate(output, "beads-readback-validation-error.txt", []byte(err.Error()+"\n")) != nil {
+			result.Reason = "beads_readback_evidence_refused"
+		}
 		return
 	}
 	result.BeadsReadbackSHA256 = actual.SHA256()
 	result.SourceFieldLosses = nativeOpaqueLosses(source, actual)
-	if reason := compareRawReadback(live.JSONL, actual); reason != "" {
+	if reason := compareRawReadback(submitted, actual); reason != "" {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", reason, "FAIL"
 		return
 	}

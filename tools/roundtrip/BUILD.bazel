@@ -13,9 +13,31 @@ _DEPS = [
     "//internal/storage/sqlite",
 ]
 
+filegroup(
+    name = "readback_reference_fixtures",
+    srcs = [
+        "testdata/fresh-native/id-style-a-inputs.tar.gz",
+        "testdata/fresh-native/id-style-a-inputs.provenance.json",
+        "testdata/fresh-native/recipe-profile.json",
+        "testdata/fresh-native/continuation-fields.json",
+        "testdata/fresh-native/beads-ef3f15.tar.gz",
+        "testdata/fresh-native/beads-ef3f15.git-tree",
+        "testdata/fresh-native/beads-1a75f7.tar.gz",
+        "testdata/fresh-native/beads-1a75f7.git-tree",
+        "testdata/fresh-native/independent-row-replay.tar.gz",
+        "testdata/typed-reader/beads-e25cf4.tar.gz",
+        "testdata/typed-reader/beads-e25cf4.git-tree",
+        "testdata/readback-8f19/memory-complete-beads-raw-readback.tar",
+        "testdata/readback-8f19/memory-complete-reverse-live.jsonl",
+        "testdata/readback-8f19/memory-partial-beads-raw-readback.tar",
+        "testdata/readback-8f19/memory-partial-reverse-live.jsonl",
+    ],
+    visibility = ["//tools/lexicon:__pkg__"],
+)
+
 go_binary(
     name = "roundtrip",
-    srcs = ["main.go", "beads.go"],
+    srcs = ["main.go", "beads.go", "beads_refusal.go"],
     importpath = "github.com/buildbetter-app/plugs/tools/roundtrip",
     visibility = ["//visibility:public"],
     deps = _DEPS,
@@ -25,25 +47,70 @@ go_test(
     name = "roundtrip_test",
     size = "large",
     tags = ["local", "requires-network"],
-    srcs = ["main.go", "beads.go", "main_test.go", "beads_test.go"],
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_fresh.go", "beads_fresh_inputs.go", "beads_fresh_archive.go", "beads_fresh_id.go", "main_test.go", "beads_test.go", "beads_refusal_test.go", "beads_typed_test.go", "beads_fresh_test.go", "beads_fresh_inputs_test.go", "beads_fresh_archive_test.go", "beads_fresh_id_test.go"],
     data = [
+        "testdata/fresh-native/recipe-profile.json",
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
-    ],
+    ] + glob(["testdata/readback-8f19/*"]) + ["testdata/fresh-native/id-style-a-inputs.tar.gz", "testdata/fresh-native/id-style-a-inputs.provenance.json"],
     deps = _DEPS,
+)
+
+# The guarded manual entry defaults to three Full cases. The merged receiver
+# is present; the extra mode opt-in requires exact-case native input proof.
+go_test(
+    name = "fresh_same_run_native_test",
+    size = "enormous",
+    timeout = "eternal",
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_fresh.go", "beads_fresh_inputs.go", "beads_fresh_archive.go", "beads_fresh_id.go", "beads_runtime_test.go", "beads_native_regression_test.go", "beads_typed_runtime_test.go", "beads_fresh_runtime_test.go", "beads_fresh_server_runtime_test.go", "beads_fresh_record_runtime_test.go", "beads_fresh_compose_runtime_test.go"],
+    args = ["-test.run=^TestFreshSameRunIDStyleATwelveFixtures$$"],
+    data = [
+        "testdata/public-companion-profile.json",
+        "testdata/fresh-native/recipe-profile.json",
+        "testdata/fresh-native/continuation-fields.json",
+        "testdata/fresh-native/beads-1a75f7.tar.gz",
+        "testdata/fresh-native/beads-1a75f7.git-tree",
+        "testdata/fresh-native/independent-row-replay.tar.gz",
+        "fresh_oracle.py",
+        "//internal/integration/converterroundtrip:converterroundtrip_test",
+        "testdata/fresh-native/beads-ef3f15.tar.gz",
+        "testdata/fresh-native/beads-ef3f15.git-tree",
+        "testdata/typed-reader/beads-e25cf4.tar.gz",
+        "testdata/typed-reader/beads-e25cf4.git-tree",
+        "//internal/publicnative:dolt_runtime",
+        "//internal/integration/offlinehistory:lexicon_files",
+    ] + ["testdata/fresh-native/id-style-a-inputs.tar.gz", "testdata/fresh-native/id-style-a-inputs.provenance.json"],
+    env = {
+        "PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)",
+        "PLUG_ID_STYLE_A_CONSUMER": "$(rlocationpath //internal/integration/converterroundtrip:converterroundtrip_test)",
+    },
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_WORKFLOW_REF"],
+    tags = ["local", "manual", "requires-network"],
+    deps = _DEPS + ["//internal/publicnative", "@com_github_go_sql_driver_mysql//:mysql"],
 )
 
 go_test(
     name = "public_beads_runtime_test",
-    size = "large",
-    srcs = ["main.go", "beads.go", "beads_runtime_test.go", "beads_native_regression_test.go"],
+    size = "enormous",
+    timeout = "eternal",
+    srcs = ["main.go", "beads.go", "beads_refusal.go", "beads_typed.go", "beads_runtime_test.go", "beads_native_regression_test.go", "beads_typed_runtime_test.go"],
     args = ["-public-beads-runtime"],
     data = [
         "testdata/public-companion-profile.json",
+        "testdata/typed-reader/beads-e25cf4.tar.gz",
+        "testdata/typed-reader/beads-e25cf4.git-tree",
         "//spec/s1-b25-b28:public_recording_protocol",
+        "//spec/s1-b09-native:public_capture_source",
         "//internal/integration/converterroundtrip:public_source_fixtures",
         "//internal/integration/offlinehistory:lexicon_files",
     ],
     tags = ["local", "manual", "requires-network"],
-    deps = _DEPS,
+    env_inherit = ["BAZEL_BIN", "BAZEL_RC", "BAZELISK_HOME", "BAZELISK_VERIFY_SHA256", "GITHUB_RUN_ID"],
+    deps = _DEPS + ["//internal/publicnative"],
+)
+
+filegroup(
+    name = "continuation_field_profile",
+    srcs = ["testdata/fresh-native/continuation-fields.json"],
+    visibility = ["//internal/integration/converterroundtrip:__pkg__"],
 )

@@ -295,7 +295,7 @@ func validateVersionedRecord(record Record, projects []Project, counts map[strin
 			}
 		}
 		if IsTypedEdgeVersion(edgeVersion) {
-			if _, err := SourceEdgeMetadata(edgeVersion, record.ID, stringValue(fields["type"]), fields["metadata"]); err != nil {
+			if _, err := sourceTableEdgeMetadata(edgeVersion, table, record.ID, stringValue(fields["type"]), fields["metadata"]); err != nil {
 				return fmt.Errorf("edge %s metadata: %w", record.ID, err)
 			}
 		}

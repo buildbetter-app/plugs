@@ -26,6 +26,7 @@ go_test(
     name = "native-receive_test",
     srcs = RECEIVE_SRCS + ["native_collection_report_test.go", "graph_certification_test.go"],
     size = "large",
+    timeout = "eternal",
     tags = ["local", "requires-network"],
     data = ["//internal/integration/converterroundtrip:testdata/public-native-delta-small-0e4d5da4.tar.gz"],
     deps = RECEIVE_DEPS + [

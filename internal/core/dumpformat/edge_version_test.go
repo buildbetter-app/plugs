@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -343,6 +344,87 @@ func TestEdgeV2InspectionRetainsUnwrappedSQLTextAndEnvelopeIdentity(t *testing.T
 	// An opaque conditional string is not a second SQL parsing boundary.
 	if _, err := InspectSourceEdgeMetadata(2, "edge-1", "conditional-blocks", map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": "literal text"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEdgeMetadataIdentityErrorRetainsExactRejectedEnvelope(t *testing.T) {
+	for _, test := range []struct {
+		name, raw string
+		value     any
+		present   bool
+	}{
+		{"different-string", `{"_plug_edge_id":"other"}`, "other", true},
+		{"empty-string", `{"_plug_edge_id":""}`, "", true},
+		{"absent", `{"_plug_metadata":{}}`, nil, false},
+		{"null", `{"_plug_edge_id":null}`, nil, true},
+		{"wide-number", `{"_plug_edge_id":9007199254740993}`, json.Number("9007199254740993"), true},
+		{"number-spelling", `{"_plug_edge_id":9.007199254740993e+15}`, json.Number("9.007199254740993e+15"), true},
+		{"boolean", `{"_plug_edge_id":false}`, false, true},
+		{"array", `{"_plug_edge_id":[9007199254740993,null]}`, []any{json.Number("9007199254740993"), nil}, true},
+		{"object", `{"_plug_edge_id":{"n":9007199254740993,"null":null}}`, map[string]any{"n": json.Number("9007199254740993"), "null": nil}, true},
+	} {
+		for _, version := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+			t.Run(fmt.Sprintf("%s/v%d", test.name, version), func(t *testing.T) {
+				var detached any
+				if err := decodeJSON([]byte(test.raw), &detached); err != nil {
+					t.Fatal(err)
+				}
+				for _, raw := range []any{test.raw, detached} {
+					projection, err := InspectSourceEdgeMetadata(version, "edge-1", "waits-for", raw)
+					var identity *EdgeMetadataIdentityError
+					if !errors.As(fmt.Errorf("retained readback: %w", err), &identity) || err.Error() != "edge metadata envelope identity mismatch" || !reflect.DeepEqual(projection, EdgeMetadataProjection{}) {
+						t.Fatalf("identity refusal lost its type, text or empty projection: %+v %v", projection, err)
+					}
+					if identity.SourceTable != "" || identity.EdgeID != "edge-1" || identity.EnvelopePresent != test.present || !reflect.DeepEqual(identity.EnvelopeID, test.value) {
+						t.Fatalf("rejected identity changed: %+v", identity)
+					}
+					predicate, err := SourceEdgeMetadata(version, "edge-1", "waits-for", raw)
+					var predicateError *EdgeMetadataIdentityError
+					if predicate != nil || !errors.As(err, &predicateError) || !reflect.DeepEqual(predicateError, identity) {
+						t.Fatal("predicate API concealed or accepted the rejected identity")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestEdgeMetadataIdentityErrorDoesNotClassifyOtherRefusals(t *testing.T) {
+	for _, raw := range []string{
+		`{"_plug_edge_id":"edge-1","_plug_metadata":null}`,
+		`{"_plug_edge_id":"edge-1","extra":true}`,
+		`{"_plug_edge_id":"edge-1","_plug_edge_id":"other"}`,
+		`{"gate":false}`,
+	} {
+		_, err := InspectSourceEdgeMetadata(EdgeVersionTypedDependencies, "edge-1", "waits-for", raw)
+		var identity *EdgeMetadataIdentityError
+		if err == nil || errors.As(err, &identity) {
+			t.Fatalf("other malformed metadata acquired an identity diagnostic: %s %v", raw, err)
+		}
+	}
+}
+
+func TestEdgeMetadataIdentityErrorSurvivesPortableReaderWrapping(t *testing.T) {
+	for _, version := range []int{EdgeVersionTypedDependencies, EdgeVersionLocalOpaque} {
+		f := newMergeFixture(t, "pl")
+		edge := &f.records["edge"][0]
+		raw := fmt.Sprintf(`{"_plug_edge_id":%q,"_plug_metadata":{"n":9007199254740993}}`, edge.ID)
+		edge.Body["metadata"], edge.Source.Fields["metadata"] = raw, raw
+		data := edgeVersionFixture(t, f, version)
+		archive, err := Read(bytes.NewReader(data))
+		if err != nil || !bytes.Equal(archive.TarBytes(), data) || archive.Records("edge")[0].Source.Fields["metadata"] != raw {
+			t.Fatalf("matching identity or exact source changed: %v", err)
+		}
+		raw = `{"_plug_edge_id":9007199254740993}`
+		edge.Body["metadata"], edge.Source.Fields["metadata"] = raw, raw
+		archive, err = Read(bytes.NewReader(edgeVersionFixture(t, f, version)))
+		var identity *EdgeMetadataIdentityError
+		if archive != nil || !errors.As(err, &identity) || err.Error() != "edge "+edge.ID+" metadata: edge metadata envelope identity mismatch" {
+			t.Fatalf("portable reader accepted or concealed the identity refusal: %v", err)
+		}
+		if identity.SourceTable != DurableDependencyTable || identity.EdgeID != edge.ID || !identity.EnvelopePresent || identity.EnvelopeID != json.Number("9007199254740993") {
+			t.Fatalf("portable reader lost exact source context: %+v", identity)
+		}
 	}
 }
 

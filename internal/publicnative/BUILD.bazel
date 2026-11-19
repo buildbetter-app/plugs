@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "publicnative",
-    srcs = ["server_linux.go"],
+    srcs = ["server_linux.go", "source.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/publicnative",
     visibility = ["//visibility:public"],
 )

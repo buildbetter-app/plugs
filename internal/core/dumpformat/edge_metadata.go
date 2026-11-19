@@ -2,10 +2,26 @@ package dumpformat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
+
+// EdgeMetadataIdentityError retains the rejected envelope identity without
+// adding source values to the refusal text. EnvelopeID is the detached JSON
+// value, including exact json.Number spellings; EnvelopePresent distinguishes
+// an absent ID from JSON null. SourceTable is empty for standalone inspection.
+type EdgeMetadataIdentityError struct {
+	SourceTable     string
+	EdgeID          string
+	EnvelopeID      any
+	EnvelopePresent bool
+}
+
+func (*EdgeMetadataIdentityError) Error() string {
+	return "edge metadata envelope identity mismatch"
+}
 
 // SourceEdgeMetadata validates the declared edge wire contract and returns
 // only its scheduling predicate. Body.metadata and Source.Fields.metadata
@@ -14,6 +30,15 @@ import (
 func SourceEdgeMetadata(version int, edgeID, kind string, value any) (*model.LinkMetadata, error) {
 	projection, err := InspectSourceEdgeMetadata(version, edgeID, kind, value)
 	return projection.Predicate, err
+}
+
+func sourceTableEdgeMetadata(version int, table, edgeID, kind string, value any) (*model.LinkMetadata, error) {
+	predicate, err := SourceEdgeMetadata(version, edgeID, kind, value)
+	var identity *EdgeMetadataIdentityError
+	if errors.As(err, &identity) {
+		identity.SourceTable = table
+	}
+	return predicate, err
 }
 
 // EdgeMetadataProjection separates a detached, unwrapped source value from
@@ -57,9 +82,12 @@ func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (Edg
 			reserved = reserved || key == "_plug_edge_id" || key == "_plug_metadata"
 		}
 		if reserved {
-			id, ok := object["_plug_edge_id"].(string)
+			envelopeID, present := object["_plug_edge_id"]
+			id, ok := envelopeID.(string)
 			if !ok || id == "" || id != edgeID {
-				return EdgeMetadataProjection{}, fmt.Errorf("edge metadata envelope identity mismatch")
+				return EdgeMetadataProjection{}, &EdgeMetadataIdentityError{
+					EdgeID: edgeID, EnvelopeID: envelopeID, EnvelopePresent: present,
+				}
 			}
 			for key := range object {
 				if key != "_plug_edge_id" && key != "_plug_metadata" {
