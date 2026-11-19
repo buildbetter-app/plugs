@@ -510,7 +510,7 @@ type DumpOptions struct {
 // digest checks, authorization and bounded polling through fresh readers.
 // False means Commit is final and immutable, including all post warnings.
 type IdempotencyRecord struct {
-	AttemptID       string
+	AttemptID       string `json:"-"`
 	RequestHash     string
 	Commit          model.Commit
 	Changeset       model.Changeset
