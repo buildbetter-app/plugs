@@ -131,7 +131,35 @@ func (s *workflowCheckpointAdapter) ReadSourcePlaneSnapshot(ctx context.Context,
 		return nil, err
 	}
 	keep = true
-	return &checkedSourcePlaneSnapshot{Reader: r, checkpoints: checkpoints}, nil
+	return newCheckedSourcePlaneSnapshot(r, checkpoints), nil
+}
+
+func newCheckedSourcePlaneSnapshot(r Reader, checkpoints map[string]Checkpoint) SourcePlaneSnapshot {
+	checked := &checkedSourcePlaneSnapshot{Reader: r, checkpoints: checkpoints}
+	// Optional reader capabilities belong to the pinned observation. Preserve
+	// them only when the underlying reader actually provides them; an adapter
+	// must never advertise a capability that it cannot satisfy.
+	allocators, hasAllocators := r.(AllocatorReader)
+	parents, hasParents := r.(HierarchyChildrenReader)
+	links, hasLinks := r.(InverseSourceLinksReader)
+	switch {
+	case hasAllocators && hasParents && hasLinks:
+		return &inverseHierarchyAllocatorSourcePlaneSnapshot{hierarchyAllocatorSourcePlaneSnapshot: &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}
+	case hasAllocators && hasParents:
+		return &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}
+	case hasAllocators && hasLinks:
+		return &inverseAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, InverseSourceLinksReader: links}
+	case hasParents && hasLinks:
+		return &inverseHierarchySourcePlaneSnapshot{hierarchySourcePlaneSnapshot: &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}
+	case hasAllocators:
+		return &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}
+	case hasParents:
+		return &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}
+	case hasLinks:
+		return &inverseLinksSourcePlaneSnapshot{SourcePlaneSnapshot: checked, InverseSourceLinksReader: links}
+	default:
+		return checked
+	}
 }
 
 type checkedSourcePlaneSnapshot struct {
@@ -139,6 +167,41 @@ type checkedSourcePlaneSnapshot struct {
 	mu          sync.RWMutex
 	checkpoints map[string]Checkpoint
 	closed      bool
+}
+
+type allocatorSourcePlaneSnapshot struct {
+	SourcePlaneSnapshot
+	AllocatorReader
+}
+
+type hierarchySourcePlaneSnapshot struct {
+	SourcePlaneSnapshot
+	HierarchyChildrenReader
+}
+
+type inverseLinksSourcePlaneSnapshot struct {
+	SourcePlaneSnapshot
+	InverseSourceLinksReader
+}
+
+type hierarchyAllocatorSourcePlaneSnapshot struct {
+	*allocatorSourcePlaneSnapshot
+	HierarchyChildrenReader
+}
+
+type inverseAllocatorSourcePlaneSnapshot struct {
+	*allocatorSourcePlaneSnapshot
+	InverseSourceLinksReader
+}
+
+type inverseHierarchySourcePlaneSnapshot struct {
+	*hierarchySourcePlaneSnapshot
+	InverseSourceLinksReader
+}
+
+type inverseHierarchyAllocatorSourcePlaneSnapshot struct {
+	*hierarchyAllocatorSourcePlaneSnapshot
+	InverseSourceLinksReader
 }
 
 func (r *checkedSourcePlaneSnapshot) SourcePlaneCheckpoint(key string) (Checkpoint, error) {

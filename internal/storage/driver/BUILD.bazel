@@ -63,6 +63,7 @@ go_test(
         "native_delta_history_test.go",
         "offline_history_stream_test.go",
         "offline_history_source_order_test.go",
+        "source_planes_snapshot_test.go",
     ],
     embed = [":driver"],
     deps = ["//internal/core/model"],
