@@ -216,6 +216,15 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 				t.Fatal("actual two-native-set single row receiver", err)
 			}
 			defer report.Close()
+			if report.collection == nil || report.collection.plan.Built() {
+				t.Fatal("successful collection kept a live consumed plan")
+			}
+			closedPayload := reflect.ValueOf(report.collection.plan).FieldByName("planPayload").Elem()
+			for _, name := range []string{"image", "archive", "profile", "sourcePlanes", "release"} {
+				if !closedPayload.FieldByName(name).IsNil() {
+					t.Fatal("collection report retains uncharged closed plan payload", name)
+				}
+			}
 			assertJoinedPhysicalHistories(t, report.NativeHistories, l.binding)
 			if report.Receipt == nil || report.Restored.Head != model.Natural64(195) || report.Restored.HistoryFloor != model.Natural64(0) || observed.writes != 1 || len(report.NativeHistories) != 2 || report.SourcePlanes == nil || len(report.SourcePlanes.Providers) != 1 {
 				t.Fatal("two-project session/receipt/provider conservation", report.Restored, observed.writes, len(report.NativeHistories))
@@ -248,6 +257,11 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 			if len(l.retained) == retainedStart {
 				t.Fatal("recovery did not independently authenticate retained originals")
 			}
+			// Own an independent expected value before Close clears the receipt holder.
+			expectedReceipt, err := json.Marshal(report.Receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err = recovered.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -265,7 +279,8 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 			retainedStart = len(l.retained)
 			l.phase = "reopened resume"
 			_, resumed, found, err := RecoverBoundSourceImport(ctx, observed)
-			if err != nil || !found || !reflect.DeepEqual(resumed.Receipt, report.Receipt) || observed.writes != 0 {
+			resumedReceipt, receiptErr := json.Marshal(resumed.Receipt)
+			if err != nil || receiptErr != nil || !found || string(resumedReceipt) != string(expectedReceipt) || observed.writes != 0 {
 				t.Fatal("real reopened collection receipt/recovery", found, err)
 			}
 			defer resumed.Close()

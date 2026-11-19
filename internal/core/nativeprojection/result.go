@@ -18,7 +18,12 @@ import (
 // is invalid. Only Build, BuildWithProfile and BuildForInspection issue one;
 // detached snapshots and caller-supplied records cannot be promoted to a Plan.
 // A Plan authenticates no streaming transcript and mints no checkpoint.
-type Plan struct {
+type Plan struct{ *planPayload }
+
+// Every copy shares both payload references and their accounting lifetime.
+type planPayload struct {
+	release       func()
+	closed        bool
 	image         *restorePlan
 	archive       *dumpformat.Archive
 	archiveSHA256 string
@@ -54,8 +59,15 @@ func BuildWithProfile(archive *dumpformat.Archive, profile *driver.RestoreImport
 	if archive == nil {
 		return Plan{}, fmt.Errorf("receiving planner requires an archive")
 	}
-	image, err := buildPlanWithProfile(archive, profile, when, contexts...)
-	return finishPlan(archive, image, profile, when, err)
+	owner, release := archive.NativeDeltaAccountingScope()
+	image, err := buildPlanWithProfile(owner, profile, when, contexts...)
+	plan, err := finishPlan(owner, image, profile, when, err)
+	if err != nil {
+		release()
+		return Plan{}, err
+	}
+	plan.release = release
+	return plan, nil
 }
 
 func BuildForInspection(archive *dumpformat.Archive) (Plan, error) {
@@ -90,11 +102,31 @@ func finishPlan(archive *dumpformat.Archive, image restorePlan, profile *driver.
 			planes = &value
 		}
 	}
-	return Plan{image: &image, archive: archive, archiveSHA256: archive.SHA256(), profile: bound, sourcePlanes: planes, when: when}, nil
+	return Plan{&planPayload{image: &image, archive: archive, archiveSHA256: archive.SHA256(), profile: bound, sourcePlanes: planes, when: when}}, nil
 }
 
-func (p Plan) Built() bool           { return p.image != nil }
-func (p Plan) ArchiveSHA256() string { return p.archiveSHA256 }
+// Close ends a consumed plan's private reservations. All copies share the
+// lifetime; detached snapshots must have their own owner before this call.
+func (p Plan) Close() {
+	if p.planPayload == nil || p.closed {
+		return
+	}
+	release := p.release
+	// Clear the shared holder, not a receiver copy: closed plans retained by
+	// collection reports must not keep canonical profiles or archive aliases.
+	*p.planPayload = planPayload{closed: true}
+	if release != nil {
+		release()
+	}
+}
+
+func (p Plan) Built() bool { return p.planPayload != nil && !p.closed && p.image != nil }
+func (p Plan) ArchiveSHA256() string {
+	if p.planPayload == nil {
+		return ""
+	}
+	return p.archiveSHA256
+}
 func (p Plan) DerivedSHA256() string {
 	if !p.Built() {
 		return ""
@@ -106,6 +138,9 @@ func (p Plan) HasNativeCapture() bool { return p.Built() && p.image.nativeCaptur
 // RequestBinding decodes the complete supplied wire profile and restore clock. A legacy
 // or inspection plan has no import binding; the bool preserves that distinction.
 func (p Plan) RequestBinding() (driver.RestoreImportProfile, time.Time, bool, error) {
+	if !p.Built() {
+		return driver.RestoreImportProfile{}, time.Time{}, false, fmt.Errorf("unbuilt receiving plan")
+	}
 	profile, when, bound, _, err := p.RequestBindingWithAccounting(p.archive)
 	return profile, when, bound, err
 }
@@ -157,7 +192,12 @@ func (p Plan) RequestBindingWithAccounting(owner *dumpformat.Archive) (driver.Re
 	return profile, p.when, true, release, nil
 }
 
-func (p Plan) Snapshot() (Snapshot, error) { return p.SnapshotWithAccounting(p.archive) }
+func (p Plan) Snapshot() (Snapshot, error) {
+	if !p.Built() {
+		return Snapshot{}, fmt.Errorf("unbuilt receiving plan")
+	}
+	return p.SnapshotWithAccounting(p.archive)
+}
 
 // SnapshotWithAccounting reserves raw copied payloads and actual slice element
 // sizes. The supplied owner must live through consumption of the entire image.

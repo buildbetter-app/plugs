@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -157,20 +159,35 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 			return Report{}, nil, driver.ErrConflict
 		}
 	}
+	if source.beforeInspection != nil {
+		ctx, err = source.beforeInspection(ctx, &report)
+		if err != nil {
+			return Report{}, nil, err
+		}
+		source.beforeInspection = nil
+	}
 	// Re-verify the exact retained source and immutable provider origin map.
 	// Comparing the schema's original source member permits ordinary mutations
 	// while refusing a namespace that retained its origin tag but lost raw data.
 	archive := source.archive
+	if owned {
+		// This newly reconstructed archive outlives the pinned reader that
+		// supplies Blob. Its authenticated cache remains owned and charged
+		// until the returned report is explicitly released.
+		archive.UseNativeDeltaPreparedReadback()
+	}
 	// Recovery may run after the original native capture reader was closed.
 	// Reuse the archive's authenticated prepared view for readback rather than
 	// reopening that closed reader.
-	archive.UseNativeDeltaPreparedReadback()
 	// The report retains the source archive, while prepared logical bytes and
 	// reverse inspection candidates end at this comparison boundary. The retained
 	// archive keeps its authenticated preparation until the caller invokes
 	// ReleaseNativeDecoded: its source reader closes when recovery returns.
 	work, release := archive.NativeDeltaAccountingScope()
 	defer release()
+	// For supplied receiving evidence, readback mode belongs only to this
+	// operation: its public root preparation is cleared after receiving.
+	work.UseNativeDeltaPreparedReadback()
 	ctx = work.WithNativeDeltaAccounting(ctx)
 	logical := source.logical
 	if logical == nil {
@@ -180,15 +197,28 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		}
 		logical = image.LogicalImage()
 	}
-	initialImage, err := workflowplugin.InspectSourceReverseImage(logical)
+	initialImage, err := workflowplugin.InspectSourceReverseImageContext(ctx, logical)
 	if err != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, sourceInspectionFailure(err, driver.ErrConflict)
 	}
-	currentImage, err := workflowplugin.InspectSourceReverseImage(current)
-	if err != nil || initialImage.OriginSHA256 == "" || initialImage.OriginSHA256 != currentImage.OriginSHA256 {
+	currentImage, err := workflowplugin.InspectSourceReverseImageContext(ctx, current)
+	if err != nil {
+		return Report{}, nil, sourceInspectionFailure(err, driver.ErrConflict)
+	}
+	if initialImage.OriginSHA256 == "" || initialImage.OriginSHA256 != currentImage.OriginSHA256 {
 		return Report{}, nil, driver.ErrConflict
 	}
 	report.Archive, report.SourcePlanes, report.collection = archive, &binding, source.collection
 	keepArchive = true
 	return report, current, nil
+}
+
+// Resource admission and cancellation are not evidence of corrupt source data.
+// Known durable publication sanitizes failures separately at its outer boundary.
+func sourceInspectionFailure(cause, malformed error) error {
+	var limit *dumpformat.NativeDeltaDecodedLimitError
+	if errors.As(cause, &limit) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+	return malformed
 }

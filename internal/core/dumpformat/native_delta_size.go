@@ -186,6 +186,42 @@ func (c *deltaSizeCounter) value(v reflect.Value) error {
 			// fields without allocating a second principal/caveat tree.
 			type principalWire model.PrincipalRef
 			return c.value(reflect.ValueOf(principalWire(x)))
+		case model.Commit:
+			// Commit.MarshalJSON validates then marshals this exact alias. Count
+			// that wire without invoking aggregate marshal/validation (OpResult
+			// validation itself decodes raw records into an allocated map).
+			// This counter grants no validity: publication/encoding still validates.
+			type commitWire model.Commit
+			return c.value(reflect.ValueOf(commitWire(x)))
+		case model.OpResult:
+			type resultWire model.OpResult
+			return c.value(reflect.ValueOf(resultWire(x)))
+		case model.Warning:
+			type warningWire model.Warning
+			return c.value(reflect.ValueOf(warningWire(x)))
+		case model.WarningCode:
+			if err := x.Validate(); err != nil {
+				return err
+			}
+			return c.text(string(x))
+		case model.Violation:
+			type violationWire model.Violation
+			return c.value(reflect.ValueOf(violationWire(x)))
+		case model.Changeset:
+			// The native receipt stores the existing durable changeset wire.
+			// As above, traverse aliases rather than invoking its marshaler.
+			type changesetWire model.Changeset
+			return c.value(reflect.ValueOf(changesetWire(x)))
+		case model.ChangesetKind:
+			if err := x.Validate(); err != nil {
+				return err
+			}
+			return c.text(string(x))
+		case model.OpKind:
+			if err := x.Validate(); err != nil {
+				return err
+			}
+			return c.text(string(x))
 		case model.Ref:
 			if err := x.Validate(); err != nil {
 				return err

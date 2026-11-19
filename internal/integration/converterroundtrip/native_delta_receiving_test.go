@@ -24,7 +24,7 @@ import (
 // This exact public producer capture was independently reviewed at 0e4d5da4.
 // Import/readback here is a separate receiving proof. The fixture contains no
 // executable, same-source physical writer ports or preserved native store copy.
-func publicNativeDeltaArchive(t *testing.T) *dumpformat.Archive {
+func publicNativeDeltaArchive(t *testing.T, budgets ...*dumpformat.NativeDeltaBudget) *dumpformat.Archive {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/public-native-delta-small-0e4d5da4.tar.gz")
 	if err != nil {
@@ -60,7 +60,11 @@ func publicNativeDeltaArchive(t *testing.T) *dumpformat.Archive {
 	if len(files) != 3 {
 		t.Fatal("public source file census changed")
 	}
-	archive, err := dumpformat.ReadNativeCaptureSet(context.Background(), bytes.NewReader(files["capture-set.json"]), bytes.NewReader(files["head.tar"]), func(_ context.Context, n uint64) (io.ReadCloser, error) {
+	ctx := context.Background()
+	if len(budgets) != 0 {
+		ctx = dumpformat.WithNativeDeltaBudget(ctx, budgets[0])
+	}
+	archive, err := dumpformat.ReadNativeCaptureSet(ctx, bytes.NewReader(files["capture-set.json"]), bytes.NewReader(files["head.tar"]), func(_ context.Context, n uint64) (io.ReadCloser, error) {
 		raw, ok := files[fmt.Sprintf("parts/%020d.part", n)]
 		if !ok {
 			return nil, os.ErrNotExist
@@ -163,6 +167,18 @@ func TestNativeDeltaRowReceivingEveryMappingAndReopenedStore(t *testing.T) {
 			if err != nil {
 				t.Fatal("receive row-granular public capture", err)
 			}
+			// The source report intentionally retains its exact result payload.
+			// Add only that charge; every transient category remains forbidden.
+			retained := report
+			retained.Archive = nil
+			retainedWire, sizeErr := json.Marshal(retained)
+			if sizeErr != nil {
+				t.Fatal(sizeErr)
+			}
+			retainedBytes := uint64(len(retainedWire) + 1)
+			baseline.CurrentAccountedDecodedBytes += retainedBytes
+			baseline.CurrentCategories["receiving_retained_result"] += retainedBytes
+			baseline.CurrentCharges["receiving_retained_result"]++
 			if held, _ := archive.NativeDecodedUsage(); held.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(held.CurrentCategories, baseline.CurrentCategories) || !reflect.DeepEqual(held.CurrentCharges, baseline.CurrentCharges) {
 				t.Fatal("completed conversion retained temporary allocations", baseline, held)
 			}

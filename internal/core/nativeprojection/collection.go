@@ -98,8 +98,15 @@ func (p *NativeCapturePlanner) Build(ctx context.Context, profile driver.Restore
 	if p == nil || !p.finished || p.Owner() == nil || !p.Owner().HasNativeCaptureCollection() || profile.HistoryTime != p.when.UTC().Format(time.RFC3339Nano) || profile.ArchiveDigest != p.Owner().SHA256() || string(profile.SourceStoreID) != p.Owner().Manifest().StoreID {
 		return Plan{}, fmt.Errorf("collection planner final binding differs")
 	}
-	image, err := buildPlanModeWithCurrent(p.Owner(), &profile, p.when, planImport, &p.current, ctx)
-	return finishPlan(p.Owner(), image, &profile, p.when, err)
+	owner, release := p.Owner().NativeDeltaAccountingScope()
+	image, err := buildPlanModeWithCurrent(owner, &profile, p.when, planImport, &p.current, ctx)
+	plan, err := finishPlan(owner, image, &profile, p.when, err)
+	if err != nil {
+		release()
+		return Plan{}, err
+	}
+	plan.release = release
+	return plan, nil
 }
 
 // DerivedDigest computes only the deterministic rebuilt current digest. The

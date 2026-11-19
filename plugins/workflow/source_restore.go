@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 	"time"
@@ -82,31 +81,70 @@ type SourceReverseImage struct {
 // Claims are returned exactly as stored, including expired claims, without
 // applying a later wall clock to the pinned observation. The logical image
 // must use the canonical encoding written by source preparation/runtime saves.
-func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
+func inspectSourceReverseImage(ctx context.Context, logical []byte, decode func([]byte, any) error) (SourceReverseImage, error) {
 	var empty SourceReverseImage
-	if len(logical) == 0 || len(logical) > driver.SourcePlaneMaxPlanBytes || len(bytes.TrimSpace(logical)) == 0 || bytes.TrimSpace(logical)[0] != '{' {
-		return empty, sourceRefusal("invalid reverse logical image")
+	if err := ctx.Err(); err != nil {
+		return empty, err
+	}
+	_, _, _, aggregate := reverseImageSectionLimits()
+	if uint64(len(logical)) > aggregate {
+		return empty, sourceRefusal("reverse aggregate byte limit")
+	}
+	parent := dumpformat.NativeDeltaBudgetFromContext(ctx)
+	if parent == nil {
+		parent = dumpformat.NewNativeDeltaBudget(0)
+	}
+	work, output := parent.Scope(), parent.Scope()
+	defer work.Release()
+	defer output.Release()
+	ctx = dumpformat.WithNativeDeltaBudget(ctx, work)
+	// Reserve every full-image candidate before scanner/decoder/canonical work.
+	for _, phase := range []string{"workflow_reverse_input", "workflow_reverse_decoder", "workflow_reverse_decoded", "workflow_reverse_canonical"} {
+		if err := work.ChargeBytes(phase, uint64(len(logical))); err != nil {
+			return empty, err
+		}
+	}
+	if err := admitReverseImage(ctx, logical); err != nil {
+		return empty, err
+	}
+	if err := ctx.Err(); err != nil {
+		return empty, err
 	}
 	var value persisted
-	decoder := json.NewDecoder(bytes.NewReader(logical))
-	decoder.UseNumber()
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
+	if err := decode(logical, &value); err != nil {
 		return empty, sourceRefusal("malformed reverse logical image: " + err.Error())
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return empty, sourceRefusal("trailing reverse logical image")
+	work.ReleaseBytes("workflow_reverse_input", uint64(len(logical)))
+	work.ReleaseBytes("workflow_reverse_decoder", uint64(len(logical)))
+	canonicalBytes, err := dumpformat.NativeDeltaJSONSize(value)
+	if err != nil {
+		return empty, err
+	}
+	if canonicalBytes-1 > uint64(len(logical)) {
+		if err := work.ChargeBytes("workflow_reverse_canonical", canonicalBytes-1-uint64(len(logical))); err != nil {
+			return empty, err
+		}
 	}
 	canonical, err := json.Marshal(value)
 	if err != nil || !bytes.Equal(logical, canonical) {
 		return empty, sourceRefusal("noncanonical or unsupported reverse logical fields")
 	}
+	canonical = nil
+	work.ReleaseBytes("workflow_reverse_canonical", work.ReservedBytes("workflow_reverse_canonical"))
 	if value.Source == nil || value.Source.Schema != SourceStateSchema || value.Items == nil || value.Runs == nil || value.Receipts == nil || len(value.Source.Entities) > driver.SourcePlaneMaxListEntries {
 		return empty, sourceRefusal("incomplete source-restored reverse image")
 	}
-	byHash, _, err := sourceWireRecords(value.Source.Records)
+	byHash, _, err := sourceWireRecords(value.Source.Records, ctx)
 	if err != nil {
-		return empty, sourceRefusal("invalid reverse source records: " + err.Error())
+		return empty, fmt.Errorf("invalid reverse source records: %w", err)
+	}
+	// Detached views and transient identity/index payloads are bounded by the
+	// complete canonical image that contains their source values.
+	if err := output.ChargeBytes("workflow_reverse_result", uint64(len(logical))); err != nil {
+		return empty, err
+	}
+	if err := work.ChargeBytes("workflow_reverse_indexes", uint64(len(logical))); err != nil {
+		return empty, err
 	}
 	result := SourceReverseImage{Entities: make(map[driver.SourceEntityKey]SourceReverseEntry)}
 	byTarget := make(map[string]driver.SourcePlaneEntityV1, len(value.Source.Entities))
@@ -125,16 +163,19 @@ func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
 		if entity.TargetKind == "bead" && driver.ValidateHierarchyRef(ref) != nil {
 			return empty, sourceRefusal("invalid reverse ordinary target binding")
 		}
-		wire, err := sourceMatchedRecord(byHash, entity.Origin)
+		wire, err := sourceMatchedRecord(byHash, entity.Origin, ctx)
 		if err != nil {
-			return empty, sourceRefusal("invalid reverse entity origin: " + err.Error())
+			return empty, fmt.Errorf("invalid reverse entity origin: %w", err)
 		}
-		id, err := sourceText(wire.Source.Fields["id"])
-		if err != nil || id != entity.Source.ID || wire.Source.Table != entity.Source.Plane || !wire.matchesProject(entity.Source.Project) {
+		id, err := sourceText(wire.Source.Fields["id"], ctx)
+		if err != nil {
+			return empty, fmt.Errorf("reverse entity origin address differs: %w", err)
+		}
+		if id != entity.Source.ID || wire.Source.Table != entity.Source.Plane || !wire.matchesProject(entity.Source.Project) {
 			return empty, sourceRefusal("reverse entity origin address differs")
 		}
-		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields); err != nil {
-			return empty, sourceRefusal("invalid reverse entity fields: " + err.Error())
+		if err := sourceFieldCensus(wire.Source.Fields, entity.Fields, ctx); err != nil {
+			return empty, fmt.Errorf("invalid reverse entity fields: %w", err)
 		}
 		sources[entity.Source], byTarget[entity.TargetID] = true, entity
 		if entity.TargetKind == "workflow:item" {
@@ -269,11 +310,22 @@ func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
 	for _, key := range keys {
 		result.Relations = append(result.Relations, relationView(edges[key].edge))
 	}
+	originBytes, err := dumpformat.NativeDeltaJSONSize(value.Source)
+	if err != nil {
+		return empty, err
+	}
+	if err := work.ChargeBytes("workflow_reverse_origin", originBytes-1); err != nil {
+		return empty, err
+	}
 	origin, err := json.Marshal(value.Source)
 	if err != nil {
 		return empty, sourceRefusal("invalid reverse immutable origin: " + err.Error())
 	}
 	result.OriginSHA256 = sourceImageHash(origin)
+	if err := ctx.Err(); err != nil {
+		return empty, err
+	}
+	output.Retain()
 	return result, nil
 }
 

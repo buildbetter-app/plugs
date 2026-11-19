@@ -21,7 +21,7 @@ go_test(
     name = "nativeprojection_test",
     srcs = ["planner_test.go"],
     embed = [":nativeprojection"],
-    deps = ["//internal/core/dumpformat"],
+    deps = ["//internal/core/dumpformat", "//internal/storage/driver"],
 )
 
 filegroup(

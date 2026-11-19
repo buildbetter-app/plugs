@@ -44,7 +44,7 @@ func nativeReceivingStage(tx driver.WriteTx, proof historyverify.Checkpoint) (dr
 // restoreNativeReceivingStream is the production admitted native receiving
 // route. The verifier owns the transcript and checkpoint; this host publishes
 // the SAME actual planner image under complete locks and the engine's port.
-func restoreNativeReceivingStream(ctx context.Context, archive *dumpformat.Archive, target driver.Store, suppliedLease driver.ActiveLease, profile driver.RestoreImportProfile, plan nativeprojection.Plan, sourceLogical []byte) (report Report, restoreErr error) {
+func restoreNativeReceivingStream(ctx context.Context, archive *dumpformat.Archive, target driver.Store, suppliedLease driver.ActiveLease, profile driver.RestoreImportProfile, plan nativeprojection.Plan, sourceLogical []byte, retainedArchive *dumpformat.Archive, releasePlan func()) (report Report, restoreErr error) {
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil || when.IsZero() || sourceLogical == nil {
 		return report, driver.ErrConflict
@@ -54,14 +54,32 @@ func restoreNativeReceivingStream(ctx context.Context, archive *dumpformat.Archi
 		return report, err
 	}
 	defer func() { restoreErr = errors.Join(restoreErr, stream.Close()) }()
-	return restorePreparedNativeReceivingStream(ctx, archive, target, suppliedLease, profile, plan, sourceLogical, stream)
+	return restorePreparedNativeReceivingStream(ctx, archive, target, suppliedLease, profile, plan, sourceLogical, stream, retainedArchive, func() error {
+		if err := stream.Close(); err != nil {
+			return err
+		}
+		releasePlan()
+		return nil
+	})
 }
 
 // Both native input shapes publish through this same row-granular receiver,
 // lock set, transaction, stage and original-key receipt. The collection issuer
 // supplies a whole verified stream/Plan, never a second receiving algorithm.
-func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpformat.Archive, target driver.Store, suppliedLease driver.ActiveLease, profile driver.RestoreImportProfile, plan nativeprojection.Plan, sourceLogical []byte, stream *historyverify.NativeArchiveStream) (report Report, restoreErr error) {
-	report.Archive = archive
+func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpformat.Archive, target driver.Store, suppliedLease driver.ActiveLease, profile driver.RestoreImportProfile, plan nativeprojection.Plan, sourceLogical []byte, stream *historyverify.NativeArchiveStream, retainedArchive *dumpformat.Archive, releasePrepared func() error, stageFactories ...func(driver.WriteTx, historyverify.Checkpoint) (driver.OfflineHistoryStreamStage, error)) (report Report, restoreErr error) {
+	recoveryArchive := retainedArchive
+	outputOwned := false
+	defer func() {
+		if restoreErr != nil && !outputOwned {
+			// Publication snapshots are transient until the exact result is
+			// admitted. Preserve durable identity, never unowned payload views.
+			report.NativeFamilies, report.NativeSchemas, report.NativeHistories, report.SourcePlanes, report.Receipt = nil, nil, nil, nil, nil
+		}
+	}()
+	archive, releasePublication := archive.NativeDeltaAccountingScope()
+	defer releasePublication()
+	ctx = archive.WithNativeDeltaAccounting(ctx)
+	report.Archive = retainedArchive
 	meta, err := target.Meta(ctx)
 	report.Target = meta
 	if err != nil {
@@ -71,7 +89,7 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	if err != nil || when.IsZero() || sourceLogical == nil {
 		return report, driver.ErrConflict
 	}
-	image, err := plan.Snapshot()
+	image, err := plan.SnapshotWithAccounting(archive)
 	if err != nil {
 		return report, err
 	}
@@ -138,7 +156,11 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	if _, err = tx.Head(ctx); err != nil {
 		return report, err
 	}
-	stage, err := nativeReceivingStage(tx, proof)
+	newStage := nativeReceivingStage
+	if len(stageFactories) != 0 {
+		newStage = stageFactories[0]
+	}
+	stage, err := newStage(tx, proof)
 	if err != nil {
 		return report, err
 	}
@@ -252,30 +274,79 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	}
 	commit, err := prepared.Commit(ctx, driver.ChangesetHeader{Incarnation: restored.Incarnation, Kind: model.ChangesetRestore, Time: when, Principal: profile.Admission.Actor, Chain: []string{}, Method: profile.Method, AgentLabel: profile.AgentLabel(), IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash, Response: model.Commit{Revision: restored.Head, Results: results, Warnings: []model.Warning{}}, Changes: changes, LockKeys: lockKeys(requests)})
 	check := Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}
-	if err != nil {
-		recovered, lookupErr := recoverNativeReceivingIndeterminate(ctx, target, profile, check, err)
-		if lookupErr != nil {
-			return report, lookupErr
+	commitCause := err
+	if commitCause != nil {
+		if !nativeReceivingIndeterminateMatches(commitCause, profile.IdempotencyKey) {
+			return report, commitCause
 		}
-		if recovered.collection == nil {
-			recovered.Archive = archive
-		}
-		recovered.Target = meta
-		recovered.Recovered = true
-		return recovered, nil
-	}
-	if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head {
+		// Resolve the original durable key through the SAME retained prepared
+		// evidence and result handoff. No reconstructed source owner is created
+		// beneath the publication scope, and no consumed stream is replayed.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		report.Recovered = true
+	} else if commit.Kind != model.ChangesetRestore || commit.Incarnation != restored.Incarnation || commit.Revision != restored.Head {
 		return report, fmt.Errorf("restore commit did not retain the completed stream")
 	}
 	report.Restored = restored
 	report.GraphCertification = importGraphReport(certifyGraph, restored)
 	receiverView, err := receivePlan(archive, plan, nil)
 	if err != nil {
-		return report, err
+		if commitCause != nil {
+			report.Restored = driver.Meta{}
+			return report, commitCause
+		}
+		return report, nativeReceivingPostCommitError(report, err)
 	}
-	recovered, err := recoverSourceImport(ctx, target, profile, check, &receivingEvidence{archive: archive, plan: &receiverView, logical: sourceLogical, stream: stream, requestHash: report.RequestHash})
+	evidence := &receivingEvidence{archive: recoveryArchive, plan: &receiverView, logical: sourceLogical, stream: stream, requestHash: report.RequestHash}
+	// Receipt/history/family verification is the last consumer of the prepared
+	// plan and publication image. It must precede their ownership handoff.
+	evidenceVerified := false
+	evidence.beforeInspection = func(inspectCtx context.Context, recovered *Report) (context.Context, error) {
+		evidenceVerified = true
+		// Retain only fields exported by the result. The logical input is still
+		// owned by the caller's preparation, independently of these dead buffers.
+		output, releaseOutput := retainedArchive.NativeDeltaAccountingScope()
+		defer releaseOutput()
+		retained := report
+		retained.Archive, retained.Receipt = nil, recovered.Receipt
+		// The verification view is consumed; the public result already has its
+		// independently detached family views. Do not keep a second dead copy.
+		recovered.NativeFamilies, recovered.NativeSchemas, recovered.NativeHistories, recovered.NativeDeltaHistory = nil, nil, nil, nil
+		if e := output.ChargeNativeDeltaJSON("receiving_retained_result", retained); e != nil {
+			report.NativeFamilies, report.NativeSchemas, report.NativeHistories, report.SourcePlanes = nil, nil, nil, nil
+			return inspectCtx, e
+		}
+		// Once admitted, this populated known-commit report owns its retained
+		// bytes even if writer/stream cleanup fails before inspection.
+		report.Receipt = recovered.Receipt
+		if budget := dumpformat.NativeDeltaBudgetFromContext(output.WithNativeDeltaAccounting(inspectCtx)); budget != nil {
+			budget.Retain()
+		}
+		outputOwned = true
+		if e := tx.Close(); e != nil {
+			return inspectCtx, e
+		}
+		image, results, changes, requests, revisions = nativeprojection.Snapshot{}, nil, nil, nil, nil
+		receiverView = restorePlan{}
+		evidence.plan, evidence.stream = nil, nil
+		commit = model.Changeset{}
+		body = nil
+		plan.Close()
+		releasePublication()
+		if e := releasePrepared(); e != nil {
+			return inspectCtx, e
+		}
+		return recoveryArchive.WithNativeDeltaAccounting(inspectCtx), nil
+	}
+	recovered, err := recoverSourceImport(ctx, target, profile, check, evidence)
 	if err != nil {
-		return report, err
+		if commitCause != nil && !evidenceVerified {
+			report.Restored = driver.Meta{}
+			return report, commitCause
+		}
+		return report, nativeReceivingPostCommitError(report, err)
 	}
 	report.Receipt = recovered.Receipt
 	return report, nil
@@ -284,6 +355,15 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 // recoverNativeReceivingIndeterminate resolves only the actual original key.
 // The consumed stream is never replayed; cancellation cannot turn an uncertain
 // durable outcome into a determinate rollback or a new receiving transaction.
+func nativeReceivingIndeterminateMatches(cause error, key string) bool {
+	var value driver.ErrIndeterminate
+	var pointer *driver.ErrIndeterminate
+	if errors.As(cause, &value) {
+		return value.IdempotencyKey == key
+	}
+	return errors.As(cause, &pointer) && pointer.IdempotencyKey == key
+}
+
 func recoverNativeReceivingIndeterminate(ctx context.Context, target driver.Store, profile driver.RestoreImportProfile, check Verification, cause error) (Report, error) {
 	var uncertain driver.ErrIndeterminate
 	var uncertainPointer *driver.ErrIndeterminate
@@ -304,4 +384,10 @@ func recoverNativeReceivingIndeterminate(ctx context.Context, target driver.Stor
 		return Report{}, cause
 	}
 	return recovered, nil
+}
+
+// Publication already succeeded; a verification failure must not classify the
+// durable import as a conflict or invite replay under another receipt key.
+func nativeReceivingPostCommitError(report Report, cause error) error {
+	return fmt.Errorf("native import committed at %s; receipt key %q; post-commit verification failed: %v", report.Restored.Head, report.IdempotencyKey, cause)
 }

@@ -64,13 +64,14 @@ type Verification struct {
 // A successful commit checks its durable receipt against these same validated
 // inputs. Restart recovery constructs its own source from the fixed reader.
 type receivingEvidence struct {
-	archive     *dumpformat.Archive
-	plan        *restorePlan
-	history     *driver.OfflineHistory
-	logical     []byte
-	requestHash string
-	stream      *historyverify.NativeArchiveStream
-	collection  *nativeCollectionReceiving
+	archive          *dumpformat.Archive
+	plan             *restorePlan
+	history          *driver.OfflineHistory
+	logical          []byte
+	requestHash      string
+	stream           *historyverify.NativeArchiveStream
+	collection       *nativeCollectionReceiving
+	beforeInspection func(context.Context, *Report) (context.Context, error)
 }
 
 // Restore validates the complete archive and restores it into an empty store.
@@ -190,9 +191,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 	if archive.Manifest().SourcePlaneAddressContract != "" && (profile == nil || profile.SourcePlanes == nil) {
 		return Report{Archive: archive}, fmt.Errorf("%w: source plane archive requires the joint restore adapter", driver.ErrUnsupported)
 	}
+	logicalArchive, releaseLogical := originalArchive.NativeDeltaAccountingScope()
+	defer releaseLogical()
 	var sourceLogical []byte
 	if profile != nil && profile.SourcePlanes != nil {
-		prepared, prepareErr := prepareSourceArchive(ctx, archive, *profile, true)
+		prepared, prepareErr := prepareSourceArchive(logicalArchive.WithNativeDeltaAccounting(ctx), logicalArchive, *profile, true)
 		if prepareErr != nil {
 			return Report{Archive: archive}, prepareErr
 		}
@@ -283,7 +286,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		return report, fmt.Errorf("%w: exact archive and rebuilt derived digest verification required", ErrRestoreUnavailable)
 	}
 	if archive.HasNativeDelta() && profile != nil && profile.HistoryMode == driver.RestoreHistoryModeFull {
-		return restoreNativeReceivingStream(ctx, archive, target, supplied, *profile, plan.leaf, sourceLogical)
+		return restoreNativeReceivingStream(ctx, archive, target, supplied, *profile, plan.leaf, sourceLogical, originalArchive, func() { plan = restorePlan{}; releasePlan() })
 	}
 	var history *driver.OfflineHistory
 	var replay driver.OfflineHistoryPlan
@@ -917,7 +920,7 @@ func receivePlan(archive *dumpformat.Archive, plan nativeprojection.Plan, err er
 	if err != nil {
 		return restorePlan{}, err
 	}
-	image, err := plan.Snapshot()
+	image, err := plan.SnapshotWithAccounting(archive)
 	if err != nil {
 		return restorePlan{}, err
 	}

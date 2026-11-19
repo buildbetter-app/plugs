@@ -120,6 +120,18 @@ func b19NativeSelectedModes(t *testing.T, engine string) {
 			if report.Restored.Head != model.Natural64(tc.head) || report.Restored.HistoryFloor != model.Natural64(tc.floor) || report.Restored.StoreID != driver.StoreID(want.StoreID) || report.Restored.Incarnation == empty.Incarnation || s.writes != 1 || s.snapshots != 1 || s.recoveryStart == 0 {
 				t.Fatal("selected mode identity/floor or actual publication/recovery control differs", report.Restored, s.writes, s.snapshots)
 			}
+			if tc.mode == driver.RestoreHistoryModeFull {
+				retained := report
+				retained.Archive = nil
+				retainedWire, marshalErr := json.Marshal(retained)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				retainedBytes := uint64(len(retainedWire) + 1)
+				expectedUsage.CurrentAccountedDecodedBytes += retainedBytes
+				expectedUsage.CurrentCategories["receiving_retained_result"] += retainedBytes
+				expectedUsage.CurrentCharges["receiving_retained_result"]++
+			}
 			// PR493's Full receiving path keeps its admission+combined pass cap.
 			// Other modes retain a literal trace, without inheriting that budget.
 			if tc.mode == driver.RestoreHistoryModeFull {
