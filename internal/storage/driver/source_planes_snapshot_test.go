@@ -17,8 +17,8 @@ func TestCheckedSourcePlaneSnapshotPreservesOptionalAllocatorCapabilityCondition
 		t.Fatal("incapable snapshot falsely advertises allocator capability")
 	}
 	with := &allocatorSourcePlaneSnapshot{
-		checkedSourcePlaneSnapshot: &checkedSourcePlaneSnapshot{Reader: nil},
-		AllocatorReader:            snapshotAllocatorReader{},
+		SourcePlaneSnapshot: &checkedSourcePlaneSnapshot{Reader: nil},
+		AllocatorReader:     snapshotAllocatorReader{},
 	}
 	if _, ok := any(with).(AllocatorReader); !ok {
 		t.Fatal("capable snapshot dropped allocator capability")

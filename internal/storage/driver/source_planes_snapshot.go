@@ -135,17 +135,27 @@ func (s *workflowCheckpointAdapter) ReadSourcePlaneSnapshot(ctx context.Context,
 	// Optional reader capabilities belong to the pinned observation. Preserve
 	// them only when the underlying reader actually provides them; an adapter
 	// must never advertise a capability that it cannot satisfy.
-	var snapshot SourcePlaneSnapshot = checked
-	if allocators, ok := r.(AllocatorReader); ok {
-		snapshot = &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: snapshot, AllocatorReader: allocators}
+	allocators, hasAllocators := r.(AllocatorReader)
+	parents, hasParents := r.(HierarchyChildrenReader)
+	links, hasLinks := r.(InverseSourceLinksReader)
+	switch {
+	case hasAllocators && hasParents && hasLinks:
+		return &inverseHierarchyAllocatorSourcePlaneSnapshot{hierarchyAllocatorSourcePlaneSnapshot: &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}, nil
+	case hasAllocators && hasParents:
+		return &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}, nil
+	case hasAllocators && hasLinks:
+		return &inverseAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, InverseSourceLinksReader: links}, nil
+	case hasParents && hasLinks:
+		return &inverseHierarchySourcePlaneSnapshot{hierarchySourcePlaneSnapshot: &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}, nil
+	case hasAllocators:
+		return &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, nil
+	case hasParents:
+		return &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}, nil
+	case hasLinks:
+		return &inverseLinksSourcePlaneSnapshot{SourcePlaneSnapshot: checked, InverseSourceLinksReader: links}, nil
+	default:
+		return checked, nil
 	}
-	if parents, ok := r.(HierarchyChildrenReader); ok {
-		snapshot = &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: snapshot, HierarchyChildrenReader: parents}
-	}
-	if links, ok := r.(InverseSourceLinksReader); ok {
-		snapshot = &inverseLinksSourcePlaneSnapshot{SourcePlaneSnapshot: snapshot, InverseSourceLinksReader: links}
-	}
-	return snapshot, nil
 }
 
 type checkedSourcePlaneSnapshot struct {
@@ -167,6 +177,26 @@ type hierarchySourcePlaneSnapshot struct {
 
 type inverseLinksSourcePlaneSnapshot struct {
 	SourcePlaneSnapshot
+	InverseSourceLinksReader
+}
+
+type hierarchyAllocatorSourcePlaneSnapshot struct {
+	*allocatorSourcePlaneSnapshot
+	HierarchyChildrenReader
+}
+
+type inverseAllocatorSourcePlaneSnapshot struct {
+	*allocatorSourcePlaneSnapshot
+	InverseSourceLinksReader
+}
+
+type inverseHierarchySourcePlaneSnapshot struct {
+	*hierarchySourcePlaneSnapshot
+	InverseSourceLinksReader
+}
+
+type inverseHierarchyAllocatorSourcePlaneSnapshot struct {
+	*hierarchyAllocatorSourcePlaneSnapshot
 	InverseSourceLinksReader
 }
 
