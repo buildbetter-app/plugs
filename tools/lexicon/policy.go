@@ -97,6 +97,7 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/current-and-desired-state.md":     {},
 			"engdocs/design/plug/decisions-needed.md":              {},
 			"engdocs/design/plug/design.md":                        {},
+			"engdocs/design/plug/p6-proxy-cleanup-census.md":         {},
 			"engdocs/design/plug/review-2026-10-27.md":             {},
 			"engdocs/design/plug/spec/behaviors.md":                {},
 			"engdocs/design/plug/spec/behaviors/content.md":        {},
