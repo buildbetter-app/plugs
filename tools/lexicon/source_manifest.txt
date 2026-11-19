@@ -492,6 +492,7 @@ internal/core/service/workflow_batch.go
 internal/core/service/workflow_bridge.go
 internal/core/service/workflow_close.go
 internal/core/service/workflow_delete.go
+internal/core/service/workflow_metadata.go
 internal/core/service/workflow_moves.go
 internal/core/service/workflow_permanent_test.go
 internal/core/service/workflow_refs.go
@@ -564,8 +565,18 @@ internal/integration/b03catalog/native_catalog_recording_test.go
 internal/integration/b03catalog/native_categories_test.go
 internal/integration/b03publiccatalog/BUILD.bazel
 internal/integration/b03publiccatalog/README.md
+internal/integration/b03publiccatalog/admitted_catalog_test.go
+internal/integration/b03publiccatalog/admitted_history_test.go
+internal/integration/b03publiccatalog/admitted_inputs_test.go
+internal/integration/b03publiccatalog/catalog_targets_fixture_test.go
+internal/integration/b03publiccatalog/catalog_targets_test.go
 internal/integration/b03publiccatalog/catalog_test.go
 internal/integration/b03publiccatalog/native_recording_test.go
+internal/integration/b03publiccatalog/testdata/b03-rich-catalog.inputs.json
+internal/integration/b03publiccatalog/testdata/b03-rich-r4-inputs.tar.gz
+internal/integration/b03publiccatalog/testdata/b03-rich-r5-catalog.inputs.json
+internal/integration/b03publiccatalog/testdata/b03-rich-r5-inputs.tar.gz
+internal/integration/b03publiccatalog/testdata/b03-rich-r5-provenance.md
 internal/integration/b04claimidentity/BUILD.bazel
 internal/integration/b04claimidentity/README.md
 internal/integration/b04claimidentity/claim_identity_test.go
@@ -595,6 +606,8 @@ internal/integration/b13memory/source_core_control_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
+internal/integration/b15comments/BUILD.bazel
+internal/integration/b15comments/public_test.go
 internal/integration/b16sourcehistory/BUILD.bazel
 internal/integration/b16sourcehistory/README.md
 internal/integration/b16sourcehistory/engine_test.go
@@ -644,6 +657,7 @@ internal/integration/converterroundtrip/b11_imported_identity_test.go
 internal/integration/converterroundtrip/b11_native_imported_identity_test.go
 internal/integration/converterroundtrip/b13_fullcard_search_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
+internal/integration/converterroundtrip/b15_native_comments_test.go
 internal/integration/converterroundtrip/b19_native_modes_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/graph_certification.go
@@ -739,6 +753,10 @@ internal/integration/converterroundtrip/source_planes_test.go
 internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
+internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.json
+internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.tar.gz
+internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.json
+internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz
 internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
 internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz
@@ -1056,6 +1074,7 @@ internal/server/authzrpc/hierarchy_lifecycle_test.go
 internal/server/authzrpc/hierarchy_lifecycle_times_test.go
 internal/server/authzrpc/hierarchy_read.go
 internal/server/authzrpc/hierarchy_test.go
+internal/server/authzrpc/history.go
 internal/server/authzrpc/history_authority_test.go
 internal/server/authzrpc/lifecycle.go
 internal/server/authzrpc/predicate_count_test.go
@@ -1814,6 +1833,8 @@ spec/cardb16/native_reference_test.go
 spec/cardb16/public_fixture_test.go
 spec/cardb16/public_test.go
 spec/cardb16/public_vector_test.go
+spec/cardb17b18/BUILD.bazel
+spec/cardb17b18/native_test.go
 spec/cardb19/BUILD.bazel
 spec/cardb19/README.md
 spec/cardb19/archive_test.go
@@ -1825,8 +1846,6 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
-spec/cardb20/b13_fullcard_controls_test.go
-spec/cardb20/caller_closure_test.go
 spec/cardb21/BUILD.bazel
 spec/cardb21/README.md
 spec/cardb21/acceptance_test.go
@@ -2114,7 +2133,14 @@ spec/s1-b13-native/oracle_test.go
 spec/s1-b13-native/recording_test.go
 spec/s1-b17-b20/BUILD.bazel
 spec/s1-b17-b20/README.md
+spec/s1-b17-b20/b17_b18_authoring.sh
+spec/s1-b17-b20/b17_ephemeral_test.go
+spec/s1-b17-b20/b17_precision_test.go
 spec/s1-b17-b20/b17_test.go
+spec/s1-b17-b20/b18_current_permission_test.go
+spec/s1-b17-b20/b18_guarded_test.go
+spec/s1-b17-b20/b18_instant_test.go
+spec/s1-b17-b20/b18_metadata_history_test.go
 spec/s1-b17-b20/b18_test.go
 spec/s1-b17-b20/b19_archive_test.go
 spec/s1-b17-b20/b19_fixture_test.go
@@ -2124,6 +2150,8 @@ spec/s1-b17-b20/b20_journal_log_test.go
 spec/s1-b17-b20/b20_source_compile.sh
 spec/s1-b17-b20/b20_test.go
 spec/s1-b17-b20/i6_test.go
+spec/s1-b17-b20/paired_fixture_test.go
+spec/s1-b17-b20/paired_replay_test.go
 spec/s1-b17-b20/reference/b18/record.py
 spec/s1-b17-b20/reference/b18/recording.json
 spec/s1-b17-b20/reference/b18/run-a.json
@@ -2344,6 +2372,7 @@ tools/lexicon/rules.d/b01-native.toml
 tools/lexicon/rules.d/b03-native.toml
 tools/lexicon/rules.d/b08-native.toml
 tools/lexicon/rules.d/b13-native.toml
+tools/lexicon/rules.d/b17-b18-native.toml
 tools/lexicon/rules.d/b21-b24-native.toml
 tools/lexicon/rules.d/b25-b28-public.toml
 tools/lexicon/rules.d/i8-hostcallers.toml

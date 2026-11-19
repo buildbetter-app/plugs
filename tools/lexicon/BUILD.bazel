@@ -47,9 +47,9 @@ go_test(
     args = ["-undo-source-inventory=$(rlocationpath @lexicon_sources//:source_inventory.json)"],
     data = [
         ":rule_files",
+        "//tools/roundtrip:readback_reference_fixtures",
         "//:lexicon_tree",
         "@lexicon_sources//:source_inventory.json",
-        "//tools/roundtrip:readback_reference_fixtures",
     ],
     embed = [":checker"],
 )
