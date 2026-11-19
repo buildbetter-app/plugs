@@ -5,7 +5,8 @@ outcome/event, exact same-key replay and physical SQL reopen verifiers shared
 with this recorder on memory, SQLite and PostgreSQL. It creates its own Plug
 records through public RPC and never constructs a native capture. Its results
 are public acceptance only; all seven real native plans, 78 primary
-observations plus two stale rereads, and 30-store/198-phase paired replay
+observations plus two stored-flag answers and two stale rereads, and
+30-store/198-phase paired replay
 requirements below remain separate and unchanged.
 
 The public target retains the actual typed refusal when `bead.reopen` is
@@ -86,12 +87,13 @@ used as a new observation.
 | Categories and outcomes | Pinned, reopen, custom active/done/frozen, success, failure, canceled intent and intervening reopens | A3/P22 category/outcome differences, complete condition-unmet durable events, dependent conservation |
 | Terminal subjects | Pinned subject with open blocker; forced native close of another blocked subject | Plug backlog/cancel through real public slots; distinct mutation semantics are explicit |
 | Mixed chain | Durable and ephemeral rows alternate; close each successive blocker | Actual two-plane native ownership and membership only; Plug parity is null |
-| Stale projection | Persist an incorrect false flag; answer, reread, preserve `updated_at` | Actual native SQL corruption seam only; Plug repair parity and internal recursion trace are unmeasured |
+| Stale projection | Persist an incorrect false flag; observe its stored-flag answer; run public `recompute-blocked`; answer and reread, preserving `updated_at` | Beads ready trusts the stored `is_blocked`; Plug recomputes before answering (work.md:35-59, design.md:924). Actual native SQL corruption seam only; cross-system repair parity and internal recursion trace are unmeasured |
 
 There are seven plans, each recorded twice with fixed role IDs and separate
 physical stores. The plan has 32 mutation/refusal steps plus seven initial
-phases per run. All 78 primary native observations and both stale-case stable
-rereads must complete before any Plug replay begins. Twins compare only the
+phases per run. All 78 primary native observations, both extra stored-flag
+observations and both stale-case stable rereads must complete before any Plug
+replay begins. Twins compare only the
 declared semantic fields; the
 original timestamps, revisions, command streams, database schemas and cells
 are retained separately without normalization or replacement.
@@ -111,14 +113,26 @@ flag in the accepted implementation; its own original output is retained,
 while the explicit inclusive ready query controls mixed-plane membership.
 
 The `also_blocks` step discovers its single actual stored dependency row and
-updates metadata through the real SQL command. The stale case discovers the
-actual owner row and changes only its stored flag, preserving `updated_at`.
-Both requests, their affected-row counts, and complete before/after images
-are retained. Neither seam is represented as a native product writer. The
-stale case requires the flag to be false before the answering reads, true
-after them, with the exact timestamp conserved, and requires a second whole
-read sequence to conserve the repaired image. That stability does not prove
-an internal nonrecursive call trace or a concurrent recheck schedule.
+updates metadata through the real SQL command. It also injects the blocked
+owner flag that the pinned producer's writer would maintain, conserving every
+other owner cell. The stale case discovers the actual owner row and changes
+only its stored flag, preserving `updated_at`. Both requests, their affected-row
+counts, and complete before/after images are retained. Neither seam is
+represented as a native product writer.
+
+Pinned Beads `ready` trusts stored `is_blocked`. The stale case first requires
+the false flag to expose the dependent as ready and the complete database image
+to stay unchanged across answering reads. It then invokes the actual public
+`recompute-blocked --json` command, requires exactly one corrected flag and no
+other owner-cell changes, and checks the original ready/blocked expectations.
+Both subsequent whole read sequences must conserve the publicly repaired image
+and its exact `updated_at`. No repair is inserted before the stored-flag answer.
+The separate public Plug test
+`TestB02PublicReadyRecomputesStaleFalseWithoutChangingUpdatedAt` seeds a stale
+false fixture and checks actual `bead.ready`, paging, SQL reopen and complete
+retained-state conservation on memory/SQLite/PostgreSQL. It proves the Plug
+answer independently; it does not claim a native-compatible repair writer or
+an internal nonrecursive call trace or concurrent recheck schedule.
 
 Five durable plans replay both actual captures independently on memory,
 SQLite and PostgreSQL: 30 stores and 198 observed phases. There is no

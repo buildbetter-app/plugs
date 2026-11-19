@@ -61,7 +61,7 @@ func b02Plans() []b02Plan {
 			InitialReady: []string{"root"},
 			Steps: []b02Step{
 				{Name: "blocked-close-refused", Action: "close", Role: "join", NativeRefusal: "cannot close blocked issue", PlugRefusal: "ontology_guard_failed", NativeReady: []string{"root"}, PlugReady: []string{"root"}},
-				{Name: "self-link-refused", Action: "self", Role: "root", NativeRefusal: "cannot depend on itself", PlugRefusal: "invalid_params", NativeReady: []string{"root"}, PlugReady: []string{"root"}},
+				{Name: "self-link-refused", Action: "self", Role: "root", NativeRefusal: "cannot depend on itself", PlugRefusal: "ontology_guard_failed", NativeReady: []string{"root"}, PlugReady: []string{"root"}},
 				{Name: "root-closed", Action: "close", Role: "root", PlugMethod: "bead.close", NativeReady: []string{"left", "right"}, PlugReady: []string{"left", "right"}},
 				{Name: "left-closed", Action: "close", Role: "left", PlugMethod: "bead.close", NativeReady: []string{"right"}, PlugReady: []string{"right"}},
 				{Name: "right-closed", Action: "close", Role: "right", PlugMethod: "bead.close", NativeReady: []string{"join"}, PlugReady: []string{"join"}},
@@ -100,7 +100,7 @@ func b02Plans() []b02Plan {
 			InitialReady: []string{"blocker"},
 			Steps: []b02Step{
 				{Name: "pinned-backlog", Action: "status", Role: "blocker", NativeStatus: "pinned", PlugMethod: "bead.defer", NativeReady: []string{"ordinary", "conditional"}, PlugReady: []string{}, Deviation: "A3/P22: native pinned satisfies both edges; Plug backlog satisfies neither"},
-				{Name: "open-again", Action: "reopen", Role: "blocker", PlugMethod: "bead.reopen", NativeReady: []string{"blocker"}, PlugReady: []string{"blocker"}},
+				{Name: "open-again", Action: "status", Role: "blocker", NativeStatus: "open", PlugMethod: "bead.reopen", NativeReady: []string{"blocker"}, PlugReady: []string{"blocker"}},
 				{Name: "custom-active", Action: "status", Role: "blocker", NativeStatus: "b02active", PlugMethod: "bead.reopen", PlugRefusal: "invalid_params", NativeReady: []string{"blocker"}, PlugReady: []string{"blocker"}, Deviation: "Native changes the active status name; Plug is already queued and its reopen slot refuses without mutation"},
 				{Name: "custom-done", Action: "status", Role: "blocker", NativeStatus: "b02done", PlugMethod: "bead.close", NativeReady: []string{}, PlugReady: []string{"ordinary"}, Deviation: "A3: native blocker satisfaction uses literal closed/pinned; Plug completed-success satisfies ordinary blocks only"},
 				{Name: "custom-frozen", Action: "status", Role: "blocker", NativeStatus: "b02frozen", PlugMethod: "bead.defer", NativeReady: []string{}, PlugReady: []string{}},
@@ -138,9 +138,9 @@ func b02Plans() []b02Plan {
 			Nodes:        []b02NodeSpec{{Role: "blocker"}, {Role: "dependent"}},
 			Edges:        []b02EdgeSpec{{"dependent", "blocker", "blocks"}},
 			InitialReady: []string{"blocker"},
-			NativeOnly:   "Deliberately stale native stored projection uses a labelled SQL corruption seam. Plug has no corresponding accepted product writer; cross-system projection-repair parity is null. Stable second reads do not prove an internal nonrecursive call trace",
+			NativeOnly:   "Deliberately stale native stored projection uses a labelled SQL corruption seam and explicit public recompute-blocked repair. Plug has no corresponding accepted product writer; cross-system projection-repair parity is null. Stable second reads do not prove an internal nonrecursive call trace",
 			Steps: []b02Step{
-				{Name: "stale-false-recomputed", Action: "stale", Role: "dependent", NativeReady: []string{"blocker"}},
+				{Name: "stale-false-recomputed", Action: "stale", Role: "dependent", NativeReady: []string{"blocker"}, Deviation: "Beads ready trusts the stored is_blocked; Plug recomputes before answering (work.md:35-59, design.md:924)"},
 			},
 		},
 	}
@@ -204,6 +204,7 @@ func b02ExpectedBlocked(t *testing.T, plan, label string) map[string][]string {
 		},
 		"stale-projection": {
 			"initial":                       {"dependent": {"blocker"}},
+			"stale-false-recomputed-stored": {},
 			"stale-false-recomputed":        {"dependent": {"blocker"}},
 			"stale-false-recomputed-second": {"dependent": {"blocker"}},
 		},
@@ -440,9 +441,30 @@ func b02Record(t *testing.T, binary, output string, inputs nativeInputs, plan b0
 					statuses[step.Role] = "open"
 				}
 			}
-			capture.Phases[step.Name] = b02Observe(t, c, plan, step.Name, statuses, step.NativeReady)
 			if step.Action == "stale" {
+				// Observe the pinned producer's stored-flag answer before the
+				// separate public repair; never silently pre-repair this seam.
+				capture.Phases[step.Name+"-stored"] = b02Observe(t, c, plan, step.Name+"-stored", statuses, []string{"blocker", "dependent"})
+				stored := b02Census(t, c, step.Name+"-stored-complete")
+				if !bytes.Equal(b02Bytes(t, after), b02Bytes(t, stored)) {
+					t.Fatal("native stored-flag answering reads changed the injected complete image")
+				}
+				var repair struct {
+					Rows json.Number `json:"rows_corrected"`
+				}
+				nativeDecode(t, c.run(step.Name+"-public-repair", "recompute-blocked", "--json"), &repair)
+				if repair.Rows.String() != "1" {
+					t.Fatal("public recompute-blocked did not repair exactly one stale flag")
+				}
+				repaired := b02Census(t, c, step.Name+"-after-public-repair")
+				capture.Phases[step.Name] = b02Observe(t, c, plan, step.Name, statuses, step.NativeReady)
 				b02CheckRepair(t, c, plan, step, before, after)
+				stable := b02Census(t, c, step.Name+"-repaired-reads-complete")
+				if !bytes.Equal(b02Bytes(t, repaired), b02Bytes(t, stable)) {
+					t.Fatal("native answering reads changed the publicly repaired complete image")
+				}
+			} else {
+				capture.Phases[step.Name] = b02Observe(t, c, plan, step.Name, statuses, step.NativeReady)
 			}
 		}) {
 			t.Fatalf("native step %s is incomplete; following steps are NOT_RUN", step.Name)
@@ -723,7 +745,10 @@ func b02CheckRepair(t *testing.T, c *nativeCommand, plan b02Plan, step b02Step, 
 	after := b02Census(t, c, step.Name+"-repaired")
 	_, repaired := b02OwnerRow(t, after, b02ID(plan, step.Role))
 	if (fmt.Sprint(repaired["is_blocked"]) != "1" && repaired["is_blocked"] != true) || !reflect.DeepEqual(original["updated_at"], repaired["updated_at"]) || !reflect.DeepEqual(stale["updated_at"], repaired["updated_at"]) {
-		t.Fatal("answer did not recompute stale flag while conserving updated_at")
+		t.Fatal("public recompute-blocked did not repair stale flag while conserving updated_at")
+	}
+	if !reflect.DeepEqual(original, repaired) {
+		t.Fatal("public recompute-blocked changed unrelated owner cells")
 	}
 	b02Observe(t, c, plan, step.Name+"-second", map[string]string{"blocker": "open", "dependent": "open"}, step.NativeReady)
 	stable := b02Census(t, c, step.Name+"-second-complete")

@@ -2,6 +2,7 @@ package s1b01b04
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,80 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+// A certified corruption fixture supplies a stale false flag, not a public
+// writer for it. The real public ready read must still evaluate the live edge.
+func TestB02PublicReadyRecomputesStaleFalseWithoutChangingUpdatedAt(t *testing.T) {
+	h := newPostgresHarness(t)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			dsn := ""
+			if engine == "postgres" {
+				dsn = h.dsn(t)
+			}
+			ids := []string{"b02stale-blocker", "b02stale-dependent"}
+			f := newFixture(t, engine, dsn, compileOntology(t, customDocument(), nil), ids)
+			root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+			if root == "" {
+				root = t.TempDir()
+			}
+			output, err := os.MkdirTemp(root, "b02-public-stale-"+engine+"-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := &b02Replay{f: f, output: output, refs: map[string]model.Ref{}, statuses: map[string]string{}}
+			r.initializeOntology()
+			roles := []string{"blocker", "dependent"}
+			for i, role := range roles {
+				commit := r.write("create-"+role, "bead.create", map[string]any{"type": "issue", "fields": map[string]any{"title": "B02 public " + role, "priority": i}}, ids[i])
+				r.refs[role], r.statuses[role] = commit.Results[0].Ref, "queued"
+			}
+			r.write("edge", "bead.link", map[string]any{"from": r.refs["dependent"], "to": r.refs["blocker"], "kind": "blocks"}, r.refs["dependent"].ID)
+			before := r.snapshot()
+			var body []byte
+			for _, row := range before.Records {
+				if row.Ref.ID == r.refs["dependent"].ID {
+					doc, err := pipeline.DecodeDocument(row.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					doc.Fields["blocked"], doc.Fields["updated_at"] = false, "2026-11-19T00:00:00Z"
+					body, err = json.Marshal(doc)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if len(body) == 0 {
+				t.Fatal("public dependent source row missing")
+			}
+			graph := &conformance.FixtureGraphSource{Links: []driver.SourceLink{{Kind: "blocks", To: r.refs["blocker"]}}}
+			if _, err := conformance.Seed(f.ctx, f.store, f.lease, driver.ChangesetHeader{}, []conformance.FixtureChange{{Ref: r.refs["dependent"], Kind: "bead", Op: model.OpPatch, Body: body, Graph: graph}}); err != nil {
+				t.Fatal(err)
+			}
+			matches := 0
+			for _, row := range r.snapshot().Records {
+				if row.Ref.ID == r.refs["dependent"].ID {
+					matches++
+					if !bytes.Equal(row.Body, body) {
+						t.Fatal("stored stale false flag, edge or updated_at differs from the fixture")
+					}
+				}
+			}
+			if matches != 1 {
+				t.Fatal("stale fixture lacks one authoritative dependent")
+			}
+			nativeJSON(t, filepath.Join(output, "fixture-seam.json"), map[string]any{"body": json.RawMessage(body), "graph": graph, "scope": "certified stale false fixture; public writer parity and native recording are unmeasured"})
+			// This checks the actual ready RPC, signed paging, SQL reopen, and
+			// byte-identical complete retained state, including updated_at.
+			b02ObservePublicOutcome(t, r, "stale-false-answer", roles, []string{"blocker"})
+		})
+	}
+}
 
 // This is public Plug acceptance. No native capture is constructed, loaded or
 // credited. The physical recorder uses the same write, receipt, event and
