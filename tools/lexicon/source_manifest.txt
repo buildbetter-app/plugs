@@ -1397,6 +1397,7 @@ internal/storage/driver/source_planes_codec.go
 internal/storage/driver/source_planes_restore.go
 internal/storage/driver/source_planes_restore_test.go
 internal/storage/driver/source_planes_snapshot.go
+internal/storage/driver/source_planes_snapshot_test.go
 internal/storage/driver/source_planes_test.go
 internal/storage/driver/source_planes_validate.go
 internal/storage/hierarchy-index-design.md

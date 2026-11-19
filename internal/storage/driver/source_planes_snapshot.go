@@ -135,10 +135,17 @@ func (s *workflowCheckpointAdapter) ReadSourcePlaneSnapshot(ctx context.Context,
 	// Optional reader capabilities belong to the pinned observation. Preserve
 	// them only when the underlying reader actually provides them; an adapter
 	// must never advertise a capability that it cannot satisfy.
+	var snapshot SourcePlaneSnapshot = checked
 	if allocators, ok := r.(AllocatorReader); ok {
-		return &allocatorSourcePlaneSnapshot{checkedSourcePlaneSnapshot: checked, AllocatorReader: allocators}, nil
+		snapshot = &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: snapshot, AllocatorReader: allocators}
 	}
-	return checked, nil
+	if parents, ok := r.(HierarchyChildrenReader); ok {
+		snapshot = &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: snapshot, HierarchyChildrenReader: parents}
+	}
+	if links, ok := r.(InverseSourceLinksReader); ok {
+		snapshot = &inverseLinksSourcePlaneSnapshot{SourcePlaneSnapshot: snapshot, InverseSourceLinksReader: links}
+	}
+	return snapshot, nil
 }
 
 type checkedSourcePlaneSnapshot struct {
@@ -149,8 +156,18 @@ type checkedSourcePlaneSnapshot struct {
 }
 
 type allocatorSourcePlaneSnapshot struct {
-	*checkedSourcePlaneSnapshot
+	SourcePlaneSnapshot
 	AllocatorReader
+}
+
+type hierarchySourcePlaneSnapshot struct {
+	SourcePlaneSnapshot
+	HierarchyChildrenReader
+}
+
+type inverseLinksSourcePlaneSnapshot struct {
+	SourcePlaneSnapshot
+	InverseSourceLinksReader
 }
 
 func (r *checkedSourcePlaneSnapshot) SourcePlaneCheckpoint(key string) (Checkpoint, error) {
