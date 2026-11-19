@@ -611,7 +611,7 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 	// the ordinary fixture's fallback ID sequence does not control this route.
 	allocatorBefore := nativeB23Allocator(t, f, before.Meta, expected)
 	fallbackBefore := f.idIndex
-	ref, created := f.create(t, "b23-live-cap-member", "actual public Plug cap member")
+	ref, created := nativeB23Create(t, f, "b23-live-cap-member", "actual public Plug cap member")
 	if err := allocatorBefore.ValidateCandidate("", ref.ID); err != nil || !ref.IsID() || !ref.Branch.IsZero() || f.idIndex != fallbackBefore || created.Revision != model.Natural64(2) || before.Meta.Head != model.Natural64(1) || len(created.Warnings) != 0 {
 		t.Fatal("B23 real public create failed its restored allocator/commit binding", ref, created, err)
 	}
@@ -726,6 +726,47 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 	if o.count() != 1 {
 		t.Fatal("imported B23 reads posted beyond the one real create")
 	}
+}
+
+// Retry only the public client's explicit retryable contract. Reuse the exact
+// request and idempotency key so an ambiguous committed attempt cannot create twice.
+func nativeB23Create(t *testing.T, f *fixture, label, title string) (model.Ref, model.Commit) {
+	t.Helper()
+	request := f.request("bead.create", label, map[string]any{
+		"type": "issue", "fields": map[string]any{"title": title},
+	})
+	for attempt := 1; attempt <= 5; attempt++ {
+		got := f.dispatch(request)
+		if got.Error == nil {
+			created := commit(t, got)
+			if len(created.Results) != 1 {
+				t.Fatalf("create result: %+v", created)
+			}
+			ref := created.Results[0].Ref
+			var bead struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(created.Results[0].Record, &bead); err != nil || bead.ID != ref.ID {
+				t.Fatal("B23 public create returned mismatched bead identity", ref, bead, err)
+			}
+			t.Logf("B23 public create %s succeeded attempt=%d/5 id=%s replayed=%t", label, attempt, ref.ID, got.Meta.Replayed)
+			return ref, created
+		}
+		t.Logf("B23 public create %s attempt=%d/5 code=%s message=%q hint=%q retryable=%t", label, attempt, got.Error.Data.Code, got.Error.Message, got.Error.Data.Hint, got.Error.Data.Retryable)
+		if !got.Error.Data.Retryable || attempt == 5 {
+			t.Fatalf("B23 public create %s failed after %d attempt(s): code=%s message=%q", label, attempt, got.Error.Data.Code, got.Error.Message)
+		}
+		backoff := time.Second * time.Duration(1<<(attempt-1))
+		t.Logf("B23 public create %s retry backoff=%s", label, backoff)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-f.ctx.Done():
+			timer.Stop()
+			t.Fatal("B23 public create retry canceled", f.ctx.Err())
+		}
+	}
+	panic("unreachable B23 public create retry exhaustion")
 }
 
 type nativeB23AllocatorExpectation struct {
