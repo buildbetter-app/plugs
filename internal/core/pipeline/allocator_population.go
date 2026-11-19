@@ -15,6 +15,7 @@ import (
 // integer per prefix and no record bodies. A revision mismatch discards it.
 type populationCache struct {
 	mu          sync.Mutex
+	generation  uint64
 	incarnation string
 	at          model.Revision
 	counts      map[string]uint64
@@ -77,7 +78,9 @@ func (p *prepared) hashPopulation(ctx context.Context, prefix string) (uint64, e
 		cache.incarnation = view.Incarnation
 		cache.at = *view.At
 		cache.counts = map[string]uint64{}
+		cache.generation++
 	}
+	generation := cache.generation
 	base, ok := cache.counts[prefix]
 	cache.mu.Unlock()
 	if ok {
@@ -94,7 +97,7 @@ func (p *prepared) hashPopulation(ctx context.Context, prefix string) (uint64, e
 		return 0, err
 	}
 	cache.mu.Lock()
-	if cache.incarnation == view.Incarnation && cache.at.String() == view.At.String() {
+	if cache.counts != nil && cache.generation == generation && cache.incarnation == view.Incarnation && cache.at.String() == view.At.String() {
 		cache.counts[prefix] = base
 	}
 	cache.mu.Unlock()
@@ -110,8 +113,9 @@ func (w *Writer) advancePopulation(p *prepared, head, next model.Revision) {
 	if cache.incarnation != p.snapshot.Snapshot().Incarnation || cache.at.String() != head.String() {
 		return
 	}
-	if p.snapshot.Snapshot().At.String() != head.String() {
+	if cache.counts == nil || p.snapshot.Snapshot().At.String() != head.String() {
 		cache.counts = nil
+		cache.generation++
 		return
 	}
 	deltas := map[string]int64{}
@@ -142,6 +146,7 @@ func (w *Writer) advancePopulation(p *prepared, head, next model.Revision) {
 			decrease := uint64(-delta)
 			if decrease > count {
 				cache.counts = nil
+				cache.generation++
 				return
 			}
 			count -= decrease
@@ -151,4 +156,5 @@ func (w *Writer) advancePopulation(p *prepared, head, next model.Revision) {
 		cache.counts[prefix] = count
 	}
 	cache.at = next
+	cache.generation++
 }

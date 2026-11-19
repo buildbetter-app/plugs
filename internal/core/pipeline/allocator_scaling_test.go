@@ -317,3 +317,185 @@ func TestPopulationCandidateBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// The channels force the reviewed old-patch/external-head/cold-census schedule;
+// no timing assumption or production hook participates in the reproduction.
+func TestPopulationColdPublishGenerationAfterStalePatch(t *testing.T) {
+	h := setup(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	seedAllocator(t, h.store, h.lease, driver.NewHashAllocator("demo", 3, 8, 0.25))
+	seedAllocatorScaleBeads(t, h, 3)
+	w := h.writer()
+	oldMeta := meta(801)
+	oldMeta.Project = "demo"
+	cs := model.ChangeSet{Ops: []model.Op{patch(model.Ref{ID: "demo-00000000"}, map[string]any{"title": "old prepared patch"})}}
+	old, err := w.prepare(ctx, h.read(t), by, cs, oldMeta, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.pre(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.graph(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !old.graphPreserved {
+		t.Fatal("fixture must preserve graph without a census")
+	}
+	if err := w.claims(old, by, oldMeta); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.detectChanges(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.prepareReadySortKeys(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.prepareAudit(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	externalMeta := meta(802)
+	externalMeta.Project = "demo"
+	if _, err := h.writer().Apply(ctx, by, model.ChangeSet{Ops: []model.Op{patch(model.Ref{ID: "demo-00000001"}, map[string]any{"title": "external unrelated patch"})}}, externalMeta); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	var release sync.Once
+	defer release.Do(func() { close(resume) })
+	reader := h.read(t)
+	barrier := &populationCensusBarrier{Reader: reader, AllocatorReader: reader.(driver.AllocatorReader), entered: entered, resume: resume}
+	request := meta(803)
+	request.Project = "demo"
+	type result struct {
+		p   *prepared
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		var r result
+		defer func() {
+			if v := recover(); v != nil {
+				r.err = fmt.Errorf("cold census panicked: %v", v)
+			}
+			done <- r
+		}()
+		r.p, r.err = w.prepare(ctx, barrier, by, model.ChangeSet{Ops: []model.Op{create("paused-cold")}}, request, nil)
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("cold census did not reach barrier", ctx.Err())
+	}
+	w.population.mu.Lock()
+	before := w.population.generation
+	at := w.population.at
+	w.population.mu.Unlock()
+	if at.String() != reader.Snapshot().At.String() {
+		t.Fatal("census did not install exact H cache")
+	}
+	principal, err := driver.PrincipalKey(by)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := requestHash(cs, oldMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := w.transact(ctx, old, by, oldMeta, principal, hash, "generation-patch-attempt", nil)
+	if err != nil {
+		t.Fatal("older graph-preserving patch did not commit", err)
+	}
+	expectedHead, e := at.Uint64()
+	if e != nil {
+		t.Fatal(e)
+	}
+	if committed.Revision.String() != model.Natural64(expectedHead+1).String() {
+		t.Fatal("patch did not commit from actual H to H+1")
+	}
+	if committed.Revision.String() == old.snapshot.Snapshot().At.String() {
+		t.Fatal("patch did not advance head")
+	}
+	w.population.mu.Lock()
+	after := w.population.generation
+	invalidated := w.population.counts == nil
+	w.population.mu.Unlock()
+	if !invalidated || after <= before {
+		t.Fatalf("cache invalidation generation before=%d after=%d nil=%v", before, after, invalidated)
+	}
+	release.Do(func() { close(resume) })
+	var cold result
+	select {
+	case cold = <-done:
+	case <-ctx.Done():
+		t.Fatal("cold census did not finish", ctx.Err())
+	}
+	if cold.err != nil {
+		t.Fatal(cold.err)
+	}
+	// The pinned-H result remains valid, but must not republish into the invalidated cache.
+	w.population.mu.Lock()
+	discarded := w.population.counts == nil && w.population.generation == after
+	w.population.mu.Unlock()
+	if !discarded {
+		t.Fatal("stale cold completion was published")
+	}
+	expectedCold, err := h.writer().prepare(ctx, reader, by, model.ChangeSet{Ops: []model.Op{create("paused-cold")}}, request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cold.p.proposal.Changes[0].Resource.Ref.ID != expectedCold.proposal.Changes[0].Resource.Ref.ID {
+		t.Fatal("pinned cold ID changed")
+	}
+	work := &allocatorWorkCounts{counts: map[driver.ReadWorkKind]int64{}}
+	current := h.read(t)
+	request = meta(804)
+	request.Project = "demo"
+	next, err := w.prepare(driver.WithReadWorkObserver(ctx, work), current, by, model.ChangeSet{Ops: []model.Op{create("after-invalidation")}}, request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oracle, err := h.writer().prepare(ctx, current, by, model.ChangeSet{Ops: []model.Op{create("after-invalidation")}}, request, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.proposal.Changes[0].Resource.Ref.ID != oracle.proposal.Changes[0].Resource.Ref.ID {
+		t.Fatal("post-invalidation ID differs from census")
+	}
+	if work.counts[driver.ReadAllocatorDecodes] != 3 {
+		t.Fatalf("rebuild decodes=%d want3", work.counts[driver.ReadAllocatorDecodes])
+	}
+	warm := &allocatorWorkCounts{counts: map[driver.ReadWorkKind]int64{}}
+	if _, err := w.prepare(driver.WithReadWorkObserver(ctx, warm), current, by, model.ChangeSet{Ops: []model.Op{create("warm")}}, request, nil); err != nil {
+		t.Fatal(err)
+	}
+	if warm.counts[driver.ReadAllocatorDecodes] != 0 {
+		t.Fatal("new generation did not warm")
+	}
+	t.Logf("forced H-1 patch / external H / blocked H census / H+1 patch: generation %d -> %d, stale census discarded, rebuild=3 warm=0", before, after)
+}
+
+type populationCensusBarrier struct {
+	driver.Reader
+	driver.AllocatorReader
+	once    sync.Once
+	entered chan struct{}
+	resume  <-chan struct{}
+}
+
+func (r *populationCensusBarrier) Query(ctx context.Context, q driver.Query) (driver.Page[driver.Record], error) {
+	var err error
+	r.once.Do(func() {
+		close(r.entered)
+		select {
+		case <-r.resume:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+	})
+	if err != nil {
+		return driver.Page[driver.Record]{}, err
+	}
+	return r.Reader.Query(ctx, q)
+}
