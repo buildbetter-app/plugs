@@ -26,8 +26,10 @@ import (
 )
 
 // Snapshot every application table, preserving the complete column census,
-// SQL NULL, actual SQL value types and full bytes. No lock/receipt/checkpoint
-// table is removed to make a refusal pass.
+// SQL NULL, actual SQL value types and full bytes. Only the host lease's
+// non-NULL expires value is normalized: heartbeats advance it independently of
+// public calls. Its column/type and every identity/epoch/fencing field remain,
+// as do all lock/receipt/checkpoint tables and every business-state byte.
 func b26CompleteSQL(t *testing.T, db *sql.DB, engine string) map[string][]string {
 	t.Helper()
 	query := "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
@@ -88,6 +90,9 @@ func b26CompleteSQL(t *testing.T, db *sql.DB, engine string) map[string][]string
 			cells := make([]map[string]any, len(columns))
 			for i, value := range values {
 				cells[i] = map[string]any{"column": columns[i], "type": fmt.Sprintf("%T", value), "value": value}
+				if value != nil && columns[i] == "expires" && ((engine == "postgres" && table == "lease") || (engine == "sqlite" && table == "active_lease")) {
+					cells[i]["value"] = "<host-lease-heartbeat-expiry>"
+				}
 			}
 			body, err := json.Marshal(cells)
 			if err != nil {

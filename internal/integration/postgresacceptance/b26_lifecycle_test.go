@@ -156,12 +156,33 @@ func TestB26PublicHostRenewsPostgreSQLLease(t *testing.T) {
 	h := b26Host(t, openStore(t, dsn))
 	before := h.create(t, "before-initial-lease-expiry")
 	epoch := h.lease.Epoch()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	readExpiry := func() time.Time {
+		t.Helper()
+		var expiry time.Time
+		if err := db.QueryRow("SELECT expires FROM plug_postgres.lease WHERE singleton").Scan(&expiry); err != nil {
+			t.Fatal(err)
+		}
+		return expiry
+	}
+	initialExpiry := readExpiry()
+	initialSQL := b26CompleteSQL(t, db, "postgres")
 	timer := time.NewTimer(driver.LeaseTTL + driver.LeaseRenewEvery)
 	defer timer.Stop()
 	select {
 	case <-h.lease.Lost():
 		t.Fatal("public host lost its lease across the initial TTL")
 	case <-timer.C:
+	}
+	if !readExpiry().After(initialExpiry) {
+		t.Fatal("heartbeat did not advance the real PostgreSQL lease expiry")
+	}
+	if !reflect.DeepEqual(initialSQL, b26CompleteSQL(t, db, "postgres")) {
+		t.Fatal("heartbeat changed complete SQL state beyond the normalized lease expiry")
 	}
 	// These use the real public RPC and the original epoch after its initial
 	// TTL. A non-renewing harness cannot admit this write or the following read.
