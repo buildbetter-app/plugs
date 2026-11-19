@@ -25,7 +25,9 @@ import (
 
 func nativeStreamingProfile(t *testing.T,archive *dumpformat.Archive,store driver.Store,lease driver.ActiveLease) driver.RestoreImportProfile {
  t.Helper()
- plan:=nativeHistoryPlanFromArchive(t,archive,store,lease)
+ work,release:=archive.NativeDeltaAccountingScope()
+ plan:=nativeHistoryPlanFromArchive(t,work,store,lease)
+ release()
  plan.Dispositions[0].StorageClass=""
  for _,record:=range archive.Records("bead") {
   storage,present:=record.Source.Fields["storage_class"]

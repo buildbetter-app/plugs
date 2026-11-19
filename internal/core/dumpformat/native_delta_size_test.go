@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
 	"testing"
 	"time"
@@ -49,5 +50,46 @@ func TestNativeDeltaSizeDoesNotInvokeUnknownAggregateMarshalers(t *testing.T) {
 	called := false
 	if _, err := NativeDeltaJSONSize(deltaUnallocatedMarshaler{&called}); err == nil || called {
 		t.Fatalf("unsupported custom encoding executed: called=%t err=%v", called, err)
+	}
+}
+
+func TestNativeDeltaJSONSizeMatchesCommitAndReceiptWire(t *testing.T) {
+	when := time.Date(2026, 11, 19, 9, 0, 0, 123, time.UTC)
+	ttl, replaced := model.Natural64(1000), false
+	result := model.OpResult{Ref: model.RefByID("receipt-record", model.Natural64(0)), Revision: model.Natural64(2), Record: json.RawMessage(` { "payload": "<>&\u2028", "large": 9007199254740993 } `), SetBy: map[string]string{"/payload": "trusted"}, Replaced: &replaced}
+	commit := model.Commit{Revision: model.Natural64(2), Results: []model.OpResult{result}, Warnings: []model.Warning{{Code: "post_subscriber_failed", Message: "<warning>", Details: map[string]any{"nested": []any{json.Number("9007199254740993"), "<>&"}}}}, WouldCommit: true, Violations: []model.Violation{{Guard: "guard", Message: "message", Details: map[string]any{"valid": true}}}, LeaseExpiresAt: &when, LeaseTtlMs: &ttl}
+	receipt := driver.IdempotencyRecord{AttemptID: "not-serialized", RequestHash: "request", Commit: commit, Changeset: model.Changeset{Revision: model.Natural64(2), Branch: model.Natural64(0), Incarnation: "target", Kind: model.ChangesetRestore, Time: when, Principal: model.PrincipalRef{Kind: "user", ID: "receiver"}, Chain: []string{}, IdempotencyKey: "original", Changes: []model.ChangeRecord{{Ref: result.Ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}}}
+	for _, value := range []any{model.Commit{Revision: model.Natural64(0), Results: []model.OpResult{}, Warnings: []model.Warning{}}, result, commit, receipt, &receipt} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal("valid receipt wire fixture", err)
+		}
+		want := uint64(len(encoded) + 1)
+		got, err := NativeDeltaJSONSize(value)
+		if err != nil || got != want {
+			t.Fatalf("%T counted=%d marshaled=%d error=%v", value, got, want, err)
+		}
+		budget := NewNativeDeltaBudget(want)
+		owner := budget.Scope()
+		if err := owner.ChargeJSON("receipt", value); err != nil || budget.Usage().CurrentCategories["receipt"] != want {
+			t.Fatal("receipt charge is not its exact marshaled size", want, err, budget.Usage())
+		}
+		owner.Release()
+		if budget.Usage().CurrentAccountedDecodedBytes != 0 {
+			t.Fatal("receipt owner cleanup", budget.Usage())
+		}
+		limited := NewNativeDeltaBudget(want - 1)
+		candidate := limited.Scope()
+		err = candidate.ChargeJSON("receipt", value)
+		var refusal *NativeDeltaDecodedLimitError
+		if !errors.As(err, &refusal) || refusal.MeasuredBytes != want || limited.Usage().CurrentAccountedDecodedBytes != 0 {
+			t.Fatal("receipt bypassed exact budget admission", err, want)
+		}
+		candidate.Release()
+	}
+	called := false
+	commit.Warnings[0].Details = map[string]any{"unknown": deltaUnallocatedMarshaler{&called}}
+	if _, err := NativeDeltaJSONSize(commit); err == nil || called {
+		t.Fatal("receipt counting invoked an unknown aggregate marshaler", err, called)
 	}
 }

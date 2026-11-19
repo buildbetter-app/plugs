@@ -383,6 +383,16 @@ func TestReceivingActualCleanNoopResumedAndHarnessTraversalCaps(t *testing.T) {
 			}
 			l.phase = "automatic no-op recovery"
 			l.assertTraversals(s.recoveryStart, 0, true)
+			retained := report
+			retained.Archive = nil
+			retainedWire, marshalErr := json.Marshal(retained)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			retainedBytes := uint64(len(retainedWire) + 1) // admitted JSON includes LF
+			baseline.CurrentAccountedDecodedBytes += retainedBytes
+			baseline.CurrentCategories["receiving_retained_result"] += retainedBytes
+			baseline.CurrentCharges["receiving_retained_result"]++
 			held, _ := a.NativeDecodedUsage()
 			if held.CurrentAccountedDecodedBytes != baseline.CurrentAccountedDecodedBytes || !reflect.DeepEqual(held.CurrentCategories, baseline.CurrentCategories) || !reflect.DeepEqual(held.CurrentCharges, baseline.CurrentCharges) {
 				t.Fatal("completed receiving retained staging", baseline, held)

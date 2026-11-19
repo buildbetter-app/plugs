@@ -52,7 +52,7 @@ func RestoreNativeCaptureSetImportWithLease(ctx context.Context, archive *dumpfo
 	if err != nil {
 		return Report{}, err
 	}
-	report, err := restoreArchiveWithProfile(ctx, work, target, lease, &bound, nil)
+	report, err := restoreArchiveWithProfile(ctx, archive, target, lease, &bound, nil)
 	if report.Archive != nil && report.Archive.SHA256() == archive.SHA256() {
 		report.Archive = archive
 	}

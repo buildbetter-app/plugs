@@ -1,6 +1,7 @@
 package nativeprojection
 
 import (
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"testing"
 	"time"
 
@@ -37,5 +38,42 @@ func TestSourceCloseTimeRejectsInvalidStamp(t *testing.T) {
 func TestSourceCloseTimeLeavesAbsentFieldUnknown(t *testing.T) {
 	if got, err := SourceCloseTime(closeTimeRecord(nil)); err != nil || got != nil {
 		t.Fatalf("absent closed_at=%v err=%v, want nil", got, err)
+	}
+}
+
+func TestClosedPlanCopiesDropEveryPrivatePayloadReference(t *testing.T) {
+	budget := dumpformat.NewNativeDeltaBudget(4096)
+	retained, prepared := budget.Scope(), budget.Scope()
+	if err := retained.ChargeBytes("returned_result", 31); err != nil {
+		t.Fatal(err)
+	}
+	profile, canonical := []byte("profile"), []byte("canonical-plan")
+	if err := prepared.ChargeBytes("planner_profile_binding", uint64(len(profile))); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepared.ChargeBytes("planner_profile_plan", uint64(len(canonical))); err != nil {
+		t.Fatal(err)
+	}
+	plan := Plan{&planPayload{image: &restorePlan{}, archive: &dumpformat.Archive{}, profile: profile, sourcePlanes: &driver.SourcePlaneImportBindingV1{CanonicalPlan: canonical}, release: prepared.Release}}
+	copy := plan
+	if !copy.Built() || budget.Usage().CurrentAccountedDecodedBytes != uint64(31+len(profile)+len(canonical)) {
+		t.Fatal("missing preclose ownership", budget.Usage())
+	}
+	plan.Close()
+	for _, closed := range []Plan{plan, copy} {
+		if closed.Built() || closed.image != nil || closed.archive != nil || closed.profile != nil || closed.sourcePlanes != nil || closed.release != nil {
+			t.Fatal("closed copy retains an uncharged payload", closed)
+		}
+		if _, err := closed.Snapshot(); err == nil {
+			t.Fatal("closed copy still usable")
+		}
+		closed.Close()
+	}
+	if budget.Usage().CurrentAccountedDecodedBytes != 31 || budget.Usage().CurrentCategories["returned_result"] != 31 {
+		t.Fatal("close did not conserve exactly the retained set", budget.Usage())
+	}
+	retained.Release()
+	if budget.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("result owner cleanup", budget.Usage())
 	}
 }

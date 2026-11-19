@@ -108,6 +108,16 @@ func TestNativeCollectionPreparedHandleReceivesOnceAndReleasesOwner(t *testing.T
 		t.Fatal(err)
 	}
 	defer report.Close()
+	// This actual receipt formerly hit the unknown model.Commit counter guard.
+	retained := report
+	retained.Archive = nil
+	encodedResult, encodeErr := json.Marshal(retained)
+	encodedReceipt, receiptErr := json.Marshal(report.Receipt)
+	countedReceipt, countErr := dumpformat.NativeDeltaJSONSize(report.Receipt)
+	usage, tracked := report.Archive.NativeDecodedUsage()
+	if encodeErr != nil || receiptErr != nil || countErr != nil || !tracked || usage.CurrentCategories["receiving_retained_result"] != uint64(len(encodedResult)+1) || usage.CurrentCharges["receiving_retained_result"] != 1 || countedReceipt != uint64(len(encodedReceipt)+1) {
+		t.Fatal("actual returned receipt/report charge differs from marshaled wire", encodeErr, receiptErr, countErr, usage, len(encodedResult), countedReceipt, len(encodedReceipt))
+	}
 	assertJoinedPhysicalHistories(t, report.NativeHistories, l.binding)
 	if observed.writes != 1 || report.Receipt == nil || report.Restored.Head != model.Natural64(195) {
 		t.Fatal("prepared receive changed session cardinality", observed.writes, report.Restored)
@@ -128,11 +138,14 @@ func TestNativeCollectionPreparedHandleReceivesOnceAndReleasesOwner(t *testing.T
 	if err := report.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if report.Archive != nil || report.SourcePlanes != nil || report.NativeFamilies != nil {
+	if report.Archive != nil || report.SourcePlanes != nil || report.NativeFamilies != nil || report.NativeSchemas != nil || report.NativeHistories != nil || report.Receipt != nil || report.NativeDeltaHistory != nil || report.GraphCertification != nil {
 		t.Fatal("closed report retained owned views")
 	}
 	if budget.Usage().CurrentAccountedDecodedBytes != 0 {
 		t.Fatal("prepared operation retained reservations", budget.Usage())
+	}
+	if err := report.Close(); err != nil || budget.Usage().CurrentAccountedDecodedBytes != 0 {
+		t.Fatal("repeated report close changed ownership", err, budget.Usage())
 	}
 }
 

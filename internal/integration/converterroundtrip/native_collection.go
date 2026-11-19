@@ -46,6 +46,7 @@ func (r *Report) Close() error {
 	}
 	owned := r.collection
 	r.collection, r.Archive, r.NativeFamilies, r.NativeSchemas, r.NativeHistories, r.SourcePlanes = nil, nil, nil, nil, nil, nil
+	r.Receipt, r.NativeDeltaHistory, r.GraphCertification = nil, nil, nil
 	return owned.close()
 }
 
@@ -170,12 +171,12 @@ func RestoreNativeCaptureCollectionImportWithLease(ctx context.Context, binding 
 	return restorePreparedNativeCaptureCollection(ctx, p, target, lease)
 }
 
-func restorePreparedNativeCaptureCollection(ctx context.Context, p *nativeCollectionReceiving, target driver.Store, lease driver.ActiveLease) (report Report, err error) {
+func restorePreparedNativeCaptureCollection(ctx context.Context, p *nativeCollectionReceiving, target driver.Store, lease driver.ActiveLease, stageFactories ...func(driver.WriteTx, historyverify.Checkpoint) (driver.OfflineHistoryStreamStage, error)) (report Report, err error) {
 	keep := false
 	defer func() {
 		if !keep {
 			if report.collection == nil {
-				report.Archive, report.NativeFamilies, report.NativeSchemas, report.NativeHistories, report.SourcePlanes = nil, nil, nil, nil, nil
+				report.Archive, report.NativeFamilies, report.NativeSchemas, report.NativeHistories, report.SourcePlanes, report.Receipt = nil, nil, nil, nil, nil, nil
 			}
 			err = errors.Join(err, p.close())
 		}
@@ -183,7 +184,7 @@ func restorePreparedNativeCaptureCollection(ctx context.Context, p *nativeCollec
 	work, release := p.archive.NativeDeltaAccountingScope()
 	defer release()
 	ctx = work.WithNativeDeltaAccounting(ctx)
-	report, err = restorePreparedNativeReceivingStream(ctx, work, target, lease, p.profile, p.plan, p.logical, p.stream)
+	report, err = restorePreparedNativeReceivingStream(ctx, work, target, lease, p.profile, p.plan, p.logical, p.stream, p.archive, func() error { release(); return nil }, stageFactories...)
 	if err != nil {
 		return report, err
 	}

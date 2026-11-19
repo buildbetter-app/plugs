@@ -15,6 +15,7 @@ go_library(
         "source_graph.go",
         "source_projection.go",
         "source_restore.go",
+        "source_reverse_admission.go",
         "workflow.go",
     ],
     importpath = "github.com/buildbetter-app/plugs/plugins/workflow",
@@ -24,7 +25,7 @@ go_library(
 
 go_test(
     name = "workflow_test",
-    srcs = ["source_accounting_test.go", "workflow_test.go"],
+    srcs = ["source_accounting_test.go", "source_reverse_size_test.go", "workflow_test.go"],
     embed = [":workflow"],
     deps = ["//internal/core/dumpformat", "//internal/core/model", "//internal/storage/driver", "//pluginapi"],
 )

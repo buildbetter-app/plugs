@@ -2503,3 +2503,8 @@ tools/roundtrip/testdata/readback-8f19/memory-partial-reverse-live.jsonl
 tools/roundtrip/testdata/readback-8f19/provenance.json
 tools/roundtrip/testdata/typed-reader/beads-e25cf4.git-tree
 tools/roundtrip/testdata/typed-reader/beads-e25cf4.tar.gz
+internal/integration/converterroundtrip/receiving_postcommit_test.go
+internal/integration/converterroundtrip/receiving_recovery.md
+internal/integration/converterroundtrip/source_inspection_errors_test.go
+plugins/workflow/source_reverse_admission.go
+plugins/workflow/source_reverse_size_test.go

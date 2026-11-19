@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/buildbetter-app/plugs/internal/integration/converterroundtrip",
     visibility = ["//:__subpackages__"],
     deps = [
+        "//internal/api/wire",
         "//internal/core/dumpformat",
         "//internal/core/model",
         "//internal/core/nativeprojection",

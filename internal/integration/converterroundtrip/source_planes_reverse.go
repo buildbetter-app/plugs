@@ -3,6 +3,7 @@ package converterroundtrip
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 
@@ -12,7 +13,7 @@ import (
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
 
-func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, meta driver.Meta, profile driver.RestoreImportProfile, options reverseconverter.Options) (LiveReverse, error) {
+func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, meta driver.Meta, profile driver.RestoreImportProfile, options reverseconverter.Options) (result LiveReverse, reverseErr error) {
 	bound, err := profile.Detached()
 	if err != nil || bound.SourcePlanes == nil {
 		return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
@@ -27,18 +28,36 @@ func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, me
 	}
 	report, logical, err := recoverSourceImportReader(ctx, r, meta, bound, Verification{ArchiveSHA256: bound.ArchiveDigest, DerivedSHA256: bound.DerivedDigest}, plan, request)
 	if err != nil {
-		return LiveReverse{}, ReverseRefusal{"source_receipt_archive_or_origin_mismatch"}
+		return LiveReverse{}, sourceInspectionFailure(err, ReverseRefusal{"source_receipt_archive_or_origin_mismatch"})
 	}
-	current, err := workflowplugin.InspectSourceReverseImage(logical)
+	// Recovery transfers an owned archive/collection. Reverse consumes it
+	// locally and returns only converted output, on both success and refusal.
+	defer func() {
+		if report.collection != nil {
+			reverseErr = errors.Join(reverseErr, report.Close())
+		} else if report.Archive != nil {
+			report.Archive.ReleaseNativeDecoded()
+		}
+	}()
+	// The returned reverse result does not retain inspector lookup maps or
+	// preparation clones. Keep their reservations local through all exits.
+	inspectCtx, releaseInspection := dumpformat.WithNativeDeltaAccountingScope(ctx)
+	defer releaseInspection()
+	current, err := workflowplugin.InspectSourceReverseImageContext(inspectCtx, logical)
 	if err != nil {
-		return LiveReverse{}, ReverseRefusal{"invalid_current_source_image"}
+		return LiveReverse{}, sourceInspectionFailure(err, ReverseRefusal{"invalid_current_source_image"})
 	}
-	prepared, err := prepareSourceArchive(ctx, report.Archive, bound, true)
+	preparationArchive, releasePreparation := report.Archive.NativeDeltaAccountingScope()
+	defer releasePreparation()
+	prepared, err := prepareSourceArchive(inspectCtx, preparationArchive, bound, true)
 	if err != nil {
-		return LiveReverse{}, ReverseRefusal{"invalid_admitted_source_image"}
+		return LiveReverse{}, sourceInspectionFailure(err, ReverseRefusal{"invalid_admitted_source_image"})
 	}
-	initial, err := workflowplugin.InspectSourceReverseImage(prepared.LogicalImage())
-	if err != nil || initial.OriginSHA256 != current.OriginSHA256 {
+	initial, err := workflowplugin.InspectSourceReverseImageContext(inspectCtx, prepared.LogicalImage())
+	if err != nil {
+		return LiveReverse{}, sourceInspectionFailure(err, ReverseRefusal{"changed_source_origin"})
+	}
+	if initial.OriginSHA256 != current.OriginSHA256 {
 		return LiveReverse{}, ReverseRefusal{"changed_source_origin"}
 	}
 	dump, err := retainedReverseDump(ctx, r, bound)
