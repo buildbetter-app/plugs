@@ -1522,6 +1522,7 @@ internal/storage/postgres/reader.go
 internal/storage/postgres/reader_batch_test.go
 internal/storage/postgres/reader_versions_batch_negative_test.go
 internal/storage/postgres/reader_versions_batch_test.go
+internal/storage/postgres/receipt_identity_test.go
 internal/storage/postgres/rollback_window_test.go
 internal/storage/postgres/schema.go
 internal/storage/postgres/selection.go
@@ -1585,6 +1586,7 @@ internal/storage/sqlite/publication_lease_race_test.go
 internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/receipt_identity_test.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go
 internal/storage/sqlite/selection.go

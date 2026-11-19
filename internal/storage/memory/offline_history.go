@@ -155,7 +155,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		return zero, err
 	}
 	key := normalizedScope(principal, h.AgentLabel, h.Method, h.IdempotencyKey)
-	next.replays[key] = replay{value: driver.IdempotencyRecord{RequestHash: h.RequestHash, Commit: response, Changeset: entry}, at: s.now()}
+	next.replays[key] = replay{value: driver.IdempotencyRecord{AttemptID: h.AttemptID, RequestHash: h.RequestHash, Commit: response, Changeset: entry}, at: s.now()}
 	if err = t.checkCommit(ctx); err != nil {
 		return zero, err
 	}

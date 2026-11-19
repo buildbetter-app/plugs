@@ -359,16 +359,16 @@ func (conflictStore) Write(context.Context, driver.ActiveLease) (driver.WriteTx,
 	return nil, driver.ErrConflict
 }
 
-func TestCollectorObservesIndeterminateCommitResolvedByReplay(t *testing.T) {
+func TestCollectorObservesIndeterminateOwnCommitResolvedByReceipt(t *testing.T) {
 	h := setup(t)
 	w, collector := h.telemetryWriter()
 	w.store = lostAckStore{Store: h.store}
 	outcome, err := w.ApplyWithOutcome(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("new")}}, meta(1))
-	if err != nil || !outcome.Replayed {
+	if err != nil || outcome.Replayed {
 		t.Fatalf("resolved outcome=%+v err=%v", outcome, err)
 	}
 	snapshot := collector.Snapshot()
-	if snapshot.Outcomes[ResultReplay] != 1 || snapshot.Outcomes[ResultCommit] != 0 || snapshot.LaneCount[PhaseReplay][ResultSuccess] != 2 || snapshot.LaneCount[PhaseCommit][ResultError] != 1 {
+	if snapshot.Outcomes[ResultReplay] != 0 || snapshot.Outcomes[ResultCommit] != 1 || snapshot.LaneCount[PhaseReplay][ResultSuccess] != 2 || snapshot.LaneCount[PhaseCommit][ResultError] != 1 {
 		t.Fatalf("resolved observations=%+v", snapshot)
 	}
 	assertSingleGraphWrite(t, h, outcome.Commit)

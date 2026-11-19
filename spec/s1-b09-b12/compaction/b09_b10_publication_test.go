@@ -176,7 +176,16 @@ func TestB09B10CompactionPublicationVisibilityRefusalAndReplay(t *testing.T) {
 			// is followed by an uncertain acknowledgment; Writer must resolve it.
 			fault.refuse, fault.loseAck = false, true
 			commit := f.call("admin.compact", key, map[string]any{}, "")
-			assertReplayed(t, f)
+			// P8: a lost acknowledgment of the caller's own commit is not a replay.
+			var ownResponse struct {
+				Meta map[string]json.RawMessage `json:"_meta"`
+			}
+			if err := json.Unmarshal(f.trace[len(f.trace)-1], &ownResponse); err != nil {
+				t.Fatal(err)
+			}
+			if _, replayed := ownResponse.Meta["replayed"]; replayed {
+				t.Fatalf("own commit has replay metadata: %s", f.trace[len(f.trace)-1])
+			}
 			assertCommitTarget(t, commit, children[0])
 			if calls != 2 || fault.commits != 2 || !reflect.DeepEqual(inputs[0], inputs[1]) {
 				t.Fatalf("refusal/lost-ack selected or summarized extra rows: calls=%d commits=%d inputs=%+v", calls, fault.commits, inputs)

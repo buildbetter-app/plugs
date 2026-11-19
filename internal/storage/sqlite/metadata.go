@@ -39,6 +39,50 @@ func (t *transaction) replay(ctx context.Context, c *sql.Conn, h driver.Changese
 	}
 	return value, nil
 }
+
+// receiptResponse keeps legacy flat Commit JSON readable and carries private
+// invocation metadata outside the public Commit type.
+type receiptResponse struct {
+	model.Commit
+	AttemptID string `json:"attemptID,omitempty"`
+}
+
+func (r receiptResponse) MarshalJSON() ([]byte, error) {
+	if err := r.Commit.Validate(); err != nil {
+		return nil, err
+	}
+	// Alias suppresses Commit.MarshalJSON, which would hide sibling fields.
+	type commitFields model.Commit
+	return json.Marshal(struct {
+		commitFields
+		AttemptID string `json:"attemptID,omitempty"`
+	}{commitFields: commitFields(r.Commit), AttemptID: r.AttemptID})
+}
+
+func (r *receiptResponse) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var attemptID string
+	if raw, ok := fields["attemptID"]; ok {
+		if err := json.Unmarshal(raw, &attemptID); err != nil {
+			return err
+		}
+		delete(fields, "attemptID")
+	}
+	public, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	var commit model.Commit
+	if err := json.Unmarshal(public, &commit); err != nil {
+		return err
+	}
+	*r = receiptResponse{Commit: commit, AttemptID: attemptID}
+	return nil
+}
+
 func responseBytes(h driver.ChangesetHeader, revision model.Revision) ([]byte, error) {
 	response := h.Response
 	response.Revision = revision
@@ -48,7 +92,7 @@ func responseBytes(h driver.ChangesetHeader, revision model.Revision) ([]byte, e
 	if response.Warnings == nil {
 		response.Warnings = []model.Warning{}
 	}
-	return json.Marshal(response)
+	return json.Marshal(receiptResponse{Commit: response, AttemptID: h.AttemptID})
 }
 func (s *Store) saveReplay(ctx context.Context, c *sql.Conn, h driver.ChangesetHeader, revision model.Revision, entry []byte) error {
 	// Validate the response even without a replay key; invalid nested values must
@@ -109,9 +153,11 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 		if err != nil {
 			return err
 		}
-		if err = json.Unmarshal(data, &result); err != nil {
+		var response receiptResponse
+		if err = json.Unmarshal(data, &response); err != nil {
 			return err
 		}
+		result = response.Commit
 		return t.store.saveReplay(ctx, c, h, m.Head, nil)
 	})
 	if err == nil {
@@ -287,7 +333,7 @@ func (s *Store) FinalizeResponse(ctx context.Context, value driver.ActiveLease, 
 			return nil
 		}
 		previous.Commit.Warnings = append(previous.Commit.Warnings, warnings...)
-		data, err := json.Marshal(previous.Commit)
+		data, err := json.Marshal(receiptResponse{Commit: previous.Commit, AttemptID: previous.AttemptID})
 		if err != nil {
 			return err
 		}
