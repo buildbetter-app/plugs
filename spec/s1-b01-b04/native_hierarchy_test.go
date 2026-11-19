@@ -18,6 +18,10 @@ import (
 func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture, coverage *nativeReplayCoverage) {
 	var inputs nativeInputs
 	nativeDecode(r.f.t, nativeInputsBytes, &inputs)
+	// The captured external: capability identity is deliberately refused by
+	// both products. This separate opaque identity exercises Plug's typed
+	// external extension without reclassifying that reserved capability.
+	const opaqueExternalTarget = "b01-opaque-unresolved"
 	steps := []struct {
 		phase, method, changedRole string
 		params                     map[string]any
@@ -34,8 +38,8 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture, cover
 		{"blocker-closed", "bead.close", "free", map[string]any{"id": r.refs["free"]}, false},
 		{"blocker-reopened", "bead.reopen", "free", map[string]any{"id": r.refs["free"]}, false},
 		{"restored", "bead.unlink", "parent", map[string]any{"from": r.refs["parent"], "to": r.refs["free"], "kind": "blocks"}, false},
-		{"external-added", "bead.link", "free", map[string]any{"from": r.refs["free"], "to": model.Ref{ID: inputs.ExternalHierarchyTarget}, "targetKind": "external", "kind": "parent-child"}, true},
-		{"external-removed", "bead.unlink", "free", map[string]any{"from": r.refs["free"], "to": model.Ref{ID: inputs.ExternalHierarchyTarget}, "targetKind": "external", "kind": "parent-child"}, true},
+		{"external-added", "bead.link", "free", map[string]any{"from": r.refs["free"], "to": model.Ref{ID: opaqueExternalTarget}, "targetKind": "external", "kind": "parent-child"}, true},
+		{"external-removed", "bead.unlink", "free", map[string]any{"from": r.refs["free"], "to": model.Ref{ID: opaqueExternalTarget}, "targetKind": "external", "kind": "parent-child"}, true},
 	}
 	if len(capture.Transitions) != 9 || len(inputs.HierarchyPhases) != 9 {
 		r.f.t.Fatal("actual native continuation or finite expected phase set is incomplete")
@@ -65,6 +69,25 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture, cover
 			if !exists || !expected {
 				t.Fatal("missing actual native phase or independent expected membership")
 			}
+			if step.phase == "external-added" {
+				// Preserve the exact native capability refusal as its own
+				// mutation-free control before the separate successful extension.
+				before := r.snapshot()
+				r.refuseMembership("hierarchy-external-capability-refused", "bead.link", map[string]any{
+					"from": r.refs["free"], "to": model.Ref{ID: inputs.ExternalHierarchyTarget},
+					"targetKind": "external", "kind": "parent-child",
+				}, "invalid_params")
+				after := r.snapshot()
+				nativeWrite(t, filepath.Join(r.output, "hierarchy-external-capability-refused-before.json"), before)
+				nativeWrite(t, filepath.Join(r.output, "hierarchy-external-capability-refused-after.json"), after)
+				if !bytes.Equal(before, after) {
+					t.Fatal("reserved external capability refusal changed complete source/derived/history/receipts/authority")
+				}
+				nativeJSON(t, filepath.Join(r.output, "hierarchy-external-target-domains.json"), map[string]any{
+					"nativeReservedTarget": inputs.ExternalHierarchyTarget, "nativeRefusal": inputs.ExternalHierarchyRefusal,
+					"plugRefusalCode": "invalid_params", "opaqueExtensionTarget": opaqueExternalTarget,
+				})
+			}
 			beforeDoc := r.rawHierarchyDocument("hierarchy-"+step.phase+"-before-fields", step.changedRole)
 			before := r.sourceImages()
 			beforeState := r.snapshot()
@@ -86,7 +109,7 @@ func (r *nativeReplay) replayHierarchyContinuations(capture nativeCapture, cover
 			})
 			externalTarget := ""
 			if step.phase == "external-added" {
-				externalTarget = inputs.ExternalHierarchyTarget
+				externalTarget = opaqueExternalTarget
 			}
 			r.observeHierarchy(capture, step.phase, observed, want, externalTarget, step.extension)
 			if r.f.backend != "memory" {
