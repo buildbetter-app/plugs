@@ -128,6 +128,12 @@ func DefaultTreePolicy() TreePolicy {
 			"engdocs/design/plug/spike-ux-decision.md":             {},
 		},
 		BinarySHA256: map[string]string{
+			"spec/cardb23query/testdata/native-rich-review-project/capture-set/head.tar": "558e825e69d4643b47ed1f926e462d835ea562ed76963f6d649fc69e7b8d1e7a",
+			"spec/cardb23query/testdata/native-rich-review-project/capture-set/parts/00000000000000000001.part": "780a3ea4713bc9f4d1ead0c1bbe6c136b03cc7ec38e30202699fd64a21f075a3",
+			"spec/cardb23query/testdata/native-rich-review-project/native-rich-review-project.tar": "6bb282aa991fdf3f22527fa171808acfdef65b158b259c83c3badf3cdc153c8d",
+			"spec/cardb23query/testdata/native-rich-review-project/oracle/issues-current.table.json": "e57128acae53ddc8c7c7a00e5958fc8e1cc39936d0900bc226e4bb9ebfae32b9",
+			"spec/cardb23query/testdata/native-rich-review-project/oracle/source-commits.json": "4d7d8c674b6b1f9d1d783c84146d85ef04a38c2defa7cfdfb7a826e83ec4824d",
+			"spec/cardb23query/testdata/native-rich-review-project/oracle/tables.ndjson": "8b7bc1025afcacab7d8631183ae064fe1f88d568b83be6e9985fc4787647a623",
 			"internal/integration/b01readyorder/testdata/native-ready-c774-43216037385.tar.gz":      "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f",
 			"spec/cardb11/testdata/public-r5-edge-inputs.tar.gz":                                    "80d21b1573730cb0b44d9984e3bf1f39b3f57a5da6988ff2bb04c067cc100b66",
 			"internal/integration/converterroundtrip/testdata/public-history-boundary-e25cf419.tar": "46677d8d6021ee35611e81238fd037d33739e4e44eb5308430b90d5f0ba5f93a",

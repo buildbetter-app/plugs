@@ -1,7 +1,7 @@
 package s1b21b24
 
 // This workload earns B23 observations independently of the closed B22 units.
-// Every row enters through the pinned engine's real public batch endpoint.
+// Small fixtures use the pinned public batch endpoint; large fixtures use bulk SQL.
 import (
 	"bytes"
 	"context"
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -154,6 +155,85 @@ func (c *nativeB23Corpus) applyBatches(batches []nativeB23Batch, workers int) {
 		}
 	}
 }
+
+// Seed the large cap/import fixtures through Dolt's bulk SQL path.  The
+// public HTTP writer is intentionally exercised by the small matrix seed and
+// the count/refusal assertions below, while sending 20k rows through serial
+// HTTP batches would spend most of the test budget in fixture setup.
+func nativeB23BulkSeed(c *nativeB23Corpus, label string, count int) {
+	c.t.Helper()
+	if count < 1 {
+		c.t.Fatal("native B23 bulk seed requires positive work")
+	}
+	// Derive the complete stored shape from one real public create. Copy all
+	// columns except id, including explicit empty values instead of SQL NULLs.
+	templateID := nativeID("b00000")
+	c.apply(label+"-template", nativeCreate("b00000", "bulk ordinary"))
+	templates := c.sql(label+"-template-row", "SELECT * FROM issues WHERE id='"+templateID+"'")
+	if len(templates) != 1 || templates[0]["id"] != templateID {
+		c.t.Fatal("native B23 bulk template is not the actual HTTP-created row")
+	}
+	template := templates[0]
+	columns := make([]string, 0, len(template))
+	for column := range template {
+		if column == "" || strings.Trim(column, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != "" {
+			c.t.Fatal("unsafe native B23 bulk template column", column)
+		}
+		columns = append(columns, column)
+	}
+	sort.Strings(columns)
+	quoted, selected := make([]string, len(columns)), make([]string, len(columns))
+	for i, column := range columns {
+		quoted[i] = "`" + column + "`"
+		selected[i] = "template." + quoted[i]
+		if column == "id" {
+			selected[i] = "seed.`id`"
+		}
+	}
+	// Bound each clone to 200 rows from a small numbers table, avoiding the
+	// 1,000-branch UNION query shape and Linux's argument-size limit.
+	const chunk = 200
+	digits := "SELECT 0 AS n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9"
+	// Only fixture SQL subprocesses get the longer MySQL read deadline. Keep
+	// c.env and the HTTP/public assertion connections at their normal settings.
+	seedEnv := make([]string, 0, len(c.env)+1)
+	for _, entry := range c.env {
+		if !strings.HasPrefix(entry, "BEADS_DOLT_POOL_READ_TIMEOUT=") {
+			seedEnv = append(seedEnv, entry)
+		}
+	}
+	seedEnv = append(seedEnv, "BEADS_DOLT_POOL_READ_TIMEOUT=120s")
+	for start := 1; start < count; start += chunk {
+		end := start + chunk
+		if end > count {
+			end = count
+		}
+		ids := fmt.Sprintf("SELECT CONCAT('%s', LPAD(%d + ones.n + 10*tens.n + 100*hundreds.n, 5, '0')) AS id FROM (%s) AS ones CROSS JOIN (%s) AS tens CROSS JOIN (SELECT 0 AS n UNION ALL SELECT 1) AS hundreds WHERE ones.n + 10*tens.n + 100*hundreds.n < %d", nativeID("b"), start, digits, digits, end-start)
+		query := "INSERT INTO issues (" + strings.Join(quoted, ",") + ") SELECT " + strings.Join(selected, ",") +
+			" FROM (" + ids + ") AS seed CROSS JOIN issues AS template WHERE template.id='" + templateID + "'"
+		if len(query)+1 > 131072 {
+			c.t.Fatal("native B23 bulk SQL exceeds the per-argument byte limit", len(query)+1)
+		}
+		nativeRunCommand(c.t, c.root, &c.commands, fmt.Sprintf("%s-%05d", label, start), c.name, c.work, seedEnv, []string{c.binary, "sql", query}, nil, 0)
+	}
+	lastID := nativeID(fmt.Sprintf("b%05d", count-1))
+	rows := c.sql(label+"-template-parity", "SELECT * FROM issues WHERE id >= '"+templateID+"' AND id <= '"+lastID+"' ORDER BY id")
+	if len(rows) != count {
+		c.t.Fatalf("native B23 bulk parity row count: got=%d want=%d", len(rows), count)
+	}
+	for i, row := range rows {
+		if row["id"] != nativeID(fmt.Sprintf("b%05d", i)) || len(row) != len(template) {
+			c.t.Fatal("native B23 bulk parity identity/column mismatch", row["id"])
+		}
+		for _, column := range columns {
+			if column != "id" && !reflect.DeepEqual(row[column], template[column]) {
+				c.t.Fatalf("native B23 bulk row %s differs from HTTP template in %s: got=%v want=%v", row["id"], column, row[column], template[column])
+			}
+		}
+	}
+	nativeWriteJSON(c.t, filepath.Join(c.root, label+"-template-parity.json"), map[string]any{"template": template, "checked_rows": count, "columns": columns, "identity_columns": []string{"id"}})
+	c.run(label+"-commit", "dolt", "commit")
+}
 func nativeB23Seed() []any {
 	rows := []struct {
 		name, title, typ, status, description, assignee string
@@ -195,6 +275,26 @@ func TestNativeB23CountMatrix(t *testing.T) {
 		t.Fatal("explicit independent native_recording required")
 	}
 	root := nativeMakeRecordingRoot(t)
+	request := os.Getenv("PLUG_B23_REQUEST_SHA")
+	source := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
+	if len(request) != 40 || strings.Trim(request, "0123456789abcdef") != "" || !filepath.IsAbs(source) {
+		t.Fatal("native B23 matrix requires its exact request SHA and declared source root")
+	}
+	cmd := exec.CommandContext(t.Context(), "/usr/bin/git", "-C", source, "show", "-s", "--format=%H%n%T%n%P", "HEAD")
+	cmd.Env = []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/local/bin:/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	raw, err := cmd.Output()
+	tuple := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if err != nil {
+		t.Fatalf("native B23 matrix source identity command failed: %q %v", raw, err)
+	}
+	if len(tuple) != 3 || strings.TrimSpace(tuple[2]) == "" {
+		t.Fatalf("native B23 matrix source ancestry unavailable; full parent tuple required: %q", raw)
+	}
+	if tuple[0] != request {
+		t.Fatalf("native B23 matrix request SHA mismatch: requested=%s source=%q", request, raw)
+	}
+	nativeWriteJSON(t, filepath.Join(root, "request-binding.json"), map[string]any{"request_sha": request, "head": tuple[0], "tree": tuple[1], "ordered_parents": strings.Fields(tuple[2]), "recording": *nativeRecordingID, "target": os.Getenv("TEST_TARGET")})
+	t.Logf("NATIVE_B23_REQUEST head=%s tree=%s parents=%s recording=%s", tuple[0], tuple[1], tuple[2], *nativeRecordingID)
 	t.Logf("NATIVE_B23_OUTPUT %s", root)
 	var profile nativeRecordingProfile
 	var protocol nativeRecordingFixture
@@ -313,19 +413,7 @@ func TestNativeB23CountMatrix(t *testing.T) {
 	if !t.Run("native-20001-cap", func(t *testing.T) {
 		c := nativeB23Open(t, filepath.Join(root, "cap"), server, artifact, "cap")
 		c.apply("matrix-seed", nativeB23Seed()...)
-		batches := make([]nativeB23Batch, 0, 20)
-		for start := 0; start < 19995; start += 1000 {
-			items := []any{}
-			end := start + 1000
-			if end > 19995 {
-				end = 19995
-			}
-			for i := start; i < end; i++ {
-				items = append(items, nativeCreate(fmt.Sprintf("b%05d", i), "bulk ordinary"))
-			}
-			batches = append(batches, nativeB23Batch{label: fmt.Sprintf("bulk-%05d", start), items: items})
-		}
-		c.applyBatches(batches, 1)
+		nativeB23BulkSeed(c, "bulk", 19995)
 		before := c.census("cap-before")
 		if len(before["issues"].([]map[string]any)) != 20001 {
 			t.Fatal("native cap corpus is not exactly 20001 durable issues")
@@ -358,19 +446,7 @@ func TestNativeB23CountMatrix(t *testing.T) {
 	if !t.Run("supported-20000-import", func(t *testing.T) {
 		c := nativeB23Open(t, filepath.Join(root, "exchange"), server, artifact, "exchange")
 		c.apply("matrix-seed", nativeB23Seed()...)
-		batches := make([]nativeB23Batch, 0, 20)
-		for start := 0; start < 19994; start += 1000 {
-			end := start + 1000
-			if end > 19994 {
-				end = 19994
-			}
-			items := []any{}
-			for i := start; i < end; i++ {
-				items = append(items, nativeCreate(fmt.Sprintf("b%05d", i), "bulk ordinary"))
-			}
-			batches = append(batches, nativeB23Batch{label: fmt.Sprintf("bulk-%05d", start), items: items})
-		}
-		c.applyBatches(batches, 1)
+		nativeB23BulkSeed(c, "bulk", 19994)
 		state := c.census("source-final")
 		if len(state["issues"].([]map[string]any)) != 20000 {
 			t.Fatal("separate supported source is not exactly 20000 rows")
@@ -454,6 +530,8 @@ func nativeB23ExportAndReplay(t *testing.T, c *nativeB23Corpus, protocol nativeR
 	}
 	profile := driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "s1-native-recorder"}, Authority: "restore-admin", AdmissionDigest: nativeHashBytes([]byte("s1-b23 actual native count corpus"))}, SourceStoreID: inspection.SourceStoreID, Method: "offline.restore.import", IdempotencyKey: "s1-b23-" + *nativeRecordingID, ArchiveDigest: inspection.ArchiveSHA256, DerivedDigest: inspection.DerivedSHA256, HistoryMode: driver.RestoreHistoryModeSnapshot}
 	nativeWriteJSON(t, filepath.Join(c.root, "import-profile.json"), profile)
+	allocatorExpected := nativeB23FixtureAllocator(t, archive)
+	nativeWriteJSON(t, filepath.Join(c.root, "allocator-expectation.json"), allocatorExpected)
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		if !t.Run("imported-"+engine, func(t *testing.T) {
 			f := newFixture(t, engine)
@@ -480,14 +558,14 @@ func nativeB23ExportAndReplay(t *testing.T, c *nativeB23Corpus, protocol nativeR
 			var denied atomic.Bool
 			nativeBindImported(t, f, o, &denied)
 			nativeAssertSnapshotHistoryBoundary(t, c.root, f)
-			nativeB23ImportedMatrix(t, c.root, f, o, &denied)
+			nativeB23ImportedMatrix(t, c.root, f, o, &denied, allocatorExpected)
 		}) {
 			return
 		}
 	}
 }
 
-func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePostObserver, denied *atomic.Bool) {
+func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePostObserver, denied *atomic.Bool, expected nativeB23AllocatorExpectation) {
 	t.Helper()
 	before := nativeImportedState(t, f)
 	nativeWriteJSON(t, filepath.Join(root, f.engine+"-b23-before.json"), nativeRecordState(t, before))
@@ -529,9 +607,9 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 	// Frozen conversion maps native built-in task/bug to actual type issue.
 	// A real production create crosses the imported 20000 image to 20001;
 	// it is not relabeled as a 20001-native-source import.
-	// Restore installs the actual random allocator. Bind its returned identity;
+	// Restore preserves the source-declared allocator. Bind its returned identity;
 	// the ordinary fixture's fallback ID sequence does not control this route.
-	allocatorBefore := nativeB23Allocator(t, f, before.Meta)
+	allocatorBefore := nativeB23Allocator(t, f, before.Meta, expected)
 	fallbackBefore := f.idIndex
 	ref, created := f.create(t, "b23-live-cap-member", "actual public Plug cap member")
 	if err := allocatorBefore.ValidateCandidate("", ref.ID); err != nil || !ref.IsID() || !ref.Branch.IsZero() || f.idIndex != fallbackBefore || created.Revision != model.Natural64(2) || before.Meta.Head != model.Natural64(1) || len(created.Warnings) != 0 {
@@ -571,9 +649,9 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 	if err := json.Unmarshal(record.Body, &body); err != nil || body.ID != ref.ID || body.Type != "issue" || body.Project != project || body.Fields["title"] != "actual public Plug cap member" {
 		t.Fatal("B23 cap member does not match the actual project/type/title predicate", body, err)
 	}
-	allocatorAfter := nativeB23Allocator(t, f, capBefore.Meta)
+	allocatorAfter := nativeB23Allocator(t, f, capBefore.Meta, expected)
 	if !reflect.DeepEqual(allocatorBefore, allocatorAfter) {
-		t.Fatal("B23 random allocator changed its counter-free profile")
+		t.Fatal("B23 source-declared allocator changed its counter-free profile")
 	}
 	nativeWriteJSON(t, filepath.Join(root, f.engine+"-b23-allocator.json"), map[string]any{"before": allocatorBefore, "after": allocatorAfter, "created_ref": ref, "commit": created, "fallback_calls_before": fallbackBefore, "fallback_calls_after": f.idIndex})
 	versions := capBefore.Versions[ref.ID]
@@ -650,8 +728,89 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 	}
 }
 
-// Read the real restored allocator at the same immutable census head.
-func nativeB23Allocator(t *testing.T, f *fixture, meta driver.Meta) driver.OfflineAllocator {
+type nativeB23AllocatorExpectation struct {
+	Source dumpformat.Project      `json:"source"`
+	Target driver.OfflineAllocator `json:"target"`
+}
+
+// Derive the oracle from this captured fixture, independently of the import
+// planner. Manifest hash_length describes existing IDs; the config controls
+// the adaptive continuation policy, with the pinned Beads defaults if absent.
+func nativeB23FixtureAllocator(t *testing.T, archive *dumpformat.Archive) nativeB23AllocatorExpectation {
+	t.Helper()
+	projects := archive.Manifest().Projects
+	if len(projects) != 1 || projects[0].Prefix != project || projects[0].IDMode != driver.AllocatorHash {
+		t.Fatal("B23 fixture does not declare its single native hash allocator", projects)
+	}
+	source := projects[0]
+	want := driver.OfflineAllocator{Prefix: source.Prefix, Mode: source.IDMode, HashLength: 8, MinHashLength: 3, MaxHashLength: 8, MaxCollisionProb: 0.25, LastID: source.LastID}
+	if len(source.ChildCounters) > 0 {
+		want.Children = make(map[string]uint64, len(source.ChildCounters))
+		for parent, count := range source.ChildCounters {
+			want.Children[parent] = count
+		}
+	}
+	seen := map[string]bool{}
+	for _, record := range archive.Records("config") {
+		if record.Source.Table != "config" || record.Project != "" && record.Project != source.Prefix || record.Source.Identity != nil && record.Source.Identity.Project != source.Prefix {
+			continue
+		}
+		key, _ := record.Source.Fields["key"].(string)
+		if key != "min_hash_length" && key != "max_hash_length" && key != "max_collision_prob" {
+			continue
+		}
+		value, ok := record.Source.Fields["value"].(string)
+		if !ok || seen[key] {
+			t.Fatal("B23 fixture allocator config is ambiguous", key)
+		}
+		seen[key] = true
+		if value == "" {
+			continue
+		}
+		if key == "max_collision_prob" {
+			n, err := strconv.ParseFloat(value, 64)
+			if err != nil {
+				t.Fatal("B23 fixture allocator probability is invalid", value, err)
+			}
+			want.MaxCollisionProb = n
+		} else {
+			n, err := strconv.ParseUint(value, 10, 32)
+			if err != nil {
+				t.Fatal("B23 fixture allocator hash length is invalid", key, value, err)
+			}
+			if key == "min_hash_length" {
+				want.MinHashLength = uint32(n)
+			} else {
+				want.HashLength, want.MaxHashLength = uint32(n), uint32(n)
+			}
+		}
+	}
+	for _, record := range archive.Records("bead") {
+		if record.Project != source.Prefix {
+			continue
+		}
+		if dot := strings.LastIndexByte(record.ID, '.'); dot >= 0 {
+			count, err := strconv.ParseUint(record.ID[dot+1:], 10, 64)
+			if err != nil || count == 0 {
+				t.Fatal("B23 fixture child allocator identity is invalid", record.ID, err)
+			}
+			if want.Children == nil {
+				want.Children = map[string]uint64{}
+			}
+			if parent := record.ID[:dot]; count > want.Children[parent] {
+				want.Children[parent] = count
+			}
+		}
+	}
+	if err := want.Validate(); err != nil {
+		t.Fatal("B23 fixture allocator policy is invalid", err)
+	}
+	return nativeB23AllocatorExpectation{Source: source, Target: want}
+}
+
+// Cross-check the fixture, retained import binding and real allocator at the
+// same immutable census head, both before and after the genuine public create.
+func nativeB23Allocator(t *testing.T, f *fixture, meta driver.Meta, expected nativeB23AllocatorExpectation) driver.OfflineAllocator {
 	t.Helper()
 	at := meta.Head
 	r, err := f.store.Read(f.ctx, driver.View{Incarnation: meta.Incarnation, At: &at})
@@ -664,9 +823,24 @@ func nativeB23Allocator(t *testing.T, f *fixture, meta driver.Meta) driver.Offli
 		t.Fatal("B23 restored store has no allocator reader")
 	}
 	allocator, readErr := reader.LoadAllocator(f.ctx, project)
+	bindingID := "instance_config/restore-import/binding"
+	records, bindingErr := r.Get(f.ctx, []driver.Ref{model.RefByID(bindingID, model.Natural64(0))})
 	closeErr := r.Close()
-	if readErr != nil || closeErr != nil || allocator.Validate() != nil || !reflect.DeepEqual(allocator, driver.NewRandomAllocator(project)) {
-		t.Fatal("B23 actual restored allocator differs from its admitted random profile", allocator, readErr, closeErr)
+	if readErr != nil || bindingErr != nil || closeErr != nil || len(records) != 1 || records[0].Kind != "instance_config" || records[0].Ref.ID != bindingID {
+		t.Fatal("B23 allocator/binding snapshot is incomplete", readErr, bindingErr, closeErr, len(records))
+	}
+	var binding struct {
+		Projects []struct {
+			SourceAllocator dumpformat.Project      `json:"sourceAllocator"`
+			TargetAllocator driver.OfflineAllocator `json:"targetAllocator"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(records[0].Body, &binding); err != nil || len(binding.Projects) != 1 {
+		t.Fatal("B23 retained allocator binding is invalid", err, len(binding.Projects))
+	}
+	bound := binding.Projects[0]
+	if allocator.Validate() != nil || !reflect.DeepEqual(bound.SourceAllocator, expected.Source) || !reflect.DeepEqual(bound.TargetAllocator, expected.Target) || !reflect.DeepEqual(allocator, expected.Target) {
+		t.Fatal("B23 fixture, retained binding and live allocator disagree", expected, bound, allocator)
 	}
 	return allocator
 }

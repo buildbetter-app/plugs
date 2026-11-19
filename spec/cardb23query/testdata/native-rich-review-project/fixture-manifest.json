@@ -1,0 +1,140 @@
+{
+  "archive": {
+    "bytes": 2432512,
+    "sha256": "6bb282aa991fdf3f22527fa171808acfdef65b158b259c83c3badf3cdc153c8d"
+  },
+  "archive_members": {
+    "config/sources.json": {
+      "bytes": 71481,
+      "sha256": "51962d2fb1043787c03a44cc2d8343ea36b054353bc75b329d89be28b4369561"
+    },
+    "history/native-tables.json": {
+      "bytes": 2153649,
+      "sha256": "a501f2dd303cebc86fb682065fadfe85d604d694bbc9a8a0c807b252d6446200"
+    },
+    "history/source.json": {
+      "bytes": 68491,
+      "sha256": "25819a74e446424f4c168b2bd30a0bf8ea702140b9c031624ba342e9fe7daa5c"
+    },
+    "manifest.json": {
+      "bytes": 13837,
+      "sha256": "e94299d19acd61ee73ad68a8cced3175f9d9fa5faeed4bba1c6d63a7af938577"
+    },
+    "records/bead.ndjson": {
+      "bytes": 22562,
+      "sha256": "6920fd2deb96366296d7ff0880ba1f15a8cdeff308adcaab0afec0043ed727e1"
+    },
+    "records/edge.ndjson": {
+      "bytes": 4122,
+      "sha256": "95c74b2bc16d96514c9638e4cb6bb462feacebdd84b26bf21a4f1b30aa1121e4"
+    }
+  },
+  "capture_set": {
+    "contract": "beads-native-delta/2",
+    "decoded_limit": "existing NativeCaptureSetOptions default; no override",
+    "directory": "capture-set",
+    "files": {
+      "capture-set.json": {
+        "bytes": 713,
+        "sha256": "427b062163f7461b7ed623256d654fa24e711e8dc6441d200c2a5c762c1634c2"
+      },
+      "head.tar": {
+        "bytes": 277504,
+        "sha256": "558e825e69d4643b47ed1f926e462d835ea562ed76963f6d649fc69e7b8d1e7a"
+      },
+      "parts/00000000000000000001.part": {
+        "bytes": 2400712,
+        "sha256": "780a3ea4713bc9f4d1ead0c1bbe6c136b03cc7ec38e30202699fd64a21f075a3"
+      }
+    },
+    "format": "beads-native-capture-set/2",
+    "head_members": {
+      "config/sources.json": {
+        "bytes": 71481,
+        "sha256": "dee2038c20562af09ed4faf33f3c6189802404f067c076272e4c6bdcdb4d6616"
+      },
+      "history/source.json": {
+        "bytes": 68436,
+        "sha256": "28b59336b089f99a5e51a91f1b38186621a12d8ac77b4cb6959a9b49d1a361e7"
+      },
+      "manifest.json": {
+        "bytes": 13764,
+        "sha256": "33b9a773de29cd89a57ca8986e5b15f93f841c4852c0b8d3d8a5997d47967356"
+      },
+      "records/bead.ndjson": {
+        "bytes": 22562,
+        "sha256": "6920fd2deb96366296d7ff0880ba1f15a8cdeff308adcaab0afec0043ed727e1"
+      },
+      "records/beads-archive.ndjson": {
+        "bytes": 86903,
+        "sha256": "1f8021066e0095ef50cdeb8a0cb08f2efc52fb9d12e32a1b2e771f86a5a47245"
+      },
+      "records/config.ndjson": {
+        "bytes": 3998,
+        "sha256": "acc5c1ae02567ae3145f4751be2ed4d7b5881808a48e76c209c41c23c87f32a3"
+      },
+      "records/edge.ndjson": {
+        "bytes": 4122,
+        "sha256": "95c74b2bc16d96514c9638e4cb6bb462feacebdd84b26bf21a4f1b30aa1121e4"
+      }
+    },
+    "history_consumer": "VisitNativeDeltaImages; ephemeral tables are not retained; all 122 identities/order/table-count checks require verified terminal EOF",
+    "independent_oracle_frames": {
+      "commit_frames": 122,
+      "current_frames": 1,
+      "head_checkpoint_frames": 1,
+      "history_order": "original native commit-frame sequences 1..122; not inferred from graph listing or imported revision",
+      "native_graph_order": "original lexicographic ID listing; identities and ordered parents compared by commit ID"
+    },
+    "input_binding_sha256": "329130376856a5e938b832c9bdfa20e3d81623362788658c5230791ad5255e8e",
+    "legacy_archive_disposition": "unchanged exact typed body/source mapping mismatch refusal before target open",
+    "receiver_disposition_sha256": "a28f26d5b66a966b7dd17da386c05884aa26137298f549aef09c41dde82ac29a",
+    "route": [
+      "ReadNativeCaptureSetDirectory",
+      "BindNativeCaptureSetImport",
+      "RestoreNativeCaptureSetImportWithLease"
+    ],
+    "total_bytes": 2678929,
+    "typed_source_readback": "VerifyNativeCaptureSetReadback on every mapped typed native row/meta snapshot and current attachment, before and after physical SQL reopen; selected first/middle/final windows retain portable-row absence checks"
+  },
+  "oracle_files": {
+    "oracle/issues-current.table.json": {
+      "bytes": 15475,
+      "sha256": "e57128acae53ddc8c7c7a00e5958fc8e1cc39936d0900bc226e4bb9ebfae32b9"
+    },
+    "oracle/labels-current.table.json": {
+      "bytes": 2111,
+      "sha256": "8d14fb5b3d5e962edf26098cb7657a3e44328d9a3ca97bbfd294676e5279eb8a"
+    },
+    "oracle/source-commits.json": {
+      "bytes": 50780,
+      "sha256": "4d7d8c674b6b1f9d1d783c84146d85ef04a38c2defa7cfdfb7a826e83ec4824d"
+    },
+    "oracle/states.ndjson": {
+      "bytes": 23077,
+      "sha256": "5509589636877f276aa9984d9395c9cb64bea0a5d71a8b3ea5fb62ad6ed6d7b0"
+    },
+    "oracle/tables.ndjson": {
+      "bytes": 2650087,
+      "sha256": "8b7bc1025afcacab7d8631183ae064fe1f88d568b83be6e9985fc4787647a623"
+    }
+  },
+  "protected_classification": "local_metadata key names/counts only; values excluded per escalations.md:2607",
+  "qualification": "actual-native-source-table-evidence-and-imported-public-head; portable-old-asof-boundary-is-separate",
+  "schema": "b23-native-public-fixture/1",
+  "source": {
+    "anchor": "b1c03e196f277b6821610af983499d49ecc366c5",
+    "commit_count": 122,
+    "native_history": "history/native-tables.json",
+    "native_manifest": "/tmp/plug-swarm/reports/native-rich-relations-325dd-20261111/r4-native-originals/MANIFEST.json",
+    "portable_history_status": "available-unverified",
+    "producer_delivery": "/tmp/plug-swarm/reports/native-rich-relations-325dd-20261111/r4-handoff/DELIVERY.json",
+    "producer_head": "99021f543e57d57b27d7a8d0d6263eafa4d2b4cf",
+    "producer_parent": "0da51942d67d192a9a7a4db888b297d5d69ba94a",
+    "producer_tree": "6f3cb7e7fde39a8351c3071531ed69e7a7759cc0",
+    "project": "review-project",
+    "source_head": "i6vsgrmkbj53nknbu8no9n4hg3a4v0t7",
+    "store_id": "native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee"
+  },
+  "source_history_disposition": "native table history is inert source evidence; no public portable business rows are filled into source commit snapshots"
+}
