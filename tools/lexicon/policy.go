@@ -155,6 +155,8 @@ func DefaultTreePolicy() TreePolicy {
 		},
 	}
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz"] = "30741ec284a9dfffadde302cf8fdccac4b51f04ee14f3cf26c1e6539d722a47f"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.tar.gz"] = "4d1eb105e3697c7eda1d3518c857b8fe2944a6ac7fd65bdb54b247739f6bfb9b"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz"] = "12ebe1d5a091f0878cfd7825ac84d33c07a233b4571d090cb79b1a3b47d04aa9"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/public-native-delta-small-0e4d5da4.tar.gz"] = "66e2a1410cb6de0532e8bd453f06353d3fde8159ed9d6ffe4b0ed17f20bf6ef8"
 	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/planner-predecessor-53742cc.tar.gz"] = "c570914edd1d6171d9975717f117089c5be2db46faae2e24eccbf472e533cf27"
 	// Independent native table commitments retain exact producer vocabulary.

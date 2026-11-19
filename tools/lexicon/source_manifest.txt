@@ -596,6 +596,8 @@ internal/integration/b13memory/source_core_control_test.go
 internal/integration/b14fixedpolicy/BUILD.bazel
 internal/integration/b14fixedpolicy/README.md
 internal/integration/b14fixedpolicy/public_members_test.go
+internal/integration/b15comments/BUILD.bazel
+internal/integration/b15comments/public_test.go
 internal/integration/b16sourcehistory/BUILD.bazel
 internal/integration/b16sourcehistory/README.md
 internal/integration/b16sourcehistory/engine_test.go
@@ -645,6 +647,7 @@ internal/integration/converterroundtrip/b11_imported_identity_test.go
 internal/integration/converterroundtrip/b11_native_imported_identity_test.go
 internal/integration/converterroundtrip/b13_fullcard_search_test.go
 internal/integration/converterroundtrip/b13_joint_memory_control_test.go
+internal/integration/converterroundtrip/b15_native_comments_test.go
 internal/integration/converterroundtrip/b19_native_modes_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/graph_certification.go
@@ -736,6 +739,10 @@ internal/integration/converterroundtrip/source_planes_test.go
 internal/integration/converterroundtrip/source_poststage_test.go
 internal/integration/converterroundtrip/source_public_test.go
 internal/integration/converterroundtrip/source_storage_test.go
+internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.json
+internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.tar.gz
+internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.json
+internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz
 internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
 internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz
@@ -1822,8 +1829,6 @@ spec/cardb19/testdata/recording-1/export.jsonl
 spec/cardb19/testdata/recording-1/imported.json
 spec/cardb19/testdata/recording-2/export.jsonl
 spec/cardb19/testdata/recording-2/imported.json
-spec/cardb20/b13_fullcard_controls_test.go
-spec/cardb20/caller_closure_test.go
 spec/cardb21/BUILD.bazel
 spec/cardb21/README.md
 spec/cardb21/acceptance_test.go

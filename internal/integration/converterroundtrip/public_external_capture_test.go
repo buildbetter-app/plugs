@@ -607,6 +607,10 @@ func publicProofPhaseClock(t *testing.T) func(string) {
 func TestPublicNativeExternalCaptureMatrix(t *testing.T) {
 	publicProofGuard(t)
 	publicProofExternalRoot(t, "PLUG_PUBLIC_PROOF_RUN")
+	if os.Getenv(b15NativePacketEnv) == "1" {
+		b15RunNativeCaptureMatrix(t)
+		return
+	}
 	runPublicNativeExternalCapture(t, nil)
 }
 

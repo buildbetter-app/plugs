@@ -24,9 +24,11 @@ spec/cardb20/b06_native_test.go
 spec/cardb20/b06_plug_support_test.go
 spec/cardb20/b06_plug_test.go
 spec/cardb20/b06_tests.bzl
+spec/cardb20/b13_fullcard_controls_test.go
 spec/cardb20/b13_memory_native_test.go
 spec/cardb20/b13_tests.bzl
 spec/cardb20/b20_tests.bzl
+spec/cardb20/caller_closure_test.go
 spec/cardb20/caller_test.go
 spec/cardb20/current_test.go
 spec/cardb20/native_build_test.go
