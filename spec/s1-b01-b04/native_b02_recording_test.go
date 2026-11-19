@@ -682,7 +682,35 @@ func b02StoredMutation(t *testing.T, c *nativeCommand, before b02DatabaseImage, 
 	if changed.Rows.String() != "1" {
 		t.Fatal("native stored seam did not change exactly one actual row")
 	}
-	nativeJSON(t, filepath.Join(c.output, step.Name+"-seam-boundary.json"), map[string]any{"query": query, "productWriterParity": nil, "scope": "deliberate native stored-state injection; not a public product mutation proof"})
+	derivedQuery := ""
+	if step.Action == "also" {
+		// The pinned c8eb producer recompute marks this open subject blocked
+		// while its also_blocks spawner is open, conserving updated_at. Raw
+		// metadata SQL bypasses that writer; ready reads the stored flag.
+		// Inject the complete fixture state instead of assuming read repair.
+		table, row := b02OwnerRow(t, before, id)
+		if row["status"] != "open" || (fmt.Sprint(row["is_blocked"]) != "0" && row["is_blocked"] != false) {
+			t.Fatal("also_blocks fixture requires an open, previously unblocked subject")
+		}
+		derivedQuery = "UPDATE " + b02QuoteIdentifier(table) + " SET is_blocked=1, updated_at=updated_at WHERE id=" + b02QuoteValue(id) + " AND is_blocked=0 AND status<>'closed' AND status<>'pinned'"
+		nativeDecode(t, c.run(step.Name+"-actual-derived-sql-seam", "sql", derivedQuery, "--json"), &changed)
+		if changed.Rows.String() != "1" {
+			t.Fatal("also_blocks fixture did not mark exactly one actual subject")
+		}
+		rows := b02SQLRows(t, c, step.Name+"-derived-source-readback", "SELECT * FROM "+b02QuoteIdentifier(table)+" WHERE id="+b02QuoteValue(id))
+		if len(rows) != 1 || (fmt.Sprint(rows[0]["is_blocked"]) != "1" && rows[0]["is_blocked"] != true) {
+			t.Fatal("also_blocks fixture did not persist its blocked subject")
+		}
+		expected := make(map[string]any, len(row))
+		for key, value := range row {
+			expected[key] = value
+		}
+		expected["is_blocked"] = rows[0]["is_blocked"]
+		if !reflect.DeepEqual(expected, rows[0]) {
+			t.Fatal("also_blocks fixture changed unrelated owner cells or updated_at")
+		}
+	}
+	nativeJSON(t, filepath.Join(c.output, step.Name+"-seam-boundary.json"), map[string]any{"query": query, "derivedQuery": derivedQuery, "productWriterParity": nil, "scope": "deliberate native stored-state injection; not a public product mutation proof"})
 }
 
 func b02CheckRepair(t *testing.T, c *nativeCommand, plan b02Plan, step b02Step, before, injected b02DatabaseImage) {
