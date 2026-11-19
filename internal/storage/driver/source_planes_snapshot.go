@@ -131,6 +131,10 @@ func (s *workflowCheckpointAdapter) ReadSourcePlaneSnapshot(ctx context.Context,
 		return nil, err
 	}
 	keep = true
+	return newCheckedSourcePlaneSnapshot(r, checkpoints), nil
+}
+
+func newCheckedSourcePlaneSnapshot(r Reader, checkpoints map[string]Checkpoint) SourcePlaneSnapshot {
 	checked := &checkedSourcePlaneSnapshot{Reader: r, checkpoints: checkpoints}
 	// Optional reader capabilities belong to the pinned observation. Preserve
 	// them only when the underlying reader actually provides them; an adapter
@@ -140,21 +144,21 @@ func (s *workflowCheckpointAdapter) ReadSourcePlaneSnapshot(ctx context.Context,
 	links, hasLinks := r.(InverseSourceLinksReader)
 	switch {
 	case hasAllocators && hasParents && hasLinks:
-		return &inverseHierarchyAllocatorSourcePlaneSnapshot{hierarchyAllocatorSourcePlaneSnapshot: &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}, nil
+		return &inverseHierarchyAllocatorSourcePlaneSnapshot{hierarchyAllocatorSourcePlaneSnapshot: &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}
 	case hasAllocators && hasParents:
-		return &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}, nil
+		return &hierarchyAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, HierarchyChildrenReader: parents}
 	case hasAllocators && hasLinks:
-		return &inverseAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, InverseSourceLinksReader: links}, nil
+		return &inverseAllocatorSourcePlaneSnapshot{allocatorSourcePlaneSnapshot: &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, InverseSourceLinksReader: links}
 	case hasParents && hasLinks:
-		return &inverseHierarchySourcePlaneSnapshot{hierarchySourcePlaneSnapshot: &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}, nil
+		return &inverseHierarchySourcePlaneSnapshot{hierarchySourcePlaneSnapshot: &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}, InverseSourceLinksReader: links}
 	case hasAllocators:
-		return &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}, nil
+		return &allocatorSourcePlaneSnapshot{SourcePlaneSnapshot: checked, AllocatorReader: allocators}
 	case hasParents:
-		return &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}, nil
+		return &hierarchySourcePlaneSnapshot{SourcePlaneSnapshot: checked, HierarchyChildrenReader: parents}
 	case hasLinks:
-		return &inverseLinksSourcePlaneSnapshot{SourcePlaneSnapshot: checked, InverseSourceLinksReader: links}, nil
+		return &inverseLinksSourcePlaneSnapshot{SourcePlaneSnapshot: checked, InverseSourceLinksReader: links}
 	default:
-		return checked, nil
+		return checked
 	}
 }
 
