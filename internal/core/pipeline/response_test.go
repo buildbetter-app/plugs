@@ -426,7 +426,7 @@ func TestIndeterminateReceiptOwnership(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { _ = store.Close() })
-					lease, err = store.Lease(context.Background(), "receipt-test", time.Hour)
+					lease, err = store.Lease(context.Background(), "receipt-test", driver.LeaseTTL)
 					if err != nil {
 						t.Fatal(err)
 					}
