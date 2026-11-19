@@ -14,8 +14,8 @@ This bounded census accounts for all 32 consumer files in review B. Citations we
 | `spec/cardb11/native_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 178 |
 | `spec/cardb16/native_reference_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 87 |
 | `spec/cardb17b18/native_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 76 |
-| `spec/cardb20/b02_delta_native_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 318 |
-| `spec/cardb20/b02_native_recording_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 116 |
+| `spec/cardb20/b02_delta_native_test.go` | covered via central `Server.Stop` drain and `StartDolt` cleanup; recorder bytes equal main `ec3aaa76`; no direct recorder edit required |
+| `spec/cardb20/b02_native_recording_test.go` | covered via central `Server.Stop` drain and `StartDolt` cleanup; recorder bytes equal main `ec3aaa76`; no direct recorder edit required |
 | `spec/cardb20/b06_blocking_native_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 302; external init occurs in shared `b06_native_support_test.go:105` |
 | `spec/cardb20/b06_mixed_native_test.go` | covered via `internal/publicnative/server_linux.go:268`; StartDolt call line(s) 124; external init occurs in shared `b06_native_support_test.go:105` |
 | `spec/cardb20/b06_native_support_test.go` | covered via owned server passed into `workspace` at line 78, then `server.ChildEnv` at line 98; StartDolt callers: `b06_blocking_native_test.go:302`, `b06_mixed_native_test.go:124`, `b06_native_test.go:61` |
