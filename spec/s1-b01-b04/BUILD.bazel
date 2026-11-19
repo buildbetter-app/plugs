@@ -282,7 +282,7 @@ go_test(
         "//internal/testclock",
     ],
     tags = ["manual", "local", "requires-network"],
-    timeout = "long",
+    timeout = "eternal",
 )
 
 # Ordinary B02 source-contract coverage. This target embeds and validates the

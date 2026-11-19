@@ -15,6 +15,17 @@ Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn G
 
 ## Answered
 
+- **B02 pinned-producer stale projection (2026-11-19, root ruling
+  ROOT959a61e5):** the native-only recorder observes pinned Beads, whose `ready`
+  trusts stored `is_blocked`. Record that answer before explicitly invoking the
+  public `recompute-blocked` repair and conserving `updated_at`. Plug's B02
+  contract remains recomputation before answering (`spec/behaviors/work.md`
+  lines 35–59 and `design.md` readinessPending semantics). Keep this deviation
+  explicit and qualify the actual Plug ready answer independently; neither
+  silent native pre-repair nor a product-gap claim follows from comparing
+  these distinct surfaces. This changes the recorder's native oracle only;
+  product semantics and runtime acceptance still require their own evidence.
+
 - **Emergency-stop and G1 decision (2026-11-01, binding):** Nikhil decided
   that the live soft pause, which stops merge admission and was rehearsed on
   2026-10-31, is sufficient control-plane evidence for G1. G1 passes and work

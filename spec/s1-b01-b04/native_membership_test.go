@@ -384,6 +384,7 @@ func (r *nativeReplay) membershipReopenBeforeClaim(step nativeMembershipStep) {
 }
 
 func (r *nativeReplay) assertMembershipNonTargetFields(label, method string, params map[string]any, before, after pipeline.Document) {
+	r.assertLifecycleCloseReason(label, method, params, before, after)
 	prior, current := map[string]any{}, map[string]any{}
 	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, before), &prior)
 	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, after), &current)
@@ -418,7 +419,7 @@ func (r *nativeReplay) assertMembershipNonTargetFields(label, method string, par
 		}
 		delete(prior, "lease")
 		delete(current, "lease")
-		for _, key := range []string{"startedAt", "closedAt"} {
+		for _, key := range []string{"startedAt", "closedAt", "closeReason"} {
 			delete(prior, key)
 			delete(current, key)
 		}
@@ -429,6 +430,27 @@ func (r *nativeReplay) assertMembershipNonTargetFields(label, method string, par
 	nativeJSON(r.f.t, filepath.Join(r.output, "membership-"+label+"-non-target-fields.json"), map[string]any{
 		"method": method, "before": before, "after": after, "conservedProjection": prior,
 	})
+}
+
+// A first close stores its exact reason, including an explicit empty reason.
+// Genuine reopen/release/defer transitions clear it; settlement and unrelated
+// operations preserve the original value, including the distinction from nil.
+func (r *nativeReplay) assertLifecycleCloseReason(label, method string, params map[string]any, before, after pipeline.Document) {
+	r.f.t.Helper()
+	want := before.CloseReason
+	if before.Fields["status"] != after.Fields["status"] {
+		switch method {
+		case "bead.close":
+			reason, _ := params["reason"].(string)
+			want = &reason
+		case "bead.reopen", "bead.release", "bead.defer":
+			want = nil
+		}
+	}
+	if !reflect.DeepEqual(after.CloseReason, want) {
+		r.f.t.Fatalf("%s %s closeReason=%s want=%s", label, method,
+			nativeDocumentBytes(r.f.t, after.CloseReason), nativeDocumentBytes(r.f.t, want))
+	}
 }
 
 func nativeDocumentBytes(t *testing.T, doc any) []byte {
@@ -616,9 +638,10 @@ func (r *nativeReplay) assertMembershipSettlement(before []byte, commit model.Co
 }
 
 // Local hierarchy writes may change Parent/Links, and lifecycle operations may
-// change their status and core timestamps. Every remaining source field stays
-// exact, including the changed child's project/type/title/createdAt/metadata.
+// change their status, core timestamps, and the asserted close reason. Every
+// remaining source field stays exact, including project/type/title/createdAt/metadata.
 func (r *nativeReplay) assertHierarchyNonTargetFields(label, method string, before, after pipeline.Document) {
+	r.assertLifecycleCloseReason(label, method, nil, before, after)
 	prior, current := map[string]any{}, map[string]any{}
 	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, before), &prior)
 	nativeDecode(r.f.t, nativeDocumentBytes(r.f.t, after), &current)
@@ -630,7 +653,7 @@ func (r *nativeReplay) assertHierarchyNonTargetFields(label, method string, befo
 	} else {
 		delete(prior["fields"].(map[string]any), "status")
 		delete(current["fields"].(map[string]any), "status")
-		for _, key := range []string{"startedAt", "closedAt"} {
+		for _, key := range []string{"startedAt", "closedAt", "closeReason"} {
 			delete(prior, key)
 			delete(current, key)
 		}
