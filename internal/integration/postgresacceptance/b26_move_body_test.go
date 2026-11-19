@@ -248,11 +248,7 @@ func b26PublicMoveMetadataPrecision(t *testing.T, open func() driver.Store, db *
 	if len(actualReceipt) == 0 || !bytes.Equal(canonical(first), canonical(actualReceipt)) {
 		t.Fatalf("first result differs from actual stored receipt: first=%s receipt=%s", first, actualReceipt)
 	}
-	h.server.Close()
-	if err := h.lease.Release(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.store.Close(); err != nil {
+	if err := h.close(); err != nil {
 		t.Fatal(err)
 	}
 	h = b26Host(t, open())

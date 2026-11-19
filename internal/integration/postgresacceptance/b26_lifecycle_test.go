@@ -33,11 +33,60 @@ import (
 )
 
 type b26HTTP struct {
-	store  driver.Store
-	lease  driver.ActiveLease
-	server *httptest.Server
-	token  string
-	serial atomic.Int64
+	store   driver.Store
+	lease   driver.ActiveLease
+	server  *httptest.Server
+	token   string
+	serial  atomic.Int64
+	cancel  context.CancelFunc
+	renewed <-chan error
+	once    sync.Once
+	closed  error
+}
+
+// B26 scenarios outlive the driver's maximum lease TTL, especially under load.
+// Keep the real lease alive until HTTP is drained, then join renewal before
+// releasing the lease and closing its store (including explicit reopen paths).
+func b26RenewLease(ctx context.Context, lease driver.ActiveLease) error {
+	ticker := time.NewTicker(driver.LeaseRenewEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-lease.Lost():
+			return errors.New("B26 public host lost its active lease")
+		case <-ticker.C:
+			renewCtx, cancel := context.WithTimeout(ctx, driver.LeaseRenewEvery)
+			err := lease.Renew(renewCtx)
+			cancel()
+			if err != nil {
+				if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+					return nil // Normal shutdown canceled an in-flight heartbeat.
+				}
+				return fmt.Errorf("B26 public host renew lease: %w", err)
+			}
+		}
+	}
+}
+
+func (h *b26HTTP) close() error {
+	h.once.Do(func() {
+		if h.server != nil {
+			h.server.Close()
+		}
+		h.cancel()
+		h.closed = errors.Join(h.closed, <-h.renewed)
+		select {
+		case <-h.lease.Lost():
+			h.closed = errors.Join(h.closed, errors.New("B26 public host lease lost before release"))
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		h.closed = errors.Join(h.closed, h.lease.Release(ctx), h.store.Close())
+	})
+	return h.closed
 }
 
 func b26Host(t *testing.T, store driver.Store, writerOptions ...pipeline.Option) *b26HTTP {
@@ -47,7 +96,16 @@ func b26Host(t *testing.T, store driver.Store, writerOptions ...pipeline.Option)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = lease.Release(ctx); _ = store.Close() })
+	renewCtx, cancel := context.WithCancel(ctx)
+	renewed := make(chan error, 1)
+	h := &b26HTTP{store: store, lease: lease, cancel: cancel, renewed: renewed}
+	go func() { renewed <- b26RenewLease(renewCtx, lease) }()
+	// Register before setup can fail, so every acquired lease is released.
+	t.Cleanup(func() {
+		if err := h.close(); err != nil {
+			t.Error(err)
+		}
+	})
 	metadata, err := store.Meta(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -88,9 +146,107 @@ func b26Host(t *testing.T, store driver.Store, writerOptions ...pipeline.Option)
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpServer := httptest.NewServer(handler)
-	t.Cleanup(httpServer.Close)
-	return &b26HTTP{store: store, lease: lease, server: httpServer, token: issued.Token}
+	h.server = httptest.NewServer(handler)
+	h.token = issued.Token
+	return h
+}
+
+func TestB26PublicHostRenewsPostgreSQLLease(t *testing.T) {
+	dsn := freshDatabase(t)
+	h := b26Host(t, openStore(t, dsn))
+	before := h.create(t, "before-initial-lease-expiry")
+	epoch := h.lease.Epoch()
+	timer := time.NewTimer(driver.LeaseTTL + driver.LeaseRenewEvery)
+	defer timer.Stop()
+	select {
+	case <-h.lease.Lost():
+		t.Fatal("public host lost its lease across the initial TTL")
+	case <-timer.C:
+	}
+	// These use the real public RPC and the original epoch after its initial
+	// TTL. A non-renewing harness cannot admit this write or the following read.
+	after := h.create(t, "after-initial-lease-expiry")
+	h.get(t, before)
+	h.get(t, after)
+	if h.lease.Epoch() != epoch {
+		t.Fatal("host replaced its lease instead of renewing the original epoch")
+	}
+	if err := h.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.close(); err != nil {
+		t.Fatal("idempotent host close:", err)
+	}
+	select {
+	case <-h.lease.Lost():
+	default:
+		t.Fatal("closed host retained its lease")
+	}
+	reopened := b26Host(t, openStore(t, dsn))
+	if reopened.lease.Epoch() <= epoch {
+		t.Fatal("reopened store did not acquire a fresh lease epoch")
+	}
+	reopened.get(t, before)
+	reopened.get(t, after)
+	reopened.create(t, "after-host-reopen")
+}
+
+// Only the heartbeat result is injected here; the lease and store being
+// released are real. Public lifetime coverage above uses unwrapped PostgreSQL.
+type b26RenewResult struct {
+	driver.ActiveLease
+	started chan struct{}
+	err     error
+}
+
+func (l *b26RenewResult) Renew(ctx context.Context) error {
+	close(l.started)
+	if l.err != nil {
+		return l.err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestB26PublicHostRenewalShutdown(t *testing.T) {
+	failure := errors.New("injected heartbeat failure")
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{{"renewal-failure-is-returned", failure}, {"shutdown-joins-inflight-renewal", nil}} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := memory.New()
+			lease, err := store.Lease(context.Background(), "b26-renewal-shutdown", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := &b26RenewResult{ActiveLease: lease, started: make(chan struct{}), err: tc.err}
+			ctx, cancel := context.WithCancel(context.Background())
+			renewed := make(chan error, 1)
+			h := &b26HTTP{store: store, lease: injected, cancel: cancel, renewed: renewed}
+			t.Cleanup(func() { _ = h.close() })
+			go func() { renewed <- b26RenewLease(ctx, injected) }()
+			select {
+			case <-injected.started:
+			case <-time.After(driver.LeaseTTL):
+				t.Fatal("heartbeat did not begin within its initial TTL")
+			}
+			if err := h.close(); !errors.Is(err, tc.err) {
+				t.Fatalf("close error=%v, want %v", err, tc.err)
+			}
+			if err := h.close(); !errors.Is(err, tc.err) {
+				t.Fatalf("repeated close changed its error: %v", err)
+			}
+			select {
+			case <-lease.Lost():
+			default:
+				t.Fatal("shutdown did not release the real lease")
+			}
+			if _, err := store.Meta(context.Background()); err == nil {
+				t.Fatal("shutdown did not close the real store")
+			}
+		})
+	}
 }
 func (h *b26HTTP) call(t *testing.T, method string, params map[string]any, label string) reply {
 	t.Helper()
