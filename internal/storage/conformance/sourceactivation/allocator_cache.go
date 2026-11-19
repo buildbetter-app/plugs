@@ -12,6 +12,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -96,7 +97,7 @@ func AllocatorCache(t *testing.T, store driver.Store, lease driver.ActiveLease) 
 	if _, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{}, changes); err != nil {
 		t.Fatal(err)
 	}
-	w := pipeline.New(store, lease, pipeline.WithClock(func() time.Time { return stamp }))
+	w := pipeline.New(store, lease, pipeline.WithOntology(service.NewOntology(nil)), pipeline.WithClock(func() time.Time { return stamp }))
 	for i, prefix := range []string{"demo", "demo", "demo-a", "demo-a", "demo.x", "demo.x", "demo-", "demo-"} {
 		var count uint64
 		for id := range beads {
