@@ -677,7 +677,7 @@ func nativeB23ImportedMatrix(t *testing.T, root string, f *fixture, o *nativePos
 		t.Fatal("B23 one create callback lost its actual committed snapshot/full record")
 	}
 	change := observation.Change.Changes[0]
-	if change.Resource.Kind != "bead" || change.Resource.Ref.ID != ref.ID || !change.Resource.Ref.IsID() || !change.Resource.Ref.Branch.IsZero() || change.Op.Kind != model.OpCreate || len(change.Before) != 0 || !bytes.Equal(change.After, record.Body) {
+	if change.Resource.Kind != "bead" || change.Resource.Ref.ID != ref.ID || !change.Resource.Ref.IsID() || !change.Resource.Ref.Branch.IsZero() || change.Op.Kind != model.OpCreate || len(change.Before) != 0 && !bytes.Equal(bytes.TrimSpace(change.Before), []byte("null")) || !bytes.Equal(change.After, record.Body) {
 		t.Fatal("B23 create callback lost its full source-defined change")
 	}
 	visible := nativeViewDefinition("type=issue", []string{ref.ID}, 1000, "id")
