@@ -112,7 +112,6 @@ func publicIDInput(t *testing.T) publicIDRequest {
 }
 
 func TestPublicIDStyleASameRunContinuation(t *testing.T) {
-	publicProofGuard(t)
 	selected := os.Getenv("PLUG_ID_STYLE_A_RUN")
 	if selected == "" {
 		t.Skip("explicit same-run native consumer inputs required")
@@ -120,6 +119,7 @@ func TestPublicIDStyleASameRunContinuation(t *testing.T) {
 	if selected != "1" {
 		t.Fatal("invalid same-run native consumer opt-in")
 	}
+	publicProofGuard(t)
 	t.Setenv("PATH", "/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	consumer := publicIDConsumer{request: publicIDInput(t)}
 	runPublicNativeExternalCapture(t, consumer.write, consumer.assertReopened)
