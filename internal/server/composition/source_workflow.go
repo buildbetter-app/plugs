@@ -88,7 +88,7 @@ func (a *restoreImportAdapter) importSourceArchive(ctx context.Context, principa
 		return converterroundtrip.Report{}, err
 	}
 	if found {
-		if profile.ArchiveDigest != archive.SHA256() || profile.IdempotencyKey != request.IdempotencyKey || profile.HistoryMode != request.HistoryMode || profile.Admission.Mode != mode || !reflect.DeepEqual(profile.Admission.Actor, actor) || profile.Admission.Scope != scope || profile.Admission.Authority != authority {
+		if profile.ArchiveDigest != archive.SHA256() || profile.IdempotencyKey != request.IdempotencyKey || profile.HistoryMode != request.HistoryMode || request.HistoryDigest != "" && profile.HistoryDigest != request.HistoryDigest || request.HistoryTime != "" && profile.HistoryTime != request.HistoryTime || profile.Admission.Mode != mode || !reflect.DeepEqual(profile.Admission.Actor, actor) || profile.Admission.Scope != scope || profile.Admission.Authority != authority {
 			return converterroundtrip.Report{}, driver.ErrRestoreTargetNotEmpty
 		}
 		if request.SourcePlanes != nil {
@@ -130,7 +130,7 @@ func (a *restoreImportAdapter) importSourceArchive(ctx context.Context, principa
 	if plan.Target != target {
 		return converterroundtrip.Report{}, driver.ErrConflict
 	}
-	profile = driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: mode, Actor: actor, Scope: scope, Authority: authority, AdmissionDigest: strings.Repeat("0", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archive.SHA256(), HistoryMode: request.HistoryMode}
+	profile = driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: mode, Actor: actor, Scope: scope, Authority: authority, AdmissionDigest: strings.Repeat("0", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archive.SHA256(), HistoryMode: request.HistoryMode, HistoryDigest: request.HistoryDigest, HistoryTime: request.HistoryTime}
 	profile, err = converterroundtrip.BindSourceImport(ctx, bytes.NewReader(data), profile, plan)
 	if err != nil {
 		return converterroundtrip.Report{}, err

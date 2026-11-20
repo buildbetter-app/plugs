@@ -34,6 +34,8 @@ type RestoreImportRequest struct {
 	IdempotencyKey string
 	AgentLabel     string
 	HistoryMode    driver.RestoreHistoryMode
+	HistoryDigest  string
+	HistoryTime    string
 	Presence       restore.Presence
 	SourcePlanes   *driver.SourcePlanePlanV1
 }
@@ -42,11 +44,11 @@ type RestoreImportRequest struct {
 // checked the paged archive, canonical manifest hash and initiating principal;
 // this hook performs the trusted converter inspection/admission and returns a
 // normal restore status for the same session.
-func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, archive []byte, manifestHash string, historyMode driver.RestoreHistoryMode, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
+func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, archive []byte, manifestHash string, historyMode driver.RestoreHistoryMode, historyDigest, historyTime string, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
 	if strings.TrimSpace(manifestHash) == "" {
 		return restore.RestoreStatus{}, fmt.Errorf("restore import manifest hash is required")
 	}
-	request := RestoreImportRequest{IdempotencyKey: meta.IdempotencyKey, AgentLabel: meta.AgentLabel, HistoryMode: historyMode, Presence: presence}
+	request := RestoreImportRequest{IdempotencyKey: meta.IdempotencyKey, AgentLabel: meta.AgentLabel, HistoryMode: historyMode, HistoryDigest: historyDigest, HistoryTime: historyTime, Presence: presence}
 	report, err := a.importArchive(ctx, principal, bytes.NewReader(archive), request)
 	if err != nil {
 		return restore.RestoreStatus{}, err
@@ -147,7 +149,8 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 		},
 		SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import",
 		IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archiveDigest, DerivedDigest: inspection.DerivedSHA256,
-		HistoryMode: request.HistoryMode,
+		HistoryMode:   request.HistoryMode,
+		HistoryDigest: request.HistoryDigest, HistoryTime: request.HistoryTime,
 	}
 	if _, err := profile.Detached(); err != nil {
 		return converterroundtrip.Report{}, err
