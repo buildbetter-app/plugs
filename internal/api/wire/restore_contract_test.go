@@ -65,6 +65,31 @@ func TestRestoreImportCommentContract(t *testing.T) {
 	}
 }
 
+func TestAdminRestoreBeginAcceptsOptionalHistoryBindings(t *testing.T) {
+	c, err := DefaultCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, ok := c.Descriptor("admin.restore.begin")
+	if !ok {
+		t.Fatal("missing admin.restore.begin descriptor")
+	}
+	prefix := `{"manifest":{},"humanPresence":{"mode":"presence_check","challenge":"restore","proof":"restore"}`
+	valid := prefix + `,"historyDigest":"` + strings.Repeat("a", 64) + `","historyTime":"2026-11-20T12:34:56Z"}`
+	if err := c.ValidateParams(descriptor, []byte(valid)); err != nil {
+		t.Fatalf("optional history bindings rejected: %v", err)
+	}
+	for _, raw := range []string{
+		prefix + `,"historyDigest":"short"}`,
+		prefix + `,"historyTime":42}`,
+		prefix + `,"historyDigest":42}`,
+	} {
+		if err := c.ValidateParams(descriptor, []byte(raw)); err == nil {
+			t.Fatalf("invalid optional history binding accepted: %s", raw)
+		}
+	}
+}
+
 func TestRestoreImportAllocatorAndProfileContract(t *testing.T) {
 	c, err := DefaultCatalog()
 	if err != nil {

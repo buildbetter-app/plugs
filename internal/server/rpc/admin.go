@@ -85,13 +85,15 @@ func BindAdmin(registry *Registry, manager *restore.Manager) error {
 		var params struct {
 			Manifest      map[string]any `json:"manifest"`
 			History       string         `json:"history"`
+			HistoryDigest string         `json:"historyDigest"`
+			HistoryTime   string         `json:"historyTime"`
 			HumanPresence map[string]any `json:"humanPresence"`
 			Meta          wire.Meta      `json:"_meta"`
 		}
 		if err := wire.DecodeInto(c.Params, &params); err != nil {
 			return nil, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
 		}
-		status, err := manager.BeginAsWithMeta(ctx, c.Principal, params.Manifest, params.History, writeMeta(c), restore.Presence(params.HumanPresence))
+		status, err := manager.BeginAsWithMetaAndHistory(ctx, c.Principal, params.Manifest, params.History, params.HistoryDigest, params.HistoryTime, writeMeta(c), restore.Presence(params.HumanPresence))
 		return restoreStatusJSON(status), err
 	}); err != nil {
 		return err

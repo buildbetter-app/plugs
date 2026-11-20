@@ -4919,6 +4919,23 @@
           }
         },
         {
+          "name": "historyDigest",
+          "schema": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          },
+          "description": "Optional exact digest of the verified imported history payload."
+        },
+        {
+          "name": "historyTime",
+          "schema": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": "Optional canonical UTC time used to bind the imported history."
+        },
+        {
           "name": "humanPresence",
           "schema": {
             "$ref": "#/components/schemas/HumanPresence"
@@ -14434,7 +14451,7 @@
     "methodCount": 87,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "50abe444c30fbc487fbcb43271eceebfc686c4c2b8b563d45d0b7e859f52d6e6",
-    "descriptorSha256": "941a37e3627da2836913b694dc900e9db1b343e9585cfed31281478da6d1958d",
+    "descriptorSha256": "6e689edd7e452e1341be562b8e6f592326e3c97dc4e0b81656b0902d7bfa03fb",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14685,6 +14702,25 @@
                 "head"
               ]
             }
+          },
+          {
+            "name": "historyDigest",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 64,
+              "maxLength": 64
+            },
+            "description": "Optional exact digest of the verified imported history payload."
+          },
+          {
+            "name": "historyTime",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "description": "Optional canonical UTC time used to bind the imported history."
           },
           {
             "name": "humanPresence",

@@ -96,7 +96,7 @@ func presenceError(err error) error {
 // checks have succeeded. Native archives never use this hook. The explicit
 // history policy is passed separately from write metadata so it cannot be
 // confused with an ordinary graph write field.
-type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, model.WriteMeta, Presence) (RestoreStatus, error)
+type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, string, string, model.WriteMeta, Presence) (RestoreStatus, error)
 
 type nativeRecord struct {
 	Ref      model.Ref       `json:"ref"`
@@ -377,18 +377,20 @@ func writeTar(paths []string, members map[string][]byte) ([]byte, error) {
 }
 
 type restoreSession struct {
-	id          string
-	manifest    map[string]any
-	history     string
-	historyMode driver.RestoreHistoryMode
-	hash        string
-	principal   model.PrincipalRef
-	agentLabel  string
-	idempotency string
-	pages       map[uint64][]byte
-	state       string
-	warnings    []model.Warning
-	incarnation string
+	id            string
+	manifest      map[string]any
+	history       string
+	historyMode   driver.RestoreHistoryMode
+	historyDigest string
+	historyTime   string
+	hash          string
+	principal     model.PrincipalRef
+	agentLabel    string
+	idempotency   string
+	pages         map[uint64][]byte
+	state         string
+	warnings      []model.Warning
+	incarnation   string
 }
 
 // Manager is safe for concurrent RPC calls. A restore session is in-memory
@@ -608,17 +610,19 @@ func (m *Manager) Begin(ctx context.Context, manifest map[string]any, history st
 // still checked by the injected verifier; the principal binding prevents a
 // different user from inheriting a session between begin and finish.
 func (m *Manager) BeginAs(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, presence Presence) (RestoreStatus, error) {
-	return m.beginAs(ctx, principal, manifest, history, model.WriteMeta{}, presence)
+	return m.BeginAsWithMetaAndHistory(ctx, principal, manifest, history, "", "", model.WriteMeta{}, presence)
 }
 
 // BeginAsWithMeta is the transport-facing form of BeginAs. The metadata is
 // retained privately for the converter finish hook so a retry uses the same
 // G4 scope and operation key that was admitted at begin.
 func (m *Manager) BeginAsWithMeta(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, meta model.WriteMeta, presence Presence) (RestoreStatus, error) {
-	return m.beginAs(ctx, principal, manifest, history, meta, presence)
+	return m.BeginAsWithMetaAndHistory(ctx, principal, manifest, history, "", "", meta, presence)
 }
 
-func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history string, meta model.WriteMeta, presence Presence) (RestoreStatus, error) {
+// BeginAsWithMetaAndHistory extends the transport-facing begin seam with
+// optional history bindings. Empty bindings preserve the historical behavior.
+func (m *Manager) BeginAsWithMetaAndHistory(ctx context.Context, principal model.PrincipalRef, manifest map[string]any, history, historyDigest, historyTime string, meta model.WriteMeta, presence Presence) (RestoreStatus, error) {
 	if err := m.requirePresence(presence); err != nil {
 		return RestoreStatus{}, err
 	}
@@ -665,7 +669,7 @@ func (m *Manager) beginAs(ctx context.Context, principal model.PrincipalRef, man
 	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: archiveHistory, historyMode: historyMode, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
+	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: archiveHistory, historyMode: historyMode, historyDigest: historyDigest, historyTime: historyTime, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
@@ -792,8 +796,10 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	var importHook ImportHook
 	importMeta := meta
 	var historyMode driver.RestoreHistoryMode
+	var historyDigest, historyTime string
 	if current := m.restores[id]; current != nil {
 		historyMode = current.historyMode
+		historyDigest, historyTime = current.historyDigest, current.historyTime
 		importHook = m.importHook
 		// The converter profile is bound to the begin operation, not to a
 		// caller-chosen finish key or agent label. Native restore continues to
@@ -830,7 +836,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 			current.state = "applying"
 		}
 		m.mu.Unlock()
-		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, historyMode, importMeta, presence)
+		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, historyMode, historyDigest, historyTime, importMeta, presence)
 		if importErr != nil {
 			if errors.Is(importErr, driver.ErrRestoreTargetNotEmpty) {
 				importErr = &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires a fully empty store"}}
