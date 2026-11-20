@@ -275,7 +275,7 @@ func (c *Checker) visibleChildren(ctx context.Context, caller authz.Caller, auth
 	}
 	out := ChildVisibility{Refs: []model.Ref{}, Hidden: model.Natural64(0)}
 	seen := map[string]bool{}
-	var hidden uint64
+	validChildren := make([]model.Ref, 0, len(children))
 	for _, child := range children {
 		if hierarchyRef(child) != nil || seen[child.ID] {
 			return ChildVisibility{}, hierarchyUnavailable()
@@ -292,18 +292,53 @@ func (c *Checker) visibleChildren(ctx context.Context, caller authz.Caller, auth
 		if target.Parent == nil || target.Parent.ID != parent.ID {
 			return ChildVisibility{}, hierarchyUnavailable()
 		}
-		allowed, err := c.hierarchyRead(ctx, caller, authority, child)
+		validChildren = append(validChildren, child)
+	}
+	childAllowed := make([]bool, len(validChildren))
+	if c.canBatchHierarchyChecks() {
+		childAllowed, err = c.hierarchyReadBatch(ctx, caller, authority, validChildren)
 		if err != nil {
 			return ChildVisibility{}, err
 		}
-		if allowed {
-			out.Refs = append(out.Refs, child)
-		} else {
-			hidden++
+	} else {
+		for i, child := range validChildren {
+			childAllowed[i], err = c.hierarchyRead(ctx, caller, authority, child)
+			if err != nil {
+				return ChildVisibility{}, err
+			}
 		}
 	}
-	out.Hidden = model.Natural64(hidden)
+	for i, child := range validChildren {
+		if childAllowed[i] {
+			out.Refs = append(out.Refs, child)
+		} else {
+			hidden, _ := out.Hidden.Uint64()
+			out.Hidden = model.Natural64(hidden + 1)
+		}
+	}
 	return out, nil
+}
+
+func (c *Checker) hierarchyReadBatch(ctx context.Context, caller authz.Caller, authority authz.Slice, refs []model.Ref) ([]bool, error) {
+	if len(refs) == 0 {
+		return []bool{}, ctx.Err()
+	}
+	requests := make([]authz.CheckRequest, len(refs))
+	for i, ref := range refs {
+		requests[i] = authz.CheckRequest{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}
+	}
+	decisions, err := c.chain.Check(ctx, authority, requests)
+	if err != nil {
+		return nil, authzError(err)
+	}
+	if len(decisions) != len(refs) {
+		return nil, hierarchyUnavailable()
+	}
+	allowed := make([]bool, len(refs))
+	for i, decision := range decisions {
+		allowed[i] = decision.Effect == authz.Allow
+	}
+	return allowed, nil
 }
 
 func (c *Checker) hierarchyRead(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref) (bool, error) {

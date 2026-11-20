@@ -56,6 +56,21 @@ func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req ser
 	if workflowItemRef(req.ID) {
 		return s.getWorkflow(ctx, by, req)
 	}
+	if batch := service.ReadBatchFromContext(ctx); batch != nil {
+		allowed, handled, batchErr := batch.Resolve(ctx, by, s.AuthorizeReadBatch, model.ResourceRef{Kind: "bead", Ref: req.ID})
+		if handled {
+			if batchErr != nil {
+				return service.GetResult{}, batchErr
+			}
+			if !allowed {
+				return service.GetResult{}, notFound()
+			}
+			// The view runner already owns the pinned row and only asks this
+			// callback for its authorization verdict. Avoid reopening one reader
+			// per candidate after the request-local batch fence.
+			return service.GetResult{}, nil
+		}
+	}
 	allowed, err := s.checkRead(ctx, by, "bead.get", req.ID)
 	if err != nil {
 		return service.GetResult{}, err
@@ -573,7 +588,16 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 		if err != nil {
 			return nil, err
 		}
-		for _, bead := range page.Items {
+		for offset := 0; offset < len(page.Items); {
+			candidate, err := s.nextClaimNextCandidate(ctx, by, page, offset)
+			if err != nil {
+				return nil, err
+			}
+			if candidate == len(page.Items) {
+				break
+			}
+			bead := page.Items[candidate]
+			offset = candidate + 1
 			ref := model.RefByID(bead.ID, model.Natural64(0))
 			if workflowItemRef(ref) {
 				candidateMeta := meta
@@ -585,18 +609,6 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 				if !claimNextRace(claimErr) {
 					return nil, claimErr
 				}
-				continue
-			}
-			_, snapshot, closeReader, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
-			if err != nil {
-				return nil, err
-			}
-			allowed, decisionErr := s.checker.modifyDecision(ctx, snapshot, by, "bead.claimNext", ref)
-			closeReader()
-			if decisionErr != nil {
-				return nil, decisionErr
-			}
-			if !allowed {
 				continue
 			}
 			candidateMeta := meta
@@ -667,6 +679,60 @@ func (s *GuardedService) ClaimNextWithOutcome(ctx context.Context, by model.Prin
 	}
 }
 
+// nextClaimNextCandidate reuses one authenticated facts binding while walking
+// a ready page. The selected candidate is still reauthorized by Writer after
+// this snapshot is closed, so the batch is a performance optimization only.
+func (s *GuardedService) nextClaimNextCandidate(ctx context.Context, by model.PrincipalRef, page service.BeadPage, start int) (int, error) {
+	var binding *BoundAuthorization
+	var closeReader func()
+	defer func() {
+		if closeReader != nil {
+			closeReader()
+		}
+	}()
+	refs := make([]model.Ref, 0, len(page.Items)-start)
+	indices := make([]int, 0, len(page.Items)-start)
+	for i := start; i < len(page.Items); i++ {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		ref := model.RefByID(page.Items[i].ID, model.Natural64(0))
+		if workflowItemRef(ref) {
+			if len(refs) == 0 {
+				return i, nil
+			}
+			break
+		}
+		refs = append(refs, ref)
+		indices = append(indices, i)
+	}
+	if len(refs) == 0 {
+		return len(page.Items), nil
+	}
+	_, snapshot, closeSnapshot, err := s.current(ctx, &service.AsOf{Revision: page.AsOf.Revision, Incarnation: page.AsOf.Incarnation})
+	if err != nil {
+		return 0, err
+	}
+	closeReader = closeSnapshot
+	binding, err = s.checker.BindAuthorization(ctx, snapshot, by, authz.Modify, authz.Bead, "bead.claimNext")
+	if err != nil {
+		return 0, err
+	}
+	for i, ref := range refs {
+		allowed, err := binding.Check(ctx, []model.Ref{ref})
+		if err != nil {
+			return 0, err
+		}
+		if allowed[0] {
+			return indices[i], nil
+		}
+	}
+	if next := start + len(refs); next < len(page.Items) && workflowItemRef(model.RefByID(page.Items[next].ID, model.Natural64(0))) {
+		return next, nil
+	}
+	return len(page.Items), nil
+}
+
 func (s *GuardedService) claimPage(ctx context.Context, by model.PrincipalRef, req service.ReadyRequest) (service.BeadPage, error) {
 	if s.claimNextPage != nil {
 		return s.claimNextPage(ctx, by, req)
@@ -687,12 +753,20 @@ func (s *GuardedService) claimNextReadyProbe(by model.PrincipalRef, req service.
 		if err != nil {
 			return false, err
 		}
+		if len(items) == 0 {
+			return false, nil
+		}
+		binding, decisionErr := s.checker.BindAuthorization(ctx, reader, by, authz.Modify, authz.Bead, "bead.claimNext")
+		if decisionErr != nil {
+			return false, decisionErr
+		}
 		for _, bead := range items {
-			allowed, decisionErr := s.checker.modifyDecision(ctx, reader, by, "bead.claimNext", model.RefByID(bead.ID, model.Natural64(0)))
-			if decisionErr != nil {
-				return false, decisionErr
+			ref := model.RefByID(bead.ID, model.Natural64(0))
+			allowed, err := binding.Check(ctx, []model.Ref{ref})
+			if err != nil {
+				return false, err
 			}
-			if allowed {
+			if allowed[0] {
 				return true, nil
 			}
 		}
