@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee","project":"review-project"},"table":"wisp_labels","history":"unversioned-in-beads-by-design","columns":["issue_id","label"],"rows":[{"issue_id":"review-project-e4f","label":"shared-new"},{"issue_id":"review-project-e4f.1","label":"shared-new"}]}

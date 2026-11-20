@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/9df39928fb2ca5b90d17cf77b4aafd993d43f5222b0ce523cf0585fd936d1be5","project":"delivery-project"},"table":"issue_versions","history":"retained-native-commit","columns":["change_actor","change_agent","change_at","change_message","durable_state","epoch","issue_id","removed_at","removed_reason","revision"],"rows":[]}

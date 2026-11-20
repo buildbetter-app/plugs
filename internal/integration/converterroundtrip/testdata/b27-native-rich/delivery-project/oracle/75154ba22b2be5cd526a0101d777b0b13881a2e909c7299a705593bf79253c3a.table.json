@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/9df39928fb2ca5b90d17cf77b4aafd993d43f5222b0ce523cf0585fd936d1be5","project":"delivery-project"},"table":"dolt_nonlocal_tables","history":"retained-native-commit","columns":["options","ref_table","table_name","target_ref"],"rows":[{"options":"immediate","ref_table":null,"table_name":"wisps","target_ref":"main"}]}

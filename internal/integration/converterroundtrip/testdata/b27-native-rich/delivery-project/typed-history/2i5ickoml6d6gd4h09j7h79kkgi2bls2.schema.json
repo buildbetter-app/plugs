@@ -1,0 +1,1 @@
+{"commit_id":"2i5ickoml6d6gd4h09j7h79kkgi2bls2","read_only_scope":true,"tables":{"dolt_ignore":[{"Name":"pattern","DatabaseTypeName":"text","PrimaryKeyOrdinal":0},{"Name":"ignored","DatabaseTypeName":"tinyint(1)","PrimaryKeyOrdinal":null}]}}

@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/9df39928fb2ca5b90d17cf77b4aafd993d43f5222b0ce523cf0585fd936d1be5","project":"delivery-project"},"table":"epoch_minted_addresses","history":"retained-native-commit","columns":["address","carried_from","gone_at_epoch","minted_at","minted_epoch","minted_id","store_id"],"rows":[]}

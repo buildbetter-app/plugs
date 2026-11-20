@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee","project":"review-project"},"table":"issue_snapshots","history":"versioned","columns":["archived_events","compaction_level","compressed_size","id","issue_id","original_content","original_size","snapshot_time"],"rows":[]}

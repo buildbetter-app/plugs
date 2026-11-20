@@ -45,6 +45,7 @@ go_test(
         "//internal/core/dumpformat:testdata/native-tables-synthetic.tar",
         "testdata/synthetic-plug-dump-1.tar",
         ":public_source_fixtures",
+        ":b27_native_rich_sources",
         "//spec/cardb11:public_native_edge_inputs",
         "//internal/integration/offlinehistory:lexicon_files",
         "//tools/native-receive",
@@ -104,6 +105,12 @@ filegroup(
         "testdata/public-own-version-d7f83c6f.tar",
         "testdata/public-partial-990eb800.tar",
     ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "b27_native_rich_sources",
+    srcs = glob(["testdata/b27-native-rich/**"]),
     visibility = ["//visibility:public"],
 )
 

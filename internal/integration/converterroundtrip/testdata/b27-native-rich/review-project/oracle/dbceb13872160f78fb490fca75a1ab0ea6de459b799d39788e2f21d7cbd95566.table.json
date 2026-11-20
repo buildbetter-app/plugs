@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee","project":"review-project"},"table":"interactions","history":"versioned","columns":["actor","created_at","error","exit_code","extra","id","issue_id","kind","label","model","parent_id","prompt","reason","response","tool_name"],"rows":[]}

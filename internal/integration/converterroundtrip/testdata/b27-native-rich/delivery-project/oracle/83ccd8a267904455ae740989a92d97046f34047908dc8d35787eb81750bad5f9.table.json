@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/9df39928fb2ca5b90d17cf77b4aafd993d43f5222b0ce523cf0585fd936d1be5","project":"delivery-project"},"table":"child_counters","history":"versioned","columns":["last_child","parent_id"],"rows":[{"last_child":2,"parent_id":"delivery-project-abc-4de"}]}
