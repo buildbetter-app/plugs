@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 )
 
 const (
@@ -66,8 +68,9 @@ type Manifest struct {
 }
 
 type Provenance struct {
-	Table  string         `json:"table"`
-	Fields map[string]any `json:"fields"`
+	Table    string                     `json:"table"`
+	Fields   map[string]any             `json:"fields"`
+	Identity *dumpformat.SourceIdentity `json:"identity,omitempty"`
 }
 
 type Record struct {

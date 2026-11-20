@@ -154,7 +154,7 @@ func TestLiveReverseRefusesUnrepresentableDeltasWithoutPartialOutput(t *testing.
 				t.Fatal(err)
 			}
 			state := reverseState(t, store)
-			for _, mode := range []string{"extra", "missing", "comment", "opaque", "provenance", "claim"} {
+			for _, mode := range []string{"extra", "missing", "comment", "opaque", "provenance", "unknown-reserved", "claim"} {
 				t.Run(mode, func(t *testing.T) {
 					got, err := reverseAllRestored(ctx, reverseReadHook{Store: store, mode: mode})
 					var refused ReverseRefusal
@@ -443,6 +443,8 @@ func (r reverseQueryHook) Query(ctx context.Context, q driver.Query) (driver.Pag
 			delete(doc.Metadata, "beads.await_id")
 		case "provenance":
 			doc.Metadata["beads.source_fields"] = json.RawMessage(`{}`)
+		case "unknown-reserved":
+			doc.Metadata["beads.unknown"] = json.RawMessage(`true`)
 		case "claim":
 			doc.Lease = &pipeline.ClaimLease{
 				Principal: model.PrincipalRef{Kind: "user", ID: "live-author"},
@@ -538,6 +540,64 @@ func TestProjectLiveBeadPreservesUnchangedFailureOutcome(t *testing.T) {
 	got, err := projectLiveBead(source, rows[0], dump)
 	if err != nil || got.Body["result"] != "failure" {
 		t.Fatalf("unchanged imported failure was rewritten: result=%v err=%v", got.Body["result"], err)
+	}
+}
+
+func TestProjectLiveBeadAcceptsJoinedSourceIdentityProvenance(t *testing.T) {
+	ctx := context.Background()
+	data := admittedFixtureBytes(t)
+	profile, _ := admittedImportProfile(t, data)
+	store, lease, cleanup := openTarget(t, "memory")
+	defer cleanup()
+	if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+		t.Fatal(err)
+	}
+	dump, err := reverseconverter.ReadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := dump.Records["bead"][0]
+	identity := dumpformat.SourceIdentity{StoreID: "joined-source", Project: source.Project}
+	source.Source.Identity = &identity
+	key, ok := reverseSourceRecord(source).SourceKey()
+	if !ok {
+		t.Fatal("source identity did not produce a scoped source key")
+	}
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	rows, err := r.Get(ctx, []model.Ref{model.RefByID(source.ID, model.Natural64(0))})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("restored fixture bead: %v", err)
+	}
+	doc, err := pipeline.DecodeDocument(rows[0].Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.Metadata["beads.source_identity"], err = json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.Metadata["beads.source_key"], err = json.Marshal(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows[0].Body, err = json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := projectLiveBead(source, rows[0], dump)
+	if err != nil {
+		t.Fatalf("joined provenance was refused: %v", err)
+	}
+	if got.ID != source.ID || got.Project != source.Project || !sameReverseJSON(got.Source.Identity, identity) {
+		t.Fatalf("joined source identity changed: got=%+v want=%+v", got.Source.Identity, identity)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -342,10 +343,7 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 	}
 	for kind, records := range dump.Records {
 		for i, source := range records {
-			id := source.ID
-			if kind != "bead" {
-				id = "source/" + kind + "/" + source.ID
-			}
+			id := reverseSourceMirrorID(source)
 			row, ok := live[id]
 			if !ok || row.Kind != kind {
 				return ReverseRefusal{"missing_source_record"}
@@ -390,6 +388,17 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 		return ReverseRefusal{"unmapped_live_record"}
 	}
 	return nil
+}
+
+func reverseSourceMirrorID(source reverseconverter.Record) string {
+	if source.Kind == "bead" {
+		return source.ID
+	}
+	record := reverseSourceRecord(source)
+	if _, scoped := record.SourceKey(); scoped {
+		return nativeprojection.SourcePlaneMirrorID(record, false)
+	}
+	return "source/" + source.Kind + "/" + source.ID
 }
 
 // A source replay adds a core-owned marker beyond the source head records.
@@ -443,6 +452,10 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	}
 	source.Body, source.Source.Fields = cloneRow(source.Body), cloneRow(source.Source.Fields)
 	reserved := map[string]any{"beads.source_fields": source.Source.Fields, "beads.source.status": source.Source.Fields["status"]}
+	if key, scoped := reverseSourceRecord(source).SourceKey(); scoped {
+		reserved["beads.source_identity"] = map[string]any{"store_id": key.StoreID, "project": key.Project}
+		reserved["beads.source_key"] = map[string]any{"store_id": key.StoreID, "project": key.Project, "kind": key.Kind, "table": key.Table, "id": key.ID}
+	}
 	for key, value := range source.Body {
 		switch key {
 		case "title", "description", "priority", "metadata", "labels":
