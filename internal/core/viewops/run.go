@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	coreservice "github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
@@ -212,6 +213,20 @@ func (s *Service) Run(ctx context.Context, by model.PrincipalRef, req RunRequest
 	rows, err := scan(ctx, reader)
 	if err != nil {
 		return Result{}, err
+	}
+	// Legacy point authorizers, including the guarded service Get adapter,
+	// receive one request-local candidate set so their host can load current
+	// permission facts once and return independent per-resource decisions.
+	if s.cfg.AuthorizeRead != nil {
+		resources := make([]model.ResourceRef, 0, len(rows))
+		for _, row := range rows {
+			if matches(row, filter, project, terms) {
+				resources = append(resources, model.ResourceRef{Kind: "bead", Ref: row.record.Ref})
+			}
+		}
+		if len(resources) != 0 {
+			ctx, _ = coreservice.WithReadBatchSession(ctx, resources)
+		}
 	}
 	typeSummary := len(definition.GroupBy) == 1 && definition.GroupBy[0] == "type" && definition.Fields != nil && len(definition.Fields) == 0
 	useBatchAuthorization := (req.CountOnly || typeSummary) && s.cfg.AuthorizeReadBatch != nil

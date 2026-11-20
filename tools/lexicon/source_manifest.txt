@@ -481,6 +481,7 @@ internal/core/service/native_restore.go
 internal/core/service/ontology.go
 internal/core/service/ordered_close.go
 internal/core/service/parent_filter.go
+internal/core/service/read_batch.go
 internal/core/service/reads.go
 internal/core/service/ready_count.go
 internal/core/service/ready_order.go

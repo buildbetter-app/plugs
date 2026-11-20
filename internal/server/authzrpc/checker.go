@@ -187,15 +187,23 @@ func (b *BoundAuthorization) Filter() (*authz.PreparedFilter, error) {
 }
 
 func (c *Checker) decision(ctx context.Context, snapshot Snapshot, principal model.PrincipalRef, action authz.Action, kind authz.ResourceKind, ref model.Ref, method string) (bool, error) {
-	binding, err := c.BindAuthorization(ctx, snapshot, principal, action, kind, method)
-	if err != nil {
-		return false, err
-	}
-	allowed, err := binding.Check(ctx, []model.Ref{ref})
+	allowed, err := c.decisions(ctx, snapshot, principal, action, kind, method, []model.Ref{ref})
 	if err != nil {
 		return false, err
 	}
 	return allowed[0], nil
+}
+
+// decisions binds one immutable authority snapshot for a resource batch. The
+// caller still owns the snapshot lifetime and must rebind on a new request,
+// Writer stage or retry. Each resource is evaluated independently by the
+// chain, while FactsSource.Load and the ACL observation happen once.
+func (c *Checker) decisions(ctx context.Context, snapshot Snapshot, principal model.PrincipalRef, action authz.Action, kind authz.ResourceKind, method string, refs []model.Ref) ([]bool, error) {
+	binding, err := c.BindAuthorization(ctx, snapshot, principal, action, kind, method)
+	if err != nil {
+		return nil, err
+	}
+	return binding.Check(ctx, refs)
 }
 
 // Authorize implements the Writer boundary. Before and after both check the

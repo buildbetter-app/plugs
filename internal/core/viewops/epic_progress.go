@@ -73,12 +73,14 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	if !exists || (req.Project != "" && parentRow.doc.Project != req.Project) {
 		return Result{}, failure("not_found", "epic was not found")
 	}
-	allowed, err := s.authorize(ctx, by, parentRow)
-	if err != nil {
-		return Result{}, mapped(err)
-	}
-	if !allowed {
-		return Result{}, failure("not_found", "epic was not found")
+	if !cfg.ScopeAuthorizesRead {
+		allowed, err := s.authorize(ctx, by, parentRow)
+		if err != nil {
+			return Result{}, mapped(err)
+		}
+		if !allowed {
+			return Result{}, failure("not_found", "epic was not found")
+		}
 	}
 	children := make([]model.Ref, 0)
 	direct := map[string]stored{}
@@ -97,6 +99,15 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 			direct[row.doc.ID] = row
 			children = append(children, row.record.Ref)
 		}
+	}
+	// Legacy point authorizers can still share one request-local child set. The
+	// parent was checked above before any child-specific validation.
+	if !cfg.ScopeAuthorizesRead && s.cfg.AuthorizeRead != nil {
+		resources := make([]model.ResourceRef, 0, len(children)+1)
+		for _, child := range children {
+			resources = append(resources, model.ResourceRef{Kind: "bead", Ref: child})
+		}
+		ctx, _ = service.WithReadBatchSession(ctx, resources)
 	}
 	// Historical content never supplies historical authority. Every child is
 	// authorized in its own project using one current authority snapshot.
@@ -126,13 +137,17 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	// visible child still uses its own stored project; denial adds only to the
 	// authorization remainder, and an unavailable authorizer aborts the count.
 	readable := make([]model.Ref, 0, len(visible))
-	for _, ref := range visible {
-		allowed, err := s.authorize(ctx, by, direct[ref.ID])
-		if err != nil {
-			return Result{}, mapped(err)
-		}
-		if allowed {
-			readable = append(readable, ref)
+	if cfg.ScopeAuthorizesRead {
+		readable = append(readable, visible...)
+	} else {
+		for _, ref := range visible {
+			allowed, err := s.authorize(ctx, by, direct[ref.ID])
+			if err != nil {
+				return Result{}, mapped(err)
+			}
+			if allowed {
+				readable = append(readable, ref)
+			}
 		}
 	}
 	visible = readable

@@ -61,6 +61,7 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 	}
 	aliases := map[string]model.Ref{}
 	stored := map[string]*model.Record{}
+	loaded := map[string]bool{}
 	final := map[string]model.Record{}
 	states := map[string]model.Record{}
 	// Expectation-only references are part of the disclosed pre-image even
@@ -73,14 +74,68 @@ func (c *Checker) AuthorizeHierarchy(ctx context.Context, stage port.Authorizati
 	// Fetch through the tracked reader even for creates: absence is a guarded
 	// fact. A staged mapping is introduced only after that create is allowed.
 	load := func(ref model.Ref) (*model.Record, error) {
+		if loaded[ref.ID] {
+			return stored[ref.ID], nil
+		}
 		if value, ok := stored[ref.ID]; ok {
 			return value, nil
 		}
 		value, err := hierarchySource(ctx, reader, ref)
 		if err == nil {
 			stored[ref.ID] = value
+			loaded[ref.ID] = true
 		}
 		return value, err
+	}
+	// A large Writer batch commonly contains many creates whose target records
+	// are all absent. Read those target refs through one tracked snapshot call,
+	// then keep the existing per-operation validation and first-use ordering in
+	// load. Parent refs and any later replay-only refs still use the ordinary
+	// lazy path above.
+	targetRefs := make([]model.Ref, 0, len(proposal.Changes))
+	requestedTargets := make(map[string]model.Ref, len(proposal.Changes))
+	for _, change := range proposal.Changes {
+		if change.Resource.Kind != "bead" || hierarchyRef(change.Resource.Ref) != nil {
+			return forbidden("invalid hierarchy target")
+		}
+		if _, err := json.Marshal(change.Op); err != nil {
+			return forbidden("invalid hierarchy operation")
+		}
+		if change.Op.Kind != model.OpCreate && change.Op.Kind != model.OpReparent {
+			return forbidden("unmapped hierarchy operation")
+		}
+		if _, seen := requestedTargets[change.Resource.Ref.ID]; seen {
+			continue
+		}
+		requestedTargets[change.Resource.Ref.ID] = change.Resource.Ref
+		targetRefs = append(targetRefs, change.Resource.Ref)
+	}
+	if len(targetRefs) != 0 {
+		rows, err := reader.Get(ctx, targetRefs)
+		if err != nil {
+			return hierarchyUnavailable()
+		}
+		seenRows := make(map[string]struct{}, len(rows))
+		for i := range rows {
+			row := rows[i]
+			requested, requestedOK := requestedTargets[row.Ref.ID]
+			if !requestedOK || requested.ID != row.Ref.ID || hierarchyRef(row.Ref) != nil || row.Kind != "bead" || row.Revision.IsZero() {
+				return hierarchyUnavailable()
+			}
+			if _, duplicate := seenRows[row.Ref.ID]; duplicate {
+				return hierarchyUnavailable()
+			}
+			seenRows[row.Ref.ID] = struct{}{}
+			value, err := hierarchyRaw(row.Ref, row.Revision, row.Body)
+			if err != nil {
+				return hierarchyUnavailable()
+			}
+			stored[row.Ref.ID] = &value
+			loaded[row.Ref.ID] = true
+		}
+		for _, ref := range targetRefs {
+			loaded[ref.ID] = true
+		}
 	}
 	for _, change := range proposal.Changes {
 		if change.Resource.Kind != "bead" || hierarchyRef(change.Resource.Ref) != nil {

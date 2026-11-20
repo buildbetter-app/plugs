@@ -149,7 +149,11 @@ type EpicProgressConfig struct {
 	AnonymousOnly     bool
 	ValidateAuthority func(context.Context, model.PrincipalRef, string) error
 	AuthorizeScope    func(context.Context, model.PrincipalRef, driver.Reader, model.Ref, []model.Ref) (EpicProgressAuthority, error)
-	OntologySource    service.OntologySourceLocator
+	// ScopeAuthorizesRead marks a trusted scope adapter that already checks the
+	// parent and every child against the current read authority. Such an adapter
+	// avoids a second point-authorizer walk over the same child set.
+	ScopeAuthorizesRead bool
+	OntologySource      service.OntologySourceLocator
 }
 
 // EpicProgressAuthority is host-private. It does not add a wire result member
