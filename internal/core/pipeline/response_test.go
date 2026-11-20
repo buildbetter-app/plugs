@@ -202,7 +202,8 @@ func TestUnresolvedFinalizerFailureRetainsRecoverableReceipt(t *testing.T) {
 	if !entry.ResponsePending || len(entry.Commit.Warnings) != 0 || posts.Load() != 1 || fault.calls.Load() > 4 {
 		t.Fatalf("unresolved receipt=%+v posts=%d finalizations=%d", entry, posts.Load(), fault.calls.Load())
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = withResponsePauseHook(ctx, cancel)
 	defer cancel()
 	_, err = h.writer().Apply(ctx, by, cs, m)
 	code(t, err, "busy")
