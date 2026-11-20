@@ -10,6 +10,12 @@ import (
 
 const responsePollInterval = 10 * time.Millisecond
 
+type responsePauseHookKey struct{}
+
+func withResponsePauseHook(ctx context.Context, hook func()) context.Context {
+	return context.WithValue(ctx, responsePauseHookKey{}, hook)
+}
+
 func responseUnavailable(meta model.WriteMeta, revision model.Revision, pending bool) error {
 	return &model.Error{Message: "write committed; durable response is not yet available", Data: model.ErrorData{
 		Code: "busy", Retryable: true,
@@ -19,6 +25,9 @@ func responseUnavailable(meta model.WriteMeta, revision model.Revision, pending 
 }
 
 func responsePause(ctx context.Context) error {
+	if hook, ok := ctx.Value(responsePauseHookKey{}).(func()); ok {
+		hook()
+	}
 	timer := time.NewTimer(responsePollInterval)
 	defer timer.Stop()
 	select {
