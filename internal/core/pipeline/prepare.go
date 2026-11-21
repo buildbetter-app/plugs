@@ -390,11 +390,26 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					return nil, leaseErr
 				}
 				// Stop exactly where the refusal used to be returned, keeping
-				// the operations prepared so far plus this target's pre-image
-				// for AuthorizeBefore. The caller releases the refusal only if
-				// that authorization admits it.
+				// the operations prepared so far plus this target for
+				// AuthorizeBefore. refresh gives every change its committed
+				// pre-image and staged final image, as ordinary preparation
+				// does; the refused target is loaded but unchanged, so its
+				// final image is its committed body. Authorizers that read
+				// final images (hierarchy routes) therefore see a well-formed
+				// proposal. The caller releases the refusal only if that
+				// authorization admits it.
 				p.leaseRefusal = leaseErr
+				if op.Kind == model.OpReparent {
+					// Hierarchy authorizers compare a reparent's final parent
+					// with its operation, so present the requested transition.
+					// A reparent that cannot be staged keeps the unchanged
+					// image; the refusal released is still the lease refusal.
+					_ = p.stageReparent(ctx, current, op, target, aliases)
+				}
 				p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
+				if err := p.refresh(); err != nil {
+					return nil, err
+				}
 				return p, nil
 			}
 			liveLease := current.doc.Lease
@@ -420,25 +435,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			switch op.Kind {
 			case model.OpReparent:
-				if project := op.Reparent.Project; project != "" && project != current.doc.Project {
-					return nil, failure("invalid_params", "reparent cannot move a bead between projects")
+				if err := p.stageReparent(ctx, current, op, target, aliases); err != nil {
+					return nil, err
 				}
-				parent, e := p.resolveParent(ctx, op.Reparent.Parent, aliases, target.ID)
-				if e != nil {
-					return nil, e
-				}
-				next := current.doc
-				next.Parent = parent
-				if _, e := HierarchyParent(next); e != nil {
-					return nil, e
-				}
-				op.Reparent.Target, op.Reparent.Parent = target, parent
-				if parentID(current.doc.Parent) != parentID(parent) {
-					current.doc.ParentMetadata = nil
-				}
-				current.doc.Parent = parent
-				current.setBy["parent"] = "request"
-				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
 			case model.OpPatch:
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
 					return nil, err
@@ -1507,6 +1506,31 @@ func isSlot(method string) bool {
 		return true
 	}
 	return false
+}
+
+// stageReparent applies a reparent operation to its loaded target. It changes
+// the pending record only after every check has passed.
+func (p *prepared) stageReparent(ctx context.Context, current *pending, op model.Op, target model.Ref, aliases map[string]model.Ref) error {
+	if project := op.Reparent.Project; project != "" && project != current.doc.Project {
+		return failure("invalid_params", "reparent cannot move a bead between projects")
+	}
+	parent, err := p.resolveParent(ctx, op.Reparent.Parent, aliases, target.ID)
+	if err != nil {
+		return err
+	}
+	next := current.doc
+	next.Parent = parent
+	if _, err := HierarchyParent(next); err != nil {
+		return err
+	}
+	op.Reparent.Target, op.Reparent.Parent = target, parent
+	if parentID(current.doc.Parent) != parentID(parent) {
+		current.doc.ParentMetadata = nil
+	}
+	current.doc.Parent = parent
+	current.setBy["parent"] = "request"
+	p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
+	return nil
 }
 
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }

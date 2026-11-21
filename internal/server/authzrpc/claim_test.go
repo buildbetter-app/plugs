@@ -39,6 +39,13 @@ func newQuietFixture(t *testing.T, engine string, postgresDSN func(*testing.T) s
 // one; nil keeps the store unchanged.
 func newQuietFixtureWrapped(t *testing.T, engine string, postgresDSN func(*testing.T) string, wrap func(*testing.T, driver.Store) driver.Store) *quietFixture {
 	t.Helper()
+	return newQuietFixtureConfigured(t, engine, postgresDSN, wrap, nil)
+}
+
+// newQuietFixtureConfigured additionally lets a test adjust the composition
+// config (for example to install the hierarchy authorizer); nil keeps it.
+func newQuietFixtureConfigured(t *testing.T, engine string, postgresDSN func(*testing.T) string, wrap func(*testing.T, driver.Store) driver.Store, configure func(*authzrpc.Config)) *quietFixture {
+	t.Helper()
 	clock := testclock.New(t, time.Date(2026, 11, 3, 6, 0, 0, 0, time.UTC))
 	var store driver.Store
 	var err error
@@ -63,6 +70,9 @@ func newQuietFixtureWrapped(t *testing.T, engine string, postgresDSN func(*testi
 		store = wrap(t, store)
 	}
 	f := newFixtureWith(t, store, nil, func(ctx context.Context, config authzrpc.Config) (*authzrpc.Composition, error) {
+		if configure != nil {
+			configure(&config)
+		}
 		return authzrpc.NewWithClockForTest(ctx, config, clock.Now)
 	})
 	return &quietFixture{fixture: f, clock: clock}

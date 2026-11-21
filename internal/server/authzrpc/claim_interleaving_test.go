@@ -12,6 +12,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
@@ -130,8 +131,34 @@ const secondSponsor = "user:second"
 // through user:second's direct project grant.
 func newInterleaveFixture(t *testing.T, engine string, dsn func(*testing.T) string) *interleaveFixture {
 	t.Helper()
+	return newInterleaveFixtureConfigured(t, engine, dsn, nil)
+}
+
+// Two more beads in the same project: a parent P for link and reparent
+// operations and an unclaimed sibling Y. They exist in every fixture so an
+// endpoint lookup never answers before authorization.
+const (
+	parentID  = "00000000-0000-4000-8000-000000000002"
+	siblingID = "00000000-0000-4000-8000-000000000003"
+)
+
+func parentRef() model.Ref  { return model.RefByID(parentID, model.Natural64(0)) }
+func siblingRef() model.Ref { return model.RefByID(siblingID, model.Natural64(0)) }
+
+func newInterleaveFixtureConfigured(t *testing.T, engine string, dsn func(*testing.T) string, configure func(*authzrpc.Config)) *interleaveFixture {
+	t.Helper()
 	race := &claimRace{}
-	f := &interleaveFixture{quietFixture: newQuietFixtureWrapped(t, engine, dsn, race.wrap), race: race}
+	f := &interleaveFixture{quietFixture: newQuietFixtureConfigured(t, engine, dsn, race.wrap, configure), race: race}
+	var extra []conformance.FixtureChange
+	for _, id := range []string{parentID, siblingID} {
+		extra = append(extra, conformance.FixtureChange{
+			Ref: model.RefByID(id, model.Natural64(0)), Kind: "bead", Op: model.OpCreate,
+			Body: []byte(`{"id":"` + id + `","type":"issue","project":"project","createdAt":"2026-10-01T00:00:00Z","fields":{"title":"seed","status":"todo","priority":0}}`),
+		})
+	}
+	if _, err := conformance.Seed(context.Background(), f.store, f.lease, driver.ChangesetHeader{}, extra); err != nil {
+		t.Fatal(err)
+	}
 	f.base.Grants = append(append([]authz.Grant(nil), f.base.Grants...), secondGrant())
 	if err := f.facts.Replace(f.base); err != nil {
 		t.Fatal(err)
@@ -280,7 +307,27 @@ func claimStateWrites() []leaseWrite {
 		{"tx.apply", func() map[string]any {
 			return map[string]any{"changeSet": map[string]any{"ops": []any{map[string]any{"kind": "close", "target": ref, "reason": "batched close"}}}}
 		}},
+		// Every other operation kind on an existing bead passes the same
+		// lease check, so it gets the same treatment.
+		batched(map[string]any{"kind": "comment", "target": ref, "body": "interleaved comment"}),
+		batched(map[string]any{"kind": "link", "from": ref, "to": parentRef(), "linkKind": "blocks"}),
+		batched(map[string]any{"kind": "unlink", "from": ref, "to": parentRef(), "linkKind": "blocks"}),
+		batched(map[string]any{"kind": "setMeta", "target": ref, "key": "b05.probe", "value": "interleaved"}),
+		batched(map[string]any{"kind": "delete", "target": ref}),
+		batched(map[string]any{"kind": "attach", "target": ref, "attachment": map[string]any{"kind": "link", "uri": "https://example.invalid/b05", "mediaType": "text/plain", "summary": "interleaved attachment"}}),
+		batched(map[string]any{"kind": "reparent", "target": ref, "parent": parentRef()}),
 	}
+}
+
+// batched is a tx.apply form of the given operations.
+func batched(ops ...map[string]any) leaseWrite {
+	return leaseWrite{"tx.apply", func() map[string]any {
+		list := make([]any, len(ops))
+		for i, op := range ops {
+			list[i] = op
+		}
+		return map[string]any{"changeSet": map[string]any{"ops": list}}
+	}}
 }
 
 func (w leaseWrite) label(i int) string {
@@ -329,6 +376,9 @@ func TestB05ClaimInterleavingAuthorizationAcrossDrivers(t *testing.T) {
 			})
 			t.Run("authorized_non_holder_keeps_lease_refusal", func(t *testing.T) {
 				authorizedNonHolderRefusals(t, newInterleaveFixture(t, engine, dsn))
+			})
+			t.Run("hierarchy_authorizer_keeps_lease_refusal", func(t *testing.T) {
+				hierarchyLeaseRefusals(t, newInterleaveFixtureConfigured(t, engine, dsn, func(config *authzrpc.Config) { config.Hierarchy = true }))
 			})
 		})
 	}
@@ -526,15 +576,18 @@ func ungrantedAgentClaimStateHidden(t *testing.T, f *interleaveFixture) {
 	probe("released", 8640)
 }
 
-// interleaveCloseRules admits bead close and tx.apply modifies, which the fixed
-// component leaves undecided for agents.
+// interleaveCloseRules admits bead close and tx.apply modifies for agent C
+// only; the fixed component leaves them undecided for agents. Ungranted and
+// revoked callers stay governed by the production rules alone.
 type interleaveCloseRules struct{}
 
 func (interleaveCloseRules) Eval(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
 	decisions := make([]authz.Decision, len(requests))
+	c := agentC()
 	for i, request := range requests {
 		decisions[i].Effect = authz.NoDecision
-		if request.Action == authz.Modify && request.Resource.Kind == authz.Bead && (request.Method == "bead.close" || request.Method == "tx.apply") {
+		if request.Action == authz.Modify && request.Resource.Kind == authz.Bead && (request.Method == "bead.close" || request.Method == "tx.apply") &&
+			request.Caller.Principal.Kind == c.Kind && request.Caller.Principal.ID == c.ID {
 			decisions[i] = authz.Decision{Effect: authz.Allow, Reasons: []string{"test close grant"}}
 		}
 	}
@@ -585,5 +638,56 @@ func authorizedNonHolderRefusals(t *testing.T, f *interleaveFixture) {
 	}
 	if !reflect.DeepEqual(held, f.view(t)) {
 		t.Fatal("authorized non-holder refusals changed the claim plane")
+	}
+}
+
+// With the hierarchy authorizer installed, tx.apply batches containing
+// reparent or create operations are authorized on their final images. A batch
+// stopped at a lease refusal still presents well-formed images, so an
+// authorized non-holder keeps lease_not_held and an ungranted agent gets
+// forbidden, whether the refused operation is alone, follows another
+// operation's change, or follows a create.
+func hierarchyLeaseRefusals(t *testing.T, f *interleaveFixture) {
+	t.Helper()
+	a, c := agentA(), agentC()
+	outsider := worker("user:outsider")
+	outsider.ID = "agent:outsider"
+	authzrpc.AddRuleForTest(f.server, interleaveCloseRules{})
+	success(t, f.call(t, a, "bead.claim", quietParams(), 8800))
+	held := f.view(t)
+	f.requireHolder(t, held, a)
+	x, parent, sibling := quietRef(), parentRef(), siblingRef()
+	batches := []struct {
+		name  string
+		write leaseWrite
+	}{
+		{"reparent_claimed", batched(map[string]any{"kind": "reparent", "target": x, "parent": parent})},
+		{"reparent_other_then_close_claimed", batched(
+			map[string]any{"kind": "reparent", "target": sibling, "parent": parent},
+			map[string]any{"kind": "close", "target": x, "reason": "hierarchy close"},
+		)},
+		{"create_then_reparent_claimed", batched(
+			map[string]any{"kind": "create", "key": "new", "type": "issue", "fields": map[string]any{"title": "hierarchy create"}},
+			map[string]any{"kind": "reparent", "target": x, "parent": parent},
+		)},
+	}
+	for i, batch := range batches {
+		for j, caller := range []struct {
+			by   model.PrincipalRef
+			want model.ErrorCode
+		}{{c, "lease_not_held"}, {outsider, "forbidden"}} {
+			key := 8810 + 2*i + j
+			got := f.call(t, caller.by, batch.write.method, batch.write.params(), key)
+			if got.Error == nil || got.Error.Data.Code != caller.want || len(got.Result) != 0 || got.Meta.Replayed {
+				t.Fatalf("hierarchy %s by %s: got %+v, want %s", batch.name, caller.by.ID, got.Error, caller.want)
+			}
+			if caller.want == "forbidden" && len(got.Error.Data.Details) != 0 {
+				t.Fatalf("hierarchy %s by %s: forbidden disclosed details %+v", batch.name, caller.by.ID, got.Error.Data.Details)
+			}
+			f.requireNoReceipt(t, caller.by, batch.write.method, key)
+		}
+	}
+	if !reflect.DeepEqual(held, f.view(t)) {
+		t.Fatal("hierarchy lease refusals changed the claim plane")
 	}
 }

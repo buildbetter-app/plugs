@@ -66,11 +66,19 @@ and release are `forbidden` without details until the grant returns). The
 reauthorization rows also count the request's own `Store.Write` calls (two:
 the invalidated attempt and the retry). Lease refusals (claim, release, update,
 close and their `tx.apply` forms) are released only after `AuthorizeBefore`
-admits the operations prepared so far; heartbeat already authorizes before it
-reads the target. So an agent with no grant gets the same detail-free
-`forbidden` for every one of those forms whether the bead is unclaimed, claimed
-by someone else, or released, while an authorized non-holder keeps
-`busy`/`lease_not_held`, still ahead of a stale CAS expectation.
+admits the operations prepared so far, with their committed pre-images and
+staged final images (a refused reparent is presented as the requested move);
+heartbeat already authorizes before it reads the target. So an agent with no
+grant gets the same detail-free `forbidden` for every one of those forms, and
+for tx.apply comment, link, unlink, setMeta, delete, attach and reparent,
+whether the bead is unclaimed, claimed by someone else, or released, while an
+authorized non-holder keeps `busy`/`lease_not_held`, still ahead of a stale CAS
+expectation. With `Config.Hierarchy` on, tx.apply `[reparent X]`,
+`[reparent Y, close X]` and `[create C, reparent X]` on a claimed X keep
+`lease_not_held` for an authorized non-holder and `forbidden` for an ungranted
+agent. The close/tx.apply grant for the authorized non-holder comes from a
+test rule scoped to that one agent, since the fixed component grants agents no
+close.
 
 The component tests exercise the actual HTTP/RPC boundary with real native-host
 bindings, authenticated principals, durable mutation/refusal/replay, and

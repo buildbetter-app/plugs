@@ -378,6 +378,7 @@ internal/core/pipeline/hierarchy_source.go
 internal/core/pipeline/hierarchy_test.go
 internal/core/pipeline/labels.go
 internal/core/pipeline/lease_overlay.go
+internal/core/pipeline/lease_refusal_source_test.go
 internal/core/pipeline/lifecycle.go
 internal/core/pipeline/lifecycle_test.go
 internal/core/pipeline/memory_overlay.go
