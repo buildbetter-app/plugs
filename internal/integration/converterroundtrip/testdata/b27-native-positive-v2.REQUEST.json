@@ -1,0 +1,36 @@
+{
+  "boundaries": {
+    "distinct_yaml_custom_names": "NOT_SUPPLIED",
+    "portable_two_project_full": "NOT_SUPPLIED",
+    "source_reference_binary": "producer source-built reference is separate from admitted public executable",
+    "synthetic": "row preservation, not native CLI behavior"
+  },
+  "controls": [
+    "authenticated-originals-and-independent-requirements",
+    "genuine-current-close",
+    "genuine-historical-close-reopen",
+    "synthetic-three-family-row-preservation",
+    "all-original-fields-and-relations",
+    "unresolved-external-target",
+    "stored-catalog-and-original-YAML",
+    "public-append-nondeletion",
+    "typed-public-and-offline-nonempty-refusal",
+    "paged-public-full-export",
+    "physical-SQL-reopen"
+  ],
+  "delivery_provenance_sha256": "63ad1ebc655d05fce5f1a2092c87881bb72d5de242e3626099762ef4807b021e",
+  "engines": [
+    "memory",
+    "sqlite",
+    "postgres"
+  ],
+  "format": "b27-native-positive-consumer-request/2",
+  "mode": "full",
+  "projects": [
+    "b27-review",
+    "b27-delivery"
+  ],
+  "public_bundle": "41800330346:13307042737:ac028e4b1be9609415dde0d9f2a30e12f37f3be5f3f02e4a89b356749fc4e25a",
+  "requirements_freeze_sha256": "856a30c84be5871f78872c68cd0093e9ac23ecddfe96c4318a4d74c797c5c635",
+  "source_commits_per_project": 100
+}

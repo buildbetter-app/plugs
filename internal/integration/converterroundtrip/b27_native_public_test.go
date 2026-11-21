@@ -456,7 +456,27 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			reference.AssertImported(t, source.runtime.Store, historyDigest, historyTime)
 			original := source.assertPublic(reference)
 			source.assertCatalog(reference)
+			source.reopen()
+			reference.AssertImported(t, source.runtime.Store, historyDigest, historyTime)
+			if !reflect.DeepEqual(original, source.assertPublic(reference)) {
+				t.Fatal("SQL reopen changed public native bodies")
+			}
+			source.assertCatalog(reference)
 			data, archive := source.dump()
+			before, err := source.runtime.Store.Meta(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// P44 forbids nonempty restore. Its typed refusal must preserve
+			// exact state durably, including after a second SQL reopen.
+			source.restore(data, archive, "snapshot", "", "", "restore_requires_empty")
+			source.reopen()
+			after, err := source.runtime.Store.Meta(context.Background())
+			retained, _ := source.dump()
+			if err != nil || !reflect.DeepEqual(before, after) || !bytes.Equal(data, retained) || !reflect.DeepEqual(original, source.assertPublic(reference)) {
+				t.Fatal("nonempty refusal failed durable exact conservation", err)
+			}
+			source.assertCatalog(reference)
 			target := openB27NativePublicHost(t, engine, "roundtrip", reference)
 			target.restore(data, archive, "snapshot", "", "", "")
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) {

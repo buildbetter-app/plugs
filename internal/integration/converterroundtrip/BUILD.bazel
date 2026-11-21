@@ -46,6 +46,8 @@ go_test(
         "testdata/synthetic-plug-dump-1.tar",
         ":public_source_fixtures",
         ":b27_native_rich_sources",
+        ":b27_native_comment_inputs",
+        ":b27_native_positive_inputs",
         "//spec/cardb11:public_native_edge_inputs",
         "//internal/integration/offlinehistory:lexicon_files",
         "//tools/native-receive",
@@ -111,6 +113,27 @@ filegroup(
 filegroup(
     name = "b27_native_rich_sources",
     srcs = glob(["testdata/b27-native-rich/**"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "b27_native_comment_inputs",
+    srcs = [
+        "testdata/b27-native-comments-r11.tar.gz",
+        "testdata/b27-native-comments-r11.SOURCE.json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "b27_native_positive_inputs",
+    srcs = [
+        "testdata/b27-delivery-real-native-input.tar.gz",
+        "testdata/b27-native-positive-v2-requirements.tar.gz",
+        "testdata/b27-native-positive-v2.REQUEST.json",
+        "testdata/b27-native-positive-v2.SOURCE.json",
+        "testdata/b27-review-real-native-input.tar.gz",
+    ],
     visibility = ["//visibility:public"],
 )
 

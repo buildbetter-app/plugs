@@ -4,6 +4,7 @@ package lexicon
 // Each admitted path is pinned independently; authored validators remain scanned.
 func b27NativeReferences() map[string]string {
 	return map[string]string{
+		"internal/integration/converterroundtrip/testdata/b27-native-comments-r11.SOURCE.json":                                                                                 "419fdf0d857319b66883eea2c4a78b8a8d48bad935cf94f1a8fae450ef54e153",
 		"internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/capture/capture-set/parts/00000000000000000001.part":                                "4022388ebfd5d9faddfc3eb12927539401923562008e40816490b29eccf974f6",
 		"internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/capture/inventory.json.sources/dolt-commit-graph.json":                              "9c2769bfb80dfb00f1b74d7a249a3876f103dc33a957831e56fef88564b5f116",
 		"internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/capture/inventory.json.sources/dolt-ignore.json":                                    "201e074b7571b32642e4ed1e422aa507d0a3d8b7278573959f4270ba2913e6fe",
