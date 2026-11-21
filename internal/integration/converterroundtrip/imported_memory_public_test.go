@@ -611,7 +611,7 @@ func TestNativeRestoredImportedMemoryPublicReadsAfterTwoReopensAllDrivers(t *tes
 				target, targetLease = reopen()
 				check()
 			}
-			t.Logf("P23_NATIVE_MEMORY_READBACK engine=%s fixture=%s hidden=%s phases=initial,reopen-1,reopen-2 public_get_list=pass hidden_not_found=pass strict_mutation=refused", engine, fixtureID, secretID)
+			t.Logf("P23_NATIVE_MEMORY_READBACK engine=%s fixture=%s hidden=%s phases=initial,reopen-1,reopen-2 public_get_list=pass hidden_not_found=pass strict_mutation=not_run", engine, fixtureID, secretID)
 		})
 	}
 }
