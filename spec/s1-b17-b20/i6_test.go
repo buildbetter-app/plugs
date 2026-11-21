@@ -258,10 +258,38 @@ func i6NativeAllocatorBinding(t *testing.T, archive *dumpformat.Archive, capture
 func i6NativeDigest(t *testing.T, archive *dumpformat.Archive) string {
 	t.Helper()
 	h := sha256.New()
-	names := []string{"allocator/snapshot.json", "config/sources.json", "records/native.ndjson", "versions.ndjson", "changesets.ndjson"}
+	required := map[string]struct{}{
+		"allocator/snapshot.json": {},
+		"config/sources.json":     {},
+		"records/native.ndjson":   {},
+		"versions.ndjson":         {},
+		"changesets.ndjson":       {},
+	}
 	files := archive.Manifest().Files
-	if len(files) != len(names) {
-		t.Fatalf("native member census=%v want %v", files, names)
+	// dumpformat.Read has already rejected any tar member absent from this
+	// manifest map. The census below keeps that authenticated inventory while
+	// allowing optional content-addressed evidence blobs for new backups.
+	names := make([]string, 0, len(files))
+	for name, file := range files {
+		if _, ok := required[name]; !ok {
+			if !strings.HasPrefix(name, "blobs/") {
+				t.Fatalf("native member census has unrecognized member %q", name)
+			}
+			digest := strings.TrimPrefix(name, "blobs/")
+			if len(digest) != sha256.Size*2 || digest != strings.ToLower(digest) {
+				t.Fatalf("native evidence blob path is not a lowercase sha256 %q", name)
+			}
+			decoded, err := hex.DecodeString(digest)
+			if err != nil || len(decoded) != sha256.Size || file.SHA256 != digest {
+				t.Fatalf("native evidence blob manifest binding=%q file=%+v", name, file)
+			}
+		}
+		names = append(names, name)
+	}
+	for name := range required {
+		if _, ok := files[name]; !ok {
+			t.Fatalf("native archive omitted required member %q, census=%v", name, files)
+		}
 	}
 	sort.Strings(names)
 	for _, name := range names {
