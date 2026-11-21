@@ -101,7 +101,7 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 				ID:               record.ID,
 				Project:          record.Project,
 				Body:             cloneMap(map[string]any(record.Body)),
-				Source:           Provenance{Table: record.Source.Table, Fields: cloneMap(map[string]any(record.Source.Fields))},
+				Source:           Provenance{Table: record.Source.Table, Fields: cloneMap(map[string]any(record.Source.Fields)), Identity: record.Source.Identity},
 			})
 		}
 	}

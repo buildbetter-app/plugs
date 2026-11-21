@@ -8,7 +8,7 @@ import (
 )
 
 type SourceCoreProjection struct {
-	accounting *dumpformat.Archive
+	accounting     *dumpformat.Archive
 	entities       map[driver.SourceEntityKey]driver.SourcePlaneEntityV1
 	relations      map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1
 	fields         map[driver.SourceEntityKey]map[string]bool
@@ -122,7 +122,8 @@ func SourceMirrorBody(source dumpformat.Record, joint bool) (map[string]any, err
 	body := CloneRow(source.Body)
 	body["source_id"], body["source_table"], body["source"] = source.ID, source.Source.Table, CloneRow(source.Source.Fields)
 	if key, scoped := source.SourceKey(); scoped {
-		body["source_identity"], body["source_key"] = *source.Source.Identity, key
+		body["source_identity"] = map[string]any{"store_id": key.StoreID, "project": key.Project}
+		body["source_key"] = map[string]any{"store_id": key.StoreID, "project": key.Project, "kind": key.Kind, "table": key.Table, "id": key.ID}
 		body["source_project"] = key.Project
 	}
 	if joint {
@@ -148,4 +149,3 @@ func SourceMirrorBody(source dumpformat.Record, joint bool) (map[string]any, err
 	}
 	return body, nil
 }
-
