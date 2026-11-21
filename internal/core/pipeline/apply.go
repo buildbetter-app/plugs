@@ -256,6 +256,10 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 				w.observePhaseSince(resolveCtx, PhaseAdmission, phaseStarted, e)
 				if e == nil {
 					defer fresh.Close()
+					// Read the receipt's attempt identity from this immutable
+					// snapshot before replay: a pending response makes replay
+					// wait out resolveCtx, after which no lookup can succeed.
+					entry, identityErr := fresh.IdempotencyByKey(resolveCtx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
 					phaseStarted = time.Now()
 					result, found, e := w.replay(resolveCtx, fresh, principal, by, cs, meta, hash)
 					w.observePhaseSince(resolveCtx, PhaseReplay, phaseStarted, e)
@@ -263,7 +267,6 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 						// Locks have been released: another invocation may have
 						// won after our uncertain rollback. Only a matching
 						// private receipt token proves this attempt committed.
-						entry, identityErr := fresh.IdempotencyByKey(resolveCtx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
 						if identityErr != nil {
 							return port.WriteOutcome{}, identityErr
 						}
