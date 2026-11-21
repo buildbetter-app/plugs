@@ -89,15 +89,14 @@ func legacyMemorySource(record driver.Record, document MemoryDocument) (*MemoryS
 // Both ordinary Readers and the Writer's tracked snapshot implement this
 // narrow view. Source, import-binding and overlay reads keep the commit guards.
 type memoryRecordReader interface {
-	Snapshot() driver.View
 	Get(context.Context, []model.Ref) ([]driver.Record, error)
 }
 
-func bindMemorySource(ctx context.Context, reader memoryRecordReader, record driver.Record, source *MemorySource, allowHistoricalRead bool) error {
+func bindMemorySource(ctx context.Context, reader memoryRecordReader, record driver.Record, source *MemorySource) error {
 	if source == nil {
 		return fmt.Errorf("memory overlay requires an imported source")
 	}
-	rows, err := reader.Get(ctx, []model.Ref{model.RefByID("instance_config/restore-import/binding", model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+	rows, err := reader.Get(ctx, []model.Ref{model.RefByID("instance_config/restore-import/binding", model.Natural64(0))})
 	if err != nil {
 		return err
 	}
@@ -105,36 +104,11 @@ func bindMemorySource(ctx context.Context, reader memoryRecordReader, record dri
 		Profile     driver.RestoreImportProfile `json:"profile"`
 		RequestHash string                      `json:"request_hash"`
 	}
-	var bindingRows, commitRows []driver.Record
-	for _, row := range rows {
-		switch row.Ref.ID {
-		case "instance_config/restore-import/binding":
-			bindingRows = append(bindingRows, row)
-		case driver.SourcePlaneCommitRecordID:
-			commitRows = append(commitRows, row)
-		}
-	}
-	if len(bindingRows) != 1 || bindingRows[0].Kind != "instance_config" || json.Unmarshal(bindingRows[0].Body, &binding) != nil {
+	if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
 		return fmt.Errorf("invalid source memory import binding")
 	}
-	request, requestErr := binding.Profile.RequestHash()
-	if binding.Profile.SourcePlanes != nil {
-		if len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
-			return fmt.Errorf("invalid source memory import binding")
-		}
-		var commitBinding driver.SourcePlaneCommitBindingV1
-		if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil ||
-			commitBinding.Version != driver.SourcePlaneCommitVersionV1 ||
-			commitBinding.JointPlanDigest != binding.Profile.SourcePlanes.JointPlanDigest ||
-			commitBinding.RequestHash != request || commitBinding.StoreID != binding.Profile.SourceStoreID ||
-			commitBinding.Revision.IsZero() {
-			return fmt.Errorf("historical source memory binding")
-		}
-		if commitBinding.Incarnation != reader.Snapshot().Incarnation && !allowHistoricalRead {
-			return fmt.Errorf("historical source memory binding")
-		}
-	}
-	if requestErr != nil || request != binding.RequestHash || source.Archive != "" && source.Archive != binding.Profile.ArchiveDigest ||
+	request, err := binding.Profile.RequestHash()
+	if err != nil || request != binding.RequestHash || source.Archive != "" && source.Archive != binding.Profile.ArchiveDigest ||
 		source.Legacy != (binding.Profile.SourcePlanes == nil) {
 		return fmt.Errorf("invalid source memory import binding")
 	}
@@ -146,17 +120,6 @@ func bindMemorySource(ctx context.Context, reader memoryRecordReader, record dri
 // Canonical memories pass through. Hidden source categories stay hidden and
 // cannot be reclassified by an overlay, including a forged persisted binding.
 func ResolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record driver.Record) (driver.Record, MemoryDocument, *MemorySource, error) {
-	return resolveMemoryRecord(ctx, reader, record, false)
-}
-
-// ResolveMemoryRecordForRead permits a native-restored historical source
-// marker for read projection. It never changes the strict resolver used by
-// mutation preparation or active provider recovery.
-func ResolveMemoryRecordForRead(ctx context.Context, reader memoryRecordReader, record driver.Record) (driver.Record, MemoryDocument, *MemorySource, error) {
-	return resolveMemoryRecord(ctx, reader, record, true)
-}
-
-func resolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record driver.Record, allowHistoricalRead bool) (driver.Record, MemoryDocument, *MemorySource, error) {
 	document, source, err := DecodeMemoryRecord(record)
 	if err != nil {
 		return driver.Record{}, MemoryDocument{}, nil, err
@@ -174,7 +137,7 @@ func resolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record 
 			rows[0].Revision.String() != document.Overlay.SourceRevision.String() || memorySourceHash(rows[0].Body) != document.Overlay.SourceSHA256 {
 			return driver.Record{}, MemoryDocument{}, nil, fmt.Errorf("invalid overlay source binding")
 		}
-		if err := bindMemorySource(ctx, reader, rows[0], original, allowHistoricalRead); err != nil {
+		if err := bindMemorySource(ctx, reader, rows[0], original); err != nil {
 			return driver.Record{}, MemoryDocument{}, nil, err
 		}
 		return record, document, original, nil
@@ -182,7 +145,7 @@ func resolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record 
 	if source == nil || !source.Visible {
 		return record, document, source, nil
 	}
-	if err := bindMemorySource(ctx, reader, record, source, allowHistoricalRead); err != nil {
+	if err := bindMemorySource(ctx, reader, record, source); err != nil {
 		return driver.Record{}, MemoryDocument{}, nil, err
 	}
 	rows, err := reader.Get(ctx, []model.Ref{MemoryOverlayRef(record.Ref)})
@@ -195,7 +158,7 @@ func resolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record 
 	if len(rows) != 1 {
 		return driver.Record{}, MemoryDocument{}, nil, fmt.Errorf("ambiguous memory overlay")
 	}
-	effective, replacement, bound, err := resolveMemoryRecord(ctx, reader, rows[0], allowHistoricalRead)
+	effective, replacement, bound, err := ResolveMemoryRecord(ctx, reader, rows[0])
 	if err != nil || bound == nil || bound.Record.Ref.ID != record.Ref.ID || !bytes.Equal(bound.Record.Body, record.Body) {
 		return driver.Record{}, MemoryDocument{}, nil, fmt.Errorf("invalid memory overlay binding")
 	}

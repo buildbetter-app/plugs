@@ -163,7 +163,7 @@ func decodeMemoryRecord(record driver.Record) (Memory, error) {
 // readPublicMemory projects a validated retained source envelope without
 // changing its persisted schema. Writes use the same strict classifier.
 func readPublicMemory(ctx context.Context, r driver.Reader, record driver.Record) (Memory, bool, error) {
-	effective, document, source, err := pipeline.ResolveMemoryRecordForRead(ctx, r, record)
+	effective, document, source, err := pipeline.ResolveMemoryRecord(ctx, r, record)
 	if err != nil {
 		converted := mapped(err)
 		var typed *model.Error

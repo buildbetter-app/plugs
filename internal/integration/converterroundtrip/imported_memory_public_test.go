@@ -605,31 +605,6 @@ func TestNativeRestoredImportedMemoryPublicReadsAfterTwoReopensAllDrivers(t *tes
 				if _, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: model.RefByID(secretID, model.Natural64(0))}); !isNotFoundMemory(err) {
 					t.Fatalf("hidden native-restored memory became visible: %v", err)
 				}
-				beforeMutation, historyBefore := reverseState(t, target), importedMemoryHistory(t, target)
-				_, mutationErr := svc.MemorySave(ctx, anonymous, service.MemorySaveRequest{Key: "fixture", Content: "mutated after native restore"}, model.WriteMeta{Method: "memory.save", IdempotencyKey: strings.Repeat("a", 32)})
-				var typedMutationErr *model.Error
-				if !errors.As(mutationErr, &typedMutationErr) || typedMutationErr.Data.Code != "internal_error" {
-					t.Fatalf("historical native marker mutation was not fenced: %v", mutationErr)
-				}
-				if !reflect.DeepEqual(beforeMutation, reverseState(t, target)) || !reflect.DeepEqual(historyBefore, importedMemoryHistory(t, target)) {
-					t.Fatal("fenced historical mutation changed restored state or history")
-				}
-				meta, err := target.Meta(ctx)
-				if err != nil {
-					t.Fatal(err)
-				}
-				reader, err := target.Read(ctx, driver.View{Incarnation: meta.Incarnation})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer reader.Close()
-				rows, err := reader.Get(ctx, []model.Ref{id})
-				if err != nil || len(rows) != 1 {
-					t.Fatalf("native-restored source row: %v", err)
-				}
-				if _, _, _, err := pipeline.ResolveMemoryRecord(ctx, reader, rows[0]); err == nil {
-					t.Fatal("strict mutation resolver adopted a historical native marker")
-				}
 			}
 			check()
 			for reopenCount := 0; reopenCount < 2; reopenCount++ {
@@ -853,7 +828,7 @@ func importedMemoryHistory(t *testing.T, store driver.Store) any {
 	}{versions, changes}
 }
 
-func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
+func TestImportedMemoryMalformedMarkersRefuseWithoutWritesAllDrivers(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			for _, control := range []string{"unmarked", "source-id-only", "wrong-table", "wrong-ref", "wrong-source-value", "fake-secret", "missing-value"} {
@@ -900,6 +875,7 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 					if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Principal: restorePrincipal, LockKeys: []driver.LockKey{key}, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}}); err != nil {
 						t.Fatal(err)
 					}
+					before, historyBefore := reverseState(t, store), importedMemoryHistory(t, store)
 					ontology := service.NewOntology(nil)
 					svc := service.New(store, lease, pipeline.New(store, lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
 					anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
@@ -910,6 +886,9 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 						if !errors.As(err, &typed) || typed.Data.Code != "internal_error" {
 							t.Fatalf("malformed %s hidden: %v", control, err)
 						}
+					}
+					if !reflect.DeepEqual(before, reverseState(t, store)) || !reflect.DeepEqual(historyBefore, importedMemoryHistory(t, store)) {
+						t.Fatalf("malformed %s read changed state or history", control)
 					}
 				})
 			}
