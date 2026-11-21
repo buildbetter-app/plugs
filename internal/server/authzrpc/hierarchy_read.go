@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -147,7 +149,23 @@ type EpicProgressAuthority struct {
 // Keep each finite authorization invocation below the unchanged per-check
 // budget. The authority slice remains shared across chunks, so facts and
 // tracked dependencies are still loaded once for the request.
-const hierarchyReadBatchSize = 1000
+const hierarchyReadBatchSize = 100
+
+type hierarchyReadChunkObserverKey struct{}
+
+// HierarchyReadChunkMeasurement describes one returned Chain.Check call.
+// It includes no principal, resource, decision, or error text.
+type HierarchyReadChunkMeasurement struct {
+	Size      int
+	ElapsedNS int64
+	Outcome   string
+}
+
+// WithHierarchyReadChunkObserver attaches request-local timing instrumentation
+// for test fixtures. Ordinary callers leave it unset.
+func WithHierarchyReadChunkObserver(ctx context.Context, observe func(HierarchyReadChunkMeasurement)) context.Context {
+	return context.WithValue(ctx, hierarchyReadChunkObserverKey{}, observe)
+}
 
 // AuthorizeEpicProgress applies CURRENT authority to PINNED content. EP4/EP5
 // must supply the complete direct-child query from content and bucket only the
@@ -328,6 +346,7 @@ func (c *Checker) hierarchyReadBatch(ctx context.Context, caller authz.Caller, a
 	if len(refs) == 0 {
 		return []bool{}, ctx.Err()
 	}
+	observe, _ := ctx.Value(hierarchyReadChunkObserverKey{}).(func(HierarchyReadChunkMeasurement))
 	allowed := make([]bool, len(refs))
 	for start := 0; start < len(refs); start += hierarchyReadBatchSize {
 		end := start + hierarchyReadBatchSize
@@ -338,7 +357,24 @@ func (c *Checker) hierarchyReadBatch(ctx context.Context, caller authz.Caller, a
 		for i, ref := range refs[start:end] {
 			requests[i] = authz.CheckRequest{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}
 		}
+		var started time.Time
+		if observe != nil {
+			started = time.Now()
+		}
 		decisions, err := c.chain.Check(ctx, authority, requests)
+		if observe != nil {
+			elapsed := time.Since(started)
+			outcome := "ok"
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				outcome = "deadline"
+			case errors.Is(err, context.Canceled):
+				outcome = "canceled"
+			case err != nil:
+				outcome = "error"
+			}
+			observe(HierarchyReadChunkMeasurement{Size: len(requests), ElapsedNS: elapsed.Nanoseconds(), Outcome: outcome})
+		}
 		if err != nil {
 			return nil, authzError(err)
 		}
