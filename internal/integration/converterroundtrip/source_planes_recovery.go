@@ -25,7 +25,7 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 	if err != nil {
 		return driver.RestoreImportProfile{}, Report{}, false, err
 	}
-	rows, readErr := r.Get(ctx, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0))})
+	rows, readErr := r.Get(ctx, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 	closeErr := r.Close()
 	if readErr != nil {
 		return driver.RestoreImportProfile{}, Report{}, false, readErr
@@ -37,7 +37,13 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 		return driver.RestoreImportProfile{}, Report{}, false, nil
 	}
 	var binding importBindingEvidence
-	if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
+	var bindingRows []driver.Record
+	for _, row := range rows {
+		if row.Ref.ID == importBindingRecordID {
+			bindingRows = append(bindingRows, row)
+		}
+	}
+	if len(bindingRows) != 1 || bindingRows[0].Kind != "instance_config" || json.Unmarshal(bindingRows[0].Body, &binding) != nil {
 		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
 	}
 	profile, err := binding.Profile.Detached()
@@ -45,6 +51,25 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 		return driver.RestoreImportProfile{}, Report{}, false, err
 	}
 	if profile.SourcePlanes == nil {
+		return driver.RestoreImportProfile{}, Report{}, false, nil
+	}
+	var commitRows []driver.Record
+	for _, row := range rows {
+		if row.Ref.ID == driver.SourcePlaneCommitRecordID {
+			commitRows = append(commitRows, row)
+		}
+	}
+	if len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+	}
+	var commitBinding driver.SourcePlaneCommitBindingV1
+	if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil {
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+	}
+	if commitBinding.StoreID != meta.StoreID || commitBinding.Incarnation != meta.Incarnation {
+		// A native dump/restore preserves the original source binding for
+		// reverse provenance. Its store incarnation cannot authorize live
+		// provider adoption on this restored store.
 		return driver.RestoreImportProfile{}, Report{}, false, nil
 	}
 	request, err := profile.RequestHash()

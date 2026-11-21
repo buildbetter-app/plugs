@@ -10,7 +10,7 @@ go_library(
 
 go_test(
     name = "rpc_test",
-    srcs = ["cursor_test.go", "gate_integration_test.go", "integration_test.go", "openrpc_test.go", "rpc_test.go", "workflow_integration_test.go"],
+    srcs = ["cursor_test.go", "gate_integration_test.go", "integration_test.go", "openrpc_test.go", "restore_logging_test.go", "rpc_test.go", "workflow_integration_test.go"],
     embedsrcs = ["openrpc.json"],
     deps = [
         ":rpc",

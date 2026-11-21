@@ -89,6 +89,7 @@ func legacyMemorySource(record driver.Record, document MemoryDocument) (*MemoryS
 // Both ordinary Readers and the Writer's tracked snapshot implement this
 // narrow view. Source, import-binding and overlay reads keep the commit guards.
 type memoryRecordReader interface {
+	Snapshot() driver.View
 	Get(context.Context, []model.Ref) ([]driver.Record, error)
 }
 
@@ -96,7 +97,7 @@ func bindMemorySource(ctx context.Context, reader memoryRecordReader, record dri
 	if source == nil {
 		return fmt.Errorf("memory overlay requires an imported source")
 	}
-	rows, err := reader.Get(ctx, []model.Ref{model.RefByID("instance_config/restore-import/binding", model.Natural64(0))})
+	rows, err := reader.Get(ctx, []model.Ref{model.RefByID("instance_config/restore-import/binding", model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 	if err != nil {
 		return err
 	}
@@ -104,11 +105,34 @@ func bindMemorySource(ctx context.Context, reader memoryRecordReader, record dri
 		Profile     driver.RestoreImportProfile `json:"profile"`
 		RequestHash string                      `json:"request_hash"`
 	}
-	if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
+	var bindingRows, commitRows []driver.Record
+	for _, row := range rows {
+		switch row.Ref.ID {
+		case "instance_config/restore-import/binding":
+			bindingRows = append(bindingRows, row)
+		case driver.SourcePlaneCommitRecordID:
+			commitRows = append(commitRows, row)
+		}
+	}
+	if len(bindingRows) != 1 || bindingRows[0].Kind != "instance_config" || json.Unmarshal(bindingRows[0].Body, &binding) != nil {
 		return fmt.Errorf("invalid source memory import binding")
 	}
-	request, err := binding.Profile.RequestHash()
-	if err != nil || request != binding.RequestHash || source.Archive != "" && source.Archive != binding.Profile.ArchiveDigest ||
+	request, requestErr := binding.Profile.RequestHash()
+	if binding.Profile.SourcePlanes != nil {
+		if len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
+			return fmt.Errorf("invalid source memory import binding")
+		}
+		var commitBinding driver.SourcePlaneCommitBindingV1
+		if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil ||
+			commitBinding.Version != driver.SourcePlaneCommitVersionV1 ||
+			commitBinding.JointPlanDigest != binding.Profile.SourcePlanes.JointPlanDigest ||
+			commitBinding.RequestHash != request || commitBinding.StoreID != binding.Profile.SourceStoreID ||
+			commitBinding.Revision.IsZero() ||
+			commitBinding.Incarnation != reader.Snapshot().Incarnation {
+			return fmt.Errorf("historical source memory binding")
+		}
+	}
+	if requestErr != nil || request != binding.RequestHash || source.Archive != "" && source.Archive != binding.Profile.ArchiveDigest ||
 		source.Legacy != (binding.Profile.SourcePlanes == nil) {
 		return fmt.Errorf("invalid source memory import binding")
 	}

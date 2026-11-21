@@ -74,6 +74,14 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 			return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
 		}
 		if binding.Profile.SourcePlanes != nil {
+			commitRows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+			if err != nil || len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
+				return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
+			}
+			var commitBinding driver.SourcePlaneCommitBindingV1
+			if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil || commitBinding.StoreID != meta.StoreID || commitBinding.Incarnation != meta.Incarnation {
+				return LiveReverse{}, ReverseRefusal{"historical_source_binding"}
+			}
 			return reverseSourceRestored(ctx, r, meta, binding.Profile, options)
 		}
 	}

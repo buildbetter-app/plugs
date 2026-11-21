@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -460,6 +461,53 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			target.restore(data, archive, "snapshot", "", "", "")
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) {
 				t.Fatal("public head roundtrip changed native document bodies")
+			}
+			// Native restore carries the source-plane marker as historical
+			// provenance. It must not be adopted as a live converter session,
+			// because the native target has a new store incarnation and no
+			// matching converter receipt.
+			marker := func() []byte {
+				t.Helper()
+				meta, err := target.runtime.Store.Meta(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				r, err := target.runtime.Store.Read(context.Background(), driver.View{Incarnation: meta.Incarnation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer r.Close()
+				rows, err := r.Get(context.Background(), []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+				if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" {
+					t.Fatalf("native source provenance marker missing: %v", err)
+				}
+				return append([]byte(nil), rows[0].Body...)
+			}
+			beforeReopen := marker()
+			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
+				t.Fatalf("native historical marker was adopted as an active import: found=%t err=%v", found, err)
+			}
+			if _, err := converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store); err == nil {
+				t.Fatal("native historical marker unexpectedly enabled active reverse")
+			} else {
+				var refusal converterroundtrip.ReverseRefusal
+				if !errors.As(err, &refusal) || refusal.Reason != "historical_source_binding" {
+					t.Fatalf("native historical marker returned an untyped or unrelated reverse refusal: %v", err)
+				}
+			}
+			target.reopen()
+			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
+				t.Fatal("first target reopen changed native provenance/readback")
+			}
+			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
+				t.Fatalf("first target reopen adopted historical marker: found=%t err=%v", found, err)
+			}
+			target.reopen()
+			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
+				t.Fatal("second target reopen changed native provenance/readback")
+			}
+			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
+				t.Fatalf("second target reopen adopted historical marker: found=%t err=%v", found, err)
 			}
 		})
 	}
