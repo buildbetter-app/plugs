@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -486,18 +487,12 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("native historical marker was adopted as an active import: found=%t err=%v", found, err)
 			}
-			reversed, err := converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store)
-			if err != nil || len(reversed.Result.JSONL) == 0 {
-				t.Fatalf("native historical provenance reverse failed: %v", err)
-			}
+			assertNativeHistoricalReverseRefusal(t, target.runtime.Store)
 			target.reopen()
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("first target reopen changed native provenance/readback")
 			}
-			reversed, err = converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store)
-			if err != nil || len(reversed.Result.JSONL) == 0 {
-				t.Fatalf("native historical provenance reverse after first reopen failed: %v", err)
-			}
+			assertNativeHistoricalReverseRefusal(t, target.runtime.Store)
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("first target reopen adopted historical marker: found=%t err=%v", found, err)
 			}
@@ -505,13 +500,22 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("second target reopen changed native provenance/readback")
 			}
-			reversed, err = converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store)
-			if err != nil || len(reversed.Result.JSONL) == 0 {
-				t.Fatalf("native historical provenance reverse after second reopen failed: %v", err)
-			}
+			assertNativeHistoricalReverseRefusal(t, target.runtime.Store)
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("second target reopen adopted historical marker: found=%t err=%v", found, err)
 			}
 		})
+	}
+}
+
+// Native backup/restore retains the historical marker and live native rows,
+// but has no converter source-root blob. Reverse therefore remains a typed
+// fail-closed P25 boundary until that source root is retained explicitly.
+func assertNativeHistoricalReverseRefusal(t *testing.T, store driver.Store) {
+	t.Helper()
+	_, err := converterroundtrip.ReverseRestored(context.Background(), store)
+	var refusal converterroundtrip.ReverseRefusal
+	if !errors.As(err, &refusal) || refusal.Reason != "invalid_source_evidence" {
+		t.Fatalf("native historical reverse refusal changed: %v", err)
 	}
 }
