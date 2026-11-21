@@ -46,6 +46,20 @@ func requireCASReason(t *testing.T, got reply, reason, current string) {
 	if got.Error.Data.Details["reason"] != reason {
 		t.Fatalf("CAS reason=%v want=%s", got.Error.Data.Details, reason)
 	}
+	// Exactly reason, the refusing guard ref and, for a revision arm on an
+	// existing record, currentRevision: no other key may be disclosed.
+	want := map[string]bool{"reason": true, "ref": true}
+	if current != "" {
+		want["currentRevision"] = true
+	}
+	if len(got.Error.Data.Details) != len(want) {
+		t.Fatalf("CAS details=%v want exactly the keys %v", got.Error.Data.Details, want)
+	}
+	for name := range got.Error.Data.Details {
+		if !want[name] {
+			t.Fatalf("CAS details=%v disclose unexpected key %q", got.Error.Data.Details, name)
+		}
+	}
 	token, present := got.Error.Data.Details["currentRevision"]
 	if current == "" {
 		if present {

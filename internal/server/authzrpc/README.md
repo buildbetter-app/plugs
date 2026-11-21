@@ -53,6 +53,33 @@ The new three-driver HTTP assertions are source only pending independent review
 and S1-authorized execution. They do not qualify `composition.Open`, full B05,
 authentic reference twins or all Go/SQL clock paths.
 
+`claim_interleaving_test.go` covers B05 claim interleaving on memory, SQLite and
+PostgreSQL over authenticated HTTP. A wrapper around each real store runs one
+competing commit at the claim's `Store.Write`, after both authorization stages:
+a competing claim by an agent with independent or identical grants (exactly one
+claim; the loser gets retryable `busy` and no receipt), revocation of the
+claimer's only path (`forbidden`, nothing published), revocation of only the
+competitor's path or of one of the claimer's two paths (reauthorized, exactly
+one claim), and a holder that loses permission after winning (the claim stays
+live; other agents still get `busy` or `lease_not_held`; the holder's heartbeat
+and release are `forbidden` without details until the grant returns). The
+reauthorization rows also count the request's own `Store.Write` calls (two:
+the invalidated attempt and the retry). Lease refusals (claim, release, update,
+close and their `tx.apply` forms) are released only after `AuthorizeBefore`
+admits the operations prepared so far, with their committed pre-images and
+staged final images (a refused reparent is presented as the requested move);
+heartbeat already authorizes before it reads the target. So an agent with no
+grant gets the same detail-free `forbidden` for every one of those forms, and
+for tx.apply comment, link, unlink, setMeta, delete, attach and reparent,
+whether the bead is unclaimed, claimed by someone else, or released, while an
+authorized non-holder keeps `busy`/`lease_not_held`, still ahead of a stale CAS
+expectation. With `Config.Hierarchy` on, tx.apply `[reparent X]`,
+`[reparent Y, close X]` and `[create C, reparent X]` on a claimed X keep
+`lease_not_held` for an authorized non-holder and `forbidden` for an ungranted
+agent. The close/tx.apply grant for the authorized non-holder comes from a
+test rule scoped to that one agent, since the fixed component grants agents no
+close.
+
 The component tests exercise the actual HTTP/RPC boundary with real native-host
 bindings, authenticated principals, durable mutation/refusal/replay, and
 claimNext defaults and terminal receipts. They do not qualify a WASI artifact,

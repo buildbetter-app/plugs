@@ -62,8 +62,8 @@ func TestHashCASRefusalRequiresExpectationAuthorization(t *testing.T) {
 					}
 				} else {
 					code(t, err, "precondition_failed")
-					if typed.Data.Details["reason"] != "hash" || len(typed.Data.Details) != 1 {
-						t.Fatalf("authorized hash CAS must release only its hash reason: %+v", typed.Data.Details)
+					if !reflect.DeepEqual(typed.Data.Details, map[string]any{"reason": "hash", "ref": guard}) {
+						t.Fatalf("authorized hash CAS must release exactly its reason and resolved guard address: %+v", typed.Data.Details)
 					}
 				}
 			})

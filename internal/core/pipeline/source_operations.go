@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"errors"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -40,6 +41,10 @@ type SourcePublication struct {
 // the Writer owns original request identity, authorization and publication.
 type SourcePreparation func(context.Context, driver.Reader, func(SourceOperationHandler) error) (SourcePublication, error)
 
+// errLeaseRefusalPending stops a source provider when ordinary preparation
+// has parked a lease refusal for authorization.
+var errLeaseRefusalPending = errors.New("pipeline: lease refusal pending authorization")
+
 type sourceOperationsKey struct{}
 type sourceHandlerKey struct{}
 type sourceOperations struct {
@@ -60,8 +65,20 @@ func (w *Writer) prepareSourceOperations(ctx context.Context, reader driver.Read
 	publication, err := source.prepare(ctx, reader, func(handle SourceOperationHandler) error {
 		var err error
 		p, err = w.prepare(context.WithValue(ctx, sourceHandlerKey{}, handle), reader, by, cs, meta, release)
+		if err == nil && p != nil && p.leaseRefusal != nil {
+			// Preparation stopped at a lease refusal. Stop the provider too,
+			// so it never stages, snapshots or reports results for a
+			// half-prepared batch; the refusal is authorized and released by
+			// the caller, outside the provider.
+			return errLeaseRefusalPending
+		}
 		return err
 	})
+	if p != nil && p.leaseRefusal != nil {
+		// Whatever the provider returned after the sentinel is discarded with
+		// its staging: nothing from this attempt is published.
+		return p, nil
+	}
 	if err != nil {
 		return nil, err
 	}

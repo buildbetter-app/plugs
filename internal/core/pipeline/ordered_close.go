@@ -98,18 +98,18 @@ func (w *Writer) prepareClose(ctx context.Context, p *prepared, current *pending
 		var refusal error
 		if expect.Revision != nil {
 			if !exists || revision.IsZero() {
-				refusal = preconditionFailure("revision", "expected record is absent")
+				refusal = preconditionFailure("revision", "expected record is absent", ref)
 			} else if written || expect.Revision.String() != revision.String() {
-				refusal = preconditionRevisionFailure(revision)
+				refusal = preconditionRevisionFailure(revision, ref)
 			}
 		} else if !exists {
-			refusal = preconditionFailure("hash", "expected record is absent")
+			refusal = preconditionFailure("hash", "expected record is absent", ref)
 		} else {
-			hash, err := expectationHash(doc, expect.Field)
+			hash, err := expectationHash(doc, expect.Field, ref)
 			if err != nil {
 				refusal = err
 			} else if hash != expect.Hash {
-				refusal = preconditionFailure("hash", "field hash changed")
+				refusal = preconditionFailure("hash", "field hash changed", ref)
 			}
 		}
 		if p.refusal == nil {

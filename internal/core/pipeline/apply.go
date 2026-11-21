@@ -158,7 +158,14 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
 		} else {
 			p, err = w.prepareSourceOperations(preCtx, reader, by, cs, meta, release)
-			if err == nil {
+			if err == nil && p.leaseRefusal != nil {
+				// Only an authorized caller learns that a bead is claimed by
+				// someone else or has no live claim; anyone else is refused by
+				// authorization exactly as for an unclaimed bead.
+				if err = w.authorize(preCtx, port.AuthorizeBefore, p.proposal, p.snapshot); err == nil {
+					err = p.leaseRefusal
+				}
+			} else if err == nil {
 				err = p.preserveWorkflowComments(preCtx)
 			}
 		}
@@ -256,6 +263,10 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 				w.observePhaseSince(resolveCtx, PhaseAdmission, phaseStarted, e)
 				if e == nil {
 					defer fresh.Close()
+					// Read the receipt's attempt identity from this immutable
+					// snapshot before replay: a pending response makes replay
+					// wait out resolveCtx, after which no lookup can succeed.
+					entry, identityErr := fresh.IdempotencyByKey(resolveCtx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
 					phaseStarted = time.Now()
 					result, found, e := w.replay(resolveCtx, fresh, principal, by, cs, meta, hash)
 					w.observePhaseSince(resolveCtx, PhaseReplay, phaseStarted, e)
@@ -263,7 +274,6 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 						// Locks have been released: another invocation may have
 						// won after our uncertain rollback. Only a matching
 						// private receipt token proves this attempt committed.
-						entry, identityErr := fresh.IdempotencyByKey(resolveCtx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
 						if identityErr != nil {
 							return port.WriteOutcome{}, identityErr
 						}

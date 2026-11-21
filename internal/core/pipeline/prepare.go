@@ -69,7 +69,13 @@ type prepared struct {
 	// refusal is deliberately kept out of ProposedChange. It may contain a
 	// current revision token and can be released only after AuthorizeBefore has
 	// covered every disclosed expectation target.
-	refusal           error
+	refusal error
+	// leaseRefusal is a lease refusal (live foreign claim; missing, foreign or
+	// expired lease). Preparation stops at it, and it is released only after
+	// AuthorizeBefore admits the operations prepared so far, so an
+	// unauthorized caller learns nothing about the claim state of a bead it
+	// may not modify.
+	leaseRefusal      error
 	release           *claimReleaseMode
 	warnings          []model.Warning
 	mutators          []string
@@ -100,14 +106,18 @@ func failure(code model.ErrorCode, message string) error {
 
 // preconditionFailure describes the selected CAS arm. Preparation keeps this
 // refusal private until AuthorizeBefore covers its expectation target.
-func preconditionFailure(reason, message string) *model.Error {
-	return &model.Error{Message: message, Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": reason}}}
+func preconditionFailure(reason, message string, refusing ...model.Ref) *model.Error {
+	err := &model.Error{Message: message, Data: model.ErrorData{Code: "precondition_failed", Details: map[string]any{"reason": reason}}}
+	if len(refusing) != 0 {
+		err.Data.Details["ref"] = refusing[0]
+	}
+	return err
 }
 
 // preconditionRevisionFailure adds the token from the pinned pre-read only
 // when the expected record exists.
-func preconditionRevisionFailure(current model.Revision) error {
-	err := preconditionFailure("revision", "precondition failed")
+func preconditionRevisionFailure(current model.Revision, refusing ...model.Ref) error {
+	err := preconditionFailure("revision", "precondition failed", refusing...)
 	err.Data.Details["currentRevision"] = current
 	return err
 }
@@ -369,12 +379,43 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
+			var leaseErr error
 			if release != nil {
-				if err = w.checkClaimRelease(ctx, p, current.doc, by, meta, release); err != nil {
+				leaseErr = w.checkClaimRelease(ctx, p, current.doc, by, meta, release)
+			} else {
+				leaseErr = w.checkLease(ctx, current.doc, by, meta)
+			}
+			if leaseErr != nil {
+				if !deferredLeaseRefusal(leaseErr) {
+					return nil, leaseErr
+				}
+				// Stop exactly where the refusal used to be returned, keeping
+				// the operations prepared so far plus this target for
+				// AuthorizeBefore. refresh gives every change its committed
+				// pre-image and staged final image, as ordinary preparation
+				// does; the refused target is loaded but unchanged, so its
+				// final image is its committed body. Authorizers that read
+				// final images (hierarchy routes) therefore see a well-formed
+				// proposal. The caller releases the refusal only if that
+				// authorization admits it.
+				p.leaseRefusal = leaseErr
+				if op.Kind == model.OpReparent {
+					// Hierarchy authorizers compare a reparent's final parent
+					// with its operation, so present the requested transition.
+					// A reparent that cannot be staged (cross-project, cycle,
+					// depth or missing parent) keeps the unchanged image. The
+					// ordinary authorizer then still releases the lease
+					// refusal, but under Hierarchy that image fails the final
+					// parent check and the caller gets forbidden instead. That
+					// fails closed; returning the lease refusal without
+					// authorization would reveal the claim.
+					_ = p.stageReparent(ctx, current, op, target, aliases)
+				}
+				p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
+				if err := p.refresh(); err != nil {
 					return nil, err
 				}
-			} else if err = w.checkLease(ctx, current.doc, by, meta); err != nil {
-				return nil, err
+				return p, nil
 			}
 			liveLease := current.doc.Lease
 			if overlayStore, ok := w.store.(driver.CheckpointStore); ok && liveLease != nil {
@@ -399,25 +440,9 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			switch op.Kind {
 			case model.OpReparent:
-				if project := op.Reparent.Project; project != "" && project != current.doc.Project {
-					return nil, failure("invalid_params", "reparent cannot move a bead between projects")
+				if err := p.stageReparent(ctx, current, op, target, aliases); err != nil {
+					return nil, err
 				}
-				parent, e := p.resolveParent(ctx, op.Reparent.Parent, aliases, target.ID)
-				if e != nil {
-					return nil, e
-				}
-				next := current.doc
-				next.Parent = parent
-				if _, e := HierarchyParent(next); e != nil {
-					return nil, e
-				}
-				op.Reparent.Target, op.Reparent.Parent = target, parent
-				if parentID(current.doc.Parent) != parentID(parent) {
-					current.doc.ParentMetadata = nil
-				}
-				current.doc.Parent = parent
-				current.setBy["parent"] = "request"
-				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
 			case model.OpPatch:
 				if err = applyFields(current, op.Patch.Fields, "request"); err != nil {
 					return nil, err
@@ -657,7 +682,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if expect.Revision != nil {
 					reason = "revision"
 				}
-				p.refusal = preconditionFailure(reason, "expected record is absent")
+				p.refusal = preconditionFailure(reason, "expected record is absent", ref)
 			}
 			continue
 		}
@@ -667,7 +692,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			if expect.Revision.String() != records[0].Revision.String() {
 				if p.refusal == nil {
-					p.refusal = preconditionRevisionFailure(records[0].Revision)
+					p.refusal = preconditionRevisionFailure(records[0].Revision, ref)
 				}
 			}
 		} else {
@@ -678,7 +703,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
-			hash, err := expectationHash(doc, expect.Field)
+			hash, err := expectationHash(doc, expect.Field, ref)
 			if err != nil {
 				if p.refusal == nil {
 					p.refusal = err
@@ -687,7 +712,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			}
 			if hash != expect.Hash {
 				if p.refusal == nil {
-					p.refusal = preconditionFailure("hash", "field hash changed")
+					p.refusal = preconditionFailure("hash", "field hash changed", ref)
 				}
 			}
 		}
@@ -905,7 +930,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 				if expect.Revision != nil {
 					reason = "revision"
 				}
-				p.refusal = preconditionFailure(reason, "expected record is absent")
+				p.refusal = preconditionFailure(reason, "expected record is absent", ref)
 			}
 			continue
 		}
@@ -915,7 +940,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 			}
 			if expect.Revision.String() != rows[0].Revision.String() {
 				if p.refusal == nil {
-					p.refusal = preconditionRevisionFailure(rows[0].Revision)
+					p.refusal = preconditionRevisionFailure(rows[0].Revision, ref)
 				}
 			}
 			continue
@@ -941,7 +966,7 @@ func (w *Writer) prepareMemory(ctx context.Context, reader driver.Reader, by mod
 		hash, err := FieldHash(value)
 		if err != nil || hash != expect.Hash {
 			if p.refusal == nil {
-				p.refusal = preconditionFailure("hash", "field hash changed")
+				p.refusal = preconditionFailure("hash", "field hash changed", ref)
 			}
 		}
 	}
@@ -1444,17 +1469,17 @@ func FieldHash(value any) (string, error) {
 // the committed document metadata. Metadata is decoded and canonicalized only
 // for this comparison; the stored RawMessage and exported FieldHash remain
 // untouched.
-func expectationHash(doc Document, selector string) (string, error) {
+func expectationHash(doc Document, selector string, refusing ...model.Ref) (string, error) {
 	if key, ok := strings.CutPrefix(selector, "metadata."); ok {
 		raw, present := doc.Metadata[key]
 		if !present {
 			// The admitted string hash arm has no absence discriminator. Never
 			// treat a missing metadata key as the digest of JSON null.
-			return "", preconditionFailure("hash", "metadata key is absent")
+			return "", preconditionFailure("hash", "metadata key is absent", refusing...)
 		}
 		canonical, err := canonicalMetadataJSON(raw)
 		if err != nil {
-			return "", preconditionFailure("hash", "metadata value is invalid JSON")
+			return "", preconditionFailure("hash", "metadata value is invalid JSON", refusing...)
 		}
 		digest := sha256.Sum256(canonical)
 		return hex.EncodeToString(digest[:]), nil
@@ -1488,7 +1513,48 @@ func isSlot(method string) bool {
 	return false
 }
 
+// stageReparent applies a reparent operation to its loaded target. It changes
+// the pending record only after every check has passed.
+func (p *prepared) stageReparent(ctx context.Context, current *pending, op model.Op, target model.Ref, aliases map[string]model.Ref) error {
+	if project := op.Reparent.Project; project != "" && project != current.doc.Project {
+		return failure("invalid_params", "reparent cannot move a bead between projects")
+	}
+	parent, err := p.resolveParent(ctx, op.Reparent.Parent, aliases, target.ID)
+	if err != nil {
+		return err
+	}
+	next := current.doc
+	next.Parent = parent
+	if _, err := HierarchyParent(next); err != nil {
+		return err
+	}
+	op.Reparent.Target, op.Reparent.Parent = target, parent
+	if parentID(current.doc.Parent) != parentID(parent) {
+		current.doc.ParentMetadata = nil
+	}
+	current.doc.Parent = parent
+	current.setBy["parent"] = "request"
+	p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, parent: parentID(parent)})
+	return nil
+}
+
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
+
+// deferredLeaseRefusal selects the typed lease refusals that depend on the
+// bead's current claim state (claim, release, update, close and their tx.apply
+// forms all pass the same check). Storage, staleness and capability errors
+// still fail preparation immediately.
+func deferredLeaseRefusal(err error) bool {
+	var typed *model.Error
+	if !errors.As(err, &typed) || typed == nil {
+		return false
+	}
+	switch typed.Data.Code {
+	case "busy", "lease_not_held", "lease_expired":
+		return true
+	}
+	return false
+}
 
 func (w *Writer) checkLease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
 	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {
