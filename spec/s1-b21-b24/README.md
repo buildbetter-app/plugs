@@ -179,3 +179,13 @@ readback; memory remains a same-store readback. Untimed deferral still requires
 explicit reopen. These public Plug controls do not qualify native Dolt clock
 inputs, native timed wake, protected-source import, native caps or a full card;
 those require their own accepted producer material and recording evidence.
+
+`b22_remaining_test.go` is the 2026-11-04 B22 refill (a37f2bc80) ported onto
+current main. Every authorized `precondition_failed` refusal now also carries
+`details.ref`, the resolved guard address, including guards outside the
+mutation target. `b22_close_cas_test.go` carries the B08 line item: `bead.close`
+and a `tx.apply` close naming a stale expected revision are refused with
+`reason=revision`, `currentRevision` and `ref`, publish nothing, leave the key
+reusable across reopen, and the expectation is checked before a repeated close.
+Whether the native Beads force close applies any compare-and-set needs a
+reference recording and stays open.
