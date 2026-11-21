@@ -76,6 +76,7 @@ members are retained at the final restore revision; they never fill historical
 business preimages. The adapter maps each checked source commit image to an
 explicit import-order revision. This proves commit-image history, not every
 individual SQL edit between commits or verified source-principal attribution.
+Plug refuses JSON numbers outside the I-JSON range instead of rounding them.
 
 ## Streaming core contract
 
