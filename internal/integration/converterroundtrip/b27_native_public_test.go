@@ -49,6 +49,35 @@ func b27PublicNativeDecode(t *testing.T, raw []byte, value any) {
 	}
 }
 
+// b27PublicNativeErrorData keeps refusal evidence limited to the typed public
+// error envelope. It deliberately excludes the outer message, request
+// parameters, response bodies, and headers.
+func b27PublicNativeErrorData(raw []byte) (string, map[string]any) {
+	var envelope struct {
+		Error *struct {
+			Data map[string]json.RawMessage `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		return "", nil
+	}
+	data := make(map[string]any, len(envelope.Error.Data))
+	for _, key := range []string{"code", "retryable", "retryAfterMs", "hint", "traceId", "details"} {
+		encoded, ok := envelope.Error.Data[key]
+		if !ok {
+			continue
+		}
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.UseNumber()
+		if decoder.Decode(&value) == nil {
+			data[key] = value
+		}
+	}
+	code, _ := data["code"].(string)
+	return code, data
+}
+
 func openB27NativePublicHost(t *testing.T, engine, label string, reference *converterroundtrip.B27NativeReferenceForTest) *b27NativePublicHost {
 	t.Helper()
 	return openB27NativePublicArchiveHost(t, engine, label, "review-project", reference.Data, func(t *testing.T, archive *dumpformat.Archive, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {
@@ -171,28 +200,25 @@ func (h *b27NativePublicHost) call(project, method string, params map[string]any
 	out := httptest.NewRecorder()
 	h.runtime.HTTPHandler.ServeHTTP(out, req)
 	var reply struct {
-		Result map[string]any `json:"result"`
-		Error  *struct {
-			Data struct {
-				Code string `json:"code"`
-			} `json:"data"`
-		} `json:"error"`
+		Result map[string]any  `json:"result"`
+		Error  json.RawMessage `json:"error"`
 	}
 	b27PublicNativeDecode(h.t, out.Body.Bytes(), &reply)
-	code := ""
-	if reply.Error != nil {
-		code = reply.Error.Data.Code
-	}
+	code, errorData := b27PublicNativeErrorData(out.Body.Bytes())
 	// Large dumps and protected opaque source families are recorded only by
 	// their exact wire commitments, never exposed as diagnostic field values.
-	h.trace = append(h.trace, map[string]any{"method": method, "project": project, "http_status": out.Code,
+	entry := map[string]any{"method": method, "project": project, "http_status": out.Code,
 		"request_sha256": fmt.Sprintf("%x", sha256.Sum256(raw)), "request_bytes": len(raw),
-		"response_sha256": fmt.Sprintf("%x", sha256.Sum256(out.Body.Bytes())), "response_bytes": out.Body.Len(), "code": code})
+		"response_sha256": fmt.Sprintf("%x", sha256.Sum256(out.Body.Bytes())), "response_bytes": out.Body.Len(), "code": code}
+	if len(errorData) != 0 {
+		entry["error_data"] = errorData
+	}
+	h.trace = append(h.trace, entry)
 	if wantCode != "*" && (code != wantCode || (wantCode == "" && (reply.Result == nil || reply.Error != nil)) || (wantCode != "" && reply.Error == nil)) {
-		h.t.Fatalf("%s returned code %q, expected %q; HTTP %d", method, code, wantCode, out.Code)
+		h.t.Fatalf("%s returned code %q, expected %q; HTTP %d; error_data=%v", method, code, wantCode, out.Code, errorData)
 	}
 	if wantCode == "*" && reply.Error == nil {
-		h.t.Fatalf("%s returned code %q, expected %q; HTTP %d", method, code, wantCode, out.Code)
+		h.t.Fatalf("%s returned code %q, expected %q; HTTP %d; error_data=%v", method, code, wantCode, out.Code, errorData)
 	}
 	return reply.Result
 }
@@ -241,6 +267,11 @@ func (h *b27NativePublicHost) restoreWithFinish(data []byte, archive *dumpformat
 		if len(h.trace) == 0 || h.trace[len(h.trace)-1]["code"] == "" {
 			h.t.Fatal("public restore finish did not retain a typed refusal")
 		}
+		finishTrace := h.trace[len(h.trace)-1]
+		if _, ok := finishTrace["error_data"].(map[string]any); !ok {
+			h.t.Fatal("public restore finish did not retain structured refusal data")
+		}
+		h.t.Logf("b27_public_restore_finish_refusal=%v", finishTrace["error_data"])
 		return
 	}
 	if finished["state"] != "complete" {
