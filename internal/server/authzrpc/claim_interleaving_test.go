@@ -3,6 +3,7 @@ package authzrpc_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/server/authzrpc"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/memory"
 	"github.com/buildbetter-app/plugs/internal/storage/postgres"
@@ -23,21 +25,43 @@ import (
 // competing commit at exactly that point, so the claim's commit guard, retry
 // and reauthorization are exercised rather than simulated.
 
-// claimRace fires one armed hook at the next Store.Write.
+// claimRace fires one armed hook at the next Store.Write. attempts counts the
+// Store.Write calls made outside the hook, i.e. the writes of the request
+// under test; the hook's own competing commit is not counted.
 type claimRace struct {
-	hook  atomic.Pointer[func() error]
-	fired atomic.Int32
+	hook     atomic.Pointer[func() error]
+	fired    atomic.Int32
+	attempts atomic.Int32
+	inHook   atomic.Bool
 }
 
-func (r *claimRace) arm(hook func() error) { r.hook.Store(&hook) }
+func (r *claimRace) arm(hook func() error) {
+	r.attempts.Store(0)
+	r.hook.Store(&hook)
+}
 
 func (r *claimRace) beforeWrite() error {
+	if !r.inHook.Load() {
+		r.attempts.Add(1)
+	}
 	hook := r.hook.Swap(nil)
 	if hook == nil {
 		return nil
 	}
 	r.fired.Add(1)
+	r.inHook.Store(true)
+	defer r.inHook.Store(false)
 	return (*hook)()
+}
+
+// requireRace checks the hook fired once and the request under test reached
+// Store.Write exactly attempts times: 1 when the competing commit makes the
+// retry refuse during preparation, 2 when it is reauthorized and commits.
+func (r *claimRace) requireRace(t *testing.T, attempts int32) {
+	t.Helper()
+	if r.fired.Load() != 1 || r.attempts.Load() != attempts {
+		t.Fatalf("interleave hook fired %d times and the request wrote %d times; want 1 and %d", r.fired.Load(), r.attempts.Load(), attempts)
+	}
 }
 
 // Each wrapper embeds the concrete real store, so every optional driver
@@ -231,6 +255,38 @@ func requireNoDisclosure(t *testing.T, got reply) {
 	}
 }
 
+// leaseWrite is one public write form that passes the Writer's lease check.
+type leaseWrite struct {
+	method string
+	params func() map[string]any
+}
+
+// claimStateWrites are every write form whose refusal depends on the bead's
+// claim: claim, heartbeat and release, plus update and close directly and as
+// tx.apply operations.
+func claimStateWrites() []leaseWrite {
+	ref := quietRef()
+	return []leaseWrite{
+		{"bead.claim", quietParams},
+		{"bead.heartbeat", quietParams},
+		{"bead.release", quietParams},
+		{"bead.update", func() map[string]any {
+			return map[string]any{"id": ref, "fields": map[string]any{"title": "interleaved update"}}
+		}},
+		{"bead.close", func() map[string]any { return map[string]any{"id": ref, "reason": "interleaved close"} }},
+		{"tx.apply", func() map[string]any {
+			return map[string]any{"changeSet": map[string]any{"ops": []any{map[string]any{"kind": "patch", "target": ref, "fields": map[string]any{"title": "batched update"}}}}}
+		}},
+		{"tx.apply", func() map[string]any {
+			return map[string]any{"changeSet": map[string]any{"ops": []any{map[string]any{"kind": "close", "target": ref, "reason": "batched close"}}}}
+		}},
+	}
+}
+
+func (w leaseWrite) label(i int) string {
+	return fmt.Sprintf("%s#%d", w.method, i)
+}
+
 func (f *interleaveFixture) requireNoReceipt(t *testing.T, by model.PrincipalRef, method string, key int) {
 	t.Helper()
 	if f.receipt(t, by, method, key) != nil {
@@ -271,6 +327,9 @@ func TestB05ClaimInterleavingAuthorizationAcrossDrivers(t *testing.T) {
 			t.Run("ungranted_agent_cannot_observe_claim_state", func(t *testing.T) {
 				ungrantedAgentClaimStateHidden(t, newInterleaveFixture(t, engine, dsn))
 			})
+			t.Run("authorized_non_holder_keeps_lease_refusal", func(t *testing.T) {
+				authorizedNonHolderRefusals(t, newInterleaveFixture(t, engine, dsn))
+			})
 		})
 	}
 }
@@ -291,9 +350,7 @@ func interleavedCompetingClaim(t *testing.T, f *interleaveFixture, competitor mo
 		return nil
 	})
 	got := f.call(t, a, "bead.claim", quietParams(), 8100)
-	if f.race.fired.Load() != 1 {
-		t.Fatalf("interleave hook fired %d times; want 1", f.race.fired.Load())
-	}
+	f.race.requireRace(t, 1)
 	requireLiveClaimBusy(t, got)
 	after := f.view(t)
 	f.requireHolder(t, after, competitor)
@@ -325,9 +382,7 @@ func interleavedClaimerRevoked(t *testing.T, f *interleaveFixture) {
 		return nil
 	})
 	got := f.call(t, a, "bead.claim", quietParams(), 8200)
-	if f.race.fired.Load() != 1 {
-		t.Fatalf("interleave hook fired %d times; want 1", f.race.fired.Load())
-	}
+	f.race.requireRace(t, 1)
 	requireNoDisclosure(t, got)
 	after := f.view(t)
 	requireUnclaimed(t, after)
@@ -342,7 +397,7 @@ func interleavedClaimerRevoked(t *testing.T, f *interleaveFixture) {
 // Only the competitor's grant is removed in A's window. The ACL commit still
 // invalidates A's pinned authorization, but A's own path is intact, so A is
 // reauthorized and claims exactly once. The revoked competitor then learns
-// nothing about A's claim: claim, heartbeat and release are all forbidden.
+// nothing about A's claim: every claim-state write form is forbidden.
 func interleavedCompetitorRevoked(t *testing.T, f *interleaveFixture) {
 	t.Helper()
 	a, b := agentA(), agentB()
@@ -352,9 +407,7 @@ func interleavedCompetitorRevoked(t *testing.T, f *interleaveFixture) {
 		return nil
 	})
 	got := f.call(t, a, "bead.claim", quietParams(), 8300)
-	if f.race.fired.Load() != 1 {
-		t.Fatalf("interleave hook fired %d times; want 1", f.race.fired.Load())
-	}
+	f.race.requireRace(t, 2)
 	success(t, got)
 	if got.Meta.Replayed {
 		t.Fatal("reauthorized claim reported a replay")
@@ -367,10 +420,13 @@ func interleavedCompetitorRevoked(t *testing.T, f *interleaveFixture) {
 	if f.receipt(t, a, "bead.claim", 8300) == nil {
 		t.Fatal("reauthorized claim has no receipt")
 	}
-	for i, method := range []string{"bead.claim", "bead.heartbeat", "bead.release"} {
+	for i, write := range claimStateWrites() {
 		key := 8310 + i
-		requireNoDisclosure(t, f.call(t, b, method, quietParams(), key))
-		f.requireNoReceipt(t, b, method, key)
+		got := f.call(t, b, write.method, write.params(), key)
+		if got.Error == nil || got.Error.Data.Code != "forbidden" || len(got.Error.Data.Details) != 0 || len(got.Result) != 0 || got.Meta.Replayed {
+			t.Fatalf("revoked competitor %s on a live claim was not a detail-free forbidden: %+v", write.label(i), got.Error)
+		}
+		f.requireNoReceipt(t, b, write.method, key)
 	}
 	if !reflect.DeepEqual(after, f.view(t)) {
 		t.Fatal("revoked competitor changed A's claim")
@@ -390,9 +446,7 @@ func interleavedRedundantPathRemoved(t *testing.T, f *interleaveFixture) {
 		return nil
 	})
 	got := f.call(t, a, "bead.claim", quietParams(), 8400)
-	if f.race.fired.Load() != 1 {
-		t.Fatalf("interleave hook fired %d times; want 1", f.race.fired.Load())
-	}
+	f.race.requireRace(t, 2)
 	success(t, got)
 	after := f.view(t)
 	f.requireHolder(t, after, a)
@@ -439,7 +493,7 @@ func holderLosesPermission(t *testing.T, f *interleaveFixture) {
 }
 
 // An agent whose sponsor holds no grant gets the same detail-free forbidden
-// for claim, heartbeat and release whether the bead is unclaimed, claimed by
+// for every claim-state write form whether the bead is unclaimed, claimed by
 // someone else, or claimed and then released: the claim plane is invisible
 // to it and nothing it sends changes state or stores a receipt.
 func ungrantedAgentClaimStateHidden(t *testing.T, f *interleaveFixture) {
@@ -449,13 +503,13 @@ func ungrantedAgentClaimStateHidden(t *testing.T, f *interleaveFixture) {
 	probe := func(phase string, base int) {
 		t.Helper()
 		before := f.view(t)
-		for i, method := range []string{"bead.claim", "bead.heartbeat", "bead.release"} {
+		for i, write := range claimStateWrites() {
 			key := base + i
-			got := f.call(t, outsider, method, quietParams(), key)
+			got := f.call(t, outsider, write.method, write.params(), key)
 			if got.Error == nil || got.Error.Data.Code != "forbidden" || len(got.Error.Data.Details) != 0 || len(got.Result) != 0 || got.Meta.Replayed {
-				t.Fatalf("%s: ungranted %s was not a detail-free forbidden: %+v", phase, method, got.Error)
+				t.Fatalf("%s: ungranted %s was not a detail-free forbidden: %+v", phase, write.label(i), got.Error)
 			}
-			f.requireNoReceipt(t, outsider, method, key)
+			f.requireNoReceipt(t, outsider, write.method, key)
 		}
 		if !reflect.DeepEqual(before, f.view(t)) {
 			t.Fatalf("%s: ungranted agent changed the claim plane", phase)
@@ -464,10 +518,72 @@ func ungrantedAgentClaimStateHidden(t *testing.T, f *interleaveFixture) {
 	requireUnclaimed(t, f.view(t))
 	probe("unclaimed", 8600)
 	a := agentA()
-	success(t, f.call(t, a, "bead.claim", quietParams(), 8610))
+	success(t, f.call(t, a, "bead.claim", quietParams(), 8615))
 	f.requireHolder(t, f.view(t), a)
 	probe("claimed by another agent", 8620)
-	success(t, f.call(t, a, "bead.release", quietParams(), 8630))
+	success(t, f.call(t, a, "bead.release", quietParams(), 8635))
 	requireUnclaimed(t, f.view(t))
 	probe("released", 8640)
+}
+
+// interleaveCloseRules admits bead close and tx.apply modifies, which the fixed
+// component leaves undecided for agents.
+type interleaveCloseRules struct{}
+
+func (interleaveCloseRules) Eval(_ context.Context, _ authz.Slice, requests []authz.CheckRequest) ([]authz.Decision, error) {
+	decisions := make([]authz.Decision, len(requests))
+	for i, request := range requests {
+		decisions[i].Effect = authz.NoDecision
+		if request.Action == authz.Modify && request.Resource.Kind == authz.Bead && (request.Method == "bead.close" || request.Method == "tx.apply") {
+			decisions[i] = authz.Decision{Effect: authz.Allow, Reasons: []string{"test close grant"}}
+		}
+	}
+	return decisions, nil
+}
+
+func (interleaveCloseRules) Compile(authz.ListRequest) (authz.FilterTemplate, error) {
+	return authz.FilterTemplate{}, authz.ErrCheckOnly
+}
+
+// An authorized agent that is not the holder keeps the exact lease refusal
+// for every claim-state write form, and that refusal still precedes a stale
+// compare-and-set expectation.
+func authorizedNonHolderRefusals(t *testing.T, f *interleaveFixture) {
+	t.Helper()
+	a, c := agentA(), agentC()
+	// The fixed component permits agents claim, claimNext and update only;
+	// admit close and tx.apply here so those forms have an authorized caller.
+	authzrpc.AddRuleForTest(f.server, interleaveCloseRules{})
+	success(t, f.call(t, a, "bead.claim", quietParams(), 8700))
+	held := f.view(t)
+	f.requireHolder(t, held, a)
+	stale := model.PreconditionByRevision(quietRef(), model.Natural64(1))
+	for i, write := range claimStateWrites() {
+		want := model.ErrorCode("lease_not_held")
+		if write.method == "bead.claim" {
+			want = "busy"
+		}
+		for j, withStale := range []bool{false, true} {
+			if withStale && (write.method == "bead.claim" || write.method == "bead.heartbeat" || write.method == "bead.release") {
+				continue
+			}
+			key := 8710 + 2*i + j
+			params := write.params()
+			if withStale {
+				if changeSet, ok := params["changeSet"].(map[string]any); ok {
+					changeSet["expect"] = []model.Precondition{stale}
+				} else {
+					params["expect"] = []model.Precondition{stale}
+				}
+			}
+			got := f.call(t, c, write.method, params, key)
+			if got.Error == nil || got.Error.Data.Code != want || len(got.Result) != 0 || got.Meta.Replayed {
+				t.Fatalf("authorized non-holder %s (stale CAS=%v): got %+v, want %s", write.label(i), withStale, got.Error, want)
+			}
+			f.requireNoReceipt(t, c, write.method, key)
+		}
+	}
+	if !reflect.DeepEqual(held, f.view(t)) {
+		t.Fatal("authorized non-holder refusals changed the claim plane")
+	}
 }

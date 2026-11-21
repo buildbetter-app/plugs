@@ -158,7 +158,14 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
 		} else {
 			p, err = w.prepareSourceOperations(preCtx, reader, by, cs, meta, release)
-			if err == nil {
+			if err == nil && p.leaseRefusal != nil {
+				// Only an authorized caller learns that a bead is claimed by
+				// someone else or has no live claim; anyone else is refused by
+				// authorization exactly as for an unclaimed bead.
+				if err = w.authorize(preCtx, port.AuthorizeBefore, p.proposal, p.snapshot); err == nil {
+					err = p.leaseRefusal
+				}
+			} else if err == nil {
 				err = p.preserveWorkflowComments(preCtx)
 			}
 		}

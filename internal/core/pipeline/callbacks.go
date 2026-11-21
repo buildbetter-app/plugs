@@ -105,11 +105,6 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 	if err := w.authorize(ctx, port.AuthorizeBefore, p.proposal, p.snapshot); err != nil {
 		return err
 	}
-	// Claim-state refusals follow the same rule: only an authorized caller
-	// learns that a bead is claimed by someone else or has no live claim.
-	if p.leaseRefusal != nil {
-		return p.leaseRefusal
-	}
 	// A stale expectation can carry a current revision token. Release it only
 	// after the pre-image visibility decision, before any callback or ontology
 	// code can observe the proposed write.

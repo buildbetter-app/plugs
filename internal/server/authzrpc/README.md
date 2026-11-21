@@ -62,10 +62,15 @@ claimer's only path (`forbidden`, nothing published), revocation of only the
 competitor's path or of one of the claimer's two paths (reauthorized, exactly
 one claim), and a holder that loses permission after winning (the claim stays
 live; other agents still get `busy` or `lease_not_held`; the holder's heartbeat
-and release are `forbidden` without details until the grant returns). Claim and
-release lease refusals are released only after authorization, so an agent with
-no grant gets the same detail-free `forbidden` for claim, heartbeat and release
-whether the bead is unclaimed, claimed by someone else, or released.
+and release are `forbidden` without details until the grant returns). The
+reauthorization rows also count the request's own `Store.Write` calls (two:
+the invalidated attempt and the retry). Lease refusals (claim, release, update,
+close and their `tx.apply` forms) are released only after `AuthorizeBefore`
+admits the operations prepared so far; heartbeat already authorizes before it
+reads the target. So an agent with no grant gets the same detail-free
+`forbidden` for every one of those forms whether the bead is unclaimed, claimed
+by someone else, or released, while an authorized non-holder keeps
+`busy`/`lease_not_held`, still ahead of a stale CAS expectation.
 
 The component tests exercise the actual HTTP/RPC boundary with real native-host
 bindings, authenticated principals, durable mutation/refusal/replay, and
