@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/authz"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -142,6 +144,27 @@ type EpicProgressAuthority struct {
 	Visible       []model.Ref
 	Hidden        model.Natural
 	PolicyBinding string
+}
+
+// Keep each finite authorization invocation below the unchanged per-check
+// budget. The authority slice remains shared across chunks, so facts and
+// tracked dependencies are still loaded once for the request.
+const hierarchyReadBatchSize = 100
+
+type hierarchyReadChunkObserverKey struct{}
+
+// HierarchyReadChunkMeasurement describes one returned Chain.Check call.
+// It includes no principal, resource, decision, or error text.
+type HierarchyReadChunkMeasurement struct {
+	Size      int
+	ElapsedNS int64
+	Outcome   string
+}
+
+// WithHierarchyReadChunkObserver attaches request-local timing instrumentation
+// for test fixtures. Ordinary callers leave it unset.
+func WithHierarchyReadChunkObserver(ctx context.Context, observe func(HierarchyReadChunkMeasurement)) context.Context {
+	return context.WithValue(ctx, hierarchyReadChunkObserverKey{}, observe)
 }
 
 // AuthorizeEpicProgress applies CURRENT authority to PINNED content. EP4/EP5
@@ -323,20 +346,44 @@ func (c *Checker) hierarchyReadBatch(ctx context.Context, caller authz.Caller, a
 	if len(refs) == 0 {
 		return []bool{}, ctx.Err()
 	}
-	requests := make([]authz.CheckRequest, len(refs))
-	for i, ref := range refs {
-		requests[i] = authz.CheckRequest{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}
-	}
-	decisions, err := c.chain.Check(ctx, authority, requests)
-	if err != nil {
-		return nil, authzError(err)
-	}
-	if len(decisions) != len(refs) {
-		return nil, hierarchyUnavailable()
-	}
+	observe, _ := ctx.Value(hierarchyReadChunkObserverKey{}).(func(HierarchyReadChunkMeasurement))
 	allowed := make([]bool, len(refs))
-	for i, decision := range decisions {
-		allowed[i] = decision.Effect == authz.Allow
+	for start := 0; start < len(refs); start += hierarchyReadBatchSize {
+		end := start + hierarchyReadBatchSize
+		if end > len(refs) {
+			end = len(refs)
+		}
+		requests := make([]authz.CheckRequest, end-start)
+		for i, ref := range refs[start:end] {
+			requests[i] = authz.CheckRequest{Caller: caller, Action: authz.Read, Resource: authz.Resource{Kind: authz.Bead, Ref: ref}, Method: "bead.get"}
+		}
+		var started time.Time
+		if observe != nil {
+			started = time.Now()
+		}
+		decisions, err := c.chain.Check(ctx, authority, requests)
+		if observe != nil {
+			elapsed := time.Since(started)
+			outcome := "ok"
+			switch {
+			case errors.Is(err, context.DeadlineExceeded):
+				outcome = "deadline"
+			case errors.Is(err, context.Canceled):
+				outcome = "canceled"
+			case err != nil:
+				outcome = "error"
+			}
+			observe(HierarchyReadChunkMeasurement{Size: len(requests), ElapsedNS: elapsed.Nanoseconds(), Outcome: outcome})
+		}
+		if err != nil {
+			return nil, authzError(err)
+		}
+		if len(decisions) != len(requests) {
+			return nil, hierarchyUnavailable()
+		}
+		for i, decision := range decisions {
+			allowed[start+i] = decision.Effect == authz.Allow
+		}
 	}
 	return allowed, nil
 }

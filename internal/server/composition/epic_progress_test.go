@@ -65,7 +65,15 @@ func newEpicFixture(t *testing.T, enabled bool) *epicFixture {
 				return f.adapter.ValidateAuthority(ctx, by, expected)
 			},
 			AuthorizeScope: func(ctx context.Context, by model.PrincipalRef, r driver.Reader, parent model.Ref, children []model.Ref) (viewops.EpicProgressAuthority, error) {
-				return f.opt.AuthorizeScope(ctx, by, r, parent, children)
+				var samples []authzrpc.HierarchyReadChunkMeasurement
+				ctx = authzrpc.WithHierarchyReadChunkObserver(ctx, func(sample authzrpc.HierarchyReadChunkMeasurement) {
+					samples = append(samples, sample)
+				})
+				result, err := f.opt.AuthorizeScope(ctx, by, r, parent, children)
+				t.Cleanup(func() {
+					t.Logf("AUTHZ_HIERARCHY_CHUNKS scope_children=%d samples=%v", len(children), samples)
+				})
+				return result, err
 			},
 		}
 	}

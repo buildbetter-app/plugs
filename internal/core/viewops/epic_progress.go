@@ -73,14 +73,12 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	if !exists || (req.Project != "" && parentRow.doc.Project != req.Project) {
 		return Result{}, failure("not_found", "epic was not found")
 	}
-	if !cfg.ScopeAuthorizesRead {
-		allowed, err := s.authorize(ctx, by, parentRow)
-		if err != nil {
-			return Result{}, mapped(err)
-		}
-		if !allowed {
-			return Result{}, failure("not_found", "epic was not found")
-		}
+	allowed, err := s.authorize(ctx, by, parentRow)
+	if err != nil {
+		return Result{}, mapped(err)
+	}
+	if !allowed {
+		return Result{}, failure("not_found", "epic was not found")
 	}
 	children := make([]model.Ref, 0)
 	direct := map[string]stored{}
@@ -99,15 +97,6 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 			direct[row.doc.ID] = row
 			children = append(children, row.record.Ref)
 		}
-	}
-	// Legacy point authorizers can still share one request-local child set. The
-	// parent was checked above before any child-specific validation.
-	if !cfg.ScopeAuthorizesRead && s.cfg.AuthorizeRead != nil {
-		resources := make([]model.ResourceRef, 0, len(children)+1)
-		for _, child := range children {
-			resources = append(resources, model.ResourceRef{Kind: "bead", Ref: child})
-		}
-		ctx, _ = service.WithReadBatchSession(ctx, resources)
 	}
 	// Historical content never supplies historical authority. Every child is
 	// authorized in its own project using one current authority snapshot.
@@ -136,10 +125,13 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	// The scoped adapter cannot bypass an additional host read boundary. Each
 	// visible child still uses its own stored project; denial adds only to the
 	// authorization remainder, and an unavailable authorizer aborts the count.
-	readable := make([]model.Ref, 0, len(visible))
-	if cfg.ScopeAuthorizesRead {
-		readable = append(readable, visible...)
-	} else {
+	if s.cfg.AuthorizeRead != nil {
+		resources := make([]model.ResourceRef, 0, len(visible))
+		for _, ref := range visible {
+			resources = append(resources, model.ResourceRef{Kind: "bead", Ref: direct[ref.ID].record.Ref})
+		}
+		ctx, _ := service.WithReadBatchSession(ctx, resources)
+		readable := make([]model.Ref, 0, len(visible))
 		for _, ref := range visible {
 			allowed, err := s.authorize(ctx, by, direct[ref.ID])
 			if err != nil {
@@ -149,8 +141,8 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 				readable = append(readable, ref)
 			}
 		}
+		visible = readable
 	}
-	visible = readable
 	if len(visible) > OrdinaryCandidateCap {
 		return Result{}, &model.Error{Data: model.ErrorData{Code: "scope_too_large", Hint: "authorized epic input exceeds the ordinary cap", Details: map[string]any{"cap": OrdinaryCandidateCap}}}
 	}

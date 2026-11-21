@@ -29,7 +29,6 @@ func NewEpicProgressConfig(checker *authzrpc.Checker, source service.OntologySou
 		ValidateAuthority: func(ctx context.Context, by model.PrincipalRef, expected string) error {
 			return checker.ValidateReadAuthorityBinding(ctx, by, expected)
 		},
-		ScopeAuthorizesRead: true,
 		AuthorizeScope: func(ctx context.Context, by model.PrincipalRef, content driver.Reader, parent model.Ref, children []model.Ref) (viewops.EpicProgressAuthority, error) {
 			value, err := checker.AuthorizeEpicProgress(ctx, by, content, parent, children)
 			return viewops.EpicProgressAuthority{Visible: value.Visible, Hidden: value.Hidden, PolicyBinding: value.PolicyBinding}, err

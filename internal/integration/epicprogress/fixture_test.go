@@ -521,6 +521,18 @@ func newFixtureMode(t *testing.T, backend, path string, progress, seedOntology b
 		if err != nil {
 			t.Fatal(err)
 		}
+		authorizeScope := vc.EpicProgress.AuthorizeScope
+		vc.EpicProgress.AuthorizeScope = func(ctx context.Context, by model.PrincipalRef, r driver.Reader, parent model.Ref, children []model.Ref) (viewops.EpicProgressAuthority, error) {
+			var samples []authzrpc.HierarchyReadChunkMeasurement
+			ctx = authzrpc.WithHierarchyReadChunkObserver(ctx, func(sample authzrpc.HierarchyReadChunkMeasurement) {
+				samples = append(samples, sample)
+			})
+			result, err := authorizeScope(ctx, by, r, parent, children)
+			t.Cleanup(func() {
+				t.Logf("AUTHZ_HIERARCHY_CHUNKS scope_children=%d samples=%v", len(children), samples)
+			})
+			return result, err
+		}
 	}
 	f.viewConfig = vc
 	f.views, err = viewops.New(&observedReadStore{store: store, observer: reads}, lease, vc)

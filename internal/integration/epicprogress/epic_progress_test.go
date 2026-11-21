@@ -527,8 +527,16 @@ func TestEpicProgressIndexedResultMatchesScanPath(t *testing.T) {
 				t.Fatal(err)
 			}
 			scanned, err := runProgress(t, narrowScan, by, g.parent, nil)
-			if err != nil || !reflect.DeepEqual(indexed, scanned) || indexed.Groups[0].Count != 1 || indexed.Groups[0].Elided == nil || indexed.Groups[0].Elided.Count != 2 {
-				t.Fatalf("host read boundary changed: indexed=%+v scanned=%+v err=%v", indexed, scanned, err)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantGroups := []viewops.Group{
+				{Key: "total", Count: 1, Items: []viewops.Bead{}, Elided: &viewops.Elision{Count: 2, Reason: "authorization"}},
+				{Key: "status:todo", Count: 1, Items: []viewops.Bead{}},
+			}
+			if len(indexed.Items) != 0 || !reflect.DeepEqual(indexed.Groups, wantGroups) || !reflect.DeepEqual(indexed, scanned) {
+				t.Fatalf("host read boundary changed: indexed=%s scanned=%s want groups=%s and no items",
+					firstJSON(t, indexed), firstJSON(t, scanned), firstJSON(t, wantGroups))
 			}
 			// Real readers expose the interface even below coverage start. That
 			// revision must still use the scan, never fabricate child absence.
