@@ -256,17 +256,20 @@ func b27NativeIntent(t *testing.T, archive *dumpformat.Archive, plan driver.Sour
 // array order and duplicate source rows. Object member order is not a value.
 func b27NativeEqual(t *testing.T, name string, got, want any) {
 	t.Helper()
-	decode := func(value any) any {
+	encodeAndDecode := func(value any) ([]byte, any) {
 		raw, err := json.Marshal(value)
 		if err != nil {
 			t.Fatal(name, err)
 		}
 		var result any
 		b27NativeJSON(t, raw, &result)
-		return result
+		return raw, result
 	}
-	if !reflect.DeepEqual(decode(got), decode(want)) {
-		t.Fatalf("native %s differs: got %#v want %#v", name, got, want)
+	g, actual := encodeAndDecode(got)
+	w, expected := encodeAndDecode(want)
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("native %s differs: expected_bytes=%d expected_sha256=%s actual_bytes=%d actual_sha256=%s",
+			name, len(w), hashBytes(w), len(g), hashBytes(g))
 	}
 }
 

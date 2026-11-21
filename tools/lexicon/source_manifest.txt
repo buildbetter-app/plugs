@@ -666,8 +666,10 @@ internal/integration/converterroundtrip/b15_native_comments_test.go
 internal/integration/converterroundtrip/b19_native_modes_test.go
 internal/integration/converterroundtrip/b23_public_query_history_test.go
 internal/integration/converterroundtrip/b27_native_acceptance_test.go
+internal/integration/converterroundtrip/b27_native_comment_public_test.go
 internal/integration/converterroundtrip/b27_native_exports_test.go
 internal/integration/converterroundtrip/b27_native_interchange_test.go
+internal/integration/converterroundtrip/b27_native_positive_test.go
 internal/integration/converterroundtrip/b27_native_public_test.go
 internal/integration/converterroundtrip/external_target_test.go
 internal/integration/converterroundtrip/graph_certification.go
@@ -771,6 +773,12 @@ internal/integration/converterroundtrip/testdata/b15-native-r11-current-oracle.t
 internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.json
 internal/integration/converterroundtrip/testdata/b15-native-r11-d74f91f9.packet.tar.gz
 internal/integration/converterroundtrip/testdata/b19-native-small-expectations.json
+internal/integration/converterroundtrip/testdata/b27-delivery-real-native-input.tar.gz
+internal/integration/converterroundtrip/testdata/b27-native-comments-r11.SOURCE.json
+internal/integration/converterroundtrip/testdata/b27-native-comments-r11.tar.gz
+internal/integration/converterroundtrip/testdata/b27-native-positive-v2-requirements.tar.gz
+internal/integration/converterroundtrip/testdata/b27-native-positive-v2.REQUEST.json
+internal/integration/converterroundtrip/testdata/b27-native-positive-v2.SOURCE.json
 internal/integration/converterroundtrip/testdata/b27-native-rich/SOURCE.json
 internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/binary.json
 internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/capture-command.json
@@ -1804,6 +1812,7 @@ internal/integration/converterroundtrip/testdata/b27-native-rich/review-project/
 internal/integration/converterroundtrip/testdata/b27-native-rich/review-project/typed-history/vf869902e89rr9d0rfpomismapklm5mo.schema.json
 internal/integration/converterroundtrip/testdata/b27-native-rich/review-project/typed-history/vssofl6teaokf01obc4kc0eql9s41a7t.json
 internal/integration/converterroundtrip/testdata/b27-native-rich/review-project/typed-history/vssofl6teaokf01obc4kc0eql9s41a7t.schema.json
+internal/integration/converterroundtrip/testdata/b27-review-real-native-input.tar.gz
 internal/integration/converterroundtrip/testdata/native-built-in-statuses.json
 internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz
 internal/integration/converterroundtrip/testdata/native-ready-c774-43216037385.tar.gz.provenance.json
@@ -3293,6 +3302,7 @@ spec/s1-b25-b28/config_union_test.go
 spec/s1-b25-b28/converter_test.go
 spec/s1-b25-b28/lease_import_test.go
 spec/s1-b25-b28/provenance.py
+spec/s1-b25-b28/public_interchange_test.go
 spec/s1-b25-b28/public_recording_test.go
 spec/s1-b25-b28/record_reference.py
 spec/s1-b25-b28/reference_test.go

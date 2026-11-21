@@ -117,7 +117,9 @@ func nativeHistoryPlanFromArchive(t *testing.T, a *dumpformat.Archive, store dri
 	principal, _ := json.Marshal(model.PrincipalRef{Kind: "anonymous", ID: "anonymous"})
 	plan := driver.SourcePlanePlanV1{Version: driver.SourcePlanePlanVersionV1, AddressContract: driver.SourcePlaneAddressContractV1, SourceStoreID: a.Manifest().StoreID, ArchiveSHA256: a.SHA256(), Target: driver.SourcePlaneTargetV1{StoreID: string(meta.StoreID), Incarnation: meta.Incarnation, RequireEmpty: true, Lifetime: cap.WorkflowCheckpointLifetime(), RuntimeContract: driver.SourcePlaneRuntimeContractV1}, Principals: []driver.SourcePlanePrincipalV1{{Key: "owner", Source: "explicit public fixture", Authority: "trusted-explicit/1", PrincipalJSON: principal}}, Providers: []driver.SourcePlaneProviderV1{{Alias: "workflow", Instance: "default", Namespace: "plugin/workflow/default/durable", Schema: workflowplugin.SourceStateSchema, Codec: "workflow/json/1", RuntimeContract: driver.SourcePlaneRuntimeContractV1, Lifetime: cap.WorkflowCheckpointLifetime(), OriginAdapter: "beads-workflow-origins/1"}}}
 	disposition := driver.SourcePlaneDispositionV1{Key: "durable", SourceType: "task", StorageClass: "versioned", SinkKind: "bead", Schema: "bead/1", Lifetime: "core", Statuses: []driver.SourcePlaneStringPairV1{{From: "shared", To: "shared"}}, RefusalPolicy: "exact-only"}
-	raw, err := a.SourcePlaneRecords()
+	work, release := a.NativeDeltaAccountingScope()
+	defer release()
+	raw, err := work.SourcePlaneRecords()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +134,7 @@ func nativeHistoryPlanFromArchive(t *testing.T, a *dumpformat.Archive, store dri
 				for _, field := range census {
 					rule := driver.SourcePlaneFieldRuleV1{Source: field.Name, Disposition: "origin-only"}
 					switch field.Name {
-					case "id", "title", "status", "metadata", "created_at", "priority", "description":
+					case "id", "title", "status", "metadata", "created_at", "priority", "description", "closed_at":
 						rule.Target, rule.Disposition = field.Name, "exact-map"
 					case "issue_type":
 						rule.Target, rule.Disposition = "type", "exact-map"

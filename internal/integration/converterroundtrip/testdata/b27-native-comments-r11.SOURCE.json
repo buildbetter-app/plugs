@@ -1,0 +1,2107 @@
+{
+  "format": "b27-public-native-comment-inputs/1",
+  "producer_head": "d74f91f9f0fdcd9c95c7f30bd42a2d257fc219b3",
+  "producer_tree": "3c3d7da8a35deb9c079e463c595bfa73f87a9768",
+  "native_original_manifest_sha256": "283ac99beb3445e858772b56e48ffcb901e0d864d85010ad1725aec155771fee",
+  "native_original": "S1-native-comment-active-ba011c7f-20261111/native-r11-d74f91f9/NATIVE.json",
+  "native_original_sha256": "b386a24b1b56022d3dc4e09f4a52976860a94ec223c74302be171cbc53767c9d",
+  "independent_review": "S1-native-comment-active-57864de5-20261111/FINAL-r11-d74f91f9.md",
+  "independent_review_sha256": "71580c1bcab7c7c4dd16f5f83238558d8362f8225efbf77b39f545b12a71dd2d",
+  "fixture": "b27-native-comments-r11.tar.gz",
+  "sha256": "752989c67b763078ee496b05b7cfc472407f354b591b4064852984bbf98d9421",
+  "bytes": 2284832,
+  "files": {
+    "commentcody/SOURCE.json": {
+      "bytes": 14223,
+      "sha256": "66df57c4597ec1c4b8abedf2826fc1dc049099dafa5592bdb42e3f4fadfc7b81"
+    },
+    "commentcody/capture/capture-set/capture-set.json": {
+      "bytes": 709,
+      "sha256": "982e40d7e2fc175b8892cc9b00d00b633d9a6d7df4ce807a239b4da9e4373ed4"
+    },
+    "commentcody/capture/capture-set/head.tar": {
+      "bytes": 665088,
+      "sha256": "7c1e0aa6fbd6d006aa77d9a20df96207646eb27091a593e5e5c99d6dafe6b5bc"
+    },
+    "commentcody/capture/capture-set/parts/00000000000000000001.part": {
+      "bytes": 3185338,
+      "sha256": "aefa73149ab60881bd520a03308cd2e36edc92be41a648e89459f921b6e83369"
+    },
+    "commentcody/oracle/006d08d942251782892d0424f7e8b861a41a1d194039454c53455e4dd0476088.table.json": {
+      "bytes": 4100,
+      "sha256": "006d08d942251782892d0424f7e8b861a41a1d194039454c53455e4dd0476088"
+    },
+    "commentcody/oracle/0446076c7362f091824d15a7833d561f3df8e95defd9b11e4d9d145d18671e65.table.json": {
+      "bytes": 6826,
+      "sha256": "0446076c7362f091824d15a7833d561f3df8e95defd9b11e4d9d145d18671e65"
+    },
+    "commentcody/oracle/05024bd6798f3a6ade0d596798426946ba3668193b517ecb570f41afceb84d93.table.json": {
+      "bytes": 6050,
+      "sha256": "05024bd6798f3a6ade0d596798426946ba3668193b517ecb570f41afceb84d93"
+    },
+    "commentcody/oracle/056e3875a67d1c3950499c62f41e63bce0edf61a0a429a13e47f7a2219c6fb3a.table.json": {
+      "bytes": 5953,
+      "sha256": "056e3875a67d1c3950499c62f41e63bce0edf61a0a429a13e47f7a2219c6fb3a"
+    },
+    "commentcody/oracle/059e528aec414a0a4e1c98ec49fc6751b691bfe1ec0ac3fcd68536430c4ed9c0.table.json": {
+      "bytes": 419,
+      "sha256": "059e528aec414a0a4e1c98ec49fc6751b691bfe1ec0ac3fcd68536430c4ed9c0"
+    },
+    "commentcody/oracle/05b4e84e3795f304fe8145699fc7be9f5d50abcc6369768b3ffbcc37abb93d1c.table.json": {
+      "bytes": 266,
+      "sha256": "05b4e84e3795f304fe8145699fc7be9f5d50abcc6369768b3ffbcc37abb93d1c"
+    },
+    "commentcody/oracle/060546d04a08986f4b0b262b7d5c7c1b5c50385215ceb1b58812596501c775fb.table.json": {
+      "bytes": 3701,
+      "sha256": "060546d04a08986f4b0b262b7d5c7c1b5c50385215ceb1b58812596501c775fb"
+    },
+    "commentcody/oracle/06a2605351f65b9d343015fbf36eec70b4d6a2eee494dd464d62ca4dd13a26e9.table.json": {
+      "bytes": 1972,
+      "sha256": "06a2605351f65b9d343015fbf36eec70b4d6a2eee494dd464d62ca4dd13a26e9"
+    },
+    "commentcody/oracle/07f84560a14516bd06c137d08218cfd273fe967ac74c5bf3f4e21e13eb81210d.table.json": {
+      "bytes": 6147,
+      "sha256": "07f84560a14516bd06c137d08218cfd273fe967ac74c5bf3f4e21e13eb81210d"
+    },
+    "commentcody/oracle/08783515a2336d7d6bf88e1a7f117f05f27f590de4ebcead72f1b0463690c3ca.table.json": {
+      "bytes": 3967,
+      "sha256": "08783515a2336d7d6bf88e1a7f117f05f27f590de4ebcead72f1b0463690c3ca"
+    },
+    "commentcody/oracle/09b0f0340378475a7cff7b187505b127716c9cb2ca440e169a99735bfa6f1f49.table.json": {
+      "bytes": 453,
+      "sha256": "09b0f0340378475a7cff7b187505b127716c9cb2ca440e169a99735bfa6f1f49"
+    },
+    "commentcody/oracle/0a465c966940c1b46328eca02864a103a72d86dbd866090db2beb6db36da6c91.table.json": {
+      "bytes": 5371,
+      "sha256": "0a465c966940c1b46328eca02864a103a72d86dbd866090db2beb6db36da6c91"
+    },
+    "commentcody/oracle/0ab87e5158d9c15c08381c88999efe4a06e2c3035472d10646b64913efa640d4.table.json": {
+      "bytes": 218,
+      "sha256": "0ab87e5158d9c15c08381c88999efe4a06e2c3035472d10646b64913efa640d4"
+    },
+    "commentcody/oracle/0c48962bccc880376df0ef5e17542ad90870a4dbab27fd515bf4a504f3b67805.table.json": {
+      "bytes": 223,
+      "sha256": "0c48962bccc880376df0ef5e17542ad90870a4dbab27fd515bf4a504f3b67805"
+    },
+    "commentcody/oracle/0c5cb631ad28398a0a300f0a72349ef8d87c391e653bd50750d995863d2db8f1.table.json": {
+      "bytes": 4207,
+      "sha256": "0c5cb631ad28398a0a300f0a72349ef8d87c391e653bd50750d995863d2db8f1"
+    },
+    "commentcody/oracle/0cd535ccc21c1da28f6edefcf1b2a7b6b5fba4fc63156ff4d1aa29c614f8c488.table.json": {
+      "bytes": 7214,
+      "sha256": "0cd535ccc21c1da28f6edefcf1b2a7b6b5fba4fc63156ff4d1aa29c614f8c488"
+    },
+    "commentcody/oracle/0e9eb23e79eaa08ecff63706724f718749f73db62afa8f302cfc13bed733ac7e.table.json": {
+      "bytes": 577,
+      "sha256": "0e9eb23e79eaa08ecff63706724f718749f73db62afa8f302cfc13bed733ac7e"
+    },
+    "commentcody/oracle/0f05bdfedba8efebe55a691901c015910cea851e9e11bbe916e3acb85b88983f.table.json": {
+      "bytes": 231,
+      "sha256": "0f05bdfedba8efebe55a691901c015910cea851e9e11bbe916e3acb85b88983f"
+    },
+    "commentcody/oracle/0f2c86ea89f626035f3dd203ff766a1255988d1ff8d74378ad2da62997b8707e.table.json": {
+      "bytes": 298,
+      "sha256": "0f2c86ea89f626035f3dd203ff766a1255988d1ff8d74378ad2da62997b8707e"
+    },
+    "commentcody/oracle/11f98d8a0ce75c6049602738bcd5d5aa2e2f006782fc0cb24fa81963be154e77.table.json": {
+      "bytes": 348,
+      "sha256": "11f98d8a0ce75c6049602738bcd5d5aa2e2f006782fc0cb24fa81963be154e77"
+    },
+    "commentcody/oracle/128228babb6f80a98378907c1ec420a6e90eeee62644f7400091d3d370cea7b7.table.json": {
+      "bytes": 7117,
+      "sha256": "128228babb6f80a98378907c1ec420a6e90eeee62644f7400091d3d370cea7b7"
+    },
+    "commentcody/oracle/15e238e0f1b38a75364ceb21e3068f06b7f025f62d0df8c6e651ba5ecab6643b.table.json": {
+      "bytes": 3036,
+      "sha256": "15e238e0f1b38a75364ceb21e3068f06b7f025f62d0df8c6e651ba5ecab6643b"
+    },
+    "commentcody/oracle/1749af37d8b474d8a7f68ad8ace3414484eb0233c6bfec9770e9ead03e74ecb1.table.json": {
+      "bytes": 1308,
+      "sha256": "1749af37d8b474d8a7f68ad8ace3414484eb0233c6bfec9770e9ead03e74ecb1"
+    },
+    "commentcody/oracle/17c9ae8d081725bf22414fdbb1999ac309d9b0e7e0222b4207403d86b1d5bf3a.table.json": {
+      "bytes": 217,
+      "sha256": "17c9ae8d081725bf22414fdbb1999ac309d9b0e7e0222b4207403d86b1d5bf3a"
+    },
+    "commentcody/oracle/1819042e953290a0502b3e0d06dd19576f214402d4e4f6895cc604af367c78f5.table.json": {
+      "bytes": 3435,
+      "sha256": "1819042e953290a0502b3e0d06dd19576f214402d4e4f6895cc604af367c78f5"
+    },
+    "commentcody/oracle/1937482641c7db76004cc19710c989be0eda49b5ad53474bfe461b6365eeeb9e.table.json": {
+      "bytes": 97321,
+      "sha256": "1937482641c7db76004cc19710c989be0eda49b5ad53474bfe461b6365eeeb9e"
+    },
+    "commentcody/oracle/1ea844286d49e80e6b4011fa9a3c0f42638cfd80a1d0a6b740e5275ab781799f.table.json": {
+      "bytes": 246,
+      "sha256": "1ea844286d49e80e6b4011fa9a3c0f42638cfd80a1d0a6b740e5275ab781799f"
+    },
+    "commentcody/oracle/218a4a52378fc14fe16e2309708f971e3d3d946e99cbda52cb0fe658c2022f5f.table.json": {
+      "bytes": 1647,
+      "sha256": "218a4a52378fc14fe16e2309708f971e3d3d946e99cbda52cb0fe658c2022f5f"
+    },
+    "commentcody/oracle/22212a039f71aeeaba9dce34a7dc576b29277cc7ea34775dbdb439d4db1d6974.table.json": {
+      "bytes": 2558,
+      "sha256": "22212a039f71aeeaba9dce34a7dc576b29277cc7ea34775dbdb439d4db1d6974"
+    },
+    "commentcody/oracle/23917735b15cb90e83ea94734f8713723ae218d37852905bcc8278beb11992fb.table.json": {
+      "bytes": 926,
+      "sha256": "23917735b15cb90e83ea94734f8713723ae218d37852905bcc8278beb11992fb"
+    },
+    "commentcody/oracle/23ae49b2b55b37dd1d00a63f1813edbf6ace9fffb7db1a7a0f554f75ab0be856.table.json": {
+      "bytes": 5662,
+      "sha256": "23ae49b2b55b37dd1d00a63f1813edbf6ace9fffb7db1a7a0f554f75ab0be856"
+    },
+    "commentcody/oracle/245ffe712b80b7a9eaa45932cfb610fd948622731cb417386e5e94448a9750be.table.json": {
+      "bytes": 4401,
+      "sha256": "245ffe712b80b7a9eaa45932cfb610fd948622731cb417386e5e94448a9750be"
+    },
+    "commentcody/oracle/24d10da4a1050250298ef7ef23726b623329edb9b1f3e5706b423440e0dea3d4.table.json": {
+      "bytes": 3983,
+      "sha256": "24d10da4a1050250298ef7ef23726b623329edb9b1f3e5706b423440e0dea3d4"
+    },
+    "commentcody/oracle/270d0056d43a0b343da3e5948a4f8e5deaf1bc00ba3ee2b12a95185cd094ec08.table.json": {
+      "bytes": 256,
+      "sha256": "270d0056d43a0b343da3e5948a4f8e5deaf1bc00ba3ee2b12a95185cd094ec08"
+    },
+    "commentcody/oracle/28251c2a780355db33b303de96f04dd3537b36bf77092bb52bcf7481d71cd6ca.table.json": {
+      "bytes": 4692,
+      "sha256": "28251c2a780355db33b303de96f04dd3537b36bf77092bb52bcf7481d71cd6ca"
+    },
+    "commentcody/oracle/2a793f903a7bddfaa9313f1d74da9eddc752d69301b31229b77a965a6c8989e7.table.json": {
+      "bytes": 338,
+      "sha256": "2a793f903a7bddfaa9313f1d74da9eddc752d69301b31229b77a965a6c8989e7"
+    },
+    "commentcody/oracle/2c5c929241f5d0483e477818fb9493d4fc78ad76cd8375641d99ba18aafb0c08.table.json": {
+      "bytes": 347,
+      "sha256": "2c5c929241f5d0483e477818fb9493d4fc78ad76cd8375641d99ba18aafb0c08"
+    },
+    "commentcody/oracle/2e0182936be4df439e988fc98df635d31232a4d6f905f5fb8b89db95fdc3a777.table.json": {
+      "bytes": 334,
+      "sha256": "2e0182936be4df439e988fc98df635d31232a4d6f905f5fb8b89db95fdc3a777"
+    },
+    "commentcody/oracle/2eca8bb328cf036a2443e699a6261478e0b3a3977ec812829dc3cdc35a820809.table.json": {
+      "bytes": 928,
+      "sha256": "2eca8bb328cf036a2443e699a6261478e0b3a3977ec812829dc3cdc35a820809"
+    },
+    "commentcody/oracle/2f4e250d470a1a14e97f2b969e9ad4a9ea90f4f1849af7d1ea1aa2a9ed3c2eed.table.json": {
+      "bytes": 97155,
+      "sha256": "2f4e250d470a1a14e97f2b969e9ad4a9ea90f4f1849af7d1ea1aa2a9ed3c2eed"
+    },
+    "commentcody/oracle/2f4f225838d10cf8548e52f1f2f935e54248bd1654efd22c703de7227db64f76.table.json": {
+      "bytes": 2371,
+      "sha256": "2f4f225838d10cf8548e52f1f2f935e54248bd1654efd22c703de7227db64f76"
+    },
+    "commentcody/oracle/30b9a27833503d86dec342212f8f29857e9d3dc8c8e2f4491e9f384e15e68d13.table.json": {
+      "bytes": 347,
+      "sha256": "30b9a27833503d86dec342212f8f29857e9d3dc8c8e2f4491e9f384e15e68d13"
+    },
+    "commentcody/oracle/32670ad128b0d0f649debddcd0549d1e4d7d97d466501879fc5b826bc4a2854e.table.json": {
+      "bytes": 6438,
+      "sha256": "32670ad128b0d0f649debddcd0549d1e4d7d97d466501879fc5b826bc4a2854e"
+    },
+    "commentcody/oracle/338b4b691b42a680a0ac0680520f9553bdafee1c58815c8caa6880df96a6fea9.table.json": {
+      "bytes": 648,
+      "sha256": "338b4b691b42a680a0ac0680520f9553bdafee1c58815c8caa6880df96a6fea9"
+    },
+    "commentcody/oracle/3824f544dadb8a396b3c16ab81f638b2bd506a6019ccb1c03bd8c7ec8c70053d.table.json": {
+      "bytes": 516,
+      "sha256": "3824f544dadb8a396b3c16ab81f638b2bd506a6019ccb1c03bd8c7ec8c70053d"
+    },
+    "commentcody/oracle/384a4faf997bbc645aa54a74271c78e87a95cf1000d617e19cb75f938536f28f.table.json": {
+      "bytes": 3334,
+      "sha256": "384a4faf997bbc645aa54a74271c78e87a95cf1000d617e19cb75f938536f28f"
+    },
+    "commentcody/oracle/389b06e06280b74e2d6f4926e8c60706368b0bf7bd696ca5e84bf4060fa428ea.table.json": {
+      "bytes": 309,
+      "sha256": "389b06e06280b74e2d6f4926e8c60706368b0bf7bd696ca5e84bf4060fa428ea"
+    },
+    "commentcody/oracle/3a68c89416ee64d36496c0123da9a8b0d9e786bb8dcdf09d772f1dd5d4191275.table.json": {
+      "bytes": 610,
+      "sha256": "3a68c89416ee64d36496c0123da9a8b0d9e786bb8dcdf09d772f1dd5d4191275"
+    },
+    "commentcody/oracle/3c4cb0730a729100b1227a398cba033e56bfde7b55d9960d7b092fb90c20e707.table.json": {
+      "bytes": 347,
+      "sha256": "3c4cb0730a729100b1227a398cba033e56bfde7b55d9960d7b092fb90c20e707"
+    },
+    "commentcody/oracle/3fdee264969d6e621961b08a575aaad337d64ca7a0e9bfa9a6bd3c7ac0f4343a.table.json": {
+      "bytes": 97334,
+      "sha256": "3fdee264969d6e621961b08a575aaad337d64ca7a0e9bfa9a6bd3c7ac0f4343a"
+    },
+    "commentcody/oracle/4060cc58617f016b70266182cc6344eaab1b032aceaf93efd1217de5510b07ee.table.json": {
+      "bytes": 5759,
+      "sha256": "4060cc58617f016b70266182cc6344eaab1b032aceaf93efd1217de5510b07ee"
+    },
+    "commentcody/oracle/4111d0f1c15334bb6e2e92298277f9771412811173f6520fae0ca97532ae8b14.table.json": {
+      "bytes": 318,
+      "sha256": "4111d0f1c15334bb6e2e92298277f9771412811173f6520fae0ca97532ae8b14"
+    },
+    "commentcody/oracle/41296c00bfdf052338b9eee43784a523c93385251d70101df83121ff39286de6.table.json": {
+      "bytes": 440,
+      "sha256": "41296c00bfdf052338b9eee43784a523c93385251d70101df83121ff39286de6"
+    },
+    "commentcody/oracle/4236f20757f96001c5b3f047550159786d4283b61ec423db3f19c353cf889178.table.json": {
+      "bytes": 2445,
+      "sha256": "4236f20757f96001c5b3f047550159786d4283b61ec423db3f19c353cf889178"
+    },
+    "commentcody/oracle/43fc09b238c46090383cd937f6ed43b615c668e168f77afbf232b8f15e0e1025.table.json": {
+      "bytes": 2868,
+      "sha256": "43fc09b238c46090383cd937f6ed43b615c668e168f77afbf232b8f15e0e1025"
+    },
+    "commentcody/oracle/46d5d118e23d3fd1f0030ad0b1c23c54deb00bb5491a9db1d9a5b3a8a47df1d6.table.json": {
+      "bytes": 4886,
+      "sha256": "46d5d118e23d3fd1f0030ad0b1c23c54deb00bb5491a9db1d9a5b3a8a47df1d6"
+    },
+    "commentcody/oracle/47f9cd96ca8eb2fb21b1e0fce6845a82c53edd68d364696e7c081935222a043d.table.json": {
+      "bytes": 217,
+      "sha256": "47f9cd96ca8eb2fb21b1e0fce6845a82c53edd68d364696e7c081935222a043d"
+    },
+    "commentcody/oracle/4912c0ff3f1ed012af8fa6492a2dccfa090435af4a4285ab061b0f04e6a93358.table.json": {
+      "bytes": 97347,
+      "sha256": "4912c0ff3f1ed012af8fa6492a2dccfa090435af4a4285ab061b0f04e6a93358"
+    },
+    "commentcody/oracle/4a580a36e1dc004084571ae962d12a2d6898c48973889841ed1997a40d5bc9ce.table.json": {
+      "bytes": 868,
+      "sha256": "4a580a36e1dc004084571ae962d12a2d6898c48973889841ed1997a40d5bc9ce"
+    },
+    "commentcody/oracle/5011d074472da2e8d22b62f9fcb337446308bb864d9037ef86330b6e13b5f1cd.table.json": {
+      "bytes": 3425,
+      "sha256": "5011d074472da2e8d22b62f9fcb337446308bb864d9037ef86330b6e13b5f1cd"
+    },
+    "commentcody/oracle/50c8889131616c834a1228f69a565320f1efec73ac5a90dac0649809d6bb5361.table.json": {
+      "bytes": 296,
+      "sha256": "50c8889131616c834a1228f69a565320f1efec73ac5a90dac0649809d6bb5361"
+    },
+    "commentcody/oracle/51f76a86298b88c89f95a48ab7dff471c3b205def89d0d466053183fdb863ae3.table.json": {
+      "bytes": 4789,
+      "sha256": "51f76a86298b88c89f95a48ab7dff471c3b205def89d0d466053183fdb863ae3"
+    },
+    "commentcody/oracle/54d4c230fb5e02e282937999e38251698fc8568d2e516fd7d1dd590807038afc.table.json": {
+      "bytes": 293,
+      "sha256": "54d4c230fb5e02e282937999e38251698fc8568d2e516fd7d1dd590807038afc"
+    },
+    "commentcody/oracle/560662ffcf209e6039888874299a5c7c1df6b35098ef1ecaf592e4ca4fb4a7f4.table.json": {
+      "bytes": 282,
+      "sha256": "560662ffcf209e6039888874299a5c7c1df6b35098ef1ecaf592e4ca4fb4a7f4"
+    },
+    "commentcody/oracle/56cd04155cbf2a5a86bce70ce0e7e479ad793915f3a6e1b12f80ff9cd9fa21d7.table.json": {
+      "bytes": 266,
+      "sha256": "56cd04155cbf2a5a86bce70ce0e7e479ad793915f3a6e1b12f80ff9cd9fa21d7"
+    },
+    "commentcody/oracle/57f3cd7e614477171a29c8dc44a09db7c91ff3e1a2b0b660539bcf4e9c749804.table.json": {
+      "bytes": 335,
+      "sha256": "57f3cd7e614477171a29c8dc44a09db7c91ff3e1a2b0b660539bcf4e9c749804"
+    },
+    "commentcody/oracle/5cae42917a94081b252386911af60fd3010d2af8a3424774bc9517300321ea0c.table.json": {
+      "bytes": 237,
+      "sha256": "5cae42917a94081b252386911af60fd3010d2af8a3424774bc9517300321ea0c"
+    },
+    "commentcody/oracle/613ee3cbe50296d834169ef83ad84a891f753f0eacf4ade2912664c0a975f7b5.table.json": {
+      "bytes": 4110,
+      "sha256": "613ee3cbe50296d834169ef83ad84a891f753f0eacf4ade2912664c0a975f7b5"
+    },
+    "commentcody/oracle/6218e8849e6124a9cf3d390ca3856fc2517473419d6eb061251f17b0a6f31c22.table.json": {
+      "bytes": 4366,
+      "sha256": "6218e8849e6124a9cf3d390ca3856fc2517473419d6eb061251f17b0a6f31c22"
+    },
+    "commentcody/oracle/6251c4dca73291c512035b1f4fea924dbe07975c6c04f98a904199f728bab74b.table.json": {
+      "bytes": 96978,
+      "sha256": "6251c4dca73291c512035b1f4fea924dbe07975c6c04f98a904199f728bab74b"
+    },
+    "commentcody/oracle/6957481b6b7e6a79a4330db642f481bde245a1b24bc1b682638fc28d2ef074f8.table.json": {
+      "bytes": 294,
+      "sha256": "6957481b6b7e6a79a4330db642f481bde245a1b24bc1b682638fc28d2ef074f8"
+    },
+    "commentcody/oracle/6978217ae265fa883af0e831e2cd77fc2aae59e5ee87de37ae718959dd4cbbde.table.json": {
+      "bytes": 4595,
+      "sha256": "6978217ae265fa883af0e831e2cd77fc2aae59e5ee87de37ae718959dd4cbbde"
+    },
+    "commentcody/oracle/6abd8192b9acd2f09e16e2a116e2620495ec3d2d90b033021772f25fb080ad5c.table.json": {
+      "bytes": 4625,
+      "sha256": "6abd8192b9acd2f09e16e2a116e2620495ec3d2d90b033021772f25fb080ad5c"
+    },
+    "commentcody/oracle/6ad13dce3e3fa841d5f016e66d9b2b35db7b7df818bfc4e7fa408908ca8959d1.table.json": {
+      "bytes": 855,
+      "sha256": "6ad13dce3e3fa841d5f016e66d9b2b35db7b7df818bfc4e7fa408908ca8959d1"
+    },
+    "commentcody/oracle/6c6c6fd97e0eed6e73dbfd58c081b55ff7f7e3f5ffdd46d754842ff4adbcf49e.table.json": {
+      "bytes": 358,
+      "sha256": "6c6c6fd97e0eed6e73dbfd58c081b55ff7f7e3f5ffdd46d754842ff4adbcf49e"
+    },
+    "commentcody/oracle/6dd12806d10ce7b122faeb796f0f169713cb4bb63d31ef4b65adaa4ff135704b.table.json": {
+      "bytes": 4013,
+      "sha256": "6dd12806d10ce7b122faeb796f0f169713cb4bb63d31ef4b65adaa4ff135704b"
+    },
+    "commentcody/oracle/6ebe01951bbff5ab4682a6ca6b0e2c40c95a3cae30e1d860c009ae06a5741862.table.json": {
+      "bytes": 6535,
+      "sha256": "6ebe01951bbff5ab4682a6ca6b0e2c40c95a3cae30e1d860c009ae06a5741862"
+    },
+    "commentcody/oracle/71959eb0e1476a7d8e23894286665fe116c132082d014146133e60b04e04246f.table.json": {
+      "bytes": 251,
+      "sha256": "71959eb0e1476a7d8e23894286665fe116c132082d014146133e60b04e04246f"
+    },
+    "commentcody/oracle/73c21c554129ecb3fe32a494172385e18da92c973c954fc013db2bbd6d5e7a18.table.json": {
+      "bytes": 912,
+      "sha256": "73c21c554129ecb3fe32a494172385e18da92c973c954fc013db2bbd6d5e7a18"
+    },
+    "commentcody/oracle/7f58fc0dd66ac6e5df7330a1445140a207d6b8024f048285ea61d21a95260734.table.json": {
+      "bytes": 5856,
+      "sha256": "7f58fc0dd66ac6e5df7330a1445140a207d6b8024f048285ea61d21a95260734"
+    },
+    "commentcody/oracle/80a0d1161ba740d6a716b7f01c954db9d577387e9af98212fa4b0fc0baae2aff.table.json": {
+      "bytes": 518,
+      "sha256": "80a0d1161ba740d6a716b7f01c954db9d577387e9af98212fa4b0fc0baae2aff"
+    },
+    "commentcody/oracle/82528e4d4e16a8d2e9b68637e146c4c31e5119dcf66ec7dbff1a6f0140162efd.table.json": {
+      "bytes": 1044,
+      "sha256": "82528e4d4e16a8d2e9b68637e146c4c31e5119dcf66ec7dbff1a6f0140162efd"
+    },
+    "commentcody/oracle/83586cf60f94130180e8f9ef2d1b99ec3464a5e59419a4ca5ddfd2563930d3e8.table.json": {
+      "bytes": 3431,
+      "sha256": "83586cf60f94130180e8f9ef2d1b99ec3464a5e59419a4ca5ddfd2563930d3e8"
+    },
+    "commentcody/oracle/85445c8758833cd31f3419dd72289d3ca034a810836c50083af30d140ed2181f.table.json": {
+      "bytes": 1440,
+      "sha256": "85445c8758833cd31f3419dd72289d3ca034a810836c50083af30d140ed2181f"
+    },
+    "commentcody/oracle/89c094535812e1f39b2a985d288cada91796d77f9419c2ee893089e73f18fdeb.table.json": {
+      "bytes": 368,
+      "sha256": "89c094535812e1f39b2a985d288cada91796d77f9419c2ee893089e73f18fdeb"
+    },
+    "commentcody/oracle/8a8bf250234d7d41ad7ab9c2b13a94f8af9ab6a95e075eb3d5e4b1071b8f7e19.table.json": {
+      "bytes": 351,
+      "sha256": "8a8bf250234d7d41ad7ab9c2b13a94f8af9ab6a95e075eb3d5e4b1071b8f7e19"
+    },
+    "commentcody/oracle/8d8b1a3dbd712cb7efbd2b90a1a13852d8cde27a655181d77ecc9e41ddfb8843.table.json": {
+      "bytes": 5565,
+      "sha256": "8d8b1a3dbd712cb7efbd2b90a1a13852d8cde27a655181d77ecc9e41ddfb8843"
+    },
+    "commentcody/oracle/8e997dcf6b36a3db69cf1b14857c5ab5e19f4c1b6a8ebd44bdcfa2993d26f5b7.table.json": {
+      "bytes": 3302,
+      "sha256": "8e997dcf6b36a3db69cf1b14857c5ab5e19f4c1b6a8ebd44bdcfa2993d26f5b7"
+    },
+    "commentcody/oracle/9136e32e82469cab9b7d7416d1e1ee08de6da5fa8d5fa40b5afc179be7cb1e1d.table.json": {
+      "bytes": 3722,
+      "sha256": "9136e32e82469cab9b7d7416d1e1ee08de6da5fa8d5fa40b5afc179be7cb1e1d"
+    },
+    "commentcody/oracle/9209ee237156ef563977d40680cc7e5fd8293b5a29fab4527d1e1b8a50d77745.table.json": {
+      "bytes": 7201,
+      "sha256": "9209ee237156ef563977d40680cc7e5fd8293b5a29fab4527d1e1b8a50d77745"
+    },
+    "commentcody/oracle/93b0cd1617ea64c343dfc90649b56e29e835d856347e05f11cbbd4e64a92e349.table.json": {
+      "bytes": 892,
+      "sha256": "93b0cd1617ea64c343dfc90649b56e29e835d856347e05f11cbbd4e64a92e349"
+    },
+    "commentcody/oracle/96c8ca0c47bf5ec9143bd7b5a414a76218cbdec64a1bd3088491f8d79a5eb6d0.table.json": {
+      "bytes": 5177,
+      "sha256": "96c8ca0c47bf5ec9143bd7b5a414a76218cbdec64a1bd3088491f8d79a5eb6d0"
+    },
+    "commentcody/oracle/97d4a1a999a95222bd7f626b9f32727d5d90c776ce62160d770ced95609ad694.table.json": {
+      "bytes": 2105,
+      "sha256": "97d4a1a999a95222bd7f626b9f32727d5d90c776ce62160d770ced95609ad694"
+    },
+    "commentcody/oracle/9a05614633724837a602b59109bbadac3727a5993fe9295bfb40a9773cf515e7.table.json": {
+      "bytes": 210,
+      "sha256": "9a05614633724837a602b59109bbadac3727a5993fe9295bfb40a9773cf515e7"
+    },
+    "commentcody/oracle/9b3668bcdf87b6f3def613b2324050a07c83d6a3b742e70f5168c3a84c6afb95.table.json": {
+      "bytes": 269,
+      "sha256": "9b3668bcdf87b6f3def613b2324050a07c83d6a3b742e70f5168c3a84c6afb95"
+    },
+    "commentcody/oracle/9ccf147a88332f561124b4c6c73e3a71cb97e428fde22d887f7611b2d5874820.table.json": {
+      "bytes": 2880,
+      "sha256": "9ccf147a88332f561124b4c6c73e3a71cb97e428fde22d887f7611b2d5874820"
+    },
+    "commentcody/oracle/9d6e9597e5b1bdd7ba671af65f455fd571a13363b66a807ec34256a486e30ecb.table.json": {
+      "bytes": 5080,
+      "sha256": "9d6e9597e5b1bdd7ba671af65f455fd571a13363b66a807ec34256a486e30ecb"
+    },
+    "commentcody/oracle/9e93f507f9de05f79dbdf21db921c1b490a2ec1953702f9ee798415df308c87a.table.json": {
+      "bytes": 288,
+      "sha256": "9e93f507f9de05f79dbdf21db921c1b490a2ec1953702f9ee798415df308c87a"
+    },
+    "commentcody/oracle/a4b539259d773e43503273f41baa75e8d3e6922adeba5b7e5aa187fe1e2c0d44.table.json": {
+      "bytes": 667,
+      "sha256": "a4b539259d773e43503273f41baa75e8d3e6922adeba5b7e5aa187fe1e2c0d44"
+    },
+    "commentcody/oracle/a5fdcc0adb2ffedaabc8dbd9b10d342726a57b7ab9c9d3932efd7c4efe58d9f1.table.json": {
+      "bytes": 4498,
+      "sha256": "a5fdcc0adb2ffedaabc8dbd9b10d342726a57b7ab9c9d3932efd7c4efe58d9f1"
+    },
+    "commentcody/oracle/a62c69e128d3984a924b5f73a49e8f4069112cc59b7b34bb597b4c26208a3a75.table.json": {
+      "bytes": 1584,
+      "sha256": "a62c69e128d3984a924b5f73a49e8f4069112cc59b7b34bb597b4c26208a3a75"
+    },
+    "commentcody/oracle/a6308a6a2c75671260b0f92900a4a522ef7107306475af1fc690eb1b4728c54c.table.json": {
+      "bytes": 204,
+      "sha256": "a6308a6a2c75671260b0f92900a4a522ef7107306475af1fc690eb1b4728c54c"
+    },
+    "commentcody/oracle/a76280069cd2d3dd1b94a17f3c63877fdf279e83d06afbfc305fb140bd2ee513.table.json": {
+      "bytes": 610,
+      "sha256": "a76280069cd2d3dd1b94a17f3c63877fdf279e83d06afbfc305fb140bd2ee513"
+    },
+    "commentcody/oracle/a7e6420ee64ce017f1b37e78b5800d759ac566b4c721b6ebe7afcdc6b6ae1e8e.table.json": {
+      "bytes": 3834,
+      "sha256": "a7e6420ee64ce017f1b37e78b5800d759ac566b4c721b6ebe7afcdc6b6ae1e8e"
+    },
+    "commentcody/oracle/ac3a95ffdf2c0c67ebd3f0df466f6d211a9c44b53856fd14a10a966220007851.table.json": {
+      "bytes": 927,
+      "sha256": "ac3a95ffdf2c0c67ebd3f0df466f6d211a9c44b53856fd14a10a966220007851"
+    },
+    "commentcody/oracle/acf936568ef242719f4e3be6a046c45eec61d948910cb1e5f58eca4521290a53.table.json": {
+      "bytes": 230,
+      "sha256": "acf936568ef242719f4e3be6a046c45eec61d948910cb1e5f58eca4521290a53"
+    },
+    "commentcody/oracle/aef2f2bfd9be7c732aab404a6571fd53e154adf1968b9fddf0d6baf83cf4c6f8.table.json": {
+      "bytes": 2880,
+      "sha256": "aef2f2bfd9be7c732aab404a6571fd53e154adf1968b9fddf0d6baf83cf4c6f8"
+    },
+    "commentcody/oracle/b3559467dc26ae053fc17c67dd764f3a4c816c60b6ab05b59ad0cf638e6fff35.table.json": {
+      "bytes": 268,
+      "sha256": "b3559467dc26ae053fc17c67dd764f3a4c816c60b6ab05b59ad0cf638e6fff35"
+    },
+    "commentcody/oracle/b3c602b5df8cccefa060ea11c77400b04cfa3972c5563c964e005752eb2bda13.table.json": {
+      "bytes": 908,
+      "sha256": "b3c602b5df8cccefa060ea11c77400b04cfa3972c5563c964e005752eb2bda13"
+    },
+    "commentcody/oracle/b4e94db29eff761ce53645c857c7932e9548c8ec01653ffd3cfbc93b8f21935f.table.json": {
+      "bytes": 4304,
+      "sha256": "b4e94db29eff761ce53645c857c7932e9548c8ec01653ffd3cfbc93b8f21935f"
+    },
+    "commentcody/oracle/b58c1efdda7dec9a3b9132827bc1f0f97958304ea64d746d917e19e4fdec0cce.table.json": {
+      "bytes": 3528,
+      "sha256": "b58c1efdda7dec9a3b9132827bc1f0f97958304ea64d746d917e19e4fdec0cce"
+    },
+    "commentcody/oracle/b5da425cf61e6eedcce609cbb54518f9c15ccc09fc77ababbd46ee6486019153.table.json": {
+      "bytes": 384,
+      "sha256": "b5da425cf61e6eedcce609cbb54518f9c15ccc09fc77ababbd46ee6486019153"
+    },
+    "commentcody/oracle/ba002200e8c6d6e287dda454584209c33a6d585a9532ae707410542bd7e2fd72.table.json": {
+      "bytes": 311,
+      "sha256": "ba002200e8c6d6e287dda454584209c33a6d585a9532ae707410542bd7e2fd72"
+    },
+    "commentcody/oracle/bb30723aa82375ec578fdfa84ff9d6ef97892f0dc68ce880c7bb776d5e075fcc.table.json": {
+      "bytes": 2850,
+      "sha256": "bb30723aa82375ec578fdfa84ff9d6ef97892f0dc68ce880c7bb776d5e075fcc"
+    },
+    "commentcody/oracle/bbb92deb714d9433e94d35865cf933d892b7056a8f19d1f913d1ca6c95f5c78f.table.json": {
+      "bytes": 6923,
+      "sha256": "bbb92deb714d9433e94d35865cf933d892b7056a8f19d1f913d1ca6c95f5c78f"
+    },
+    "commentcody/oracle/bbdae2624a0c14f1bbd936dbb438fee99232f48658394af68f1c649442dae0aa.table.json": {
+      "bytes": 4983,
+      "sha256": "bbdae2624a0c14f1bbd936dbb438fee99232f48658394af68f1c649442dae0aa"
+    },
+    "commentcody/oracle/bcba764f654f5559dac13c3dba07d85e40e1e8cb3f12b76393f874d10346c999.table.json": {
+      "bytes": 2637,
+      "sha256": "bcba764f654f5559dac13c3dba07d85e40e1e8cb3f12b76393f874d10346c999"
+    },
+    "commentcody/oracle/bdaeafa1b3d9f262773ce2b018990b75c00d0bac161e06849ee5d467c1f6fc25.table.json": {
+      "bytes": 2504,
+      "sha256": "bdaeafa1b3d9f262773ce2b018990b75c00d0bac161e06849ee5d467c1f6fc25"
+    },
+    "commentcody/oracle/c0a6d465d040a382e8f4b4b282e75343f71eb7d70170925a98ac60914922e8bb.table.json": {
+      "bytes": 3916,
+      "sha256": "c0a6d465d040a382e8f4b4b282e75343f71eb7d70170925a98ac60914922e8bb"
+    },
+    "commentcody/oracle/c26e8c9343de02e437f3f6604debcf2944566a4e643dae8233bfb5b88e62f35d.table.json": {
+      "bytes": 780,
+      "sha256": "c26e8c9343de02e437f3f6604debcf2944566a4e643dae8233bfb5b88e62f35d"
+    },
+    "commentcody/oracle/c5cb8d5fcfc1ee3c690b7311534ebc7ab06fc44966ad7b8c0d5f6199433b8b2c.table.json": {
+      "bytes": 296,
+      "sha256": "c5cb8d5fcfc1ee3c690b7311534ebc7ab06fc44966ad7b8c0d5f6199433b8b2c"
+    },
+    "commentcody/oracle/c62da4b7108d0736d48366052597959657ba29005859fa4b964aa4c44cdfda5b.table.json": {
+      "bytes": 3438,
+      "sha256": "c62da4b7108d0736d48366052597959657ba29005859fa4b964aa4c44cdfda5b"
+    },
+    "commentcody/oracle/c97fab35937b3e5f9ab0a8bc6ef7c4a005af6899f8ce5a97c7bccd6545c6d1b2.table.json": {
+      "bytes": 954,
+      "sha256": "c97fab35937b3e5f9ab0a8bc6ef7c4a005af6899f8ce5a97c7bccd6545c6d1b2"
+    },
+    "commentcody/oracle/cb98da1b1d2b1ad07f81e2121f07b6666bd642486df0299b6a5c6cca15667469.table.json": {
+      "bytes": 1176,
+      "sha256": "cb98da1b1d2b1ad07f81e2121f07b6666bd642486df0299b6a5c6cca15667469"
+    },
+    "commentcody/oracle/cbbc03aea0685cdec5cd01d10db1a574f59c66655c750db350aa8fe9db881a62.table.json": {
+      "bytes": 250,
+      "sha256": "cbbc03aea0685cdec5cd01d10db1a574f59c66655c750db350aa8fe9db881a62"
+    },
+    "commentcody/oracle/cc24bb76661dc8b810582cbcc5c0bc435658e68589d09fda632b22a994a7a94a.table.json": {
+      "bytes": 3819,
+      "sha256": "cc24bb76661dc8b810582cbcc5c0bc435658e68589d09fda632b22a994a7a94a"
+    },
+    "commentcody/oracle/cce9ad2e7db911927311328ff08ebabbda89f2907144e6ae2a02a247061c69b7.table.json": {
+      "bytes": 3568,
+      "sha256": "cce9ad2e7db911927311328ff08ebabbda89f2907144e6ae2a02a247061c69b7"
+    },
+    "commentcody/oracle/d0ff003fc86efffc51e8b8e24d72fa3990ba157528c0e6d99ba05a24c149be95.table.json": {
+      "bytes": 881,
+      "sha256": "d0ff003fc86efffc51e8b8e24d72fa3990ba157528c0e6d99ba05a24c149be95"
+    },
+    "commentcody/oracle/d3a72eef80c2659b0b3346125a5f5c8d89c72e9c97746d8ea9e88dd6aad99f2b.table.json": {
+      "bytes": 3625,
+      "sha256": "d3a72eef80c2659b0b3346125a5f5c8d89c72e9c97746d8ea9e88dd6aad99f2b"
+    },
+    "commentcody/oracle/d4984b74bd9ed796f24055bb935af6ad618d32c6481df0084df34b2fc1101bac.table.json": {
+      "bytes": 305,
+      "sha256": "d4984b74bd9ed796f24055bb935af6ad618d32c6481df0084df34b2fc1101bac"
+    },
+    "commentcody/oracle/d4e074b887e1308d8c1c728dfe6cb0690ef57ea449236624e42833e70c9c9271.table.json": {
+      "bytes": 4233,
+      "sha256": "d4e074b887e1308d8c1c728dfe6cb0690ef57ea449236624e42833e70c9c9271"
+    },
+    "commentcody/oracle/d52fc2dc7c0496909dbac3a69178edece04afbb1232aaa44be570ff791757f63.table.json": {
+      "bytes": 224,
+      "sha256": "d52fc2dc7c0496909dbac3a69178edece04afbb1232aaa44be570ff791757f63"
+    },
+    "commentcody/oracle/d805a2779ca285be85d921540917b092441ad3e879fa32116b25641ac9b1bbe9.table.json": {
+      "bytes": 377,
+      "sha256": "d805a2779ca285be85d921540917b092441ad3e879fa32116b25641ac9b1bbe9"
+    },
+    "commentcody/oracle/da71d956bdfa91da7bcdb01ed1add889912e1b8615023465520f9a64cc2dcb93.table.json": {
+      "bytes": 1573,
+      "sha256": "da71d956bdfa91da7bcdb01ed1add889912e1b8615023465520f9a64cc2dcb93"
+    },
+    "commentcody/oracle/dcea5df8b6f16cd0c7a4f5c3b029dc2439fb83b2960d2d75e58e1e6eac577d24.table.json": {
+      "bytes": 2238,
+      "sha256": "dcea5df8b6f16cd0c7a4f5c3b029dc2439fb83b2960d2d75e58e1e6eac577d24"
+    },
+    "commentcody/oracle/dde078800711243dbf1c3c314da6f234da744b3dd5f17c5f198a49b773b8a400.table.json": {
+      "bytes": 6244,
+      "sha256": "dde078800711243dbf1c3c314da6f234da744b3dd5f17c5f198a49b773b8a400"
+    },
+    "commentcody/oracle/dfa4f012b5cfdd33e761bff347695a32d5f2bf490a210aecb3d1810b5dfcea2f.table.json": {
+      "bytes": 6729,
+      "sha256": "dfa4f012b5cfdd33e761bff347695a32d5f2bf490a210aecb3d1810b5dfcea2f"
+    },
+    "commentcody/oracle/e3c5fc45db169ec11e71d64b3c202f2dbc773ab436aea1c5e764d5a25fc23570.table.json": {
+      "bytes": 2770,
+      "sha256": "e3c5fc45db169ec11e71d64b3c202f2dbc773ab436aea1c5e764d5a25fc23570"
+    },
+    "commentcody/oracle/e417f3e38af76d9f27a5f51ba92fd7cccd41ecde69c7f689cdda7798e1800ff3.table.json": {
+      "bytes": 622,
+      "sha256": "e417f3e38af76d9f27a5f51ba92fd7cccd41ecde69c7f689cdda7798e1800ff3"
+    },
+    "commentcody/oracle/e4ba7ee4619d3650fa2046756a2051eaa19aa7cc3b24059d5199d2972726b76e.table.json": {
+      "bytes": 1706,
+      "sha256": "e4ba7ee4619d3650fa2046756a2051eaa19aa7cc3b24059d5199d2972726b76e"
+    },
+    "commentcody/oracle/e52bac1a70534b5224c74d804fa1c27f1062d62f9a1552a7b2616cef17f6beb4.table.json": {
+      "bytes": 1839,
+      "sha256": "e52bac1a70534b5224c74d804fa1c27f1062d62f9a1552a7b2616cef17f6beb4"
+    },
+    "commentcody/oracle/e99d6a86ce4525bb3534a98f62a29a43230d5d6309981053e10cdc14c54ca1c8.table.json": {
+      "bytes": 2903,
+      "sha256": "e99d6a86ce4525bb3534a98f62a29a43230d5d6309981053e10cdc14c54ca1c8"
+    },
+    "commentcody/oracle/ea0e1146d088114c75fd208468d0aa2bea474499f1dbf3e4c05ec1f5f834917a.table.json": {
+      "bytes": 842,
+      "sha256": "ea0e1146d088114c75fd208468d0aa2bea474499f1dbf3e4c05ec1f5f834917a"
+    },
+    "commentcody/oracle/ebfa94b13fc52062715ea904abc72f9919f05d0a0c91096477788efb84111a3b.table.json": {
+      "bytes": 6632,
+      "sha256": "ebfa94b13fc52062715ea904abc72f9919f05d0a0c91096477788efb84111a3b"
+    },
+    "commentcody/oracle/ece2cff3ded848ca2ecfe381d5716152e161cf0858cfabee94fa0c7fa967137f.table.json": {
+      "bytes": 609,
+      "sha256": "ece2cff3ded848ca2ecfe381d5716152e161cf0858cfabee94fa0c7fa967137f"
+    },
+    "commentcody/oracle/ee4285919f3bc157a92f52beb2fc9c1a5b26912b2c49315e8b36f5522217fdc8.table.json": {
+      "bytes": 7020,
+      "sha256": "ee4285919f3bc157a92f52beb2fc9c1a5b26912b2c49315e8b36f5522217fdc8"
+    },
+    "commentcody/oracle/eed0cf0c7623cdf462e8d4310b0eee6845e65b63cba3f93941e51e5eb998f94e.table.json": {
+      "bytes": 218,
+      "sha256": "eed0cf0c7623cdf462e8d4310b0eee6845e65b63cba3f93941e51e5eb998f94e"
+    },
+    "commentcody/oracle/f244404cfc2e741b5a82c1b7d35e105159446955a182b29e174a4e6d55ae571d.table.json": {
+      "bytes": 6341,
+      "sha256": "f244404cfc2e741b5a82c1b7d35e105159446955a182b29e174a4e6d55ae571d"
+    },
+    "commentcody/oracle/f53d6ba89021ace35e1095754e6c8a65d03f06c88d8e147d97664797d31f6342.table.json": {
+      "bytes": 654,
+      "sha256": "f53d6ba89021ace35e1095754e6c8a65d03f06c88d8e147d97664797d31f6342"
+    },
+    "commentcody/oracle/f67dd5f82eb5840c5945ceb424f1f830fe043181cb897f0195136349c5fd9d36.table.json": {
+      "bytes": 297,
+      "sha256": "f67dd5f82eb5840c5945ceb424f1f830fe043181cb897f0195136349c5fd9d36"
+    },
+    "commentcody/oracle/f77f12c4e5d7544c56019dd31213b975ed9c668470aeb5e0ca692848fc2a6099.table.json": {
+      "bytes": 703,
+      "sha256": "f77f12c4e5d7544c56019dd31213b975ed9c668470aeb5e0ca692848fc2a6099"
+    },
+    "commentcody/oracle/f7bf32601e9cbef4ba4947061fd034bec7a085190057730afaa303a49fb91b61.table.json": {
+      "bytes": 233,
+      "sha256": "f7bf32601e9cbef4ba4947061fd034bec7a085190057730afaa303a49fb91b61"
+    },
+    "commentcody/oracle/fa51faac1e811c4cee2474bf0d97095f90a425db6e8f4301ba5f8a448064c65e.table.json": {
+      "bytes": 390,
+      "sha256": "fa51faac1e811c4cee2474bf0d97095f90a425db6e8f4301ba5f8a448064c65e"
+    },
+    "commentcody/oracle/fa6b7de7172a1813c793c77c75a13de380132de9a8fe30c8cfa15d7717e445f0.table.json": {
+      "bytes": 3169,
+      "sha256": "fa6b7de7172a1813c793c77c75a13de380132de9a8fe30c8cfa15d7717e445f0"
+    },
+    "commentcody/oracle/faefc9c3103aa93fc9b368727f868c40a1338b9bb2c1ad4453e9f769f1040901.table.json": {
+      "bytes": 430,
+      "sha256": "faefc9c3103aa93fc9b368727f868c40a1338b9bb2c1ad4453e9f769f1040901"
+    },
+    "commentcody/oracle/fba7082e4bdffffec97b6c394ae6de1c498cb96cc2265fad09fb58f16729e5ea.table.json": {
+      "bytes": 5468,
+      "sha256": "fba7082e4bdffffec97b6c394ae6de1c498cb96cc2265fad09fb58f16729e5ea"
+    },
+    "commentcody/oracle/fbcc13ac9e3ed1dc5f513134b217635b834d178f15cfdcae101c3abd85a6fd8e.table.json": {
+      "bytes": 322,
+      "sha256": "fbcc13ac9e3ed1dc5f513134b217635b834d178f15cfdcae101c3abd85a6fd8e"
+    },
+    "commentcody/oracle/fd846d4f86b82d8a69400736e8ff0ab32f6a9dfce78d67a66678d8c2ff36ddb9.table.json": {
+      "bytes": 220,
+      "sha256": "fd846d4f86b82d8a69400736e8ff0ab32f6a9dfce78d67a66678d8c2ff36ddb9"
+    },
+    "commentcody/oracle/ff8772e05638a337f2cf5c2c08106cf5253ca0b427e4c0af9c57eec113c46b6a.table.json": {
+      "bytes": 5274,
+      "sha256": "ff8772e05638a337f2cf5c2c08106cf5253ca0b427e4c0af9c57eec113c46b6a"
+    },
+    "commentcody/oracle/ffde0b77debe7e644462b71087096713643d652ef02edb9508087e0678986aad.table.json": {
+      "bytes": 237,
+      "sha256": "ffde0b77debe7e644462b71087096713643d652ef02edb9508087e0678986aad"
+    },
+    "commentcody/oracle/raw-commit-001-8ssv1ee8q376bhnt8g584rh2blj9o0tc.json": {
+      "bytes": 396,
+      "sha256": "11bb73fcd4ef24c05dc9dc3fc10db9cd68c0defccacc1a9e9298e1e8e8aa1be5"
+    },
+    "commentcody/oracle/raw-commit-002-asq0c9k9j5fnsm9te1dqkpf4q9h3reab.json": {
+      "bytes": 4391,
+      "sha256": "55ddb035e73cac0ffacc2b5e73b34a9c68fac954340d71b303cafa46cbe58e48"
+    },
+    "commentcody/oracle/raw-commit-003-t8vv3qsem08diqu5usrauqekrd82citu.json": {
+      "bytes": 12331,
+      "sha256": "31f3b0fae6af70fc26171edaceb1efea953b1c088901c9f3404877d1fa761239"
+    },
+    "commentcody/oracle/raw-commit-004-el6j0ofhfuuaqsdu0pcju0joc4oqjhrc.json": {
+      "bytes": 14006,
+      "sha256": "14d959f89e8cfc88b905a8b53319728a87fbcaf8ce6757c7f815f273d05a02a5"
+    },
+    "commentcody/oracle/raw-commit-005-pl0kesobhrf3aj5136ij886p6ppp5pui.json": {
+      "bytes": 15014,
+      "sha256": "9a9caf8f59fbd8a6f769765a2e5e93316a35f0108ad6e60f64f2d874cb6deaa5"
+    },
+    "commentcody/oracle/raw-commit-006-limk26gpl01o0tjff0rj5fmrj7keoqba.json": {
+      "bytes": 16403,
+      "sha256": "4e74cf209b871268757fb0633a25c3d2b04f661371eeff8d73ac11ecc7e9a915"
+    },
+    "commentcody/oracle/raw-commit-007-hnjj0odiddtt889e2etk5fnbrq5rsj4r.json": {
+      "bytes": 18178,
+      "sha256": "6f3de3e69b0ebffd84456dd3bf84f5a1c83677b29015e319ee19136047b35f22"
+    },
+    "commentcody/oracle/raw-commit-008-o6r79770it1il5hddbgurodgd11qbbkg.json": {
+      "bytes": 19176,
+      "sha256": "81c453bf25bed0a24a5424181b30c23c927b06c29e58a71b3243b6f48156d885"
+    },
+    "commentcody/oracle/raw-commit-009-eb2vjf94f7tbecgei7pfvver9lspp0cu.json": {
+      "bytes": 20176,
+      "sha256": "fa84d4d39547e78a433c7b33ebad88ed0f22c6ac813b11b63333e11ca65f0fac"
+    },
+    "commentcody/oracle/raw-commit-010-dv62ueiu6nvjs63hibls2bsv0qn71f85.json": {
+      "bytes": 21194,
+      "sha256": "eb9f46cdde10d3232290c80715350565f5e5ff196da2ebd19709d0f0b367d5b6"
+    },
+    "commentcody/oracle/raw-commit-011-s08e7du8e6lnbncgt23a78engvtkv3fa.json": {
+      "bytes": 22998,
+      "sha256": "370e3ab3f93d13709e453c86c5aaec6c2778668d7cc29632720f9b578c8504ea"
+    },
+    "commentcody/oracle/raw-commit-012-iit8rc9j6343tl9kcnacnofg3jpago28.json": {
+      "bytes": 24418,
+      "sha256": "ff3f846ca0bf0b0f9711fbb556c82c6430de0f585c2ab69f4c4c1b77db50bb05"
+    },
+    "commentcody/oracle/raw-commit-013-qchjf58b0uugk4lnacg09cm24kpt6qtv.json": {
+      "bytes": 25097,
+      "sha256": "cbdd9a550aa30f9d72a208af18e386a094713a2cc9048cb40ec0842db364ea73"
+    },
+    "commentcody/oracle/raw-commit-014-7t1lbgic06quguc2tr3lauf0r9fpqars.json": {
+      "bytes": 26375,
+      "sha256": "468a7a27e20c587ec6739b5d586f060cb608d560e3e78df8725ee0e495bb665b"
+    },
+    "commentcody/oracle/raw-commit-015-l2frll2adokq3stnfciqup2qbskme1fg.json": {
+      "bytes": 27393,
+      "sha256": "0e1fbdf3f4233b951fadfb58111a9f30d1b4c23291eb16e2929599d374689e56"
+    },
+    "commentcody/oracle/raw-commit-016-fj07n2972nds3q7gdfijllsdah0pplpv.json": {
+      "bytes": 30070,
+      "sha256": "a5c600412aaf00687c8ec885f989c8481df6c1d5621d9846b0f0017381804086"
+    },
+    "commentcody/oracle/raw-commit-017-4nneshl1ckse9ukvckhbn0sokfdncn06.json": {
+      "bytes": 31896,
+      "sha256": "20aa315d15c74b8428011c6afd825a6f696b82be81f0fcc484150e26f468a07b"
+    },
+    "commentcody/oracle/raw-commit-018-db4nq39c0ilnlgrqsmdmu5lkmpfjmpss.json": {
+      "bytes": 36509,
+      "sha256": "df8c812a45ed2a32da27335f04258c12bde70b7c4f2e2b8bae202b40cb3db990"
+    },
+    "commentcody/oracle/raw-commit-019-cprg0dovufq5pd4opfv7ukoba2bfqpau.json": {
+      "bytes": 41685,
+      "sha256": "aea34f0fd11e89a937104e80e2b83510ca4aa5985827ba7182fb250721fcf8a9"
+    },
+    "commentcody/oracle/raw-commit-020-es5d07bh8duhpv1ebrfet7446tkpol7m.json": {
+      "bytes": 44959,
+      "sha256": "11eddeeedfafe0b70a1c6f8083e02cc138f9dfc71cde065af39682a056dc2ffa"
+    },
+    "commentcody/oracle/raw-commit-021-p2aqv4bump8n10i3n7jn60pgjh18s4o0.json": {
+      "bytes": 45638,
+      "sha256": "c95b7ee01af780f39d05bf0678d3cbf296ea5e4700923a7ecf2f9c0835a815d8"
+    },
+    "commentcody/oracle/raw-commit-022-5dba0m0e7peip11r6mkoi2ckgvn4r88f.json": {
+      "bytes": 46317,
+      "sha256": "197c8af5b1b4ed98f2dff58b5061b49441996a532ccb1c2f386766e055bf9ccf"
+    },
+    "commentcody/oracle/raw-commit-023-vat2jiucfu5k93jmbdqt1ff2dvrjbu8g.json": {
+      "bytes": 46996,
+      "sha256": "fef2308ac8bc44693bb4597d21ead4dc5d8bb75ce882693e984b5663dac8b0c6"
+    },
+    "commentcody/oracle/raw-commit-024-sspttvlmkvtsv58q8ce41uktcdkdksd0.json": {
+      "bytes": 47675,
+      "sha256": "49934fa7627ddce2171e14de83ce9b46196d7c32a850072fe50d63d98c98f1b8"
+    },
+    "commentcody/oracle/raw-commit-025-tg0othi43vpidh2vk9h70k8g42a4a6np.json": {
+      "bytes": 48487,
+      "sha256": "2a58814b1054f6d0b6257d03861475b7616c89c3a57e8a9bdfb2de4c6f37ff98"
+    },
+    "commentcody/oracle/raw-commit-026-9t6ie41hmehuj0o8h1be5qpa746ps9nd.json": {
+      "bytes": 49725,
+      "sha256": "47a71277a405f9a2018b68475af53af8f7523193ac253acd8154eae4b36d05e5"
+    },
+    "commentcody/oracle/raw-commit-027-tkk0s7pf03qjgljp5o0vre57u70h9594.json": {
+      "bytes": 50669,
+      "sha256": "2c40e0be0360e5010df5c74cae7d0af5a2587f3b97dddd043bc54f381fd3096f"
+    },
+    "commentcody/oracle/raw-commit-028-o2kb2a2se0n8ue8gdkfo1pau1q612jni.json": {
+      "bytes": 52032,
+      "sha256": "3b43e1c83b8a8b2472081a2c87ab1a50a3fdc7043ffbac2494726beba041331f"
+    },
+    "commentcody/oracle/raw-commit-029-830sn1h7bfv07hv81f294j962d42ocjg.json": {
+      "bytes": 52842,
+      "sha256": "8d837e473698585be9f0fa6b21b118b29b908a425543900b617c5bfe8e8a1916"
+    },
+    "commentcody/oracle/raw-commit-030-lv94918tqvhao8hc21og49kpfpdg9r9n.json": {
+      "bytes": 53521,
+      "sha256": "a37e145760f095a89ae212f880310a527edccf46228d553d2a886cf4e77eb1f9"
+    },
+    "commentcody/oracle/raw-commit-031-j3eil0te74hg8fvpk241bmf4qevfgoth.json": {
+      "bytes": 54200,
+      "sha256": "80776ec92c9279499a7731bdec016cc1b1d9ca0902a83b48d1c5f851c9b1d25f"
+    },
+    "commentcody/oracle/raw-commit-032-acu414t5fphkfdhar27v9q2ot7jem6jg.json": {
+      "bytes": 54879,
+      "sha256": "ce3f5f1c4bc1bfe5b309b4e6b8c5fa6c1ec47342c40ac6eca5b32fab39f13c7b"
+    },
+    "commentcody/oracle/raw-commit-033-h6l2lek2muvjbmul7180kp0bf0g487il.json": {
+      "bytes": 55558,
+      "sha256": "8a1ce8d2dc55a05229d2103a6c60d7d62941bee605eaf18c8581512bb34ee947"
+    },
+    "commentcody/oracle/raw-commit-034-51uuqggfi9u50c7a1rkslsq8fsf6u44c.json": {
+      "bytes": 51210,
+      "sha256": "cd54fda3473e09b03ebb67648dc10d3a60d3fd6b327b5448f24cb3f34507ac75"
+    },
+    "commentcody/oracle/raw-commit-035-uontnf2rnargcmkdqd9ene225toqu3cr.json": {
+      "bytes": 51736,
+      "sha256": "7967a172a37b46a0b997f06e1d1f52207bf01d1263c24ce5b6def96d20450d9d"
+    },
+    "commentcody/oracle/raw-commit-036-l1o6rhd8opn71g1v0353nv5na064aib6.json": {
+      "bytes": 52262,
+      "sha256": "b1e638b57f851b780150b0763184973c28617d959232d24d74fb6e175c67f409"
+    },
+    "commentcody/oracle/raw-commit-037-m2v99bnfotvideuvuc5akd2825drt74i.json": {
+      "bytes": 52788,
+      "sha256": "fae3b51a12e7ab77efd57a80fa36bceb20ee968f08225c4cdb81a24e3ae9b7f9"
+    },
+    "commentcody/oracle/raw-commit-038-d2r4ps9gck4paqq3tpkb9mi3rg54ikkj.json": {
+      "bytes": 53314,
+      "sha256": "07fa8d335042471f797b7370b4ecde4408a42e2fcea6b2f81c8252467204e4b5"
+    },
+    "commentcody/oracle/raw-commit-039-018rk1u2o9shcv1lio1prt4li3op8icp.json": {
+      "bytes": 53840,
+      "sha256": "450f2dfe71bcbe3387589b1cc8066805110e41ea00e37a2ef7f0cc77bebb66b6"
+    },
+    "commentcody/oracle/raw-commit-040-3qbnsv85uq1gs83206mq6mndjim0b0h4.json": {
+      "bytes": 54366,
+      "sha256": "260604ab9bd64909f000c5362e9789ae63ba6abdb2593ee51dac90e8aa561624"
+    },
+    "commentcody/oracle/raw-commit-041-4b8h3ej3o19a5r6g57q4n2aa8cjdf3dt.json": {
+      "bytes": 54892,
+      "sha256": "4b88f595ced321b2f434194d244b2229a68cf0b75ce1ab8bd373e1dc298a779e"
+    },
+    "commentcody/oracle/raw-commit-042-nj9lstk0jrr2qvhed2moi109d11nh2qn.json": {
+      "bytes": 56173,
+      "sha256": "5b3aa60e383e2c271267b9d959f64875e16cf863f57040b8956386a05a4fe066"
+    },
+    "commentcody/oracle/raw-commit-043-00dvbj14eouik63l4p7cbq01hcqfgd22.json": {
+      "bytes": 56813,
+      "sha256": "0af3921a9ce07e37d54005dbf094bada5aefa2cf03f59d846b98ab413d374686"
+    },
+    "commentcody/oracle/raw-commit-044-s344i09oda50msmdv6p011ap4nuh9rte.json": {
+      "bytes": 57474,
+      "sha256": "6d59695f4cc658b2dc90c50fcd056e46ca9a5a5b01af5d13957caec0c089d729"
+    },
+    "commentcody/oracle/raw-commit-045-ngl2o8lemlaloqd0mrdbrtp0a8cna0pt.json": {
+      "bytes": 58146,
+      "sha256": "f40d14e5b4bd037423ec9221f5a6034b1172274b0157d39914f726501464e7ba"
+    },
+    "commentcody/oracle/raw-commit-046-4dof5jrm3i4cahcieoc7haphob0e29gk.json": {
+      "bytes": 58672,
+      "sha256": "b0dc1c9d3e4e47db31ba046f28b7ac9b63e378b7ae62196e1c0f281041ef9cf6"
+    },
+    "commentcody/oracle/raw-commit-047-6emjjf64p94ribrh4mnc79v10ra1h6le.json": {
+      "bytes": 56054,
+      "sha256": "226a96fb2711dab134d145c6dca4d66aac5f63358a099248582b412a96d5d93f"
+    },
+    "commentcody/oracle/raw-commit-048-bp9mkhplke72e31pbfdmbp510b00jv1p.json": {
+      "bytes": 57011,
+      "sha256": "328af4e0e722eaeceaabed97a6bc433f0a4347220e21e00f509ec15ccb7b000d"
+    },
+    "commentcody/oracle/raw-commit-049-2147p2ot0pf4q0hcj3brd78vaqirecnr.json": {
+      "bytes": 57537,
+      "sha256": "c69ac6ac642fcae51995af9f64449c45337a4fdb7a008adc4961675e6df03afe"
+    },
+    "commentcody/oracle/raw-commit-050-4f7aqgmi0lk01t6olepftrpkpn33vjf8.json": {
+      "bytes": 58051,
+      "sha256": "10d994b67660b6018295134a801d2d37825cedd378783e5122487249b60b7fee"
+    },
+    "commentcody/oracle/raw-commit-051-7ke77pso9oliihgnirnfv5hip89mtgrh.json": {
+      "bytes": 58619,
+      "sha256": "3c42f00c944cce0276ba017171be2a2cdc846b9cc1a2bee6ff028fabfd1aa58d"
+    },
+    "commentcody/oracle/raw-commit-052-6euoetun958eel27urovl4ls72nd19ra.json": {
+      "bytes": 59173,
+      "sha256": "b941b3734316e5c3fe801c6db54607b9be446a8b40cbe2e4cc61291b0d0d4508"
+    },
+    "commentcody/oracle/raw-commit-053-boigkkdl6cfdmj6dgdt3p56a154b3dqf.json": {
+      "bytes": 59832,
+      "sha256": "b04819e2a60f2d8141ba2ee6b4bdf0d80360173ed683f5e7e9707a7489beeebb"
+    },
+    "commentcody/oracle/raw-commit-054-djg4ok87a14hhcicgfak1fqb86ffllia.json": {
+      "bytes": 60358,
+      "sha256": "8ed1aa74ac9ddc3fa8628175bf6d5c276aac700740825bfaa36dd598f589d9fa"
+    },
+    "commentcody/oracle/raw-commit-055-kns2n5ojmcbg580883udtevsgoo3acsu.json": {
+      "bytes": 60892,
+      "sha256": "ebeb07ebecc5ff8981807318b5a5f40a238c12b2cc82389b99949f4960d8185e"
+    },
+    "commentcody/oracle/raw-commit-056-h4918mg5aiq9bev43ac4r5ums3tu2sgu.json": {
+      "bytes": 61442,
+      "sha256": "beff03bb972350758285466d02934474d837daf9617cec48010620244b7f3441"
+    },
+    "commentcody/oracle/raw-commit-057-lgcksp98442b2221hvf9c59nj215t9kv.json": {
+      "bytes": 61968,
+      "sha256": "d59754055be6c8d45a03b79c9b5c08b213d25679902cc3aa3fbd6c8f43f13876"
+    },
+    "commentcody/oracle/raw-commit-058-li089iulola3hrpfoglhoicubt1mtkjv.json": {
+      "bytes": 62494,
+      "sha256": "ca5854c997dd5ca66e8ec74f276e470c82ca6b9ce570c11fe8470b745bd6ee33"
+    },
+    "commentcody/oracle/raw-commit-059-2f1q4gh2mtcsvdet1lefhoao3rtt6fg4.json": {
+      "bytes": 63020,
+      "sha256": "1e222cd07ca8d2a521b4c2e7a5d51ae06461d38c176b9b930816da17b545da13"
+    },
+    "commentcody/oracle/raw-commit-060-8q926f1puadrq8ed6dljjl8kl5djkgca.json": {
+      "bytes": 63546,
+      "sha256": "8d055f9af7291d8e00e19ce116547a5c72a42ba64c5685103df60c932f1727b5"
+    },
+    "commentcody/oracle/raw-commit-061-3f09ijacum77v0o4pjc5j82p7mat2mqo.json": {
+      "bytes": 64469,
+      "sha256": "3d3512b07abd045fa6b8b275c0db08510140bf38aa4bedd9201c4360d4add0fb"
+    },
+    "commentcody/oracle/raw-commit-062-smf3stssjvepjgeb9ugom3bmmk5bhvkj.json": {
+      "bytes": 64725,
+      "sha256": "17f667f002a7584a255fa2e714dd2f65ac1b9d89ddd70480b87ad9709f600a9a"
+    },
+    "commentcody/oracle/raw-commit-063-to4l0nmik3h3d64qgujhbhhtb7qbpfiv.json": {
+      "bytes": 65251,
+      "sha256": "656177ddf3d636ab32d9f131964f873034dad00b9423397a7cde8e180e1c84de"
+    },
+    "commentcody/oracle/raw-commit-064-rlbdta0sc5kklsff2sbhj5aco55u6qia.json": {
+      "bytes": 65777,
+      "sha256": "a7e085df1c2fb176844734307136e1f2a3ea40458b4de4c170b670c5c046820a"
+    },
+    "commentcody/oracle/raw-commit-065-4eppug8q34rf917s2o2o8a0gjva52dht.json": {
+      "bytes": 66303,
+      "sha256": "f1b7a826aebcb9fb03627e7ea88cf6528aa577282483af337ad8995f5ddefcce"
+    },
+    "commentcody/oracle/raw-commit-066-upacc7oj7gop2qd7lmfnkdi9p30475st.json": {
+      "bytes": 66829,
+      "sha256": "5b1c0ae86081fbc2840282dac0816d2ed0250f6910b3f30618b9b13732a3a826"
+    },
+    "commentcody/oracle/raw-commit-067-hikm1r75rkp7s69n6uqqubgdleimpace.json": {
+      "bytes": 67492,
+      "sha256": "0c9be7f6fc1ddb2fdb4d676c9febd91a107b09e7f04baf975fc00a0467bb3349"
+    },
+    "commentcody/oracle/raw-commit-068-1jk66m2v69a8fpn30ro90hueap58glm2.json": {
+      "bytes": 68018,
+      "sha256": "8fb637cbe5ef74b48e0c33d8a469167d45b1e83af4c38452b5a73f23d772671f"
+    },
+    "commentcody/oracle/raw-commit-069-1ms40s0p76cl3tq8repe0r80nh307go6.json": {
+      "bytes": 66905,
+      "sha256": "e550c7eb58ed052e82a618ff16e6c5fccd4d7fc591289c6c97abf5949ecae34d"
+    },
+    "commentcody/oracle/raw-commit-070-qftsve4hnn67cceeg7n0560ucu60bcr4.json": {
+      "bytes": 67813,
+      "sha256": "a968f79aabbea2dd72d1105802ed607e91c217019e602c12038718d22fbf0fca"
+    },
+    "commentcody/oracle/raw-commit-071-k6qoh5bdo8odvvdm0165p5t7q4in2g7e.json": {
+      "bytes": 69719,
+      "sha256": "7110b66393df345d2a7a91c8c00b4de25ff661297806b9b6d31ac11b10bc0eaf"
+    },
+    "commentcody/oracle/raw-commit-072-vb5slcc206lo790aicavke6ggte11406.json": {
+      "bytes": 70245,
+      "sha256": "08d98d4bf181f464b486cac93093057957db142086b6b64d9e7a6467fa5c5386"
+    },
+    "commentcody/oracle/raw-commit-073-ocso4porpnpa64jik2ov7dl2goptdbpr.json": {
+      "bytes": 70771,
+      "sha256": "93b2ab8afbc37947ada1c0b56ab114f65b0eaaa64650c0c1aba381242b6737e0"
+    },
+    "commentcody/oracle/raw-commit-074-lrc84edqae0foishmbrm1m63hopdoe6j.json": {
+      "bytes": 71297,
+      "sha256": "dc2769f2f7ecdbf70d04a489eba5d3ff841be7adfaf6a1c47b170606006c2511"
+    },
+    "commentcody/oracle/raw-commit-075-kuhq63vbo4a2ne0r9n142jgfkqum1ijs.json": {
+      "bytes": 73954,
+      "sha256": "dcd3e7cd14318d4284234073d82cbc8f1954796f64a66f25db5e1403522dac1a"
+    },
+    "commentcody/oracle/raw-commit-076-uuortgock8tb9v0o21l6lddg0n1dii5m.json": {
+      "bytes": 74626,
+      "sha256": "5bbc29a5205e0b7e3c660c40019c137b25c16a474a53a334e66850235f90392c"
+    },
+    "commentcody/oracle/raw-commit-077-8paq9gn5vuge1h1h1n2bhhoej58gmh2a.json": {
+      "bytes": 75152,
+      "sha256": "61cb3c5c7930073baa7890196247ba7cca79a0d9ed18ce152f87a537a836e1ac"
+    },
+    "commentcody/oracle/raw-commit-078-b51mtlccof3m0h9vqmj93amjdflcopch.json": {
+      "bytes": 75821,
+      "sha256": "2b062375f1751e0b5ed229569c0d436454c69ec7e200131d690d450fb0a29ca1"
+    },
+    "commentcody/oracle/raw-commit-079-ru436gbjs72fpruu11b8g0npsdg3pm9t.json": {
+      "bytes": 76496,
+      "sha256": "d7fd602de8d6f794e5206cf5710a9f13317daa71646edb6e7317fb06bb795462"
+    },
+    "commentcody/oracle/raw-commit-080-fs9091qnh303jk0ba4nrtha69iclie9u.json": {
+      "bytes": 78039,
+      "sha256": "79b21e1327423cc0a265028dddede30d09d72ce9dfa447df441c12caccfb7616"
+    },
+    "commentcody/oracle/raw-commit-081-s7t5mgkslft4j7ad9i7j6p28ehq37nsh.json": {
+      "bytes": 78039,
+      "sha256": "090b194a97594c1a8e082cfd1d98ae208dc5a57ee6181f2829058ad8628bfe06"
+    },
+    "commentcody/oracle/raw-commit-082-javoed1293j3kab6ot4sugcq7d4r8r6j.json": {
+      "bytes": 80299,
+      "sha256": "ad6bbf6944b676eba2c7fae94ae862fb59ac67daeb19c55f612aafa9d63008b3"
+    },
+    "commentcody/oracle/raw-commit-083-8uk38rl09vt9modf0dfpbv7ia0kua4dn.json": {
+      "bytes": 610100,
+      "sha256": "1bd817d2db315cdef747626abc47f84bc9809eb49715c440fd7304c9d4e95416"
+    },
+    "commentcody/oracle/raw-commit-084-vst649d599s76im2c5odbs6q0v3sup9k.json": {
+      "bytes": 611083,
+      "sha256": "9834458565cf545765e371659b28d962207b8015220007280dbd52739102f501"
+    },
+    "commentcody/oracle/raw-commit-085-9fjsqvg31r1jbqh7tndctjd1ktddr8s2.json": {
+      "bytes": 612072,
+      "sha256": "a762896e7c7be10d8eac860b45f461f74c0da275f9d02f11da082385d5ec1dbe"
+    },
+    "commentcody/oracle/raw-current-000-9fjsqvg31r1jbqh7tndctjd1ktddr8s2.json": {
+      "bytes": 1203197,
+      "sha256": "e02c6da4c99935be528a7f310d39590e667307e88dbba26202dcaeb728b4a776"
+    },
+    "commentcody/oracle/raw-head-checkpoint-000-9fjsqvg31r1jbqh7tndctjd1ktddr8s2.json": {
+      "bytes": 612080,
+      "sha256": "63c44454f39b86a4a8af29b572c829e0e87a1461154273dfef964d1738d32b65"
+    },
+    "commentcody/oracle/raw-history.json": {
+      "bytes": 50038,
+      "sha256": "c5f8eb7cdab9a22dcacbacca4f73245dc5c631fca9c26d9dfc1d033c3dab480b"
+    },
+    "commentcody/oracle/states.ndjson": {
+      "bytes": 16172,
+      "sha256": "a932df103024d943f1caa241092589cf93a2fc7fb391d767a8bfb81b03d0b781"
+    },
+    "commentcody/oracle/tables.ndjson": {
+      "bytes": 1611867,
+      "sha256": "c32e8ce695cb82e6c7bc0e23dc29f1f520a34265006cb139085402465a31f4d5"
+    },
+    "commentcody/oracle/working-identity.json": {
+      "bytes": 383,
+      "sha256": "13d699dc3e139093ffb0d1c32ccf45f248de07abced61fa51de6fbd4921c30ff"
+    },
+    "commentcody/request.full.json": {
+      "bytes": 1078,
+      "sha256": "149625bc16b4d398b409ce50729abf43c7bdae6629dad41f0a558909ebb6742e"
+    },
+    "commentsignals/SOURCE.json": {
+      "bytes": 14226,
+      "sha256": "3508125eb548f247227e548794f9328800a60047efb402557f4ee3ded40df83c"
+    },
+    "commentsignals/capture/capture-set/capture-set.json": {
+      "bytes": 712,
+      "sha256": "c29754b3857d6d842e70ae67004930630e21fad70214c903f9cad1ea5fa8e058"
+    },
+    "commentsignals/capture/capture-set/head.tar": {
+      "bytes": 675840,
+      "sha256": "c9c9cd361cd3f4c6ae9ad17b5a4d618e5d23c8c3e35bd844159055cfcfebcda0"
+    },
+    "commentsignals/capture/capture-set/parts/00000000000000000001.part": {
+      "bytes": 3214082,
+      "sha256": "0639c05679f82e9a91bdb4f82a2bc4132ba60b744b86e15e96bd55eca3547505"
+    },
+    "commentsignals/oracle/0190c6b44d6384fe239088582d81ef972c7720c065edf3b7dd55575fad378737.table.json": {
+      "bytes": 2871,
+      "sha256": "0190c6b44d6384fe239088582d81ef972c7720c065edf3b7dd55575fad378737"
+    },
+    "commentsignals/oracle/03660d7e191d00c7c7dae7bbcef8e6ab7f5cc3ce186f100acfddfa1da9ff73ff.table.json": {
+      "bytes": 253,
+      "sha256": "03660d7e191d00c7c7dae7bbcef8e6ab7f5cc3ce186f100acfddfa1da9ff73ff"
+    },
+    "commentsignals/oracle/047c860d9339c72d39e9a35cc9802a05b332cbe2a57bd4056230219d0f775d4b.table.json": {
+      "bytes": 1443,
+      "sha256": "047c860d9339c72d39e9a35cc9802a05b332cbe2a57bd4056230219d0f775d4b"
+    },
+    "commentsignals/oracle/0618f7a5c06683349edd2a91684f2fd2362ec12c2140f85db8d5ac794462a634.table.json": {
+      "bytes": 6829,
+      "sha256": "0618f7a5c06683349edd2a91684f2fd2362ec12c2140f85db8d5ac794462a634"
+    },
+    "commentsignals/oracle/06fb5e5d1cedfc79a0f51aa5f1a21b7366f441b3af1105128b4804985842b320.table.json": {
+      "bytes": 299,
+      "sha256": "06fb5e5d1cedfc79a0f51aa5f1a21b7366f441b3af1105128b4804985842b320"
+    },
+    "commentsignals/oracle/0992da3bd349d0e224752a53e488084a620fa95b23fd07ae784b2b156b201df6.table.json": {
+      "bytes": 6635,
+      "sha256": "0992da3bd349d0e224752a53e488084a620fa95b23fd07ae784b2b156b201df6"
+    },
+    "commentsignals/oracle/0a547b47b15cc21e60b07af9422f3ad59015002815292de33cd6ca4aa78b5011.table.json": {
+      "bytes": 2883,
+      "sha256": "0a547b47b15cc21e60b07af9422f3ad59015002815292de33cd6ca4aa78b5011"
+    },
+    "commentsignals/oracle/0b0285d70f56221abd319c22c5fab2733c3034f39ef2bdc4747fad11b109c947.table.json": {
+      "bytes": 301,
+      "sha256": "0b0285d70f56221abd319c22c5fab2733c3034f39ef2bdc4747fad11b109c947"
+    },
+    "commentsignals/oracle/0c3383a98764e88258ed569a78bf71fe8211d6b2779223606e0b6ba24b095878.table.json": {
+      "bytes": 957,
+      "sha256": "0c3383a98764e88258ed569a78bf71fe8211d6b2779223606e0b6ba24b095878"
+    },
+    "commentsignals/oracle/0c9c8f77fef3e234ab0c5625b2943b933b9a6eccfe02c79f96bb71ab9b70848e.table.json": {
+      "bytes": 3725,
+      "sha256": "0c9c8f77fef3e234ab0c5625b2943b933b9a6eccfe02c79f96bb71ab9b70848e"
+    },
+    "commentsignals/oracle/0d3124abb411866614fa2fcdb5ebfb3efa87c9ebaff4564a1645c699c4576d23.table.json": {
+      "bytes": 943,
+      "sha256": "0d3124abb411866614fa2fcdb5ebfb3efa87c9ebaff4564a1645c699c4576d23"
+    },
+    "commentsignals/oracle/1076d7a0c75fc1f12e80eb57e09678f057d4ddab172ffe7abb3d535b57af2911.table.json": {
+      "bytes": 3571,
+      "sha256": "1076d7a0c75fc1f12e80eb57e09678f057d4ddab172ffe7abb3d535b57af2911"
+    },
+    "commentsignals/oracle/144a14be935c89756713633ee2dccc87497598594bd8335e8212d54e9e1340be.table.json": {
+      "bytes": 300,
+      "sha256": "144a14be935c89756713633ee2dccc87497598594bd8335e8212d54e9e1340be"
+    },
+    "commentsignals/oracle/157ab5f9f3ea1e48e3c95fdb29447ef6f783eb55dd99515a2449e4090b7d533d.table.json": {
+      "bytes": 7120,
+      "sha256": "157ab5f9f3ea1e48e3c95fdb29447ef6f783eb55dd99515a2449e4090b7d533d"
+    },
+    "commentsignals/oracle/16d2f65e589a92038d74c269270d4982877c6b4821bfdf62fac9fefe5e546d15.table.json": {
+      "bytes": 361,
+      "sha256": "16d2f65e589a92038d74c269270d4982877c6b4821bfdf62fac9fefe5e546d15"
+    },
+    "commentsignals/oracle/1846f9289844e96167589c2b84180aef903c579d6183f59cbabc5ff5a862d9ff.table.json": {
+      "bytes": 4103,
+      "sha256": "1846f9289844e96167589c2b84180aef903c579d6183f59cbabc5ff5a862d9ff"
+    },
+    "commentsignals/oracle/1a3369443a86799c3e3fe4512b7377f387adbd938adc60f4f7b02786baa20664.table.json": {
+      "bytes": 884,
+      "sha256": "1a3369443a86799c3e3fe4512b7377f387adbd938adc60f4f7b02786baa20664"
+    },
+    "commentsignals/oracle/1a607673d7745eb8fbab23358cc2e08a6e8fa65c3870e7525f81c12c8294a36b.table.json": {
+      "bytes": 4113,
+      "sha256": "1a607673d7745eb8fbab23358cc2e08a6e8fa65c3870e7525f81c12c8294a36b"
+    },
+    "commentsignals/oracle/1f6f7109a468e5de8f547c05d1b7bb40094ef64ad5401dec4190de8afc929de1.table.json": {
+      "bytes": 1047,
+      "sha256": "1f6f7109a468e5de8f547c05d1b7bb40094ef64ad5401dec4190de8afc929de1"
+    },
+    "commentsignals/oracle/1f8e96fa9de757e477ac735670741cf31e2063a32292b75c71e70cc5fc1f2b2d.table.json": {
+      "bytes": 207,
+      "sha256": "1f8e96fa9de757e477ac735670741cf31e2063a32292b75c71e70cc5fc1f2b2d"
+    },
+    "commentsignals/oracle/2065db055bf474d5f20b7bd08e2ffaf2e0f1dd6819e7c4599691cb5e385fb619.table.json": {
+      "bytes": 4236,
+      "sha256": "2065db055bf474d5f20b7bd08e2ffaf2e0f1dd6819e7c4599691cb5e385fb619"
+    },
+    "commentsignals/oracle/20aeb6b785b490434c2082e57244fdb10a7581144169c91df9f3b5fc695f0ed1.table.json": {
+      "bytes": 234,
+      "sha256": "20aeb6b785b490434c2082e57244fdb10a7581144169c91df9f3b5fc695f0ed1"
+    },
+    "commentsignals/oracle/21079a1ae7092216fad42291bee98be1438270e5d1386ed6e46c72cf40e7e834.table.json": {
+      "bytes": 350,
+      "sha256": "21079a1ae7092216fad42291bee98be1438270e5d1386ed6e46c72cf40e7e834"
+    },
+    "commentsignals/oracle/21f2ea5a1c4cce6935fb96e7e7896c8c073514313083b28743ca6c7833e744de.table.json": {
+      "bytes": 308,
+      "sha256": "21f2ea5a1c4cce6935fb96e7e7896c8c073514313083b28743ca6c7833e744de"
+    },
+    "commentsignals/oracle/241a8fba4668a669999ce31927059e35a69ab2e8a1a437c5856b6f6a91259dae.table.json": {
+      "bytes": 613,
+      "sha256": "241a8fba4668a669999ce31927059e35a69ab2e8a1a437c5856b6f6a91259dae"
+    },
+    "commentsignals/oracle/246141265bdd604c6ee0393889c85f69a38729525a49cd55eb651e7291419610.table.json": {
+      "bytes": 226,
+      "sha256": "246141265bdd604c6ee0393889c85f69a38729525a49cd55eb651e7291419610"
+    },
+    "commentsignals/oracle/25f9d2e5906f5a32324d31777f32674cd40b313dcd5bf2f6eb0c9015e811e847.table.json": {
+      "bytes": 2108,
+      "sha256": "25f9d2e5906f5a32324d31777f32674cd40b313dcd5bf2f6eb0c9015e811e847"
+    },
+    "commentsignals/oracle/27bad22eeb5c33d2dddbaaccf4d71ca149fb3b5cb8de86dbc2430338684f06b9.table.json": {
+      "bytes": 3704,
+      "sha256": "27bad22eeb5c33d2dddbaaccf4d71ca149fb3b5cb8de86dbc2430338684f06b9"
+    },
+    "commentsignals/oracle/292440c64b8cd3f1656c28e3faa805ce1ecb5ccd06236cfe4f6c10eec74e9183.table.json": {
+      "bytes": 929,
+      "sha256": "292440c64b8cd3f1656c28e3faa805ce1ecb5ccd06236cfe4f6c10eec74e9183"
+    },
+    "commentsignals/oracle/29cf585aede35375aca981152d62cd7a50b0845e56fe016be0645ce9f7fa2bc7.table.json": {
+      "bytes": 1842,
+      "sha256": "29cf585aede35375aca981152d62cd7a50b0845e56fe016be0645ce9f7fa2bc7"
+    },
+    "commentsignals/oracle/2abbfc798c59f024c6d505608fab136e091d59b0b5c279611a4b00bb4f78eceb.table.json": {
+      "bytes": 3337,
+      "sha256": "2abbfc798c59f024c6d505608fab136e091d59b0b5c279611a4b00bb4f78eceb"
+    },
+    "commentsignals/oracle/2e78582e2d06917fb49d557eb962a9bc83441d01ccf7031e881d480179ee4a56.table.json": {
+      "bytes": 3822,
+      "sha256": "2e78582e2d06917fb49d557eb962a9bc83441d01ccf7031e881d480179ee4a56"
+    },
+    "commentsignals/oracle/2eca8d3847f90ea57ebc90bc0192d5c2a2723478c158f9c72d7f5f863207318d.table.json": {
+      "bytes": 7204,
+      "sha256": "2eca8d3847f90ea57ebc90bc0192d5c2a2723478c158f9c72d7f5f863207318d"
+    },
+    "commentsignals/oracle/2fe78ad647c2d08e7a680eaef1e80e096f955cf236636abff7424f271a59591b.table.json": {
+      "bytes": 6732,
+      "sha256": "2fe78ad647c2d08e7a680eaef1e80e096f955cf236636abff7424f271a59591b"
+    },
+    "commentsignals/oracle/30bcb2140f1bd68a3212332f3ab957507e9b42efca3b800d459245d0fdcd4811.table.json": {
+      "bytes": 580,
+      "sha256": "30bcb2140f1bd68a3212332f3ab957507e9b42efca3b800d459245d0fdcd4811"
+    },
+    "commentsignals/oracle/338c34542e36da9bc43d7b12c16e2d7612aa63742295a4aaf1cf99c115cf7cb2.table.json": {
+      "bytes": 915,
+      "sha256": "338c34542e36da9bc43d7b12c16e2d7612aa63742295a4aaf1cf99c115cf7cb2"
+    },
+    "commentsignals/oracle/35551767288399fb8ed4c004ef5d5da729567820047fb12fc9c36d4227ae5f56.table.json": {
+      "bytes": 236,
+      "sha256": "35551767288399fb8ed4c004ef5d5da729567820047fb12fc9c36d4227ae5f56"
+    },
+    "commentsignals/oracle/362cd944265638a728cd3183bada7fc0d61fdc0ca49c62dc5d7d791ffd439ceb.table.json": {
+      "bytes": 4655,
+      "sha256": "362cd944265638a728cd3183bada7fc0d61fdc0ca49c62dc5d7d791ffd439ceb"
+    },
+    "commentsignals/oracle/367540b4e0d3d12584c7acb04ab4ede7d27d5aa9e4dd1c21a65179cf23269431.table.json": {
+      "bytes": 930,
+      "sha256": "367540b4e0d3d12584c7acb04ab4ede7d27d5aa9e4dd1c21a65179cf23269431"
+    },
+    "commentsignals/oracle/385a51d3236f42b8e79f32b6a568594ae952daedf21f9c25b7e54dc74564b2a0.table.json": {
+      "bytes": 2374,
+      "sha256": "385a51d3236f42b8e79f32b6a568594ae952daedf21f9c25b7e54dc74564b2a0"
+    },
+    "commentsignals/oracle/38a0a030c0dada98b8ec99e6c5ba3172cee8cef395d9f37b7d0c5a0c7b4ac6ea.table.json": {
+      "bytes": 4369,
+      "sha256": "38a0a030c0dada98b8ec99e6c5ba3172cee8cef395d9f37b7d0c5a0c7b4ac6ea"
+    },
+    "commentsignals/oracle/38c21818e58f885a9f5621fb814290e70c9b0dc3cb7b4f1fba1792d81be288ce.table.json": {
+      "bytes": 613,
+      "sha256": "38c21818e58f885a9f5621fb814290e70c9b0dc3cb7b4f1fba1792d81be288ce"
+    },
+    "commentsignals/oracle/3ad97d1e6a9adf4ad0fe38a65b15aa1f5639586d91d77882edfdd288caad8302.table.json": {
+      "bytes": 387,
+      "sha256": "3ad97d1e6a9adf4ad0fe38a65b15aa1f5639586d91d77882edfdd288caad8302"
+    },
+    "commentsignals/oracle/3eef002960ec034b614255e3005b937c7c75d2be37cbe5b4870fc8e0dcd5bfae.table.json": {
+      "bytes": 100373,
+      "sha256": "3eef002960ec034b614255e3005b937c7c75d2be37cbe5b4870fc8e0dcd5bfae"
+    },
+    "commentsignals/oracle/3f5af360782b17f8299a3bcd7eb2d519b96e7491a9c2abd2a231a8560305a572.table.json": {
+      "bytes": 3465,
+      "sha256": "3f5af360782b17f8299a3bcd7eb2d519b96e7491a9c2abd2a231a8560305a572"
+    },
+    "commentsignals/oracle/4011a92d35adda70806f93c3ef49447b1b8a47b68e679c4c59b600b8584b2119.table.json": {
+      "bytes": 660,
+      "sha256": "4011a92d35adda70806f93c3ef49447b1b8a47b68e679c4c59b600b8584b2119"
+    },
+    "commentsignals/oracle/405b9544fadc799f284b56a0db01e040ab13ef25c8e42ffb4a6126c587a6acac.table.json": {
+      "bytes": 2773,
+      "sha256": "405b9544fadc799f284b56a0db01e040ab13ef25c8e42ffb4a6126c587a6acac"
+    },
+    "commentsignals/oracle/484f1b09c6bbe9ed902fa7ab862d859dd9e2dc16cd8e7f18c202452e6c978d90.table.json": {
+      "bytes": 269,
+      "sha256": "484f1b09c6bbe9ed902fa7ab862d859dd9e2dc16cd8e7f18c202452e6c978d90"
+    },
+    "commentsignals/oracle/493717a53e8becb0e05857e2336d258c3a43eefecea8d2e895c7577d51c32d77.table.json": {
+      "bytes": 249,
+      "sha256": "493717a53e8becb0e05857e2336d258c3a43eefecea8d2e895c7577d51c32d77"
+    },
+    "commentsignals/oracle/4c74006454fafa16bdafed1b798a10d412eac262d18be3b4fc53c84f5db2a753.table.json": {
+      "bytes": 341,
+      "sha256": "4c74006454fafa16bdafed1b798a10d412eac262d18be3b4fc53c84f5db2a753"
+    },
+    "commentsignals/oracle/4c8c35730dfd5ce58125aa642ab147c0c94073a3c5f939393bad759f0b372dce.table.json": {
+      "bytes": 2241,
+      "sha256": "4c8c35730dfd5ce58125aa642ab147c0c94073a3c5f939393bad759f0b372dce"
+    },
+    "commentsignals/oracle/4cc7e26d77ef68a015ecfb6b3fe0439c980cb1854253ee7c215d7c2eda48b84d.table.json": {
+      "bytes": 3452,
+      "sha256": "4cc7e26d77ef68a015ecfb6b3fe0439c980cb1854253ee7c215d7c2eda48b84d"
+    },
+    "commentsignals/oracle/4ecb56efb69ffd257c4d69fa74d462aaf3562c6b42f497f40263d0334b0ebb76.table.json": {
+      "bytes": 100191,
+      "sha256": "4ecb56efb69ffd257c4d69fa74d462aaf3562c6b42f497f40263d0334b0ebb76"
+    },
+    "commentsignals/oracle/50155e6b0cafac64b0656700df0ac5322193edb17f5bc54a1e4398aa0108b367.table.json": {
+      "bytes": 612,
+      "sha256": "50155e6b0cafac64b0656700df0ac5322193edb17f5bc54a1e4398aa0108b367"
+    },
+    "commentsignals/oracle/521b8c19dfcf60e7a786a70330cf3b5748e2c44ffc45bcdfed961467fa63f1db.table.json": {
+      "bytes": 7217,
+      "sha256": "521b8c19dfcf60e7a786a70330cf3b5748e2c44ffc45bcdfed961467fa63f1db"
+    },
+    "commentsignals/oracle/54b9bc4d008d158254605ab61fd68444272a2289f346a5d6889317c0c04db436.table.json": {
+      "bytes": 4792,
+      "sha256": "54b9bc4d008d158254605ab61fd68444272a2289f346a5d6889317c0c04db436"
+    },
+    "commentsignals/oracle/574aee375cf195464108aab0460e525980d65c7dd3aba43220fcadbde3c9f4a9.table.json": {
+      "bytes": 2561,
+      "sha256": "574aee375cf195464108aab0460e525980d65c7dd3aba43220fcadbde3c9f4a9"
+    },
+    "commentsignals/oracle/57d2be6536aa93a1b02333e1275f447ea30b45b2c8dad79be7fa8ddcda641e38.table.json": {
+      "bytes": 269,
+      "sha256": "57d2be6536aa93a1b02333e1275f447ea30b45b2c8dad79be7fa8ddcda641e38"
+    },
+    "commentsignals/oracle/59778e982b1a28e69a4c9afce44b69d90af98c40d60d021a1103b66f49344f7e.table.json": {
+      "bytes": 220,
+      "sha256": "59778e982b1a28e69a4c9afce44b69d90af98c40d60d021a1103b66f49344f7e"
+    },
+    "commentsignals/oracle/5a869aa40bfa63fb30f2bb80ce81ec8a666cafaaec416cc5db5c64848b93e29f.table.json": {
+      "bytes": 4016,
+      "sha256": "5a869aa40bfa63fb30f2bb80ce81ec8a666cafaaec416cc5db5c64848b93e29f"
+    },
+    "commentsignals/oracle/5a8e407abbeb4d7f8a83978fd3ffa7fc1eec185f11d4380b0aa25c517e1227ad.table.json": {
+      "bytes": 4986,
+      "sha256": "5a8e407abbeb4d7f8a83978fd3ffa7fc1eec185f11d4380b0aa25c517e1227ad"
+    },
+    "commentsignals/oracle/5d75f64ce1dd267fc33155e4e40a2509aae54625d2733941a535d2ebdfc78deb.table.json": {
+      "bytes": 354,
+      "sha256": "5d75f64ce1dd267fc33155e4e40a2509aae54625d2733941a535d2ebdfc78deb"
+    },
+    "commentsignals/oracle/5eea2ef7bb340038db5afbbc07b81b32cdf542b2503ebfeff454583ff9e1e604.table.json": {
+      "bytes": 3305,
+      "sha256": "5eea2ef7bb340038db5afbbc07b81b32cdf542b2503ebfeff454583ff9e1e604"
+    },
+    "commentsignals/oracle/6225a0ab2ff1a415ba2d96e5988d1ba84b141596fc143b7fb2156c25a6764b2e.table.json": {
+      "bytes": 2507,
+      "sha256": "6225a0ab2ff1a415ba2d96e5988d1ba84b141596fc143b7fb2156c25a6764b2e"
+    },
+    "commentsignals/oracle/62607c7b85f39057b099e7086354d0b7c606432b7c8f82ba2fd9818fb7cd1bef.table.json": {
+      "bytes": 7023,
+      "sha256": "62607c7b85f39057b099e7086354d0b7c606432b7c8f82ba2fd9818fb7cd1bef"
+    },
+    "commentsignals/oracle/628434d33ea2673a8a9c189759b2e03724d52d83f3f34369c50e5c6706dd70e4.table.json": {
+      "bytes": 456,
+      "sha256": "628434d33ea2673a8a9c189759b2e03724d52d83f3f34369c50e5c6706dd70e4"
+    },
+    "commentsignals/oracle/64f286c6b9b4cfd1e8b7989a691a08ca857c5e233b37c2a05a08df24a7f2e389.table.json": {
+      "bytes": 100360,
+      "sha256": "64f286c6b9b4cfd1e8b7989a691a08ca857c5e233b37c2a05a08df24a7f2e389"
+    },
+    "commentsignals/oracle/6a8fad9b9245005fe0b1f793e8a60f8883320d3f69496e61d94189e273c87d7c.table.json": {
+      "bytes": 4501,
+      "sha256": "6a8fad9b9245005fe0b1f793e8a60f8883320d3f69496e61d94189e273c87d7c"
+    },
+    "commentsignals/oracle/6acd6e9aed2432aeedaa77041fa94bb65225a86e606c4acf538c60e461a4a29b.table.json": {
+      "bytes": 5374,
+      "sha256": "6acd6e9aed2432aeedaa77041fa94bb65225a86e606c4acf538c60e461a4a29b"
+    },
+    "commentsignals/oracle/6be7ebf4cc7b07ccfe4dfcb636cb56b3ac6ece4f386af4074ac3eac7678def9e.table.json": {
+      "bytes": 338,
+      "sha256": "6be7ebf4cc7b07ccfe4dfcb636cb56b3ac6ece4f386af4074ac3eac7678def9e"
+    },
+    "commentsignals/oracle/6f2d25f38dab06d8bb0fae6b7825be5bb07c14c9fe70d907a39ab8d8c6cc3381.table.json": {
+      "bytes": 221,
+      "sha256": "6f2d25f38dab06d8bb0fae6b7825be5bb07c14c9fe70d907a39ab8d8c6cc3381"
+    },
+    "commentsignals/oracle/703bc5eae3565df417ff85d752208dd9a9f2cfe55238adf423488728ef6143b2.table.json": {
+      "bytes": 213,
+      "sha256": "703bc5eae3565df417ff85d752208dd9a9f2cfe55238adf423488728ef6143b2"
+    },
+    "commentsignals/oracle/708041b3fd8e40fb7a13996e8fe8e176cb093a14d6b83257ce6f3538737b7637.table.json": {
+      "bytes": 259,
+      "sha256": "708041b3fd8e40fb7a13996e8fe8e176cb093a14d6b83257ce6f3538737b7637"
+    },
+    "commentsignals/oracle/70c873a9c5406cd0357783b65757a48249355f1d853b7fcc64686e01bbc52790.table.json": {
+      "bytes": 871,
+      "sha256": "70c873a9c5406cd0357783b65757a48249355f1d853b7fcc64686e01bbc52790"
+    },
+    "commentsignals/oracle/711a80ff9196d4398ecaf7637e6ae8d563b3ac755624a8e78c89def811f54089.table.json": {
+      "bytes": 5180,
+      "sha256": "711a80ff9196d4398ecaf7637e6ae8d563b3ac755624a8e78c89def811f54089"
+    },
+    "commentsignals/oracle/717d39925837f2bdab05df9b8c6f54f17057095913958b30a8611a7710bc6cf5.table.json": {
+      "bytes": 1975,
+      "sha256": "717d39925837f2bdab05df9b8c6f54f17057095913958b30a8611a7710bc6cf5"
+    },
+    "commentsignals/oracle/7187f6b944d3bce06ef12592b8bd3986194cd851e2e008fd2e3ffb2c978bd664.table.json": {
+      "bytes": 393,
+      "sha256": "7187f6b944d3bce06ef12592b8bd3986194cd851e2e008fd2e3ffb2c978bd664"
+    },
+    "commentsignals/oracle/7211b9c984feebc1030cf69d0ea1bbe2ae6e0f4a33e80c279999cd6e9efd62df.table.json": {
+      "bytes": 3438,
+      "sha256": "7211b9c984feebc1030cf69d0ea1bbe2ae6e0f4a33e80c279999cd6e9efd62df"
+    },
+    "commentsignals/oracle/74820dc82d755d21c0957728061aa90b968cdca14dad12a4cb98adefae394d87.table.json": {
+      "bytes": 1587,
+      "sha256": "74820dc82d755d21c0957728061aa90b968cdca14dad12a4cb98adefae394d87"
+    },
+    "commentsignals/oracle/7902d22cefc9214a06be2e530b38577ae2d01dd596b24e9b0f3b8edabd004b61.table.json": {
+      "bytes": 858,
+      "sha256": "7902d22cefc9214a06be2e530b38577ae2d01dd596b24e9b0f3b8edabd004b61"
+    },
+    "commentsignals/oracle/7911e6f3830d118a066ac7d75431077f6c2961021614332f3ef9c3f2242f1e46.table.json": {
+      "bytes": 5665,
+      "sha256": "7911e6f3830d118a066ac7d75431077f6c2961021614332f3ef9c3f2242f1e46"
+    },
+    "commentsignals/oracle/792d3ed3a4e595a39af4e31a2965d725ea15e62c30341c6f92ac68e03de3c345.table.json": {
+      "bytes": 911,
+      "sha256": "792d3ed3a4e595a39af4e31a2965d725ea15e62c30341c6f92ac68e03de3c345"
+    },
+    "commentsignals/oracle/7c64070504112735de7116153a18b3da96114d97753188c337df7ec5688754d1.table.json": {
+      "bytes": 2640,
+      "sha256": "7c64070504112735de7116153a18b3da96114d97753188c337df7ec5688754d1"
+    },
+    "commentsignals/oracle/7ccbd8b94e3cebcafa73c8dd316894ee5659c4712373e9b9c6257301c82b5ee2.table.json": {
+      "bytes": 302,
+      "sha256": "7ccbd8b94e3cebcafa73c8dd316894ee5659c4712373e9b9c6257301c82b5ee2"
+    },
+    "commentsignals/oracle/7f7f4c9ec0af891b5ceefaf89b972b191c57b052f9e0ac17f50bb5ad5fdd1224.table.json": {
+      "bytes": 2883,
+      "sha256": "7f7f4c9ec0af891b5ceefaf89b972b191c57b052f9e0ac17f50bb5ad5fdd1224"
+    },
+    "commentsignals/oracle/8219782c7f29bd62d075bed266e4f53457f9f77e8f949adde8141ae03ee14c32.table.json": {
+      "bytes": 519,
+      "sha256": "8219782c7f29bd62d075bed266e4f53457f9f77e8f949adde8141ae03ee14c32"
+    },
+    "commentsignals/oracle/822779f19a13d081368bdab09e4d90d8bc512343e2f96f3c8b17910008eb8878.table.json": {
+      "bytes": 357,
+      "sha256": "822779f19a13d081368bdab09e4d90d8bc512343e2f96f3c8b17910008eb8878"
+    },
+    "commentsignals/oracle/823af67c00a9f820ad779665f22870df921e35f8acbf9096d59605af867155c1.table.json": {
+      "bytes": 3172,
+      "sha256": "823af67c00a9f820ad779665f22870df921e35f8acbf9096d59605af867155c1"
+    },
+    "commentsignals/oracle/864cb886a3e0f15d3cf4f031ff6c60db2da11f04b84bad270bab419661a6a21f.table.json": {
+      "bytes": 4889,
+      "sha256": "864cb886a3e0f15d3cf4f031ff6c60db2da11f04b84bad270bab419661a6a21f"
+    },
+    "commentsignals/oracle/86c250508efc4c8855de0679ba7116125e47ffaaaa21edfe709eaa0987f3d33b.table.json": {
+      "bytes": 895,
+      "sha256": "86c250508efc4c8855de0679ba7116125e47ffaaaa21edfe709eaa0987f3d33b"
+    },
+    "commentsignals/oracle/87b2e33dbf1e5eeed88d0a2366da4ab16c093ed2ac6edeabf5457b0107ff2680.table.json": {
+      "bytes": 3970,
+      "sha256": "87b2e33dbf1e5eeed88d0a2366da4ab16c093ed2ac6edeabf5457b0107ff2680"
+    },
+    "commentsignals/oracle/8802ce08fa1698fe0c80469cc4bc658f35f549beaebaa45f3db51738ae795448.table.json": {
+      "bytes": 100011,
+      "sha256": "8802ce08fa1698fe0c80469cc4bc658f35f549beaebaa45f3db51738ae795448"
+    },
+    "commentsignals/oracle/8808ca448a92474b5e9d1001d5f95c060fa3f7a856827b04d7ca459669923759.table.json": {
+      "bytes": 4210,
+      "sha256": "8808ca448a92474b5e9d1001d5f95c060fa3f7a856827b04d7ca459669923759"
+    },
+    "commentsignals/oracle/893215463d1083d1342598345a35ca2a172c0e68cd54afdc7d0600d09c3b4d09.table.json": {
+      "bytes": 285,
+      "sha256": "893215463d1083d1342598345a35ca2a172c0e68cd54afdc7d0600d09c3b4d09"
+    },
+    "commentsignals/oracle/8aafb8e6fae61e6f3d5e91095c2c9bb0e7e16a3678d7b850bb414b6dbf2d3226.table.json": {
+      "bytes": 4598,
+      "sha256": "8aafb8e6fae61e6f3d5e91095c2c9bb0e7e16a3678d7b850bb414b6dbf2d3226"
+    },
+    "commentsignals/oracle/8cf2a7a4c71342cac1e302b4fec63b0631867b0cea5eb41fb284c985c533b2e9.table.json": {
+      "bytes": 321,
+      "sha256": "8cf2a7a4c71342cac1e302b4fec63b0631867b0cea5eb41fb284c985c533b2e9"
+    },
+    "commentsignals/oracle/8df0f0d25949f9b2efbe6a02a40a240660c22fd8a5bf4b86762805a9f80a5749.table.json": {
+      "bytes": 521,
+      "sha256": "8df0f0d25949f9b2efbe6a02a40a240660c22fd8a5bf4b86762805a9f80a5749"
+    },
+    "commentsignals/oracle/8e221cb39a6b075588d64100817e4fa14749347745976b3e3b782b7dcd88ca05.table.json": {
+      "bytes": 221,
+      "sha256": "8e221cb39a6b075588d64100817e4fa14749347745976b3e3b782b7dcd88ca05"
+    },
+    "commentsignals/oracle/92e9a5277e2ab4a390a7d0495b667e2132a084fbf1dd7a7fdf09aa1174f9b81f.table.json": {
+      "bytes": 5277,
+      "sha256": "92e9a5277e2ab4a390a7d0495b667e2132a084fbf1dd7a7fdf09aa1174f9b81f"
+    },
+    "commentsignals/oracle/95873a66b59b0d4da42272f1cfdb123bb1aa46075b78983b6d4acf069015ddb5.table.json": {
+      "bytes": 4695,
+      "sha256": "95873a66b59b0d4da42272f1cfdb123bb1aa46075b78983b6d4acf069015ddb5"
+    },
+    "commentsignals/oracle/96e6197dee761c85af52e53e40f91a50e42955e223be22ea143b3b5f426ee2a9.table.json": {
+      "bytes": 651,
+      "sha256": "96e6197dee761c85af52e53e40f91a50e42955e223be22ea143b3b5f426ee2a9"
+    },
+    "commentsignals/oracle/9852e4f42d22b7252fa6fa5c9e1439ee2fa13f725e57bc0d64d5130ed541a309.table.json": {
+      "bytes": 325,
+      "sha256": "9852e4f42d22b7252fa6fa5c9e1439ee2fa13f725e57bc0d64d5130ed541a309"
+    },
+    "commentsignals/oracle/9a5bab6a7cec15510bf1a79f94fdc93f63f30d37b9082fb0e358d3e3156c1213.table.json": {
+      "bytes": 625,
+      "sha256": "9a5bab6a7cec15510bf1a79f94fdc93f63f30d37b9082fb0e358d3e3156c1213"
+    },
+    "commentsignals/oracle/9b27c6988f02f80b6380842d814a34407d2ba4e542acd8377fc448449306504a.table.json": {
+      "bytes": 3628,
+      "sha256": "9b27c6988f02f80b6380842d814a34407d2ba4e542acd8377fc448449306504a"
+    },
+    "commentsignals/oracle/9b94ee55885ccd51f50c0874020563349d8d5dca340b1d78cdba62725a7e3a63.table.json": {
+      "bytes": 1709,
+      "sha256": "9b94ee55885ccd51f50c0874020563349d8d5dca340b1d78cdba62725a7e3a63"
+    },
+    "commentsignals/oracle/9d0663d65e837fd67a08e158e12703334e7f675666756aa98b6ff876c30b408b.table.json": {
+      "bytes": 223,
+      "sha256": "9d0663d65e837fd67a08e158e12703334e7f675666756aa98b6ff876c30b408b"
+    },
+    "commentsignals/oracle/a0d666d869a9e26bb60b975a10edac325c02ddc9af81c1cbe5bd069ba67cf4cd.table.json": {
+      "bytes": 5568,
+      "sha256": "a0d666d869a9e26bb60b975a10edac325c02ddc9af81c1cbe5bd069ba67cf4cd"
+    },
+    "commentsignals/oracle/a3829eefd7d8e086d2a60d4e02ccfbe7c20904aae4498f68d105cba9732b28ae.table.json": {
+      "bytes": 3919,
+      "sha256": "a3829eefd7d8e086d2a60d4e02ccfbe7c20904aae4498f68d105cba9732b28ae"
+    },
+    "commentsignals/oracle/a3b53774fce86878ccd8d50513acf94746956673f8c40b1ae5e9f93c86f4f24d.table.json": {
+      "bytes": 3434,
+      "sha256": "a3b53774fce86878ccd8d50513acf94746956673f8c40b1ae5e9f93c86f4f24d"
+    },
+    "commentsignals/oracle/a40543027b6fed4c7d31a396c115173fe20ceb441a6f4a29598eebb69a5e1238.table.json": {
+      "bytes": 1311,
+      "sha256": "a40543027b6fed4c7d31a396c115173fe20ceb441a6f4a29598eebb69a5e1238"
+    },
+    "commentsignals/oracle/a77108b7d568b8709249097b639fedc75f1e40a384a7afc9f598f7a91e38db98.table.json": {
+      "bytes": 271,
+      "sha256": "a77108b7d568b8709249097b639fedc75f1e40a384a7afc9f598f7a91e38db98"
+    },
+    "commentsignals/oracle/aaea20810c14fb65b69bcb91c9f8eb198112f9919169c4db83b6dae5941799b6.table.json": {
+      "bytes": 2448,
+      "sha256": "aaea20810c14fb65b69bcb91c9f8eb198112f9919169c4db83b6dae5941799b6"
+    },
+    "commentsignals/oracle/abb6db4ecbc2cd69ebdb88f5d38d7efa0b69f4cca2cc6ecce391146aab2c5148.table.json": {
+      "bytes": 272,
+      "sha256": "abb6db4ecbc2cd69ebdb88f5d38d7efa0b69f4cca2cc6ecce391146aab2c5148"
+    },
+    "commentsignals/oracle/abc9c98fe82d211bf60e4ba54b880889855aa3c93b32b87c020457ff372f41e3.table.json": {
+      "bytes": 6538,
+      "sha256": "abc9c98fe82d211bf60e4ba54b880889855aa3c93b32b87c020457ff372f41e3"
+    },
+    "commentsignals/oracle/acf23233563ef18d1511dac68ea0cdea1036b2a7c2e92f0e51a8eefb6ddc6bcc.table.json": {
+      "bytes": 1576,
+      "sha256": "acf23233563ef18d1511dac68ea0cdea1036b2a7c2e92f0e51a8eefb6ddc6bcc"
+    },
+    "commentsignals/oracle/ad4528b85e2f79a9e18eba9b4afb5776844370b0cd6828f2c61d2bd0c2c765c0.table.json": {
+      "bytes": 422,
+      "sha256": "ad4528b85e2f79a9e18eba9b4afb5776844370b0cd6828f2c61d2bd0c2c765c0"
+    },
+    "commentsignals/oracle/adf0c0566b726613e6cb3ec2e1ca8de529ee75a81e5c585b498ddd60c495a114.table.json": {
+      "bytes": 6247,
+      "sha256": "adf0c0566b726613e6cb3ec2e1ca8de529ee75a81e5c585b498ddd60c495a114"
+    },
+    "commentsignals/oracle/aec17f1ed46bca151c813829928f974135d185a855373471b91324233e1f9b91.table.json": {
+      "bytes": 712,
+      "sha256": "aec17f1ed46bca151c813829928f974135d185a855373471b91324233e1f9b91"
+    },
+    "commentsignals/oracle/aedb213d1c89d718ce7c2ca327eddee80ecfe53f6f8bacf390e5ae91e7a82b76.table.json": {
+      "bytes": 5083,
+      "sha256": "aedb213d1c89d718ce7c2ca327eddee80ecfe53f6f8bacf390e5ae91e7a82b76"
+    },
+    "commentsignals/oracle/b35053916a525bd8dc60b43aa0eb448a3e6d18a390c8e95a21e338231ea4bde8.table.json": {
+      "bytes": 2853,
+      "sha256": "b35053916a525bd8dc60b43aa0eb448a3e6d18a390c8e95a21e338231ea4bde8"
+    },
+    "commentsignals/oracle/b63c439af9486215a68c3128dd07a79367ef5aae4c8c76e23cd957abd0fc7cd0.table.json": {
+      "bytes": 100386,
+      "sha256": "b63c439af9486215a68c3128dd07a79367ef5aae4c8c76e23cd957abd0fc7cd0"
+    },
+    "commentsignals/oracle/bc7e369f196ecd298a7f37fb2a7d295b2c2103482ab2fbd0eabba4b0a20abfe5.table.json": {
+      "bytes": 254,
+      "sha256": "bc7e369f196ecd298a7f37fb2a7d295b2c2103482ab2fbd0eabba4b0a20abfe5"
+    },
+    "commentsignals/oracle/bda6970d88680e90180b274af5e0a069ba9c1fae67e0e7539c9cfa515ca02f62.table.json": {
+      "bytes": 3986,
+      "sha256": "bda6970d88680e90180b274af5e0a069ba9c1fae67e0e7539c9cfa515ca02f62"
+    },
+    "commentsignals/oracle/be8c8d154d08abdf22a25f560f5dde42241c51ed2cf9140337579fa4d9fb3541.table.json": {
+      "bytes": 220,
+      "sha256": "be8c8d154d08abdf22a25f560f5dde42241c51ed2cf9140337579fa4d9fb3541"
+    },
+    "commentsignals/oracle/c222b8edde5cf9727bbeaccc61137e55e3e92c4cb302cac2eebdec202ec4e96b.table.json": {
+      "bytes": 3531,
+      "sha256": "c222b8edde5cf9727bbeaccc61137e55e3e92c4cb302cac2eebdec202ec4e96b"
+    },
+    "commentsignals/oracle/c24c61c62c9ea9f3bc776e707de593356558f2342d18bf7eaac126cd84a1a938.table.json": {
+      "bytes": 5859,
+      "sha256": "c24c61c62c9ea9f3bc776e707de593356558f2342d18bf7eaac126cd84a1a938"
+    },
+    "commentsignals/oracle/c2ee20ad66b039b41f7abd9737ceb0f32d2aabb7988dbe548e325242cbd2ae34.table.json": {
+      "bytes": 291,
+      "sha256": "c2ee20ad66b039b41f7abd9737ceb0f32d2aabb7988dbe548e325242cbd2ae34"
+    },
+    "commentsignals/oracle/c5c1b704c7f9a4733f9a90177f320aa57fcd7952fb3402f4d46aaa99aa4d071a.table.json": {
+      "bytes": 2906,
+      "sha256": "c5c1b704c7f9a4733f9a90177f320aa57fcd7952fb3402f4d46aaa99aa4d071a"
+    },
+    "commentsignals/oracle/ca655144c5bece70ae027667789015d6b30ec81a9abb51c7a134fed6e721b454.table.json": {
+      "bytes": 443,
+      "sha256": "ca655144c5bece70ae027667789015d6b30ec81a9abb51c7a134fed6e721b454"
+    },
+    "commentsignals/oracle/cb2659f6713d48cb0614375c96773187f8f817935ef215f218fcf5445a17a141.table.json": {
+      "bytes": 371,
+      "sha256": "cb2659f6713d48cb0614375c96773187f8f817935ef215f218fcf5445a17a141"
+    },
+    "commentsignals/oracle/cce220f01a9e107efb6500cb7fc4001e20bfe175765e5e6b68d83c5e0fa59d4e.table.json": {
+      "bytes": 433,
+      "sha256": "cce220f01a9e107efb6500cb7fc4001e20bfe175765e5e6b68d83c5e0fa59d4e"
+    },
+    "commentsignals/oracle/cddba67ab6bbbbc43656b48ae0bd433965d14bfa4df99399f4a846d6a8d74b13.table.json": {
+      "bytes": 1179,
+      "sha256": "cddba67ab6bbbbc43656b48ae0bd433965d14bfa4df99399f4a846d6a8d74b13"
+    },
+    "commentsignals/oracle/ce6d907a7ffec7173397c2656108905420719efb25ad1506b3234487b9feb416.table.json": {
+      "bytes": 227,
+      "sha256": "ce6d907a7ffec7173397c2656108905420719efb25ad1506b3234487b9feb416"
+    },
+    "commentsignals/oracle/cfb784f2a37bcc532a550e231fb8f86584a24b01a0eda74e1ce9ef85068254e0.table.json": {
+      "bytes": 6053,
+      "sha256": "cfb784f2a37bcc532a550e231fb8f86584a24b01a0eda74e1ce9ef85068254e0"
+    },
+    "commentsignals/oracle/cfcb4b1a667d437f153d7764a07d5877383d06c11360cdd3d30a70e96efb3e87.table.json": {
+      "bytes": 380,
+      "sha256": "cfcb4b1a667d437f153d7764a07d5877383d06c11360cdd3d30a70e96efb3e87"
+    },
+    "commentsignals/oracle/d112590a614eb551fbcbcd672c4531593caa0c6bf03a2a1f26af58bef0762e8f.table.json": {
+      "bytes": 4307,
+      "sha256": "d112590a614eb551fbcbcd672c4531593caa0c6bf03a2a1f26af58bef0762e8f"
+    },
+    "commentsignals/oracle/d5667e3317838782367f6bcbbd82ba0cd55b1302e4a9f32cc0aee3f632379614.table.json": {
+      "bytes": 240,
+      "sha256": "d5667e3317838782367f6bcbbd82ba0cd55b1302e4a9f32cc0aee3f632379614"
+    },
+    "commentsignals/oracle/da4c497577780536ba20c7012a3ea1b6cde76f0105fcca00f9dc595c2adef8de.table.json": {
+      "bytes": 3039,
+      "sha256": "da4c497577780536ba20c7012a3ea1b6cde76f0105fcca00f9dc595c2adef8de"
+    },
+    "commentsignals/oracle/db4f03653082ec9a58facf60368fc00385cee971a8f5cfa60cbdd0c2c23b978c.table.json": {
+      "bytes": 337,
+      "sha256": "db4f03653082ec9a58facf60368fc00385cee971a8f5cfa60cbdd0c2c23b978c"
+    },
+    "commentsignals/oracle/dc7b92c95dc5869924e0154784499f4d77f8367981612e6d0c089457d8d4ebe6.table.json": {
+      "bytes": 6344,
+      "sha256": "dc7b92c95dc5869924e0154784499f4d77f8367981612e6d0c089457d8d4ebe6"
+    },
+    "commentsignals/oracle/dde8184e33c920e1a8e82698c535ed99356c81d50c9f61d43782f9b3017bf27c.table.json": {
+      "bytes": 297,
+      "sha256": "dde8184e33c920e1a8e82698c535ed99356c81d50c9f61d43782f9b3017bf27c"
+    },
+    "commentsignals/oracle/e049ab89ba37398cdb7be0e391546feedb23e34fff8ee8aa3736376979f92cd3.table.json": {
+      "bytes": 233,
+      "sha256": "e049ab89ba37398cdb7be0e391546feedb23e34fff8ee8aa3736376979f92cd3"
+    },
+    "commentsignals/oracle/e1458cf796041fc4a3339a04b62a2cd53bfa819177f3322429fce928f3f992aa.table.json": {
+      "bytes": 845,
+      "sha256": "e1458cf796041fc4a3339a04b62a2cd53bfa819177f3322429fce928f3f992aa"
+    },
+    "commentsignals/oracle/e441da7a5614fee0136c025cea85b0a4a993e0ecf5a02cc7c59daafd3178d116.table.json": {
+      "bytes": 5762,
+      "sha256": "e441da7a5614fee0136c025cea85b0a4a993e0ecf5a02cc7c59daafd3178d116"
+    },
+    "commentsignals/oracle/e5aeca861fc412f40cf373f8d662be177720b78ccdc1778baa8bff1c24741c9b.table.json": {
+      "bytes": 673,
+      "sha256": "e5aeca861fc412f40cf373f8d662be177720b78ccdc1778baa8bff1c24741c9b"
+    },
+    "commentsignals/oracle/e9ae33c157c7065a9de7472729baa923ceac30cd3353d5ee923195d49c525db3.table.json": {
+      "bytes": 4404,
+      "sha256": "e9ae33c157c7065a9de7472729baa923ceac30cd3353d5ee923195d49c525db3"
+    },
+    "commentsignals/oracle/ea265d106ea2a9cf032c31c747d317e01ac69f9a22e6b0c6f0992978b491ffe9.table.json": {
+      "bytes": 240,
+      "sha256": "ea265d106ea2a9cf032c31c747d317e01ac69f9a22e6b0c6f0992978b491ffe9"
+    },
+    "commentsignals/oracle/ea85dbd501b347c308df9cfd6a6f75d385b0d745794ec778359e54e2252688e8.table.json": {
+      "bytes": 5956,
+      "sha256": "ea85dbd501b347c308df9cfd6a6f75d385b0d745794ec778359e54e2252688e8"
+    },
+    "commentsignals/oracle/eb8f407d847d4df4bc1527fd3da531be1ee2be0c17b12f19e15dc0fded3bdc68.table.json": {
+      "bytes": 3837,
+      "sha256": "eb8f407d847d4df4bc1527fd3da531be1ee2be0c17b12f19e15dc0fded3bdc68"
+    },
+    "commentsignals/oracle/ec6a2d5129235650239b4b59cfb3571f35256bac130af3f0f0157ac3d57462f5.table.json": {
+      "bytes": 1674,
+      "sha256": "ec6a2d5129235650239b4b59cfb3571f35256bac130af3f0f0157ac3d57462f5"
+    },
+    "commentsignals/oracle/ecd2fa11ad7cb78faee5b4c7daec911b2b9d984d272b20ad01faedd0800238da.table.json": {
+      "bytes": 312,
+      "sha256": "ecd2fa11ad7cb78faee5b4c7daec911b2b9d984d272b20ad01faedd0800238da"
+    },
+    "commentsignals/oracle/ef26faa94119aacc521e90bf10d6a12c3ed3e7999ad2f4adc62cdd75eb1305cd.table.json": {
+      "bytes": 314,
+      "sha256": "ef26faa94119aacc521e90bf10d6a12c3ed3e7999ad2f4adc62cdd75eb1305cd"
+    },
+    "commentsignals/oracle/f122557bc3ef454544f82a07336922d2db0bd0be1232b8032eaa58c270a8a07d.table.json": {
+      "bytes": 350,
+      "sha256": "f122557bc3ef454544f82a07336922d2db0bd0be1232b8032eaa58c270a8a07d"
+    },
+    "commentsignals/oracle/f2d48bc3bb917671b921fead5eb1ad2925ba643c217b9437e493737234a6a0c6.table.json": {
+      "bytes": 5471,
+      "sha256": "f2d48bc3bb917671b921fead5eb1ad2925ba643c217b9437e493737234a6a0c6"
+    },
+    "commentsignals/oracle/f6280774b69c1585eff7fcdfec3b0cd5435e809b7a96b2acd7d7ce73b17c6d24.table.json": {
+      "bytes": 6150,
+      "sha256": "f6280774b69c1585eff7fcdfec3b0cd5435e809b7a96b2acd7d7ce73b17c6d24"
+    },
+    "commentsignals/oracle/f7dc2641c545b7717ba2ba4e9e754407efe81481649a2a552873e809f6877d4b.table.json": {
+      "bytes": 350,
+      "sha256": "f7dc2641c545b7717ba2ba4e9e754407efe81481649a2a552873e809f6877d4b"
+    },
+    "commentsignals/oracle/f8f8476abbdd50fb1cc2f8f2dad757329aa679cf7fa9bb972fdfef05d71ba5de.table.json": {
+      "bytes": 783,
+      "sha256": "f8f8476abbdd50fb1cc2f8f2dad757329aa679cf7fa9bb972fdfef05d71ba5de"
+    },
+    "commentsignals/oracle/f9db4e010e25ae641e9a611bc93f21b1e68ff4a23f64c606cb1de391999fee5c.table.json": {
+      "bytes": 6441,
+      "sha256": "f9db4e010e25ae641e9a611bc93f21b1e68ff4a23f64c606cb1de391999fee5c"
+    },
+    "commentsignals/oracle/fc4fa6d712f78a897f4a56299f98d3b2dbed33f8d000f41fe78544c34a8a3494.table.json": {
+      "bytes": 6926,
+      "sha256": "fc4fa6d712f78a897f4a56299f98d3b2dbed33f8d000f41fe78544c34a8a3494"
+    },
+    "commentsignals/oracle/ffc84ea46687a87af68b69e59446fc421e6a22819a5be65d2a1fe51363458249.table.json": {
+      "bytes": 296,
+      "sha256": "ffc84ea46687a87af68b69e59446fc421e6a22819a5be65d2a1fe51363458249"
+    },
+    "commentsignals/oracle/raw-commit-001-67vogoo19finlhibi53dam5ffnj9hth0.json": {
+      "bytes": 399,
+      "sha256": "1d108825958693b50b2abaaa6efaf1e0af8cb6e922f2d9801cf212e8e9a14303"
+    },
+    "commentsignals/oracle/raw-commit-002-f4s8c4lansk03okj5tetg6s3phh0g2cu.json": {
+      "bytes": 4394,
+      "sha256": "590cb45ca7945ee7204cce7c059eb0bd8c0222ac6b3370bbc4793620781856ae"
+    },
+    "commentsignals/oracle/raw-commit-003-sdg35neerbhgufp2muin8c4brub5v2bq.json": {
+      "bytes": 12334,
+      "sha256": "345340392ec3dd30631a1a14c04311d5a7518876066834c685a32694cbda33d3"
+    },
+    "commentsignals/oracle/raw-commit-004-jnjnkk9t42etroaoravq2qg9g8i5ocq4.json": {
+      "bytes": 14009,
+      "sha256": "2f1da8b9f12eb03b593e2020e1b61d8cb7c54b9b68764dff15e3b9c211756b24"
+    },
+    "commentsignals/oracle/raw-commit-005-4o66p4dgj340fhjcrqkadhhr8pou3mef.json": {
+      "bytes": 15017,
+      "sha256": "ff2c9868dc226a4c2b3af3716e6fac90d7bc5e42455959a6f52d367d3b2de4db"
+    },
+    "commentsignals/oracle/raw-commit-006-kafdpleuam9oqms96lmrg03mbhg7jv77.json": {
+      "bytes": 16406,
+      "sha256": "ea968a00e3370b718ebf53cbe8b66ae2c3196d70e81d083448adbdbacf04f04a"
+    },
+    "commentsignals/oracle/raw-commit-007-9gdragsgaodsdd09iegp046kko4m21oo.json": {
+      "bytes": 18181,
+      "sha256": "7a3f28bf4b54698e4b451c5f7ebd7c4de6d6039b7972dbc0896dbe88a3aac923"
+    },
+    "commentsignals/oracle/raw-commit-008-hpfn96jbscor58vjsvdf1g0ocqj8a061.json": {
+      "bytes": 19179,
+      "sha256": "d0b3c46df3986bedb74ed4977d1cc3ca261c0045b4bb2e9333dd53a353df92c6"
+    },
+    "commentsignals/oracle/raw-commit-009-7hsj8kco35vlfhsbr9kfpf92fiako7ha.json": {
+      "bytes": 20179,
+      "sha256": "bd1e0c18a3b18b07299daa183eff80244b8a5bbeb924da620987e61c1aaeb82f"
+    },
+    "commentsignals/oracle/raw-commit-010-h5fg0kvkl9854tl7vv73uct7hf1dt53v.json": {
+      "bytes": 21197,
+      "sha256": "af265a1c0e312316d83d2dae2f71b8bd96a9d1836105aef74edf8357260dc72b"
+    },
+    "commentsignals/oracle/raw-commit-011-tvs8uru0627avns3ma998m27vututo9f.json": {
+      "bytes": 23001,
+      "sha256": "2b2342e0ecaf6e9baf2cc6c3cc567412a3ba8df6c8c4eab27c1d54f8a38421e4"
+    },
+    "commentsignals/oracle/raw-commit-012-ejv7s9n68ndbq5sjnaihvqi4e01e1hs4.json": {
+      "bytes": 24421,
+      "sha256": "f30c9bdecc57fb9d9deb488455de0cb45d6aa37754e518aa4a5ae17746d49d19"
+    },
+    "commentsignals/oracle/raw-commit-013-038niihjbt4tvnmv4eg1qak9ls0d12ts.json": {
+      "bytes": 25100,
+      "sha256": "c68ef66d6778d2caf27abd4202d7a776c28e6c40e6f7556a8a7035498c4fc1d0"
+    },
+    "commentsignals/oracle/raw-commit-014-9btt830bitj54jrvc26hkjflp743kc2i.json": {
+      "bytes": 26378,
+      "sha256": "d57d3d53bdf041837b5be2c5f4d87951766d627b85cf4243945be56be74b5c32"
+    },
+    "commentsignals/oracle/raw-commit-015-oceckfg3qm246g9mspdq7dkahcgla535.json": {
+      "bytes": 27396,
+      "sha256": "7e1661ef13884b4d8950a9ce1f5e3a6be74c8e5fce027f634102def9aeedbbd8"
+    },
+    "commentsignals/oracle/raw-commit-016-qpka5eekb3hf08f2kpts7mmghiu2cfa3.json": {
+      "bytes": 30073,
+      "sha256": "e58515c74e2e555872593fe89b2a2934b86f6ddbb398a10007f8d78007874a93"
+    },
+    "commentsignals/oracle/raw-commit-017-epfststgkrsk2b4ivob92s7cq7guav51.json": {
+      "bytes": 31899,
+      "sha256": "c980621923e6cb2fc6d360c8e652595ecc742cf6140f7d370f4d040a44c7f6ee"
+    },
+    "commentsignals/oracle/raw-commit-018-5varp52nslmlmfp153cjmurui715b799.json": {
+      "bytes": 36512,
+      "sha256": "9dae03c091f2843c9f310223aaca075cf08bbf93687959d5c24b59343c24f450"
+    },
+    "commentsignals/oracle/raw-commit-019-k9ksb8h64hp85u05qomgleshp88m1o9i.json": {
+      "bytes": 41688,
+      "sha256": "fb6066c2971006188bdd1cd0a0afd6204633dc92f29f467c2fe8a2b65e44f81a"
+    },
+    "commentsignals/oracle/raw-commit-020-oqqfmmspcvd9jjos2s63416u8ev8bdm0.json": {
+      "bytes": 44962,
+      "sha256": "600327c15aa03f5e6d35fccf81d23db34399a05f0dfdc62ae40930028f0bf11c"
+    },
+    "commentsignals/oracle/raw-commit-021-mqvuuqpp80h09pmtth6md34jkp50bekj.json": {
+      "bytes": 45641,
+      "sha256": "e77f59ecd8e4e66ae8ab762b8016954268b106d8e27d08eeb1d1d20dbc20427e"
+    },
+    "commentsignals/oracle/raw-commit-022-dq5nv9ur7l8lgl5vpotf8cjsn2jbojp6.json": {
+      "bytes": 46320,
+      "sha256": "e3df0f3eec3d5409c3239ed0d1f21d28c52e050bbd3e2570b20e49782ff41216"
+    },
+    "commentsignals/oracle/raw-commit-023-5emc7g8nu2md104amnomqi92op4cs3hv.json": {
+      "bytes": 46999,
+      "sha256": "a59a20ee498cca7e6772b028d94ec253659491e0d3490a40aa0e763924bf703e"
+    },
+    "commentsignals/oracle/raw-commit-024-q9nn5qjvjdn75803p2i5i5nkrokt9eem.json": {
+      "bytes": 47678,
+      "sha256": "692349c1a88f9b94d3f349531ca83d6b4d048eb11dd1b179ee03519429d51e51"
+    },
+    "commentsignals/oracle/raw-commit-025-31l3b9376b8nd5s30oqlsbg0560th8aj.json": {
+      "bytes": 48490,
+      "sha256": "a7099adf8c80c64b737f42c9683c3ee8eab5c2b52e5143bebcaae95ea30889d2"
+    },
+    "commentsignals/oracle/raw-commit-026-r0h4op50us9gtiif916o6l2olphtk725.json": {
+      "bytes": 49728,
+      "sha256": "2827490829da5d7e9f910fc7e71b7ac2e3edaa3fb044f29095adcebc20ab028a"
+    },
+    "commentsignals/oracle/raw-commit-027-gf7vejq4j1ogtrj7ijcdjqp9dlpbs0e9.json": {
+      "bytes": 50672,
+      "sha256": "33963ba08a1e1ac1fe38b57e569b3fe4dea8c3926845805cc2ca97acc1f790da"
+    },
+    "commentsignals/oracle/raw-commit-028-907m0esgflq4c7u6mnvdvvssuuqnvhn4.json": {
+      "bytes": 52035,
+      "sha256": "dcd928956270f1f3290b10cc80f1b7041bc60c1e429586f61cab6a51ae9d1ca9"
+    },
+    "commentsignals/oracle/raw-commit-029-0mvlln81al80n68tuv79prstgopqp9bu.json": {
+      "bytes": 52845,
+      "sha256": "d60220a806bb5d804872a2bad5874302869104dace6f1afca3e6fe5716acdd9f"
+    },
+    "commentsignals/oracle/raw-commit-030-a9a1q3n59gkm76q1a4p6712t64pq9pv6.json": {
+      "bytes": 53524,
+      "sha256": "f76284fbab93714330c2650e5420bd1fa30a674eb58165b4e21c155a62ea2e28"
+    },
+    "commentsignals/oracle/raw-commit-031-ukfabtmlj2gm027l7rko34s1939taf22.json": {
+      "bytes": 54203,
+      "sha256": "b9dcbe0b071664b2d2b9ac3e605e69c89893903bdbbe5cbfeb53cb58a9b40d26"
+    },
+    "commentsignals/oracle/raw-commit-032-js1deb4p3kn6q5u0editp01974ncvl75.json": {
+      "bytes": 54882,
+      "sha256": "65c36cb9bf2d205b1838b998785c1601ac65f3a897af51565e31762f1d8d8e59"
+    },
+    "commentsignals/oracle/raw-commit-033-294gviufjqrcjk1a6vg81oortanj9vf3.json": {
+      "bytes": 55561,
+      "sha256": "966f244f965204ae69c0ebf2a88505ba8cc6942777a3a36cf07bdaae4222d893"
+    },
+    "commentsignals/oracle/raw-commit-034-mtpb78ahgoml31ebkntddai3kocft8mm.json": {
+      "bytes": 51213,
+      "sha256": "1b46039e7d23f4281bcd397f67623ee0e4eda17caff7e1880770117f23931bcd"
+    },
+    "commentsignals/oracle/raw-commit-035-tb2ismvgvb8vd9il04uc1p77mcaqck26.json": {
+      "bytes": 51739,
+      "sha256": "49e950ca891494e8499c1506f8b68ba6632dcf7d1bf8a138388edf711d9fee27"
+    },
+    "commentsignals/oracle/raw-commit-036-pa4s3tch010pmufhvc3lc92rpsivk3tf.json": {
+      "bytes": 52265,
+      "sha256": "e95d28811e51508d9ef0c774fbb464fb114e657b7ddf3a596f67899da3af3459"
+    },
+    "commentsignals/oracle/raw-commit-037-jb3ho54n1n63ptbibtdgo29h941876a6.json": {
+      "bytes": 52791,
+      "sha256": "ce1ee58190953cdeab0189057a2b012f132a32f06c0df2944d90bb99804866cf"
+    },
+    "commentsignals/oracle/raw-commit-038-rpf2hlkbrnaajh3sm3etekcd7ireoh8a.json": {
+      "bytes": 53317,
+      "sha256": "7f4324100adb753d6a6e2e7b4c6cf196e93942ef01ddc1f9323033c789cce1a5"
+    },
+    "commentsignals/oracle/raw-commit-039-t4seub9043p3j83hpihb5he72mkukvq8.json": {
+      "bytes": 53843,
+      "sha256": "99ad7b7267d43cf78a6a6b3fe24b02342a755edad1a0a631934d6908445f20a5"
+    },
+    "commentsignals/oracle/raw-commit-040-atpcrnl136uknpg6udfildlu3kvqsddk.json": {
+      "bytes": 54369,
+      "sha256": "8149d8234392cf9b36a88dca4c23ac60c70c74abbe1c21337a3c43a8478eda19"
+    },
+    "commentsignals/oracle/raw-commit-041-8gvr0rqpj0ohbacn8ivjaskp9anu90nm.json": {
+      "bytes": 54895,
+      "sha256": "6e9587742186e7c9c6f0e6b04068322c07a716ae598392b2deb4d1213a3d0f05"
+    },
+    "commentsignals/oracle/raw-commit-042-6a53hh21gmls5a9e2d7kq4lev7g2lsb5.json": {
+      "bytes": 56176,
+      "sha256": "01c53c4db9fca9ab138ebd41d1d6572f338df6771739351f0a91190d0e50b7b9"
+    },
+    "commentsignals/oracle/raw-commit-043-7kkb0ti60r1rui3umi4c84etl3ka2m9p.json": {
+      "bytes": 56816,
+      "sha256": "f907bb7a10c065c64536bb23dc6bbc7919c9f91ba6de2afa7de0896c88762b11"
+    },
+    "commentsignals/oracle/raw-commit-044-kn8fovqh2paveuml54dsp4snnti7q5r5.json": {
+      "bytes": 57477,
+      "sha256": "8a02a8d51986e3efc9a46b420068e4df44e09fbd6338bbf70c904f63a523b365"
+    },
+    "commentsignals/oracle/raw-commit-045-bv6etsaip03srtv8ufuqhqnk13224n4g.json": {
+      "bytes": 58149,
+      "sha256": "0ce63653836da03c6b89f2187f043e91355d9674c5ed5a69d23ebf0d8d221fdd"
+    },
+    "commentsignals/oracle/raw-commit-046-lktf1u7l30o9a5atog3iqhki73gq0i83.json": {
+      "bytes": 58675,
+      "sha256": "daaf6c12b6fcdb235374faef94232cf74edec99df1b4ac703cc59933d91e7335"
+    },
+    "commentsignals/oracle/raw-commit-047-ju2tm7btd9ppggq974a81283ane1v53s.json": {
+      "bytes": 56057,
+      "sha256": "15bce7d413f4f164750a2628e7c35b2b1456b30653ed372b6b551ea77b4108e7"
+    },
+    "commentsignals/oracle/raw-commit-048-4iudlp5a4cgjgchh2s36idvhgohjn8i1.json": {
+      "bytes": 57014,
+      "sha256": "2bf81c3e97788a38a875c16eff688b9c6c5bf5141b94f49895b1b02aca6a95a0"
+    },
+    "commentsignals/oracle/raw-commit-049-2l6eapvaucdjsqjthvobjfjghqh8bnru.json": {
+      "bytes": 57540,
+      "sha256": "885e19ec0b5386a298905207a79919719fdf59a52cc266f214a237a29d9052c7"
+    },
+    "commentsignals/oracle/raw-commit-050-pdoar9j7c4dsbj7up9cip321ckoujr29.json": {
+      "bytes": 58054,
+      "sha256": "eb962cfc2ce19fc518858f9e17a91c3dcf84a6fcfec285408e7d1667c0b673aa"
+    },
+    "commentsignals/oracle/raw-commit-051-nmqq5ttf6d8msmm7fvre078p5fcgtb6a.json": {
+      "bytes": 58622,
+      "sha256": "889abae842e9564dccc668dafb92a58eb89557f6ea28788fbf57d7352316b95a"
+    },
+    "commentsignals/oracle/raw-commit-052-ha8ssanslki2eglirak29rd4j5k3q98p.json": {
+      "bytes": 59176,
+      "sha256": "de0cb7670b6d2db9930b8ce7ec44818f005b367b344ee20f86d8fe7bdf77bf29"
+    },
+    "commentsignals/oracle/raw-commit-053-c56815117o36kogjpaic4ns5d2fi2pi1.json": {
+      "bytes": 59835,
+      "sha256": "7cc93dc28bc7b7e27f7e9a4208839a3367c4e2c3d0af9a87026f0aa215fb6a43"
+    },
+    "commentsignals/oracle/raw-commit-054-nm6kri8pn1k8rvb4amf4hv4rumk30nut.json": {
+      "bytes": 60361,
+      "sha256": "c5fe87cf3d9a7e5312160bec46ae8140593535f0f669ae26e7d6f45f2087f10a"
+    },
+    "commentsignals/oracle/raw-commit-055-19buhs6pb0lsnvs9ccsmius9t34drcqa.json": {
+      "bytes": 60895,
+      "sha256": "e98c887fd79a271f95d0b16d9789e569345ae972246125adc1a0999d19753ef0"
+    },
+    "commentsignals/oracle/raw-commit-056-8oke9rm7f5ffpjbpu4fplf07utm1j62q.json": {
+      "bytes": 61445,
+      "sha256": "0dc6d234576fe4617345301b4d4b27b40e5a556450c511f7366fcafdf4b41548"
+    },
+    "commentsignals/oracle/raw-commit-057-e0fhsbh89ngopsik9ck3novcm29ig3sj.json": {
+      "bytes": 61971,
+      "sha256": "e6fdea0d42a00872b911b0ceecaab461da7dac8279337c7dfbbb8c054a95c876"
+    },
+    "commentsignals/oracle/raw-commit-058-v9tl7dgv7dpdno97jm2bjmvig11skh06.json": {
+      "bytes": 62497,
+      "sha256": "b1cf3003f460fad2d1ebb6eec2fe89c4faba9b09cb85bc71d9161d6d8e8a4700"
+    },
+    "commentsignals/oracle/raw-commit-059-6dd57cdm696f5en0lsng1a1g80t6btd2.json": {
+      "bytes": 63023,
+      "sha256": "0d98bfe885ab24c2516a64fb6a7ac89484c5cd9989e0390628c1b161a3719425"
+    },
+    "commentsignals/oracle/raw-commit-060-tg2369ahgrlvid598sqarpbsfbjiv42i.json": {
+      "bytes": 63549,
+      "sha256": "fbfbc66118869295b246d37e8bd804190b3a1bc9bfe324649c4b56eb4c98ba06"
+    },
+    "commentsignals/oracle/raw-commit-061-eh7bg3f5akrndi87biglp9ti5jolt0ov.json": {
+      "bytes": 64472,
+      "sha256": "5d6d23155009d7fad3fe6505be2ba303b25012af6cd546fb13611ee721da252e"
+    },
+    "commentsignals/oracle/raw-commit-062-odja9ge7r1etgr7eq0lfrshrm7qel37c.json": {
+      "bytes": 64728,
+      "sha256": "77ad00d1b710ab208b7d1964da4c94b1cb039e7ed9448afd4ad5c225679c6f67"
+    },
+    "commentsignals/oracle/raw-commit-063-b8muudrdosm1fqfm36d5ovtg6pdst7eg.json": {
+      "bytes": 65254,
+      "sha256": "51851eceb43495571d409aea4658bc2759bdb883146e2b805a31dd736c4300e7"
+    },
+    "commentsignals/oracle/raw-commit-064-aiidl3u0hnb8e598cm0rdcnknm2fd3p8.json": {
+      "bytes": 65780,
+      "sha256": "dede569c7a2a2e7b29d62497c8b8d3d6e8610d98c94056f4385dfdd0c61494b7"
+    },
+    "commentsignals/oracle/raw-commit-065-a3h52sda8upcut96e11oj1npksd2eor9.json": {
+      "bytes": 66306,
+      "sha256": "28c1f6933d97cda440b62130e2a440381425c97914774044bb9b23b0aadd86c7"
+    },
+    "commentsignals/oracle/raw-commit-066-jh9221m7lib9h1s018njvmfbqdtfngjc.json": {
+      "bytes": 66832,
+      "sha256": "108dfdbeb9a0117fc8e2299736a7ee699a1ec19db318f3c734920b1058890a98"
+    },
+    "commentsignals/oracle/raw-commit-067-3ouiktiq7gdc397l5s211rka7j9420ui.json": {
+      "bytes": 67495,
+      "sha256": "362afcfc845ff54fdd2f2daf1588b8173db0a6c86371685bc770532f9964b52e"
+    },
+    "commentsignals/oracle/raw-commit-068-c9r1epsgusfr5h8b1b1k4vv66b8fm9jq.json": {
+      "bytes": 68021,
+      "sha256": "86dcdc4eb54ad6d560e64a630c4ab6ab78fa8e1b271bef598d5711fb73f8851c"
+    },
+    "commentsignals/oracle/raw-commit-069-urnl1iurabg0ue9nqr4egjoq8es7a565.json": {
+      "bytes": 66908,
+      "sha256": "510854aecb86d62170b04998b45482bf2981e3de4b5bf788a4ebaf5bf17248b7"
+    },
+    "commentsignals/oracle/raw-commit-070-noqe9qats9iqa3q65o03diqhheee56mv.json": {
+      "bytes": 67816,
+      "sha256": "2bfd56959b95c4931e77a9726538a63b24e864ea67832b3d350a9f58a0852f5a"
+    },
+    "commentsignals/oracle/raw-commit-071-0o911papumfpddk0b0bpnqam0ko0t2sl.json": {
+      "bytes": 69722,
+      "sha256": "f47268a36c770111fe955927df893dbaba2ece4d0d2ab356c404d660ca4420ca"
+    },
+    "commentsignals/oracle/raw-commit-072-rmb62b4vl3timkgs5n0qt21911gjc23e.json": {
+      "bytes": 70248,
+      "sha256": "f8fb15ad440b60e8485bd201a437aef3d38d89cc2c3756e9ded73c77557da32e"
+    },
+    "commentsignals/oracle/raw-commit-073-e1vpujij61od36tdnu9cmsh2todmduc6.json": {
+      "bytes": 70774,
+      "sha256": "bdc5993459da944eb0d70a214167818422ff7973c56898461bf4af565b7f19e7"
+    },
+    "commentsignals/oracle/raw-commit-074-5ioje7sl7qv8n24cmact4eicct29v1j0.json": {
+      "bytes": 71300,
+      "sha256": "82894a35213c88a66b8c3826d4a5fad1c6d3c2658a176861d5371f3987136053"
+    },
+    "commentsignals/oracle/raw-commit-075-fqgihd0jhm5h0h3jhho6r1c8vcq5rv58.json": {
+      "bytes": 73957,
+      "sha256": "6e9ac60b067aaea6735246d975af44a473fa66c449175b329e4e0c297dbe76a1"
+    },
+    "commentsignals/oracle/raw-commit-076-r4e1g3pm0rguktvoq91f2ek7a0tj2bsr.json": {
+      "bytes": 74629,
+      "sha256": "3f73207b252ff8ebca89231cdaca57fcd33ad99d688a804816d3b765ea92218f"
+    },
+    "commentsignals/oracle/raw-commit-077-lljuhu35koonel2flb10ufka7lejmkua.json": {
+      "bytes": 75155,
+      "sha256": "40919f97d086c007350f4f330ade829c27bc027c9393b0f1b064542cbd94a95a"
+    },
+    "commentsignals/oracle/raw-commit-078-rg0ja61af9cilj88tm4jrke9ruglbrvu.json": {
+      "bytes": 75824,
+      "sha256": "ad642ea342b0ba4dfcd3f03e547da49209be5bda7b76a63470689a129c230560"
+    },
+    "commentsignals/oracle/raw-commit-079-fm8ng2d9rtshemkgkrovslagv02kft3m.json": {
+      "bytes": 76499,
+      "sha256": "80deeb152477a27173fa76d37278a196a0e05a0c7d883ea0ec7a991cd423d595"
+    },
+    "commentsignals/oracle/raw-commit-080-4nser7cinv54pfi7qptueem5ts607glv.json": {
+      "bytes": 78042,
+      "sha256": "966649d79441ee5f8d7567f31ef30a0d948cd2ca44d2ae455011be2957a3ed81"
+    },
+    "commentsignals/oracle/raw-commit-081-6e1b5a9ds86taq70c8t2kmpvsm6015gi.json": {
+      "bytes": 78042,
+      "sha256": "979ba12a30b240281a5cdd88944347b79c96210e4f1616d7a6e10392aea2e0ff"
+    },
+    "commentsignals/oracle/raw-commit-082-q7fael8q1pajgh68o6lebnhcv7hh6r7a.json": {
+      "bytes": 80309,
+      "sha256": "776ee50fbfc612f842cdbe1a423ce0255737f82bfc5fe8fea3e1c6fe71f0afd0"
+    },
+    "commentsignals/oracle/raw-commit-083-l0ojr4eujabf894flohgl1nd4odk101l.json": {
+      "bytes": 617244,
+      "sha256": "45ccf4e4f6779ecbc76cbad90856f27416d55556d3c256e756d297eac4a837db"
+    },
+    "commentsignals/oracle/raw-commit-084-6bss69a9cegtq05caljn1heul91ihvnq.json": {
+      "bytes": 618234,
+      "sha256": "e7c1135226ce3fa556475dfafe0a27645c3afcf290762b55921760a6a22c798e"
+    },
+    "commentsignals/oracle/raw-commit-085-9l0erbi04bm4pms3hucrt4k8hmipcsob.json": {
+      "bytes": 619230,
+      "sha256": "c86753cdc9af91af28e2b325159543508fff4f511049f1a694d3115ae68b080d"
+    },
+    "commentsignals/oracle/raw-current-000-9l0erbi04bm4pms3hucrt4k8hmipcsob.json": {
+      "bytes": 1217645,
+      "sha256": "aceb13e2c315982df53d418fcd428a8ab32c7d07ff2b9df4d8974aca654dcf4b"
+    },
+    "commentsignals/oracle/raw-head-checkpoint-000-9l0erbi04bm4pms3hucrt4k8hmipcsob.json": {
+      "bytes": 619238,
+      "sha256": "630bbc7cbbfb66435385f31f62b2b8489cfbc7eefb142fad5ed6f0f40b336b2a"
+    },
+    "commentsignals/oracle/raw-history.json": {
+      "bytes": 50024,
+      "sha256": "db08bf2d7c1b3233b521a62065b6c7c1244fcc96941d6a000b2a03d5d99f11df"
+    },
+    "commentsignals/oracle/states.ndjson": {
+      "bytes": 16172,
+      "sha256": "e6b878c9e417cb4b1c7a204c9eddec13e270ce4bb9abce0bc04ea46c7a5312c4"
+    },
+    "commentsignals/oracle/tables.ndjson": {
+      "bytes": 1611873,
+      "sha256": "8acd24c3e774aed1a902bd9b8392bd01e909e1bd754ea23ba0bdf35f65b688b1"
+    },
+    "commentsignals/oracle/working-identity.json": {
+      "bytes": 386,
+      "sha256": "8d59d83b32b979b324f1c791f6edf9856c2374b0846acabeddc19d1373f4b813"
+    },
+    "commentsignals/request.full.json": {
+      "bytes": 1087,
+      "sha256": "198a4633e03146af4f5d2ee90ef935822fa5c111b04d7eaa8581b15b65427e11"
+    },
+    "independent-reviewer-tuples/commentcody-comments.ndjson": {
+      "bytes": 118971,
+      "sha256": "647689149ee5f2a3a40e1aedd2700011d97b5e3604e888af9c095484b12aa93e"
+    },
+    "independent-reviewer-tuples/commentcody-wisp_comments.ndjson": {
+      "bytes": 121516,
+      "sha256": "61564efbb68d9455c7287644cd9d25e0b1135e3e6c5399240feb11fe755e4e70"
+    },
+    "independent-reviewer-tuples/commentsignals-comments.ndjson": {
+      "bytes": 123534,
+      "sha256": "3a8a541ffdd9a759427369377ff3182a7467aacb331be61ec49c375d0183d157"
+    },
+    "independent-reviewer-tuples/commentsignals-wisp_comments.ndjson": {
+      "bytes": 126079,
+      "sha256": "07b4f4957de9865d3a71450b31e7a7af2c70cef67cd50e5e29ee0ef415361266"
+    }
+  },
+  "projects": [
+    {
+      "project": "commentcody",
+      "source": {
+        "store_id": "native/e08de6af03275f11375cc6639b6fb1476da3e8ad7a8bf98513dc223792d18d9e",
+        "project": "commentcody"
+      },
+      "capture_sha256": "982e40d7e2fc175b8892cc9b00d00b633d9a6d7df4ce807a239b4da9e4373ed4",
+      "expected_tuples": 1018
+    },
+    {
+      "project": "commentsignals",
+      "source": {
+        "store_id": "native/c3f9fd5817d3380c213c557020d5945b676c2059528e1345327dc1fc60f60b13",
+        "project": "commentsignals"
+      },
+      "capture_sha256": "c29754b3857d6d842e70ae67004930630e21fad70214c903f9cad1ea5fa8e058",
+      "expected_tuples": 1018
+    }
+  ],
+  "qualifications": {
+    "native_fixture_focus": "PASS",
+    "producer_whole": "RED_LITERAL; fixture NO_STATUS",
+    "consumer": "NOT_RUN_AT_PACKAGING",
+    "admission": "NOT_RUN",
+    "private": "HARD_DISABLED"
+  },
+  "packaging": "Exact original member bytes in deterministic gzip/TAR only; no producer/mapper/receiver execution or immutable input rewriting."
+}

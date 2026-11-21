@@ -201,6 +201,13 @@ func DefaultTreePolicy() TreePolicy {
 	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/head.tar"] = "35af10f464d6c7b3140cc4c87e7ac0eee9761a32b4a0ecc8b9fe6f7195d323b3"
 	policy.BinarySHA256["internal/core/dumpformat/testdata/native-joined-public-ca26683b/sv2/parts/00000000000000000001.part"] = "972e3b0097d8fda9231475093f2754cdc7b5165f38b8a1aad6ff8bbaf16bf3d5"
 
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-comments-r11.tar.gz"] = "752989c67b763078ee496b05b7cfc472407f354b591b4064852984bbf98d9421"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-delivery-real-native-input.tar.gz"] = "806b1e0dfc0abaf2c60e3c1e69c09dfd4fb9922746019d7281588aee6758633e"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-positive-v2.REQUEST.json"] = "d00aadceddf0b3d9ec52bd58d43e1cc215e844a6788c52ccd1ba1fb05e996912"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-positive-v2-requirements.tar.gz"] = "dfd1c9e3ba8a170a826d8305d7431e731fb4083fcbbed984e4b261f820f03da4"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-positive-v2.SOURCE.json"] = "eef26070c9c3868b8bcfb37b0bd45c7150d6d9cf9ae3cb5ccd8a0cc90db40e45"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-review-real-native-input.tar.gz"] = "63378e429e6f4cacb992f82260b1e5c8a4202654d22e055d1c305e4f0928fc9c"
+
 	// The numbered native schema corpus is immutable fixture input. Every
 	// file, including siblings without vocabulary matches, has an exact hash;
 	// a new sibling or changed byte continues to fail closed.
