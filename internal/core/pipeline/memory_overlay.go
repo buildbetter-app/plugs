@@ -93,7 +93,7 @@ type memoryRecordReader interface {
 	Get(context.Context, []model.Ref) ([]driver.Record, error)
 }
 
-func bindMemorySource(ctx context.Context, reader memoryRecordReader, record driver.Record, source *MemorySource) error {
+func bindMemorySource(ctx context.Context, reader memoryRecordReader, record driver.Record, source *MemorySource, allowHistoricalRead bool) error {
 	if source == nil {
 		return fmt.Errorf("memory overlay requires an imported source")
 	}
@@ -127,8 +127,10 @@ func bindMemorySource(ctx context.Context, reader memoryRecordReader, record dri
 			commitBinding.Version != driver.SourcePlaneCommitVersionV1 ||
 			commitBinding.JointPlanDigest != binding.Profile.SourcePlanes.JointPlanDigest ||
 			commitBinding.RequestHash != request || commitBinding.StoreID != binding.Profile.SourceStoreID ||
-			commitBinding.Revision.IsZero() ||
-			commitBinding.Incarnation != reader.Snapshot().Incarnation {
+			commitBinding.Revision.IsZero() {
+			return fmt.Errorf("historical source memory binding")
+		}
+		if commitBinding.Incarnation != reader.Snapshot().Incarnation && !allowHistoricalRead {
 			return fmt.Errorf("historical source memory binding")
 		}
 	}
@@ -144,6 +146,17 @@ func bindMemorySource(ctx context.Context, reader memoryRecordReader, record dri
 // Canonical memories pass through. Hidden source categories stay hidden and
 // cannot be reclassified by an overlay, including a forged persisted binding.
 func ResolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record driver.Record) (driver.Record, MemoryDocument, *MemorySource, error) {
+	return resolveMemoryRecord(ctx, reader, record, false)
+}
+
+// ResolveMemoryRecordForRead permits a native-restored historical source
+// marker for read projection. It never changes the strict resolver used by
+// mutation preparation or active provider recovery.
+func ResolveMemoryRecordForRead(ctx context.Context, reader memoryRecordReader, record driver.Record) (driver.Record, MemoryDocument, *MemorySource, error) {
+	return resolveMemoryRecord(ctx, reader, record, true)
+}
+
+func resolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record driver.Record, allowHistoricalRead bool) (driver.Record, MemoryDocument, *MemorySource, error) {
 	document, source, err := DecodeMemoryRecord(record)
 	if err != nil {
 		return driver.Record{}, MemoryDocument{}, nil, err
@@ -161,7 +174,7 @@ func ResolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record 
 			rows[0].Revision.String() != document.Overlay.SourceRevision.String() || memorySourceHash(rows[0].Body) != document.Overlay.SourceSHA256 {
 			return driver.Record{}, MemoryDocument{}, nil, fmt.Errorf("invalid overlay source binding")
 		}
-		if err := bindMemorySource(ctx, reader, rows[0], original); err != nil {
+		if err := bindMemorySource(ctx, reader, rows[0], original, allowHistoricalRead); err != nil {
 			return driver.Record{}, MemoryDocument{}, nil, err
 		}
 		return record, document, original, nil
@@ -169,7 +182,7 @@ func ResolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record 
 	if source == nil || !source.Visible {
 		return record, document, source, nil
 	}
-	if err := bindMemorySource(ctx, reader, record, source); err != nil {
+	if err := bindMemorySource(ctx, reader, record, source, allowHistoricalRead); err != nil {
 		return driver.Record{}, MemoryDocument{}, nil, err
 	}
 	rows, err := reader.Get(ctx, []model.Ref{MemoryOverlayRef(record.Ref)})
@@ -182,7 +195,7 @@ func ResolveMemoryRecord(ctx context.Context, reader memoryRecordReader, record 
 	if len(rows) != 1 {
 		return driver.Record{}, MemoryDocument{}, nil, fmt.Errorf("ambiguous memory overlay")
 	}
-	effective, replacement, bound, err := ResolveMemoryRecord(ctx, reader, rows[0])
+	effective, replacement, bound, err := resolveMemoryRecord(ctx, reader, rows[0], allowHistoricalRead)
 	if err != nil || bound == nil || bound.Record.Ref.ID != record.Ref.ID || !bytes.Equal(bound.Record.Body, record.Body) {
 		return driver.Record{}, MemoryDocument{}, nil, fmt.Errorf("invalid memory overlay binding")
 	}
