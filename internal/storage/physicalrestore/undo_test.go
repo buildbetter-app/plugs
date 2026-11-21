@@ -124,6 +124,21 @@ func undoClone(t *testing.T, request UndoRequest) UndoRequest {
 	}
 	return out
 }
+
+func canonicalJSON(t *testing.T, text string) string {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(text))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
 func undoCheckUnchanged(t *testing.T, conn *sql.Conn, request UndoRequest) {
 	t.Helper()
 	if head := undoHead(t, conn); head != request.Source.CommitID {
@@ -321,7 +336,7 @@ func TestPhysicalUndoAtomicRefusals(t *testing.T) {
 			table := undoTable(t, &r.Current, "undo_cells")
 			for ci, col := range table.Columns {
 				if col.Name == "metadata" {
-					table.Rows[0][ci] = Cell{Type: "string", Data: `{"new":9007199254740993}`}
+					table.Rows[0][ci] = Cell{Type: "string", Data: `{"new":0.123456789012345678901234567890}`}
 				}
 			}
 		}},
@@ -345,6 +360,57 @@ func TestPhysicalUndoAtomicRefusals(t *testing.T) {
 			t.Logf("UNDO_REFUSAL kind=%s field=%s row=%d preexisting_rows_preserved=true head_preserved=true", failure.Kind, failure.Column, failure.Row)
 		})
 	}
+}
+
+func TestPhysicalUndoExactNewMetadata(t *testing.T) {
+	conn, _, _, original := undoFixture(t)
+	request := undoClone(t, original)
+	table := undoTable(t, &request.Current, "undo_cells")
+	const want = `{"new":9007199254740993}`
+	for ci, col := range table.Columns {
+		if col.Name == "metadata" {
+			table.Rows[0][ci] = Cell{Type: "string", Data: want}
+		}
+	}
+	receipt, err := Undo(context.Background(), conn, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := VerifyUndo(context.Background(), conn, request, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualTable := undoTable(t, &actual, "undo_cells")
+	for ci, col := range actualTable.Columns {
+		if col.Name == "metadata" {
+			got := canonicalJSON(t, actualTable.Rows[0][ci].Data)
+			if got != want {
+				t.Fatalf("exact metadata readback changed: got %s want %s", got, want)
+			}
+			t.Logf("UNDO_EXACT_METADATA field=metadata row=0 requested=%s readback=%s rounded=false", want, got)
+			return
+		}
+	}
+	t.Fatal("metadata column missing")
+}
+
+func TestPhysicalUndoUnrepresentableJSONDriverBoundary(t *testing.T) {
+	_, conn, _, _ := restoreDB(t, false)
+	execSQL(t, conn, "CREATE TABLE probe_json (id INT PRIMARY KEY, metadata JSON)")
+	const requested = `{"new":0.123456789012345678901234567890}`
+	if _, err := conn.ExecContext(context.Background(), "INSERT INTO probe_json VALUES (1, JSON_OBJECT('new', CAST(? AS JSON)))", "0.123456789012345678901234567890"); err != nil {
+		t.Fatalf("driver rejected candidate before readback: %v", err)
+	}
+	var got string
+	if err := conn.QueryRowContext(context.Background(), "SELECT metadata FROM probe_json WHERE id=1").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	const wantReadback = `{"new":0.12345678901234568}`
+	canonical := canonicalJSON(t, got)
+	if canonical != wantReadback {
+		t.Fatalf("driver readback changed: got %s want %s", canonical, wantReadback)
+	}
+	t.Logf("DRIVER_JSON_UNREPRESENTABLE requested=%s readback=%s", requested, canonical)
 }
 
 func TestPhysicalUndoCancellationAfterNativeInserts(t *testing.T) {
