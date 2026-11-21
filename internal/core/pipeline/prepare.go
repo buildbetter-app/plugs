@@ -402,8 +402,13 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				if op.Kind == model.OpReparent {
 					// Hierarchy authorizers compare a reparent's final parent
 					// with its operation, so present the requested transition.
-					// A reparent that cannot be staged keeps the unchanged
-					// image; the refusal released is still the lease refusal.
+					// A reparent that cannot be staged (cross-project, cycle,
+					// depth or missing parent) keeps the unchanged image. The
+					// ordinary authorizer then still releases the lease
+					// refusal, but under Hierarchy that image fails the final
+					// parent check and the caller gets forbidden instead. That
+					// fails closed; returning the lease refusal without
+					// authorization would reveal the claim.
 					_ = p.stageReparent(ctx, current, op, target, aliases)
 				}
 				p.proposal.Changes = append(p.proposal.Changes, port.Change{Resource: model.ResourceRef{Kind: "bead", Ref: target}, Op: op, Before: before})
