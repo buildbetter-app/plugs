@@ -2119,6 +2119,7 @@ internal/server/authzrpc/binding_test.go
 internal/server/authzrpc/blocked.go
 internal/server/authzrpc/checker.go
 internal/server/authzrpc/claim.go
+internal/server/authzrpc/claim_interleaving_test.go
 internal/server/authzrpc/claim_test.go
 internal/server/authzrpc/cycles.go
 internal/server/authzrpc/drivers_test.go

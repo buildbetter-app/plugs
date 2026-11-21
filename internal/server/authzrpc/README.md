@@ -53,6 +53,21 @@ The new three-driver HTTP assertions are source only pending independent review
 and S1-authorized execution. They do not qualify `composition.Open`, full B05,
 authentic reference twins or all Go/SQL clock paths.
 
+`claim_interleaving_test.go` covers B05 claim interleaving on memory, SQLite and
+PostgreSQL over authenticated HTTP. A wrapper around each real store runs one
+competing commit at the claim's `Store.Write`, after both authorization stages:
+a competing claim by an agent with independent or identical grants (exactly one
+claim; the loser gets retryable `busy` and no receipt), revocation of the
+claimer's only path (`forbidden`, nothing published), revocation of only the
+competitor's path or of one of the claimer's two paths (reauthorized, exactly
+one claim), and a holder that loses permission after winning (the claim stays
+live; other agents still get `busy` or `lease_not_held`; the holder's heartbeat
+and release are `forbidden` without details until the grant returns). Claim and
+release check the live lease during preparation, before authorization, so an
+agent with no grant may get `busy` or `lease_not_held` on a claimed bead where
+an unclaimed one gives `forbidden`; the test logs those codes and leaves the
+ordering open.
+
 The component tests exercise the actual HTTP/RPC boundary with real native-host
 bindings, authenticated principals, durable mutation/refusal/replay, and
 claimNext defaults and terminal receipts. They do not qualify a WASI artifact,
