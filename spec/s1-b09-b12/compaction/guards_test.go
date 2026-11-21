@@ -224,6 +224,11 @@ func TestB12RevertAllTextPermanentHistoryProofCASAndProtectedRecords(t *testing.
 			if details["reason"] != "revert" {
 				t.Fatalf("wrong CAS reason: %v", details)
 			}
+			// The revert refusal keeps the refusing guard address that every
+			// compare-and-set refusal carries; its guards all name the target.
+			if guard, ok := details["ref"].(map[string]any); !ok || guard["id"] != ref["id"] {
+				t.Fatalf("revert CAS refusal lost its refusing guard ref: %v", details)
+			}
 			f.assertSameHead(before)
 			f.assertNoReceipt("history.revert", "field-conflict")
 			f.call("bead.update", "return-compacted-field", map[string]any{"id": ref, "fields": map[string]any{"notes": "", "title": "newer title"}}, "")
