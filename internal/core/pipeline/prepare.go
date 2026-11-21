@@ -69,7 +69,12 @@ type prepared struct {
 	// refusal is deliberately kept out of ProposedChange. It may contain a
 	// current revision token and can be released only after AuthorizeBefore has
 	// covered every disclosed expectation target.
-	refusal           error
+	refusal error
+	// leaseRefusal is a claim or release lease refusal (live foreign claim,
+	// missing, foreign or expired lease). Like refusal it is released only
+	// after AuthorizeBefore, so an unauthorized caller learns nothing about
+	// the claim state of a bead it may not modify.
+	leaseRefusal      error
 	release           *claimReleaseMode
 	warnings          []model.Warning
 	mutators          []string
@@ -373,12 +378,19 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 			if err != nil {
 				return nil, err
 			}
+			var leaseErr error
 			if release != nil {
-				if err = w.checkClaimRelease(ctx, p, current.doc, by, meta, release); err != nil {
-					return nil, err
+				leaseErr = w.checkClaimRelease(ctx, p, current.doc, by, meta, release)
+			} else {
+				leaseErr = w.checkLease(ctx, current.doc, by, meta)
+			}
+			if leaseErr != nil {
+				if !deferredLeaseRefusal(meta, release, leaseErr) {
+					return nil, leaseErr
 				}
-			} else if err = w.checkLease(ctx, current.doc, by, meta); err != nil {
-				return nil, err
+				if p.leaseRefusal == nil {
+					p.leaseRefusal = leaseErr
+				}
 			}
 			liveLease := current.doc.Lease
 			if overlayStore, ok := w.store.(driver.CheckpointStore); ok && liveLease != nil {
@@ -387,7 +399,7 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 					return nil, err
 				}
 			}
-			if isClaim(meta.Method) && liveLease != nil && w.cfg.now().Before(liveLease.ExpiresAt) {
+			if isClaim(meta.Method) && p.leaseRefusal == nil && liveLease != nil && w.cfg.now().Before(liveLease.ExpiresAt) {
 				if len(cs.Ops) != 1 || op.Kind != model.OpPatch || len(op.Patch.Fields) != 0 {
 					return nil, failure("invalid_params", "an already-owned claim requires one empty patch")
 				}
@@ -1493,6 +1505,24 @@ func isSlot(method string) bool {
 }
 
 func isClaim(method string) bool { return method == "bead.claim" || method == "bead.claimNext" }
+
+// deferredLeaseRefusal selects the typed claim/release lease refusals that
+// depend on the bead's current claim state. Storage, staleness and capability
+// errors still fail preparation immediately.
+func deferredLeaseRefusal(meta model.WriteMeta, release *claimReleaseMode, err error) bool {
+	if !isClaim(meta.Method) && release == nil {
+		return false
+	}
+	var typed *model.Error
+	if !errors.As(err, &typed) || typed == nil {
+		return false
+	}
+	switch typed.Data.Code {
+	case "busy", "lease_not_held", "lease_expired":
+		return true
+	}
+	return false
+}
 
 func (w *Writer) checkLease(ctx context.Context, doc Document, by model.PrincipalRef, meta model.WriteMeta) error {
 	if isGateMethod(meta.Method) && meta.Method == "gate."+meta.GateAction {

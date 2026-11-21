@@ -268,6 +268,9 @@ func TestB05ClaimInterleavingAuthorizationAcrossDrivers(t *testing.T) {
 			t.Run("holder_loses_permission_after_claim", func(t *testing.T) {
 				holderLosesPermission(t, newInterleaveFixture(t, engine, dsn))
 			})
+			t.Run("ungranted_agent_cannot_observe_claim_state", func(t *testing.T) {
+				ungrantedAgentClaimStateHidden(t, newInterleaveFixture(t, engine, dsn))
+			})
 		})
 	}
 }
@@ -338,12 +341,8 @@ func interleavedClaimerRevoked(t *testing.T, f *interleaveFixture) {
 
 // Only the competitor's grant is removed in A's window. The ACL commit still
 // invalidates A's pinned authorization, but A's own path is intact, so A is
-// reauthorized and claims exactly once. The revoked competitor's later calls
-// change nothing, store no receipt and carry no details. Their codes are logged,
-// not asserted: claim and release check the live lease during preparation,
-// before authorization, so an unauthorized agent may see busy or
-// lease_not_held where an unclaimed bead gives forbidden. That ordering is an
-// open question for root, not a contract this test fixes.
+// reauthorized and claims exactly once. The revoked competitor then learns
+// nothing about A's claim: claim, heartbeat and release are all forbidden.
 func interleavedCompetitorRevoked(t *testing.T, f *interleaveFixture) {
 	t.Helper()
 	a, b := agentA(), agentB()
@@ -370,11 +369,7 @@ func interleavedCompetitorRevoked(t *testing.T, f *interleaveFixture) {
 	}
 	for i, method := range []string{"bead.claim", "bead.heartbeat", "bead.release"} {
 		key := 8310 + i
-		got := f.call(t, b, method, quietParams(), key)
-		if got.Error == nil || len(got.Result) != 0 || got.Meta.Replayed || len(got.Error.Data.Details) != 0 {
-			t.Fatalf("revoked competitor %s on a live claim was not a detail-free refusal: %+v", method, got.Error)
-		}
-		t.Logf("revoked competitor %s on a live claim: code=%s", method, got.Error.Data.Code)
+		requireNoDisclosure(t, f.call(t, b, method, quietParams(), key))
 		f.requireNoReceipt(t, b, method, key)
 	}
 	if !reflect.DeepEqual(after, f.view(t)) {
@@ -441,4 +436,38 @@ func holderLosesPermission(t *testing.T, f *interleaveFixture) {
 	if restored.Versions != held.Versions || restored.Revision != held.Revision {
 		t.Fatal("heartbeat after restored permission was not quiet")
 	}
+}
+
+// An agent whose sponsor holds no grant gets the same detail-free forbidden
+// for claim, heartbeat and release whether the bead is unclaimed, claimed by
+// someone else, or claimed and then released: the claim plane is invisible
+// to it and nothing it sends changes state or stores a receipt.
+func ungrantedAgentClaimStateHidden(t *testing.T, f *interleaveFixture) {
+	t.Helper()
+	outsider := worker("user:outsider")
+	outsider.ID = "agent:outsider"
+	probe := func(phase string, base int) {
+		t.Helper()
+		before := f.view(t)
+		for i, method := range []string{"bead.claim", "bead.heartbeat", "bead.release"} {
+			key := base + i
+			got := f.call(t, outsider, method, quietParams(), key)
+			if got.Error == nil || got.Error.Data.Code != "forbidden" || len(got.Error.Data.Details) != 0 || len(got.Result) != 0 || got.Meta.Replayed {
+				t.Fatalf("%s: ungranted %s was not a detail-free forbidden: %+v", phase, method, got.Error)
+			}
+			f.requireNoReceipt(t, outsider, method, key)
+		}
+		if !reflect.DeepEqual(before, f.view(t)) {
+			t.Fatalf("%s: ungranted agent changed the claim plane", phase)
+		}
+	}
+	requireUnclaimed(t, f.view(t))
+	probe("unclaimed", 8600)
+	a := agentA()
+	success(t, f.call(t, a, "bead.claim", quietParams(), 8610))
+	f.requireHolder(t, f.view(t), a)
+	probe("claimed by another agent", 8620)
+	success(t, f.call(t, a, "bead.release", quietParams(), 8630))
+	requireUnclaimed(t, f.view(t))
+	probe("released", 8640)
 }

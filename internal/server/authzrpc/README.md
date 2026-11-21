@@ -63,10 +63,9 @@ competitor's path or of one of the claimer's two paths (reauthorized, exactly
 one claim), and a holder that loses permission after winning (the claim stays
 live; other agents still get `busy` or `lease_not_held`; the holder's heartbeat
 and release are `forbidden` without details until the grant returns). Claim and
-release check the live lease during preparation, before authorization, so an
-agent with no grant may get `busy` or `lease_not_held` on a claimed bead where
-an unclaimed one gives `forbidden`; the test logs those codes and leaves the
-ordering open.
+release lease refusals are released only after authorization, so an agent with
+no grant gets the same detail-free `forbidden` for claim, heartbeat and release
+whether the bead is unclaimed, claimed by someone else, or released.
 
 The component tests exercise the actual HTTP/RPC boundary with real native-host
 bindings, authenticated principals, durable mutation/refusal/replay, and
