@@ -680,66 +680,111 @@ func b27NativeDocumentRows(t *testing.T, rows map[string]driver.Record, archive 
 	}
 }
 
+func b27NativeInputForProject(t *testing.T, project string) b27NativeInput {
+	t.Helper()
+	for _, input := range b27NativeInputs(t) {
+		if input.Project == project {
+			return input
+		}
+	}
+	t.Fatalf("B27 native project %q is missing", project)
+	return b27NativeInput{}
+}
+
 // Each delta source uses the installed single-source receiver. In particular,
 // two delta directories are never relabeled as one multi-project input. The
 // shared oracle checks exact independent SQL table/state bytes at import and
 // reopen for every mode; the callback checks the live B27 projection as well.
-func TestB27RichNativeDeltaModes(t *testing.T) {
-	for _, input := range b27NativeInputs(t) {
-		t.Run(input.Project, func(t *testing.T) {
-			for _, mode := range []string{"full", "partial", "snapshot"} {
-				t.Run(mode, func(t *testing.T) {
-					for _, engine := range []string{"memory", "sqlite", "postgres"} {
-						t.Run(engine, func(t *testing.T) {
-							req := b27NativeRequest(t, input, mode)
-							name := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(t.Name())
-							root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
-							if root == "" {
-								t.Fatal("canonical Bazel output directory required")
-							}
-							raw, err := json.Marshal(req)
-							if err != nil {
-								t.Fatal(err)
-							}
-							request := filepath.Join(root, name+"-request.json")
-							if err := os.WriteFile(request, raw, 0600); err != nil {
-								t.Fatal(err)
-							}
-							self, err := os.Executable()
-							if err != nil {
-								t.Fatal(err)
-							}
-							t.Setenv("PLUG_PUBLIC_PROOF_DRIVER", engine)
-							t.Setenv("PLUG_PUBLIC_PROOF_ELF_SHA256", publicProofHashFile(t, self))
-							t.Setenv("PLUG_PUBLIC_PROOF_REQUEST", request)
-							t.Setenv("PLUG_PUBLIC_PROOF_REQUEST_SHA256", hashBytes(raw))
-							t.Setenv("PLUG_PUBLIC_PROOF_OUTPUT", filepath.Join(root, name))
-							var conserved b27NativeConservation
-							runPublicNativeExternalCaptureWithPlan(t, b27NativeIntent, func(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error {
-								if profile.HistoryMode != driver.RestoreHistoryMode(mode) {
-									t.Fatal("B27 selected mode changed")
-								}
-								b27NativeDocuments(t, store, report.Archive, []b27NativeInput{input})
-								b27NativeAuxiliaryReadback(t, store, report.Archive, input, report)
-								b27NativeCatalogReadback(t, store, report.Archive, input)
-								conserved = b27NativeNonemptyRefusal(t, ctx, store, lease, profile, report.Archive, req.Capture)
-								t.Logf("b27_existing_rows_conserved project=%s phase=after-nonempty-refusal rows=%d", input.Project, len(conserved.Rows))
-								return nil
-							}, func(t *testing.T, _ context.Context, store driver.Store, _ driver.ActiveLease, _ driver.RestoreImportProfile, report Report) error {
-								if conserved.Rows == nil || !reflect.DeepEqual(conserved, b27NativeConservationAt(t, store)) {
-									t.Fatal("reopen after nonempty refusal changed existing durable rows")
-								}
-								b27NativeDocuments(t, store, report.Archive, []b27NativeInput{input})
-								b27NativeAuxiliaryReadback(t, store, report.Archive, input, report)
-								b27NativeCatalogReadback(t, store, report.Archive, input)
-								t.Logf("b27_existing_rows_conserved project=%s phase=after-shared-reopen rows=%d", input.Project, len(conserved.Rows))
-								return nil
-							})
-						})
-					}
-				})
-			}
-		})
+// Keep one top-level test per project/mode so Bazel can distribute the three
+// engine cases across converterroundtrip shards instead of assigning all 18
+// cases to one shard.
+func runB27RichNativeDeltaMode(t *testing.T, input b27NativeInput, mode, engine string) {
+	t.Helper()
+	req := b27NativeRequest(t, input, mode)
+	name := strings.NewReplacer("/", "_", ":", "_", " ", "_").Replace(t.Name())
+	root := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
+	if root == "" {
+		t.Fatal("canonical Bazel output directory required")
+	}
+	raw, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := filepath.Join(root, name+"-request.json")
+	if err := os.WriteFile(request, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PLUG_PUBLIC_PROOF_DRIVER", engine)
+	t.Setenv("PLUG_PUBLIC_PROOF_ELF_SHA256", publicProofHashFile(t, self))
+	t.Setenv("PLUG_PUBLIC_PROOF_REQUEST", request)
+	t.Setenv("PLUG_PUBLIC_PROOF_REQUEST_SHA256", hashBytes(raw))
+	t.Setenv("PLUG_PUBLIC_PROOF_OUTPUT", filepath.Join(root, name))
+	var conserved b27NativeConservation
+	runPublicNativeExternalCaptureWithPlan(t, b27NativeIntent, func(t *testing.T, ctx context.Context, store driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile, report Report) error {
+		if profile.HistoryMode != driver.RestoreHistoryMode(mode) {
+			t.Fatal("B27 selected mode changed")
+		}
+		b27NativeDocuments(t, store, report.Archive, []b27NativeInput{input})
+		b27NativeAuxiliaryReadback(t, store, report.Archive, input, report)
+		b27NativeCatalogReadback(t, store, report.Archive, input)
+		conserved = b27NativeNonemptyRefusal(t, ctx, store, lease, profile, report.Archive, req.Capture)
+		t.Logf("b27_existing_rows_conserved project=%s phase=after-nonempty-refusal rows=%d", input.Project, len(conserved.Rows))
+		return nil
+	}, func(t *testing.T, _ context.Context, store driver.Store, _ driver.ActiveLease, _ driver.RestoreImportProfile, report Report) error {
+		if conserved.Rows == nil || !reflect.DeepEqual(conserved, b27NativeConservationAt(t, store)) {
+			t.Fatal("reopen after nonempty refusal changed existing durable rows")
+		}
+		b27NativeDocuments(t, store, report.Archive, []b27NativeInput{input})
+		b27NativeAuxiliaryReadback(t, store, report.Archive, input, report)
+		b27NativeCatalogReadback(t, store, report.Archive, input)
+		t.Logf("b27_existing_rows_conserved project=%s phase=after-shared-reopen rows=%d", input.Project, len(conserved.Rows))
+		return nil
+	})
+}
+
+func TestB27RichNativeDeltaModesReviewProjectFull(t *testing.T) {
+	input := b27NativeInputForProject(t, "review-project")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) { runB27RichNativeDeltaMode(t, input, "full", engine) })
+	}
+}
+
+func TestB27RichNativeDeltaModesReviewProjectPartial(t *testing.T) {
+	input := b27NativeInputForProject(t, "review-project")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) { runB27RichNativeDeltaMode(t, input, "partial", engine) })
+	}
+}
+
+func TestB27RichNativeDeltaModesReviewProjectSnapshot(t *testing.T) {
+	input := b27NativeInputForProject(t, "review-project")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) { runB27RichNativeDeltaMode(t, input, "snapshot", engine) })
+	}
+}
+
+func TestB27RichNativeDeltaModesDeliveryProjectFull(t *testing.T) {
+	input := b27NativeInputForProject(t, "delivery-project")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) { runB27RichNativeDeltaMode(t, input, "full", engine) })
+	}
+}
+
+func TestB27RichNativeDeltaModesDeliveryProjectPartial(t *testing.T) {
+	input := b27NativeInputForProject(t, "delivery-project")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) { runB27RichNativeDeltaMode(t, input, "partial", engine) })
+	}
+}
+
+func TestB27RichNativeDeltaModesDeliveryProjectSnapshot(t *testing.T) {
+	input := b27NativeInputForProject(t, "delivery-project")
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) { runB27RichNativeDeltaMode(t, input, "snapshot", engine) })
 	}
 }
 
