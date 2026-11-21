@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -487,17 +486,17 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("native historical marker was adopted as an active import: found=%t err=%v", found, err)
 			}
-			if _, err := converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store); err == nil {
-				t.Fatal("native historical marker unexpectedly enabled active reverse")
-			} else {
-				var refusal converterroundtrip.ReverseRefusal
-				if !errors.As(err, &refusal) || refusal.Reason != "historical_source_binding" {
-					t.Fatalf("native historical marker returned an untyped or unrelated reverse refusal: %v", err)
-				}
+			reversed, err := converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store)
+			if err != nil || len(reversed.Result.JSONL) == 0 {
+				t.Fatalf("native historical provenance reverse failed: %v", err)
 			}
 			target.reopen()
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("first target reopen changed native provenance/readback")
+			}
+			reversed, err = converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store)
+			if err != nil || len(reversed.Result.JSONL) == 0 {
+				t.Fatalf("native historical provenance reverse after first reopen failed: %v", err)
 			}
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("first target reopen adopted historical marker: found=%t err=%v", found, err)
@@ -505,6 +504,10 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			target.reopen()
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("second target reopen changed native provenance/readback")
+			}
+			reversed, err = converterroundtrip.ReverseRestored(context.Background(), target.runtime.Store)
+			if err != nil || len(reversed.Result.JSONL) == 0 {
+				t.Fatalf("native historical provenance reverse after second reopen failed: %v", err)
 			}
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("second target reopen adopted historical marker: found=%t err=%v", found, err)
