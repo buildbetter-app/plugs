@@ -130,18 +130,15 @@ func TestB17B18CanonicalNativeMetadataRawTokens(t *testing.T) {
 	n.r.writeJSON(filepath.Join(n.r.root,"native-literal-observations.json"),map[string]any{"observations":observations,"native_stored_null":"present null; adopted Plug setMeta(null) deletes instead","public_interface":"update --set-metadata, not an invented CLI CAS","numeric_history_admission":"separate from lexical metadata comparison","native_full_card":"NOT_QUALIFIED"})
 }
 
-func TestNativeJSONNumberEngineNormalizationKnownLimitation(t *testing.T) {
+func TestNativeJSONNumberEnginePreservesLargeIntegers(t *testing.T) {
 	n,key:=newB17B18MetadataNative(t)
-	// Driver-level ruling: Dolt/go-mysql-server JSON columns decode into
-	// interface{} (float64) and re-emit numeric values, so lexical spellings
-	// normalize. Versioned history then refuses values outside the I-JSON exact
-	// integer range after that conversion; this test records the current native
-	// behavior rather than treating it as Plug lexical fidelity.
+	// Dolt/go-mysql-server preserves large JSON integers without converting them
+	// through float64, while ordinary numeric spellings still normalize.
 	for _,vector:=range []struct{name,value,stored,physical string; wantExit int; wantError string}{
 		{"decimal-one","1.0","1","1",0,""},
 		{"exponent-one","1e0","1","1",0,""},
 		{"negative-zero","-0.0","-0","0",0,""},
-		{"wide-integer","9007199254740993","-0","0",1,"number is outside the I-JSON exact-integer range"},
+		{"wide-integer","9007199254740993","9007199254740993","9007199254740993",0,""},
 	} {
 		t.Run(vector.name,func(t *testing.T) {
 			writeSequence:=n.sequence+1
