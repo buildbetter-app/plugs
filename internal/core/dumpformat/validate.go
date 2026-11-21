@@ -338,6 +338,13 @@ func validateNativeArchive(manifest Manifest, members map[string][]byte, paths [
 		if !ok || path == "manifest.json" || file.Size != int64(len(member)) || file.SHA256 != digest(member) {
 			return fmt.Errorf("native checksum/size mismatch for %q", path)
 		}
+		if strings.HasPrefix(path, "blobs/") {
+			name := strings.TrimPrefix(path, "blobs/")
+			decoded, err := hex.DecodeString(name)
+			if err != nil || len(decoded) != sha256.Size || name != file.SHA256 {
+				return fmt.Errorf("native evidence blob path is not content-addressed for %q", path)
+			}
+		}
 	}
 	if len(manifest.Files) != len(members)-1 || manifest.Files["records/native.ndjson"].Size < 0 ||
 		manifest.Files["versions.ndjson"].Size < 0 || manifest.Files["changesets.ndjson"].Size < 0 {

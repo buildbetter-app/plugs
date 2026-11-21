@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -516,6 +517,10 @@ func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *test
 // hidden source rows remain denied.
 func TestNativeRestoredImportedMemoryPublicReadsAfterTwoReopensAllDrivers(t *testing.T) {
 	data := nativeSafeImportedMemoryFixture(t)
+	sourceArchive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
@@ -531,6 +536,14 @@ func TestNativeRestoredImportedMemoryPublicReadsAfterTwoReopensAllDrivers(t *tes
 			}
 			if manifest.Scope != "plug-native-store" || manifest.History != "head" {
 				t.Fatalf("converter import did not produce a native head archive: %+v", manifest)
+			}
+			nativeArchive, err := dumpformat.Read(bytes.NewReader(nativeBytes))
+			if err != nil {
+				t.Fatal(err)
+			}
+			root, ok := nativeArchive.NativeMember("blobs/" + sourceArchive.SHA256())
+			if !ok || !bytes.Equal(root, data) {
+				t.Fatalf("native dump omitted authenticated converter source root: present=%t bytes=%d want=%d", ok, len(root), len(data))
 			}
 
 			target, targetLease, reopen := openIdentityTarget(t, engine)
@@ -614,6 +627,212 @@ func TestNativeRestoredImportedMemoryPublicReadsAfterTwoReopensAllDrivers(t *tes
 			t.Logf("P23_NATIVE_MEMORY_READBACK engine=%s fixture=%s hidden=%s phases=initial,reopen-1,reopen-2 public_get_list=pass hidden_not_found=pass strict_mutation=not_run", engine, fixtureID, secretID)
 		})
 	}
+}
+
+func TestNativeRestoredConverterEvidenceReverseAllDrivers(t *testing.T) {
+	data := admittedFixtureBytes(t)
+	sourceArchive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			source, sourceLease, _ := openIdentityTarget(t, engine)
+			profile, _ := admittedImportProfile(t, data)
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), source, sourceLease, profile); err != nil {
+				t.Fatal(err)
+			}
+			nativeBytes, manifest, err := restore.Dump(ctx, source, "head")
+			if err != nil {
+				t.Fatal(err)
+			}
+			nativeArchive, err := dumpformat.Read(bytes.NewReader(nativeBytes))
+			if err != nil {
+				t.Fatal(err)
+			}
+			root, ok := nativeArchive.NativeMember("blobs/" + sourceArchive.SHA256())
+			if !ok || !bytes.Equal(root, data) {
+				t.Fatalf("native dump omitted source root: present=%t bytes=%d want=%d", ok, len(root), len(data))
+			}
+			target, targetLease, reopen := openIdentityTarget(t, engine)
+			restoreNativeHeadForTest(t, ctx, target, targetLease, nativeBytes, manifest)
+			for i := 0; i < 2; i++ {
+				target, targetLease = reopen()
+			}
+			reversed, err := ReverseRestored(ctx, target)
+			if err != nil {
+				t.Fatalf("reverse after native restore and two reopens: %v", err)
+			}
+			original, err := reverseconverter.ConvertArchive(data)
+			if err != nil || !bytes.Equal(reversed.Result.JSONL, original.JSONL) || !reflect.DeepEqual(reversed.Result.Projection, original.Projection) {
+				t.Fatalf("native-restored reverse differs from source: %v", err)
+			}
+			tampered := tamperNativeEvidenceRootForTest(t, nativeBytes)
+			tamperedArchive, err := dumpformat.Read(bytes.NewReader(tampered))
+			if err != nil {
+				t.Fatal(err)
+			}
+			badTarget, badLease, _ := openIdentityTarget(t, engine)
+			restoreNativeHeadForTest(t, ctx, badTarget, badLease, tampered, tamperedArchive.Manifest())
+			_, err = ReverseRestored(ctx, badTarget)
+			var refusal ReverseRefusal
+			if !errors.As(err, &refusal) || refusal.Reason != "invalid_source_evidence" {
+				t.Fatalf("tampered native evidence was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativeDumpConverterEvidenceSizeImpactTwoProjectFixture(t *testing.T) {
+	data := sourceReverseFixture(t, false)
+	sourceArchive, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sourceArchive.Manifest().Projects) != 2 {
+		t.Fatalf("size fixture must contain two projects: %d", len(sourceArchive.Manifest().Projects))
+	}
+	ctx := context.Background()
+	source, lease, _ := openIdentityTarget(t, "memory")
+	profile := sourceReverseProfile(t, data, source, lease, false)
+	if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), source, lease, profile); err != nil {
+		t.Fatal(err)
+	}
+	nativeBytes, _, err := restore.Dump(ctx, source, "head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeArchive, err := dumpformat.Read(bytes.NewReader(nativeBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobBytes, blobCount := 0, 0
+	for path, file := range nativeArchive.Manifest().Files {
+		if !strings.HasPrefix(path, "blobs/") {
+			continue
+		}
+		blobCount++
+		blobBytes += int(file.Size)
+	}
+	if blobCount == 0 || blobBytes == 0 {
+		t.Fatal("two-project native dump did not retain converter evidence blobs")
+	}
+	t.Logf("P25_NATIVE_REVERSE_EVIDENCE_SIZE projects=2 native_archive_bytes=%d evidence_blob_count=%d evidence_blob_payload_bytes=%d payload_fraction=%.6f", len(nativeBytes), blobCount, blobBytes, float64(blobBytes)/float64(len(nativeBytes)))
+}
+
+func restoreNativeHeadForTest(t *testing.T, ctx context.Context, target driver.Store, lease driver.ActiveLease, nativeBytes []byte, manifest dumpformat.Manifest) {
+	t.Helper()
+	manager := restore.NewManager(target, lease, restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }))
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifestMap map[string]any
+	if err := json.Unmarshal(manifestJSON, &manifestMap); err != nil {
+		t.Fatal(err)
+	}
+	presence := restore.Presence{"mode": "presence_check", "challenge": "p25-native", "proof": "p25-native"}
+	principal := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	status, err := manager.BeginAs(ctx, principal, manifestMap, "head", presence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for page, offset := uint64(0), 0; offset < len(nativeBytes); page++ {
+		end := offset + 1<<20
+		if end > len(nativeBytes) {
+			end = len(nativeBytes)
+		}
+		chunk := nativeBytes[offset:end]
+		sum := sha256.Sum256(chunk)
+		status, err = manager.ChunkAs(ctx, principal, status.RestoreID, page, chunk, hex.EncodeToString(sum[:]), presence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		offset = end
+	}
+	manifestSum := sha256.Sum256(manifestJSON)
+	if _, err := manager.Finish(ctx, status.RestoreID, hex.EncodeToString(manifestSum[:]), principal, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: strings.Repeat("p", 32)}, presence); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func tamperNativeEvidenceRootForTest(t *testing.T, input []byte) []byte {
+	t.Helper()
+	members := map[string][]byte{}
+	reader := tar.NewReader(bytes.NewReader(input))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		members[header.Name], err = io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var manifest dumpformat.Manifest
+	decode(t, members["manifest.json"], &manifest)
+	originalLines := bytes.Split(bytes.TrimSpace(members["records/native.ndjson"]), []byte{'\n'})
+	var lines [][]byte
+	for _, line := range bytes.Split(bytes.TrimSpace(members["records/native.ndjson"]), []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var record map[string]any
+		decode(t, line, &record)
+		ref, _ := record["ref"].(map[string]any)
+		if ref["id"] == "restore/archive" {
+			var body map[string]any
+			decode(t, encode(t, record["body"]), &body)
+			body["archive_sha256"] = strings.Repeat("0", 64)
+			record["body"] = body
+		}
+		lines = append(lines, bytes.TrimSuffix(encode(t, record), []byte{'\n'}))
+	}
+	members["records/native.ndjson"] = append(bytes.Join(lines, []byte{'\n'}), '\n')
+	if len(lines) != manifest.RecordCount {
+		t.Fatalf("native tamper line census changed: lines=%d manifest=%d original=%d", len(lines), manifest.RecordCount, len(originalLines))
+	}
+	for path, data := range members {
+		if path == "manifest.json" {
+			continue
+		}
+		manifest.Files[path] = dumpformat.File{SHA256: digestBytes(data), Size: int64(len(data))}
+	}
+	paths := make([]string, 0, len(members)-1)
+	for path := range members {
+		if path != "manifest.json" {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	h := sha256.New()
+	for _, path := range paths {
+		_, _ = io.WriteString(h, path)
+		_, _ = h.Write(members[path])
+	}
+	manifest.NativeDigest = hex.EncodeToString(h.Sum(nil))
+	members["manifest.json"] = encode(t, manifest)
+	var out bytes.Buffer
+	writer := tar.NewWriter(&out)
+	sort.Strings(paths)
+	paths = append([]string{"manifest.json"}, paths...)
+	for _, path := range paths {
+		if err := writer.WriteHeader(&tar.Header{Name: path, Mode: 0o600, Size: int64(len(members[path])), ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(members[path]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }
 
 func nativeSafeImportedMemoryFixture(t *testing.T) []byte {
