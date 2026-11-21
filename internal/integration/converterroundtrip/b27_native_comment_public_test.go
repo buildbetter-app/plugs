@@ -440,20 +440,7 @@ func TestB27RichNativeCommentPublicImportReadback(t *testing.T) {
 						}
 						beforeRows = b27NativeRows(t, store, nil)
 						b27NativeCommentPublicReadback(t, ctx, store, input.Project, report.Archive, input.Comments, profile.Admission.Actor, profile.HistoryTime)
-						source := b27NativeRefusalArchive(t, ctx, request.Capture, report.Archive.SHA256())
-						defer source.ReleaseNativeDecoded()
-						_, refusalErr := RestoreNativeCaptureSetImportWithLease(ctx, source, store, lease, profile)
-						if !errors.Is(refusalErr, driver.ErrRestoreTargetNotEmpty) {
-							return fmt.Errorf("nonempty native comment restore did not refuse with restore_requires_empty: %w", refusalErr)
-						}
-						afterMeta, err := store.Meta(ctx)
-						if err != nil {
-							return err
-						}
-						afterRows := b27NativeRows(t, store, nil)
-						if !reflect.DeepEqual(beforeMeta, afterMeta) || !reflect.DeepEqual(beforeRows, afterRows) {
-							return errors.New("typed nonempty refusal changed durable native state")
-						}
+						b27NativeNonemptyRefusal(t, ctx, store, lease, profile, report.Archive, request.Capture)
 						if err := VerifyNativeCaptureSetReadback(ctx, store, report.Archive, report); err != nil {
 							return fmt.Errorf("native readback after refusal: %w", err)
 						}
