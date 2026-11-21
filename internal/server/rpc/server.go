@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
@@ -230,7 +231,14 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		return nil
 	}
 	if callErr != nil {
-		return s.errorResponse(id, s.registry.catalog.MapError(callErr))
+		mapped := s.registry.catalog.MapError(callErr)
+		if strings.HasPrefix(method, "admin.restore.") && mapped.Data.Code == "internal_error" {
+			if mapped.Data.TraceID == "" {
+				mapped.Data.TraceID = newTraceID()
+			}
+			slog.ErrorContext(ctx, "admin restore internal error", "method", method, "traceId", mapped.Data.TraceID, "error", callErr)
+		}
+		return s.errorResponse(id, mapped)
 	}
 	replayed := false
 	if outcome, ok := result.(Outcome); ok {
@@ -285,16 +293,21 @@ func (s *Server) errorResponse(id []byte, e *wire.Error) []byte {
 		e = s.registry.catalog.NewError("internal_error", "", nil)
 	}
 	if e.Data.TraceID == "" {
-		var b [16]byte
-		if _, err := rand.Read(b[:]); err == nil {
-			e.Data.TraceID = hex.EncodeToString(b[:])
-		}
+		e.Data.TraceID = newTraceID()
 	}
 	encoded, err := json.Marshal(e)
 	if err != nil {
 		encoded = []byte(`{"code":-32603,"message":"internal error","data":{"code":"internal_error","retryable":false}}`)
 	}
 	return response(id, "error", encoded, false)
+}
+
+func newTraceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func (s *Server) visible(ctx context.Context, by model.PrincipalRef) ([]wire.MethodDesc, []string, string, error) {

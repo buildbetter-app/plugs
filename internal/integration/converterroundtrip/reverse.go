@@ -68,16 +68,28 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if err != nil {
 		return LiveReverse{}, err
 	}
+	var retainedProfiles []driver.RestoreImportProfile
 	if len(rows) != 0 {
 		var binding importBindingEvidence
 		if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
 			return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
 		}
 		if binding.Profile.SourcePlanes != nil {
-			return reverseSourceRestored(ctx, r, meta, binding.Profile, options)
+			retainedProfiles = append(retainedProfiles, binding.Profile)
+			commitRows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+			if err != nil || len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
+				return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
+			}
+			var commitBinding driver.SourcePlaneCommitBindingV1
+			if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil {
+				return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
+			}
+			if commitBinding.StoreID == meta.StoreID && commitBinding.Incarnation == meta.Incarnation {
+				return reverseSourceRestored(ctx, r, meta, binding.Profile, options)
+			}
 		}
 	}
-	dump, err := retainedReverseDump(ctx, r)
+	dump, err := retainedReverseDump(ctx, r, retainedProfiles...)
 	if err != nil {
 		return LiveReverse{}, err
 	}

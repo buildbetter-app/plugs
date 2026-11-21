@@ -4,16 +4,20 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -505,6 +509,223 @@ func TestJointImportedMemoriesPublicReadReverseAndConservationAllDrivers(t *test
 	}
 }
 
+// This exercises the repaired path through an actual converter import, a
+// native dump and native restore into a fresh store. SQL stores are physically
+// reopened twice. Memory keeps its documented process-lifetime store and
+// refreshes its lease. Public reads must retain trusted historical data while
+// hidden source rows remain denied.
+func TestNativeRestoredImportedMemoryPublicReadsAfterTwoReopensAllDrivers(t *testing.T) {
+	data := nativeSafeImportedMemoryFixture(t)
+	ctx := context.Background()
+	anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			source, sourceLease, _ := openIdentityTarget(t, engine)
+			profile := sourceReverseProfile(t, data, source, sourceLease, false)
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), source, sourceLease, profile); err != nil {
+				t.Fatal(err)
+			}
+			nativeBytes, manifest, err := restore.Dump(ctx, source, "head")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if manifest.Scope != "plug-native-store" || manifest.History != "head" {
+				t.Fatalf("converter import did not produce a native head archive: %+v", manifest)
+			}
+
+			target, targetLease, reopen := openIdentityTarget(t, engine)
+			manager := restore.NewManager(target, targetLease, restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error {
+				return nil
+			}))
+			manifestJSON, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifestMap map[string]any
+			if err := json.Unmarshal(manifestJSON, &manifestMap); err != nil {
+				t.Fatal(err)
+			}
+			presence := restore.Presence{"mode": "presence_check", "challenge": "p23-native-memory", "proof": "p23-native-memory"}
+			principal := anonymous
+			status, err := manager.BeginAs(ctx, principal, manifestMap, "head", presence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for page, offset := uint64(0), 0; offset < len(nativeBytes); page++ {
+				end := offset + 1<<20
+				if end > len(nativeBytes) {
+					end = len(nativeBytes)
+				}
+				chunk := nativeBytes[offset:end]
+				sum := sha256.Sum256(chunk)
+				status, err = manager.ChunkAs(ctx, principal, status.RestoreID, page, chunk, hex.EncodeToString(sum[:]), presence)
+				if err != nil {
+					t.Fatal(err)
+				}
+				offset = end
+			}
+			manifestSum := sha256.Sum256(manifestJSON)
+			if _, err := manager.Finish(ctx, status.RestoreID, hex.EncodeToString(manifestSum[:]), principal, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: strings.Repeat("p", 32)}, presence); err != nil {
+				var typed *model.Error
+				if errors.As(err, &typed) {
+					t.Fatalf("native restore finish: code=%s hint=%s details=%v", typed.Data.Code, typed.Data.Hint, typed.Data.Details)
+				}
+				t.Fatal(err)
+			}
+			archive, err := dumpformat.Read(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fixtureID, secretID string
+			for _, row := range archive.Records("memory") {
+				switch row.ID {
+				case "fixture":
+					fixtureID = nativeMemoryTargetID(row)
+				case "secret":
+					secretID = nativeMemoryTargetID(row)
+				}
+			}
+			if fixtureID == "" || secretID == "" {
+				t.Fatal("native-safe fixture omitted fixture or hidden memory")
+			}
+
+			check := func() {
+				t.Helper()
+				ontology := service.NewOntology(nil)
+				svc := service.New(target, targetLease, pipeline.New(target, targetLease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
+				id := model.RefByID(fixtureID, model.Natural64(0))
+				got, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: id})
+				if err != nil || got.ID != id.ID || got.Key != "fixture" || got.Content != "A complete synthetic memory" {
+					t.Fatalf("native-restored public memory read: %+v %v", got, err)
+				}
+				page, err := svc.MemoryList(ctx, anonymous, service.MemoryListRequest{Limit: 100})
+				if err != nil || len(page.Items) != 2 || !containsMemoryID(page.Items, id.ID) {
+					t.Fatalf("native-restored public memory list: %+v %v", page, err)
+				}
+				if _, err := svc.MemoryGet(ctx, anonymous, service.MemoryGetRequest{ID: model.RefByID(secretID, model.Natural64(0))}); !isNotFoundMemory(err) {
+					t.Fatalf("hidden native-restored memory became visible: %v", err)
+				}
+			}
+			check()
+			for reopenCount := 0; reopenCount < 2; reopenCount++ {
+				target, targetLease = reopen()
+				check()
+			}
+			t.Logf("P23_NATIVE_MEMORY_READBACK engine=%s fixture=%s hidden=%s phases=initial,reopen-1,reopen-2 public_get_list=pass hidden_not_found=pass strict_mutation=not_run", engine, fixtureID, secretID)
+		})
+	}
+}
+
+func nativeSafeImportedMemoryFixture(t *testing.T) []byte {
+	t.Helper()
+	base := authoredMixedMemoryFixtureFrom(t, sourceReverseFixture(t, false))
+	return rewriteTarData(t, base, func(members map[string][]byte) {
+		var kept [][]byte
+		originalCount := 0
+		for _, line := range bytes.Split(bytes.TrimSpace(members["records/memory.ndjson"]), []byte{'\n'}) {
+			originalCount++
+			var row map[string]any
+			decode(t, line, &row)
+			id, _ := row["id"].(string)
+			if id == "fixture" || id == "unicode" || id == "secret" {
+				kept = append(kept, line)
+			}
+		}
+		members["records/memory.ndjson"] = append(bytes.Join(kept, []byte{'\n'}), '\n')
+		changeManifest(t, members, func(manifest map[string]any) {
+			for _, entry := range manifest["kind_registry"].([]any) {
+				kind := entry.(map[string]any)
+				if kind["name"] == "memory" {
+					kind["count"] = len(kept)
+				}
+			}
+			for _, entry := range manifest["sources"].([]any) {
+				source := entry.(map[string]any)
+				if source["family"] == "config" {
+					rows, err := source["rows"].(json.Number).Int64()
+					if err != nil {
+						t.Fatal(err)
+					}
+					source["rows"] = rows - int64(originalCount-len(kept))
+				}
+			}
+		})
+	})
+}
+
+func nativeMemoryTargetID(source dumpformat.Record) string {
+	key, _ := json.Marshal([]string{"memory", source.Project, "config", source.ID})
+	return "source/memory/" + digestBytes(key)
+}
+
+func containsMemoryID(items []service.Memory, id string) bool {
+	for _, item := range items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func rewriteTarData(t *testing.T, input []byte, change func(map[string][]byte)) []byte {
+	t.Helper()
+	members := map[string][]byte{}
+	reader := tar.NewReader(bytes.NewReader(input))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		members[header.Name], err = io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	change(members)
+	var manifest map[string]any
+	decode(t, members["manifest.json"], &manifest)
+	files := manifest["files"].(map[string]any)
+	for path, data := range members {
+		if path == "manifest.json" {
+			continue
+		}
+		if _, ok := files[path]; ok {
+			files[path] = map[string]any{"sha256": digestBytes(data), "size": len(data)}
+		}
+	}
+	members["manifest.json"] = encode(t, manifest)
+	var out bytes.Buffer
+	writer := tar.NewWriter(&out)
+	names := make([]string, 0, len(members)-1)
+	for name := range members {
+		if name != "manifest.json" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	names = append([]string{"manifest.json"}, names...)
+	for _, name := range names {
+		if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: int64(len(members[name]))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(members[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+func isNotFoundMemory(err error) bool {
+	var typed *model.Error
+	return errors.As(err, &typed) && typed.Data.Code == "not_found"
+}
+
 func TestImportedMemoryReverseRejectsInvalidSourceShapes(t *testing.T) {
 	data := authoredMixedMemoryFixture(t)
 	for _, control := range []string{"unknown-classification", "missing-value", "fake-secret", "extra-secret-field", "source-mismatch", "extra-source-field"} {
@@ -607,7 +828,7 @@ func importedMemoryHistory(t *testing.T, store driver.Store) any {
 	}{versions, changes}
 }
 
-func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
+func TestImportedMemoryMalformedMarkersRefuseWithoutWritesAllDrivers(t *testing.T) {
 	for _, engine := range []string{"memory", "sqlite", "postgres"} {
 		t.Run(engine, func(t *testing.T) {
 			for _, control := range []string{"unmarked", "source-id-only", "wrong-table", "wrong-ref", "wrong-source-value", "fake-secret", "missing-value"} {
@@ -654,6 +875,7 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 					if _, err := tx.Commit(ctx, driver.ChangesetHeader{Incarnation: meta.Incarnation, Kind: model.ChangesetWrite, Principal: restorePrincipal, LockKeys: []driver.LockKey{key}, Changes: []model.ChangeRecord{{Ref: ref, Op: model.OpCreate, FromRevision: model.Natural64(0), ChangedPaths: []string{"/"}}}}); err != nil {
 						t.Fatal(err)
 					}
+					before, historyBefore := reverseState(t, store), importedMemoryHistory(t, store)
 					ontology := service.NewOntology(nil)
 					svc := service.New(store, lease, pipeline.New(store, lease, pipeline.WithOntology(ontology)), service.WithOntology(ontology))
 					anonymous := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
@@ -664,6 +886,9 @@ func TestImportedMemoryNearMissesRemainMalformedAllDrivers(t *testing.T) {
 						if !errors.As(err, &typed) || typed.Data.Code != "internal_error" {
 							t.Fatalf("malformed %s hidden: %v", control, err)
 						}
+					}
+					if !reflect.DeepEqual(before, reverseState(t, store)) || !reflect.DeepEqual(historyBefore, importedMemoryHistory(t, store)) {
+						t.Fatalf("malformed %s read changed state or history", control)
 					}
 				})
 			}

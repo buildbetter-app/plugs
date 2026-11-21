@@ -2276,6 +2276,7 @@ internal/server/rpc/integration_test.go
 internal/server/rpc/label_rename.go
 internal/server/rpc/openrpc.json
 internal/server/rpc/openrpc_test.go
+internal/server/rpc/restore_logging_test.go
 internal/server/rpc/registry.go
 internal/server/rpc/rpc_test.go
 internal/server/rpc/server.go
