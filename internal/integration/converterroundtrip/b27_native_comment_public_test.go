@@ -389,7 +389,8 @@ func b27NativeCommentPublicReadback(t *testing.T, ctx context.Context, store dri
 				t.Fatal(err)
 			}
 			if comment.Body != tuple.Text || comment.Origin != "import" || comment.SourceAuthor != author || comment.SourceTime == nil || !comment.SourceTime.Equal(sourceTime) || !comment.Time.Equal(wantRestore) || comment.Time.Equal(sourceTime) || !reflect.DeepEqual(comment.Principal, actor) {
-				t.Fatalf("public comment tuple %s/%d differs: %+v want author=%q source=%s", issueID, i, comment, author, tuple.CreatedAt)
+				t.Fatalf("public comment tuple %s/%d differs: expected_body_bytes=%d expected_body_sha256=%s actual_body_bytes=%d actual_body_sha256=%s",
+					issueID, i, len(tuple.Text), hashBytes([]byte(tuple.Text)), len(comment.Body), hashBytes([]byte(comment.Body)))
 			}
 		}
 		count += len(doc.Comments)

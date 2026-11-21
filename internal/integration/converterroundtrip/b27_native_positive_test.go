@@ -790,7 +790,8 @@ func b27PositiveExport(t *testing.T, ctx context.Context, store driver.Store, le
 			t.Fatalf("positive public export changed an existing record %s: body expected=canonicalization-success actual=error=%v", row.Ref.ID, canonicalErr)
 		}
 		if !bytes.Equal(canonical, row.Body) {
-			t.Fatalf("positive public export changed an existing record %s: body expected=%s actual=%s", row.Ref.ID, canonical, row.Body)
+			t.Fatalf("positive public export changed an existing record %s: body expected_bytes=%d expected_sha256=%s actual_bytes=%d actual_sha256=%s",
+				row.Ref.ID, len(canonical), hashBytes(canonical), len(row.Body), hashBytes(row.Body))
 		}
 		seen[row.Ref.ID] = true
 	}

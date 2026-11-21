@@ -193,8 +193,14 @@ func (h *b27PublicHost) assertConfiguration() {
 	}
 	defer r.Close()
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID("ontology/b27-public", model.Natural64(0))})
-	if err != nil || len(rows) != 1 || rows[0].Kind != "ontology" || !bytes.Equal(rows[0].Body, b27PublicSource(h.t)) {
-		h.t.Fatalf("stored authored host configuration changed: %v %v", rows, err)
+	if err != nil || len(rows) != 1 || rows[0].Kind != "ontology" {
+		h.t.Fatalf("stored authored host configuration changed: rows=%d err=%v", len(rows), err)
+	}
+	want := b27PublicSource(h.t)
+	got := rows[0].Body
+	if !bytes.Equal(got, want) {
+		h.t.Fatalf("stored authored host configuration changed: expected_bytes=%d expected_sha256=%x actual_bytes=%d actual_sha256=%x",
+			len(want), sha256.Sum256(want), len(got), sha256.Sum256(got))
 	}
 }
 
@@ -326,7 +332,8 @@ func b27Equal(t *testing.T, name string, got, want any) {
 	// Lossless decoding makes object key order irrelevant while retaining
 	// number token spellings, array order, absent members and explicit null.
 	if err != nil || !reflect.DeepEqual(actual, expected) {
-		t.Fatalf("%s: got %s want %s (%v)", name, g, w, err)
+		t.Fatalf("%s differs: expected_bytes=%d expected_sha256=%x actual_bytes=%d actual_sha256=%x",
+			name, len(w), sha256.Sum256(w), len(g), sha256.Sum256(g))
 	}
 }
 
@@ -427,7 +434,7 @@ func TestB27PublicPlugRoundtripFieldsRelationsAndReopen(t *testing.T) {
 			b27Equal(t, "independent typed metadata", child["metadata"].(map[string]any)["b27"], wantMetadata)
 			comments := source.must("bead.get", map[string]any{"id": ref(ids[1])})["comments"].([]any)
 			if len(comments) != 3 {
-				t.Fatalf("comments=%v", comments)
+				t.Fatalf("public comment count differs: got=%d want=3", len(comments))
 			}
 			for i, body := range []string{"first comment\n子", "second comment", "finished with exact reason 子"} {
 				b27Equal(t, "independent comment body", comments[i].(map[string]any)["body"], body)
