@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/9df39928fb2ca5b90d17cf77b4aafd993d43f5222b0ce523cf0585fd936d1be5","project":"delivery-project"},"table":"dependencies","history":"retained-native-commit","columns":["created_at","created_by","depends_on_external","depends_on_issue_id","depends_on_wisp_id","id","issue_id","metadata","thread_id","type"],"rows":[]}

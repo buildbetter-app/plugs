@@ -214,6 +214,14 @@ func DefaultTreePolicy() TreePolicy {
 	for name, digest := range b24RecordedTimerReferences() {
 		policy.ReferenceSHA256[name] = digest
 	}
+	for name, digest := range b27NativeReferences() {
+		policy.ReferencePrefixes = append(policy.ReferencePrefixes, name)
+		policy.ReferenceSHA256[name] = digest
+	}
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/capture/capture-set/head.tar"] = "5a31787d5e586e4659034eff26816db5dcbe25f50d45b821a87bad6995ab40cb"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-rich/delivery-project/legacy/capture.tar"] = "308aceba00ecaf570721f716581330b6004bcdd73e23af9676a5eb3c90f6c407"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-rich/review-project/capture/capture-set/head.tar"] = "558e825e69d4643b47ed1f926e462d835ea562ed76963f6d649fc69e7b8d1e7a"
+	policy.BinarySHA256["internal/integration/converterroundtrip/testdata/b27-native-rich/review-project/legacy/capture.tar"] = "fe9bb72ba2d901f2dcad3a8617dc7ac002100bb98fbd5b9aa90fc643ef70c833"
 	return policy
 }
 

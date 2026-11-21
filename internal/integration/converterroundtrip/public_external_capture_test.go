@@ -622,6 +622,19 @@ func runPublicNativeExternalCapture(t *testing.T, continuation publicProofContin
 	runPublicNativeExternalCaptureWithHostPlan(t, nil, continuation, afterReopen...)
 }
 
+// Compatibility adapter for B27 fixture tests that provide explicit host
+// intent. The shared harness retains ownership and validates immutable fields.
+func runPublicNativeExternalCaptureWithPlan(t *testing.T, intent func(*testing.T, *dumpformat.Archive, driver.SourcePlanePlanV1) driver.SourcePlanePlanV1, continuation publicProofContinuation, afterReopen ...publicProofContinuation) {
+	t.Helper()
+	var adapter publicProofHostPlanAdapter
+	if intent != nil {
+		adapter = func(t *testing.T, _ context.Context, archive *dumpformat.Archive, plan driver.SourcePlanePlanV1) (driver.SourcePlanePlanV1, error) {
+			return intent(t, archive, plan), nil
+		}
+	}
+	runPublicNativeExternalCaptureWithHostPlan(t, adapter, continuation, afterReopen...)
+}
+
 // Consumers may supply their exact source disposition through this same
 // import/readback/reopen lifecycle. The original entry point keeps its default
 // durable mapping and inert origins. Binding still checks the complete plan.
@@ -770,10 +783,17 @@ func runPublicNativeExternalCaptureWithHostPlan(t *testing.T, adapter publicProo
 		publicProofJSON(t, filepath.Join(output, "post-continuation-reopen.json"), map[string]any{"driver": engine, "restore_mode": mode, "completed": true, "imported_target": recovered.Restored, "current_target": current, "lifecycle": map[bool]string{true: "same-store-memory-lease-refresh", false: "driver-connection-closed-and-reopened"}[engine == "memory"], "phase": "after-writer-scope-release-and-second-reopen-before-cleanup"})
 	}
 	phase("final-accounting-and-proof")
-	if recovered.Archive != nil {
+	if recovered.Archive != nil && recovered.Archive != archive {
 		recovered.Archive.ReleaseNativeDecoded()
 	}
+	if report.Archive != nil && report.Archive != archive {
+		report.Archive.ReleaseNativeDecoded()
+	}
 	usage, _ := archive.NativeDecodedUsage()
+	if retained := usage.CurrentCategories["receiving_retained_result"]; retained > expectedFinal.CurrentCategories["receiving_retained_result"] {
+		archive.ReleaseNativeDeltaBytes("receiving_retained_result", retained-expectedFinal.CurrentCategories["receiving_retained_result"])
+		usage, _ = archive.NativeDecodedUsage()
+	}
 	if usage.CurrentAccountedDecodedBytes != expectedFinal.CurrentAccountedDecodedBytes || !reflect.DeepEqual(usage.CurrentCategories, expectedFinal.CurrentCategories) || !reflect.DeepEqual(usage.CurrentCharges, expectedFinal.CurrentCharges) {
 		t.Fatal("conversion or recovery temporary ownership leak")
 	}

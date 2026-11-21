@@ -649,7 +649,16 @@ func (m *Manager) BeginAsWithMetaAndHistory(ctx context.Context, principal model
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "unsupported dump manifest"}}
 	}
 	if err := driver.ValidateRestoreHistoryPolicy(historyMode, parsed.History); err != nil {
-		return RestoreStatus{}, restoreHistoryModelError(err)
+		// Converter archives carrying source-native histories declare their
+		// portable history as available-unverified. Full-mode composition binds
+		// the exact history digest and restore time here, then performs the
+		// native-history verification during finish. Keep the driver policy
+		// unchanged for native archives, partial restores, and every other
+		// history declaration.
+		admitBoundConverterHistory := parsed.Scope == dumpformat.Scope && historyMode == driver.RestoreHistoryModeFull && parsed.History == driver.RestoreHistoryAvailableUnverified && historyDigest != "" && historyTime != ""
+		if !admitBoundConverterHistory {
+			return RestoreStatus{}, restoreHistoryModelError(err)
+		}
 	}
 	// Converter imports perform the empty-target check in the trusted adapter,
 	// which first attempts read-only receipt recovery for a same-bound retry.

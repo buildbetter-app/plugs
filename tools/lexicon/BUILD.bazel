@@ -8,6 +8,7 @@ go_library(
         "b07_native_protocol_literals.go",
         "b07_represented_literals.go",
         "b24_recorded_timer_references.go",
+        "b27_native_references.go",
         "checker.go",
         "config.go",
         "inventory.go",

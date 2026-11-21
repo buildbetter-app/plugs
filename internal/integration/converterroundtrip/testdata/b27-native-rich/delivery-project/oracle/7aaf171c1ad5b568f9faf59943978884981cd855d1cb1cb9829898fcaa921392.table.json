@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/9df39928fb2ca5b90d17cf77b4aafd993d43f5222b0ce523cf0585fd936d1be5","project":"delivery-project"},"table":"store_epoch","history":"retained-native-commit","columns":["bumped_at","bumped_reason","epoch","id"],"rows":[]}

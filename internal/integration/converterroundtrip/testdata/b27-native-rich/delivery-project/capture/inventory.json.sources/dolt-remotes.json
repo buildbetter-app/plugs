@@ -1,0 +1,1 @@
+{"query":"SELECT * FROM dolt_remotes","table":{"Columns":["name","url","fetch_specs","params"],"Rows":[]}}

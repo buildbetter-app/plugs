@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee","project":"review-project"},"table":"federation_peers","history":"versioned","columns":["created_at","last_sync","name","password_encrypted","remote_url","sovereignty","updated_at","username"],"rows":[]}

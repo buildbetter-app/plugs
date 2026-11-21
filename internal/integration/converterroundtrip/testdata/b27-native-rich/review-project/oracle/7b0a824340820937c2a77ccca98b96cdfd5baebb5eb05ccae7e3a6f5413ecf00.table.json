@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee","project":"review-project"},"table":"custom_types","history":"versioned","columns":["name"],"rows":[{"name":"rich_kind"},{"name":"sql_only_kind"},{"name":"unused_stored_kind"}]}

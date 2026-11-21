@@ -84,6 +84,42 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 	return nativeDetachedProfile(outputArchive, p)
 }
 
+// validateBoundNativeHistoryTime closes the second part of the public
+// history binding. A caller-supplied digest and time must identify the same
+// complete native source histories that the converter will lower. Existing
+// host-side preparation computes the binding when those fields are empty, so
+// this check only applies to values admitted through admin.restore.begin.
+func ValidateBoundHistoryTime(archive *dumpformat.Archive, profile driver.RestoreImportProfile) error {
+	if archive.Manifest().SourceFamilyContract != dumpformat.SourceFamilyContract || !archive.HasNativeSourceHistories() {
+		return nil
+	}
+	var latest time.Time
+	err := archive.VisitNativeSourceHistories(context.Background(), func(history dumpformat.NativeHistory) error {
+		for _, commit := range history.Commits {
+			if commit.ID != history.Head {
+				continue
+			}
+			date, ok := commit.Metadata["date"].(string)
+			if !ok {
+				return fmt.Errorf("native history HEAD has no canonical date")
+			}
+			when, err := time.Parse(time.RFC3339Nano, date)
+			if err != nil || when.IsZero() {
+				return fmt.Errorf("native history HEAD has an invalid date")
+			}
+			if when.After(latest) {
+				latest = when
+			}
+			return nil
+		}
+		return fmt.Errorf("native history has no HEAD commit")
+	})
+	if err != nil || latest.IsZero() || profile.HistoryTime != latest.UTC().Format(time.RFC3339Nano) {
+		return driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
+	}
+	return nil
+}
+
 func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 	if invalid, ok := err.(dumpformat.ErrSourceHistory); ok {
 		return driver.ErrRestoreHistoryRefused{Mode: mode, Reason: driver.RestoreHistoryReason(invalid.Reason)}

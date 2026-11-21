@@ -115,6 +115,11 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
+	if request.HistoryDigest != "" {
+		if err := converterroundtrip.ValidateBoundHistoryTime(archive, driver.RestoreImportProfile{HistoryMode: request.HistoryMode, HistoryDigest: request.HistoryDigest, HistoryTime: request.HistoryTime}); err != nil {
+			return converterroundtrip.Report{}, err
+		}
+	}
 	archiveDigest := archive.SHA256()
 	if archive.Manifest().SourcePlaneAddressContract != "" {
 		return a.importSourceArchive(ctx, principal, data, request, archive)

@@ -1,0 +1,1 @@
+{"query":"SELECT table_name, staged, status FROM dolt_status","table":{"Columns":["table_name","staged","status"],"Rows":[]}}

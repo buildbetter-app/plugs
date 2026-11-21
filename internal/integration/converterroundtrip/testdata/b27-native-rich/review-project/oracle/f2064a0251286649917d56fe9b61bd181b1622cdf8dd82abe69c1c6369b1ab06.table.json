@@ -1,0 +1,1 @@
+{"source_identity":{"store_id":"native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee","project":"review-project"},"table":"issue_versions","history":"versioned","columns":["attribution_status","change_actor","change_agent","change_at","change_message","durable_state","epoch","issue_id","removed_at","removed_reason","removed_restriction","revision"],"rows":[]}

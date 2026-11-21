@@ -1,0 +1,1 @@
+{"query":"SELECT * FROM dolt_nonlocal_tables","table":{"Columns":["table_name","target_ref","ref_table","options"],"Rows":[]}}

@@ -1,0 +1,1 @@
+{"query":"SELECT * FROM dolt_conflicts","table":{"Columns":["table","num_conflicts"],"Rows":[]}}

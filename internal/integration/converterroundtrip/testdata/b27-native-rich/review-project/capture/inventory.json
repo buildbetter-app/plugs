@@ -1,0 +1,268 @@
+{
+  "native_history_contract": "beads-native-delta/2",
+  "source_family_contract": "beads-source-families/1",
+  "status_category_contract": "beads-status-categories/1",
+  "source_plane_address_contract": "beads-source-planes/1",
+  "version": "beads-inventory/1",
+  "store_id": "native/7b298f02e585b19938e948ead15989007b64bfc26b1e89750fda53ee711120ee",
+  "machine": "ip-10-1-5-96",
+  "projects": [
+    {
+      "statuses": [
+        {
+          "name": "archived",
+          "category": "done"
+        },
+        {
+          "name": "awaiting_review",
+          "category": "active"
+        },
+        {
+          "name": "blocked",
+          "category": "wip"
+        },
+        {
+          "name": "closed",
+          "category": "done"
+        },
+        {
+          "name": "deferred",
+          "category": "frozen"
+        },
+        {
+          "name": "hooked",
+          "category": "wip"
+        },
+        {
+          "name": "in_progress",
+          "category": "wip"
+        },
+        {
+          "name": "on_hold",
+          "category": "frozen"
+        },
+        {
+          "name": "open",
+          "category": "active"
+        },
+        {
+          "name": "pinned",
+          "category": "frozen"
+        },
+        {
+          "name": "project_local",
+          "category": "active"
+        },
+        {
+          "name": "qa_testing",
+          "category": "wip"
+        },
+        {
+          "name": "sql_only",
+          "category": "active"
+        },
+        {
+          "name": "yaml_only",
+          "category": "frozen"
+        }
+      ],
+      "prefix": "review-project",
+      "id_mode": "hash",
+      "hash_length": 3,
+      "last_id": 0,
+      "child_counters": {}
+    }
+  ],
+  "ontology": [
+    {
+      "id": "native-map-type/3bf8fdf7c3010cc345498082ad7222b598ce1f571daef98da9f2b91a6d87b638",
+      "kind": "map_type",
+      "target": {
+        "project": "review-project",
+        "type": "rich_kind"
+      },
+      "from": "rich_kind",
+      "to": "issue"
+    }
+  ],
+  "quiesced": true,
+  "remotes_merged": true,
+  "working_set_clean": true,
+  "history": "unavailable",
+  "external": [
+    {
+      "family": "user-legacy-config",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/user-legacy-config.json",
+      "state": "json-config",
+      "precedence": 0
+    },
+    {
+      "family": "user-xdg-config",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/user-xdg-config.json",
+      "state": "json-config",
+      "precedence": 2
+    },
+    {
+      "family": "user-native-config",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/user-native-config.json",
+      "state": "json-config",
+      "precedence": 1
+    },
+    {
+      "family": "project-config",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/project-config.json",
+      "state": "json-config",
+      "precedence": 3
+    },
+    {
+      "family": "beads-dir-config",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/beads-dir-config.json",
+      "state": "json-config",
+      "precedence": 4
+    },
+    {
+      "family": "project-local-config",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/project-local-config.json",
+      "state": "json-config",
+      "precedence": 5
+    },
+    {
+      "family": "environment-and-flags",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/environment-and-flags.json",
+      "state": "json-config",
+      "precedence": 6
+    },
+    {
+      "family": "metadata-json",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/metadata-json.json",
+      "state": "json-config",
+      "precedence": 7
+    },
+    {
+      "family": "legacy-config-json",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/legacy-config-json.json",
+      "state": "json-config",
+      "precedence": 8
+    },
+    {
+      "family": "beads-hooks",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/beads-hooks.json",
+      "state": "json-config",
+      "precedence": 9
+    },
+    {
+      "family": "legacy-hooks",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/legacy-hooks.json",
+      "state": "json-config",
+      "precedence": 10
+    },
+    {
+      "family": "git-hooks",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/git-hooks.json",
+      "state": "json-config",
+      "precedence": 11
+    },
+    {
+      "family": "external-hook-managers",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/external-hook-managers.json",
+      "state": "json-config",
+      "precedence": 12
+    },
+    {
+      "family": "routes-jsonl",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/routes-jsonl.json",
+      "state": "json-config",
+      "precedence": 13
+    },
+    {
+      "family": "formulas",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/formulas.json",
+      "state": "json-config",
+      "precedence": 14
+    },
+    {
+      "family": "formula-search-paths",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/formula-search-paths.json",
+      "state": "json-config",
+      "precedence": 15
+    },
+    {
+      "family": "issues-jsonl",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/issues-jsonl.json",
+      "state": "json-config",
+      "precedence": 16
+    },
+    {
+      "family": "interactions-jsonl",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/interactions-jsonl.json",
+      "state": "json-config",
+      "precedence": 17
+    },
+    {
+      "family": "dolt-ignore",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-ignore.json",
+      "state": "json-config",
+      "precedence": 18
+    },
+    {
+      "family": "dolt-nonlocal-tables",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-nonlocal-tables.json",
+      "state": "json-config",
+      "precedence": 19
+    },
+    {
+      "family": "dolt-working-set",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-working-set.json",
+      "state": "json-config",
+      "precedence": 20
+    },
+    {
+      "family": "dolt-commit-graph",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-commit-graph.json",
+      "state": "json-config",
+      "precedence": 21
+    },
+    {
+      "family": "dolt-remotes",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-remotes.json",
+      "state": "json-config",
+      "precedence": 22
+    },
+    {
+      "family": "dolt-conflicts",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-conflicts.json",
+      "state": "json-config",
+      "precedence": 23
+    },
+    {
+      "family": "dolt-history-maintenance",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/dolt-history-maintenance.json",
+      "state": "json-config",
+      "precedence": 24
+    },
+    {
+      "family": "store-files-and-quiescence",
+      "path": "/tmp/bbt.2jPsBQ/tmp/TestPublicNativeRichRelationsFixturereview-project1790926200/008/inventory.json.sources/store-files-and-quiescence.json",
+      "state": "json-config",
+      "precedence": 25
+    }
+  ],
+  "config_policy": {
+    "config/auto_compact_enabled": "public",
+    "config/compact_batch_size": "public",
+    "config/compact_parallel_workers": "public",
+    "config/compact_tier1_days": "public",
+    "config/compact_tier1_dep_levels": "public",
+    "config/compact_tier2_commits": "public",
+    "config/compact_tier2_days": "public",
+    "config/compact_tier2_dep_levels": "public",
+    "config/compaction_enabled": "public",
+    "config/issue_prefix": "public",
+    "config/status.custom": "public",
+    "config/types.custom": "public",
+    "metadata/_project_id": "public",
+    "metadata/clone_id": "public",
+    "metadata/last_import_time": "public",
+    "metadata/repo_id": "public"
+  }
+}
