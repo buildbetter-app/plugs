@@ -81,9 +81,9 @@ func p31ProjectJSONL(t *testing.T, input []byte) map[string][]byte {
 	return result
 }
 
-const p31PinnedBD = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/bd"
+const p31PinnedBeads = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/bd"
 
-func p31BDIssueCore(value map[string]any) map[string]any {
+func p31BeadsIssueCore(value map[string]any) map[string]any {
 	copy := map[string]any{}
 	for key, item := range value {
 		switch key {
@@ -95,7 +95,7 @@ func p31BDIssueCore(value map[string]any) map[string]any {
 	return copy
 }
 
-func p31BDSourceRows(t *testing.T, expected []byte) map[string]map[string]any {
+func p31BeadsSourceRows(t *testing.T, expected []byte) map[string]map[string]any {
 	t.Helper()
 	rows := map[string]map[string]any{}
 	for _, line := range bytes.Split(bytes.TrimSpace(expected), []byte{'\n'}) {
@@ -118,7 +118,7 @@ func p31BDSourceRows(t *testing.T, expected []byte) map[string]map[string]any {
 	return rows
 }
 
-func p31BDCanonical(value any) any {
+func p31BeadsCanonical(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		copy := map[string]any{}
@@ -127,18 +127,18 @@ func p31BDCanonical(value any) any {
 				if raw, ok := item.(string); ok {
 					var decoded any
 					if json.Unmarshal([]byte(raw), &decoded) == nil {
-						copy[key] = p31BDCanonical(decoded)
+						copy[key] = p31BeadsCanonical(decoded)
 						continue
 					}
 				}
 			}
-			copy[key] = p31BDCanonical(item)
+			copy[key] = p31BeadsCanonical(item)
 		}
 		return copy
 	case []any:
 		copy := make([]any, len(typed))
 		for i, item := range typed {
-			copy[i] = p31BDCanonical(item)
+			copy[i] = p31BeadsCanonical(item)
 		}
 		return copy
 	default:
@@ -146,8 +146,8 @@ func p31BDCanonical(value any) any {
 	}
 }
 
-func p31BDListExpected(source map[string]any, rows map[string]map[string]any) map[string]any {
-	want := p31BDIssueCore(source)
+func p31BeadsListExpected(source map[string]any, rows map[string]map[string]any) map[string]any {
+	want := p31BeadsIssueCore(source)
 	dependencies, _ := source["dependencies"].([]any)
 	if len(dependencies) != 0 {
 		listDependencies := make([]any, 0, len(dependencies))
@@ -198,15 +198,15 @@ func p31BDListExpected(source map[string]any, rows map[string]map[string]any) ma
 	return want
 }
 
-func p31BDShowExpected(source map[string]any, rows map[string]map[string]any) map[string]any {
-	want := p31BDIssueCore(source)
+func p31BeadsShowExpected(source map[string]any, rows map[string]map[string]any) map[string]any {
+	want := p31BeadsIssueCore(source)
 	dependencies, _ := source["dependencies"].([]any)
 	if len(dependencies) != 0 {
 		showDependencies := make([]any, 0, len(dependencies))
 		for _, raw := range dependencies {
 			dependency, _ := raw.(map[string]any)
 			id, _ := dependency["depends_on_id"].(string)
-			item := p31BDIssueCore(rows[id])
+			item := p31BeadsIssueCore(rows[id])
 			item["dependency_type"] = dependency["type"]
 			showDependencies = append(showDependencies, item)
 		}
@@ -239,9 +239,9 @@ func p31BDShowExpected(source map[string]any, rows map[string]map[string]any) ma
 	return want
 }
 
-func p31BD(t *testing.T, directory string, stdin []byte, args ...string) []byte {
+func p31Beads(t *testing.T, directory string, stdin []byte, args ...string) []byte {
 	t.Helper()
-	cmd := exec.Command(p31PinnedBD, args...)
+	cmd := exec.Command(p31PinnedBeads, args...)
 	cmd.Dir = directory
 	cmd.Stdin = bytes.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
@@ -251,14 +251,14 @@ func p31BD(t *testing.T, directory string, stdin []byte, args ...string) []byte 
 	return out
 }
 
-func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) {
+func p31BeadsSourceReadback(t *testing.T, project string, source, expected []byte) {
 	t.Helper()
-	rows := p31BDSourceRows(t, expected)
+	rows := p31BeadsSourceRows(t, expected)
 	directory := t.TempDir()
-	p31BD(t, directory, nil, "init", "--prefix", project, "--non-interactive", "--quiet")
-	p31BD(t, directory, source, "import", "-")
+	p31Beads(t, directory, nil, "init", "--prefix", project, "--non-interactive", "--quiet")
+	p31Beads(t, directory, source, "import", "-")
 	var issues []map[string]any
-	if err := json.Unmarshal(p31BD(t, directory, nil, "list", "--all", "--json"), &issues); err != nil {
+	if err := json.Unmarshal(p31Beads(t, directory, nil, "list", "--all", "--json"), &issues); err != nil {
 		t.Fatal(err)
 	}
 	if len(issues) != len(rows) {
@@ -279,13 +279,13 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 			}
 			return copy
 		}
-		if !reflect.DeepEqual(p31BDCanonical(listComparable(got)), p31BDCanonical(p31BDListExpected(sourceRow, rows))) {
+		if !reflect.DeepEqual(p31BeadsCanonical(listComparable(got)), p31BeadsCanonical(p31BeadsListExpected(sourceRow, rows))) {
 			gb, _ := json.Marshal(got)
-			wb, _ := json.Marshal(p31BDListExpected(sourceRow, rows))
+			wb, _ := json.Marshal(p31BeadsListExpected(sourceRow, rows))
 			t.Fatalf("bd list readback differs id=%s got=%s want=%s", id, gb, wb)
 		}
 		var shown any
-		if err := json.Unmarshal(p31BD(t, directory, nil, "show", id, "--json", "--include-comments"), &shown); err != nil {
+		if err := json.Unmarshal(p31Beads(t, directory, nil, "show", id, "--json", "--include-comments"), &shown); err != nil {
 			t.Fatal(err)
 		}
 		shownMap, _ := shown.(map[string]any)
@@ -294,13 +294,13 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 				shownMap, _ = list[0].(map[string]any)
 			}
 		}
-		if !reflect.DeepEqual(p31BDCanonical(listComparable(shownMap)), p31BDCanonical(p31BDShowExpected(sourceRow, rows))) {
+		if !reflect.DeepEqual(p31BeadsCanonical(listComparable(shownMap)), p31BeadsCanonical(p31BeadsShowExpected(sourceRow, rows))) {
 			gb, _ := json.Marshal(shownMap)
-			wb, _ := json.Marshal(p31BDShowExpected(sourceRow, rows))
+			wb, _ := json.Marshal(p31BeadsShowExpected(sourceRow, rows))
 			t.Fatalf("bd show readback differs id=%s got=%s want=%s", id, gb, wb)
 		}
 		var deps any
-		if err := json.Unmarshal(p31BD(t, directory, nil, "dep", "list", id, "--json"), &deps); err != nil {
+		if err := json.Unmarshal(p31Beads(t, directory, nil, "dep", "list", id, "--json"), &deps); err != nil {
 			t.Fatal(err)
 		}
 		wantDeps := sourceRow["dependencies"]
@@ -318,7 +318,7 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 			for _, expected := range wantDepList {
 				e, _ := expected.(map[string]any)
 				depID, _ := e["depends_on_id"].(string)
-				if dep["id"] == depID && dep["dependency_type"] == e["type"] && reflect.DeepEqual(p31BDIssueCore(depWithoutDependencyType(dep)), p31BDIssueCore(rows[depID])) {
+				if dep["id"] == depID && dep["dependency_type"] == e["type"] && reflect.DeepEqual(p31BeadsIssueCore(depWithoutDependencyType(dep)), p31BeadsIssueCore(rows[depID])) {
 					matched = true
 					break
 				}
@@ -396,7 +396,7 @@ func TestP31JoinedCurrentReceiverReverseDirectAndNativeRestoredAllDrivers(t *tes
 					}
 				}
 				for project, expected := range want {
-					p31BDSourceReadback(t, project, actual[project], expected)
+					p31BeadsSourceReadback(t, project, actual[project], expected)
 				}
 			}
 			check("direct", store)
