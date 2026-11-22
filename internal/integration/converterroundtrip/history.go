@@ -406,7 +406,7 @@ func historyLockPlan(plan restorePlan, h driver.OfflineHistory) restorePlan {
 	return copy
 }
 
-func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord) error {
+func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, expectedRevision *model.Revision) error {
 	ctx, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
 	defer release()
 	if p.HistoryTime == "" || evidence.ArchiveSHA256 != p.ArchiveDigest {
@@ -438,13 +438,13 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	archive, releaseArchive := archive.NativeDeltaAccountingScope()
 	defer releaseArchive()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
-	return validateHistoryRecoveryArchive(ctx, r, p, evidence, receipt, archive, nil, stream)
+	return validateHistoryRecoveryArchive(ctx, r, p, evidence, receipt, expectedRevision, archive, nil, stream)
 }
 
 // The same fixed reader's authenticated source is shared by all recovery
 // checks. A clean commit may additionally borrow its already validated history;
 // no target record can construct this operation-local value.
-func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, archive *dumpformat.Archive, prepared *driver.OfflineHistory, streams ...*historyverify.NativeArchiveStream) error {
+func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driver.RestoreImportProfile, evidence archiveEvidence, receipt *driver.IdempotencyRecord, expectedRevision *model.Revision, archive *dumpformat.Archive, prepared *driver.OfflineHistory, streams ...*historyverify.NativeArchiveStream) error {
 	archive, release := archive.NativeDeltaAccountingScope()
 	defer release()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
