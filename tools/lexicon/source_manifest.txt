@@ -722,6 +722,7 @@ internal/integration/converterroundtrip/native_table_oracle_test.go
 internal/integration/converterroundtrip/native_tables.go
 internal/integration/converterroundtrip/native_tables_test.go
 internal/integration/converterroundtrip/native_workflow_accounting_test.go
+internal/integration/converterroundtrip/p31_joined_acceptance_test.go
 internal/integration/converterroundtrip/planner_extraction_test.go
 internal/integration/converterroundtrip/planner_helpers.go
 internal/integration/converterroundtrip/planner_output_test.go

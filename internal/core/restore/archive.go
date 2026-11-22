@@ -110,14 +110,15 @@ type nativeRecord struct {
 // which keeps ordinary native backups compact while preserving the exact
 // content-addressed source envelope needed by reverse conversion.
 type nativeReverseEvidence struct {
-	ArchiveSHA256      string                             `json:"archive_sha256"`
-	DerivedSHA256      string                             `json:"derived_sha256"`
-	Profile            string                             `json:"profile"`
-	Members            map[string]dumpformat.File         `json:"members"`
-	NativeCaptureFiles map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
-	SourceStore        string                             `json:"source_store"`
-	NativeIncarnation  string                             `json:"native_incarnation,omitempty"`
-	HistoryBinding     *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
+	ArchiveSHA256           string                             `json:"archive_sha256"`
+	DerivedSHA256           string                             `json:"derived_sha256"`
+	Profile                 string                             `json:"profile"`
+	Members                 map[string]dumpformat.File         `json:"members"`
+	NativeCaptureFiles      map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
+	NativeDecodedLimitBytes uint64                             `json:"native_decoded_limit_bytes,omitempty"`
+	SourceStore             string                             `json:"source_store"`
+	NativeIncarnation       string                             `json:"native_incarnation,omitempty"`
+	HistoryBinding          *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
 }
 
 func archiveDigest(paths []string, members map[string][]byte) string {
@@ -227,6 +228,25 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 			if marshalErr == nil {
 				records[i].Body = body
 			}
+		}
+	}
+	// A native restore creates a fresh store incarnation. Rebind the retained
+	// source-plane commit marker to that incarnation so reverse can continue
+	// through the authenticated source projection after native restore.
+	for i := range records {
+		if records[i].Ref.ID != driver.SourcePlaneCommitRecordID || records[i].Kind != "instance_config" {
+			continue
+		}
+		var binding driver.SourcePlaneCommitBindingV1
+		if json.Unmarshal(records[i].Body, &binding) != nil || binding.StoreID != meta.StoreID {
+			continue
+		}
+		binding.Incarnation = string(meta.Incarnation)
+		for j := range binding.Providers {
+			binding.Providers[j].Origin.Incarnation = string(meta.Incarnation)
+		}
+		if body, marshalErr := json.Marshal(binding); marshalErr == nil {
+			records[i].Body = body
 		}
 	}
 
@@ -386,6 +406,7 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 
 func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, records []nativeRecord) (map[string][]byte, error) {
 	digests := map[string]bool{}
+	joined := false
 	for _, record := range records {
 		if record.Ref.ID != "restore/archive" {
 			continue
@@ -396,6 +417,9 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 		}
 		if !hasConverterReverseEvidence(evidence) {
 			continue
+		}
+		if len(evidence.NativeCaptureFiles) != 0 && strings.HasPrefix(evidence.SourceStore, "merge-") {
+			joined = true
 		}
 		if isDigest(evidence.ArchiveSHA256) {
 			digests[evidence.ArchiveSHA256] = true
@@ -420,6 +444,9 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 	for _, digest := range paths {
 		data, err := reader.Blob(ctx, driver.Hash(digest))
 		if err != nil || memberDigest(data) != digest {
+			if joined {
+				return nil, fmt.Errorf("joined reverse evidence blob %s is unavailable or changed", digest)
+			}
 			continue
 		}
 		result[digest] = data
@@ -429,11 +456,14 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 
 func hasConverterReverseEvidence(evidence nativeReverseEvidence) bool {
 	// Native capture-set evidence belongs to the native history recovery
-	// contract. It is intentionally not promoted into converter reverse
-	// evidence here, preserving the P23 refusal boundary for native-only
-	// backups. Offline converter archives have no capture-file ledger and
-	// use the source envelope/member ledger below.
-	if len(evidence.NativeCaptureFiles) != 0 || strings.HasPrefix(evidence.SourceStore, "native/") {
+	// contract. A joined source-plane import is the one native form that also
+	// has a converter reverse path. Its aggregate store is the authenticated
+	// merge namespace. Keep single-source native backups on the P23 refusal
+	// boundary, and retain only the joined capture ledger for that reverse path.
+	if len(evidence.NativeCaptureFiles) != 0 {
+		return strings.HasPrefix(evidence.SourceStore, "merge-")
+	}
+	if strings.HasPrefix(evidence.SourceStore, "native/") {
 		return false
 	}
 	for path := range evidence.Members {
@@ -1190,6 +1220,11 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	if err := allocatorRestore.RestoreNativeAllocators(ctx, allocatorSnapshot); err != nil {
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
+	if archive.Native() {
+		if err := rebindNativeReverseEvidence(records, prepared.Incarnation); err != nil {
+			return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+		}
+	}
 	for _, record := range records {
 		if err := pipeline.PutSourceRecord(ctx, tx, record); err != nil {
 			return model.Changeset{}, err
@@ -1257,6 +1292,47 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	committed, err := tx.Commit(ctx, header)
 	return committed, restoreAdmissionError(err)
+}
+
+func rebindNativeReverseEvidence(records []driver.Record, incarnation string) error {
+	for i := range records {
+		if records[i].Ref.ID == driver.SourcePlaneCommitRecordID && records[i].Kind == "instance_config" {
+			var binding driver.SourcePlaneCommitBindingV1
+			if err := json.Unmarshal(records[i].Body, &binding); err != nil {
+				return err
+			}
+			binding.Incarnation = incarnation
+			binding.Revision = model.Natural64(1)
+			for j := range binding.Providers {
+				binding.Providers[j].Origin.Incarnation = incarnation
+			}
+			body, err := json.Marshal(binding)
+			if err != nil {
+				return err
+			}
+			records[i].Body = body
+		}
+		if records[i].Ref.ID != "restore/archive" || records[i].Kind != "restore-archive" {
+			continue
+		}
+		var evidence nativeReverseEvidence
+		if err := json.Unmarshal(records[i].Body, &evidence); err != nil {
+			return err
+		}
+		if evidence.NativeIncarnation == "" {
+			continue
+		}
+		evidence.NativeIncarnation = incarnation
+		if evidence.HistoryBinding != nil {
+			evidence.HistoryBinding.Incarnation = incarnation
+		}
+		body, err := json.Marshal(evidence)
+		if err != nil {
+			return err
+		}
+		records[i].Body = body
+	}
+	return nil
 }
 
 func restoreAdmissionError(err error) error {

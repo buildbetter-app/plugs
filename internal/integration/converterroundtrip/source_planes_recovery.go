@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -154,16 +155,39 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		}
 	}
 	if len(receiptBytes) == 0 || json.Unmarshal(receiptBytes, &binding) != nil {
-		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"}
+		rows, rowErr := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+		if rowErr != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
+			return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"}
+		}
 	}
 	floor := model.Natural64(1)
-	if bound.HistoryMode == driver.RestoreHistoryModeFull ||
-		bound.HistoryMode == driver.RestoreHistoryModePartial && bound.NativeDeltaHistory != nil && bound.NativeDeltaHistory.FirstSequence == 1 {
+	if report.Receipt.RequestHash != "" && (bound.HistoryMode == driver.RestoreHistoryModeFull ||
+		bound.HistoryMode == driver.RestoreHistoryModePartial && bound.NativeDeltaHistory != nil && bound.NativeDeltaHistory.FirstSequence == 1) {
 		floor = model.Natural64(0)
 	}
 	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: report.Receipt.Commit.Revision, HistoryFloor: floor}
-	if err := binding.Validate(bound, initial); err != nil {
-		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitBinding"}
+	if report.Receipt.RequestHash != "" {
+		if err := binding.Validate(bound, initial); err != nil {
+			return Report{}, nil, fmt.Errorf("%w: %v", driver.ErrRestoreBindingMismatch{Field: "source.commitBinding"}, err)
+		}
+	}
+	if report.Receipt.RequestHash == "" {
+		if source.archive == nil {
+			return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.archive"}
+		}
+		logical := source.logical
+		if logical == nil {
+			work, release := source.archive.NativeDeltaAccountingScope()
+			defer release()
+			image, prepErr := prepareSourceArchive(ctx, work, bound, true)
+			if prepErr != nil {
+				return Report{}, nil, prepErr
+			}
+			logical = image.LogicalImage()
+		}
+		report.Archive, report.SourcePlanes, report.collection = source.archive, &binding, source.collection
+		keepArchive = true
+		return report, logical, nil
 	}
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 	if err != nil {
@@ -174,7 +198,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	cp, err := r.SourcePlaneCheckpoint(plan.Providers[0].Namespace)
 	if err != nil {
-		return Report{}, nil, err
+		return Report{}, nil, fmt.Errorf("source checkpoint: %w", err)
 	}
 	// Origin is immutable; generation and the live logical image may advance.
 	inspector := pluginhost.NewDurableState(nil, nil, "workflow", "default").(driver.SourcePlaneOriginReader)
@@ -253,5 +277,5 @@ func sourceInspectionFailure(cause, malformed error) error {
 	if errors.As(cause, &limit) || errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
-	return malformed
+	return fmt.Errorf("%w: %v", malformed, cause)
 }

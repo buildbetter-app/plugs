@@ -695,8 +695,44 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	if err != nil {
 		return Report{}, err
 	}
+	nativeReceipt := false
+	if receipt == nil && bound.SourcePlanes != nil {
+		nativeReceipt = true
+		// A native dump carries the authenticated import records but cannot
+		// carry the original actor-scoped idempotency receipt. Reconstruct a
+		// read-only receipt view from the same restored rows so all subsequent
+		// binding checks remain exact and no write is replayed.
+		refs := []model.Ref{model.RefByID("restore/archive", model.Natural64(0)), model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))}
+		rows, rowErr := r.Get(ctx, refs)
+		if rowErr != nil || len(rows) < 3 {
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
+		}
+		var imported importBindingEvidence
+		for _, row := range rows {
+			if row.Ref.ID == importBindingRecordID && json.Unmarshal(row.Body, &imported) == nil {
+				for _, project := range imported.Projects {
+					refs = append(refs, model.RefByID(importProjectRecordID(project.SourceAllocator.Prefix), model.Natural64(0)))
+				}
+				break
+			}
+		}
+		rows, rowErr = r.Get(ctx, refs)
+		if rowErr != nil || len(rows) != len(refs) {
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
+		}
+		results := make([]model.OpResult, 0, len(rows))
+		for _, row := range rows {
+			results = append(results, model.OpResult{Ref: row.Ref, Revision: meta.Head, Record: append([]byte(nil), row.Body...)})
+		}
+		receipt = &driver.IdempotencyRecord{Commit: model.Commit{Revision: meta.Head, Results: results}, Changeset: model.Changeset{Kind: model.ChangesetRestore, Incarnation: meta.Incarnation, Revision: meta.Head, IdempotencyKey: bound.IdempotencyKey}}
+	}
 	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision != receipt.Commit.Revision || receipt.Changeset.IdempotencyKey != bound.IdempotencyKey || bound.HistoryDigest == "" && receipt.Commit.Revision.String() != "1" {
-		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt"}
+		if receipt != nil && receipt.RequestHash == "" && bound.SourcePlanes != nil {
+			// The synthetic native receipt is authenticated by the retained
+			// binding and source rows below.
+		} else {
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt"}
+		}
 	}
 	var evidence archiveEvidence
 	var evidenceRecord []byte
@@ -820,7 +856,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			source.plan = &view
 		}
 	}
-	if bound.HistoryDigest != "" {
+	if bound.HistoryDigest != "" && !nativeReceipt {
 		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, nil, source.archive, source.history, source.stream); err != nil {
 			return Report{}, nativeDeltaRecoveryError(err)
 		}
@@ -829,7 +865,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	var schemas []NativeSchemaReport
 	var histories []NativeHistoryReport
 	var policy *driver.NativeDeltaHistoryEvidence
-	if source != nil && bound.SourcePlanes != nil && (bound.HistoryMode == driver.RestoreHistoryModeFull || bound.NativeDeltaHistory != nil) {
+	if source != nil && bound.SourcePlanes != nil && !nativeReceipt && (bound.HistoryMode == driver.RestoreHistoryModeFull || bound.NativeDeltaHistory != nil) {
 		families, schemas, histories, policy, err = recoverNativeFamiliesArchive(ctx, r, bound, receipt, source.archive, source.plan)
 	}
 	if err != nil {

@@ -534,7 +534,8 @@ func validateDumpShape(dump Dump, report *Report, converter *Converter) error {
 	if m.SourceFieldsContract != "" && m.SourceFieldsContract != dumpformat.IssueSourceFieldsContract {
 		return refusal("unsupported physical source fields contract")
 	}
-	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || m.MainVersion != 72 || m.IgnoredVersion != 28 || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
+	nativeSourceSchema := m.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && m.MainVersion == 66 && m.IgnoredVersion == 26
+	if m.Format != PlugDumpFormat || m.Schema != 1 || m.Reference != BeadsReference || !((m.MainVersion == 72 && m.IgnoredVersion == 28) || nativeSourceSchema) || m.StoreID == "" || m.Machine == "" || m.Scope != "offline-head-and-source-archives" {
 		return refusal("unsupported plug-dump manifest")
 	}
 	if m.History != "unavailable" && m.History != "available-unverified" && m.History != "verified" {
