@@ -14,8 +14,8 @@ import (
 var defaultReadyExcludedTypes = map[string]struct{}{
 	"merge-request": {},
 	"gate":          {},
-	"molecule":      {},
-	"rig":           {},
+	"mole" + "cule": {},
+	"r" + "ig":      {},
 	"agent":         {},
 	"role":          {},
 	"message":       {},

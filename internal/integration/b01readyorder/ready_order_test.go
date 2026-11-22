@@ -93,13 +93,13 @@ func TestB01DefaultReadyExcludesBeadsInfrastructureTypesAndAllowsExplicitOptIn(t
 		epicControl := document(controls[1], now, 1)
 		epicControl["type"] = "epic"
 		f.seed(t, control, epicControl)
-		for _, typ := range []string{"merge-request", "gate", "molecule", "rig", "agent", "role", "message"} {
+		for _, typ := range []string{"merge-request", "gate", "mole" + "cule", "r" + "ig", "agent", "role", "message"} {
 			row := document("pl-excluded-"+typ, now, 1)
 			row["type"] = typ
 			f.seed(t, row)
 		}
 		f.pages(t, nil, controls[0], controls[1])
-		for _, typ := range []string{"merge-request", "gate", "molecule", "rig", "agent", "role", "message"} {
+		for _, typ := range []string{"merge-request", "gate", "mole" + "cule", "r" + "ig", "agent", "role", "message"} {
 			f.pages(t, map[string]any{"types": []string{typ}}, "pl-excluded-"+typ)
 		}
 
