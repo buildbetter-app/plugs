@@ -552,7 +552,7 @@ func projectLiveBeadWithOpaque(source reverseconverter.Record, row driver.Record
 			continue // Legacy restore's allocator mirror is not source metadata.
 		}
 		if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "plug.restore.") {
-			return reverseconverter.Record{}, ReverseRefusal{"unknown_reserved_metadata"}
+			return reverseconverter.Record{}, ReverseRefusal{fmt.Sprintf("unknown_reserved_metadata:%s:opaque=%v source=%s/%s/%s", key, dynamicOpaque, source.Project, source.Source.Table, source.ID)}
 		}
 		var value any
 		if err := decodeReverseJSON(raw, &value); err != nil {
