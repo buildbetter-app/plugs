@@ -103,6 +103,15 @@ type File struct {
 	Size   int64  `json:"size"`
 }
 
+// HistoryBindingEvidence carries the exact source restore receipt identity
+// needed to validate history-bearing converter reverse after native restore.
+// It is copied from the authenticated source receipt and never recomputed.
+type HistoryBindingEvidence struct {
+	RequestHash string `json:"request_hash"`
+	Revision    string `json:"revision"`
+	Incarnation string `json:"incarnation"`
+}
+
 type Disposition struct {
 	Identity *SourceIdentity `json:"identity,omitempty"`
 	Family   string          `json:"family"`

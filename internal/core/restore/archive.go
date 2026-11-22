@@ -110,10 +110,13 @@ type nativeRecord struct {
 // which keeps ordinary native backups compact while preserving the exact
 // content-addressed source envelope needed by reverse conversion.
 type nativeReverseEvidence struct {
-	ArchiveSHA256      string                     `json:"archive_sha256"`
-	Members            map[string]dumpformat.File `json:"members"`
-	NativeCaptureFiles map[string]dumpformat.File `json:"native_capture_files,omitempty"`
-	SourceStore        string                     `json:"source_store"`
+	ArchiveSHA256      string                             `json:"archive_sha256"`
+	DerivedSHA256      string                             `json:"derived_sha256"`
+	Profile            string                             `json:"profile"`
+	Members            map[string]dumpformat.File         `json:"members"`
+	NativeCaptureFiles map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
+	SourceStore        string                             `json:"source_store"`
+	HistoryBinding     *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
 }
 
 func archiveDigest(paths []string, members map[string][]byte) string {
@@ -205,6 +208,22 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 		cursor = page.NextCursor
 	}
 	sort.Slice(records, func(i, j int) bool { return nativeRecordKey(records[i]) < nativeRecordKey(records[j]) })
+	if historyBinding := nativeReverseHistoryBinding(ctx, reader, records); historyBinding != nil {
+		for i := range records {
+			if records[i].Ref.ID != "restore/archive" {
+				continue
+			}
+			var evidence nativeReverseEvidence
+			if json.Unmarshal(records[i].Body, &evidence) != nil {
+				continue
+			}
+			evidence.HistoryBinding = historyBinding
+			body, marshalErr := json.Marshal(evidence)
+			if marshalErr == nil {
+				records[i].Body = body
+			}
+		}
+	}
 
 	// A converter restore retains its source envelope and referenced members as
 	// content-addressed blobs. Carry those exact blobs into a native backup so
@@ -419,6 +438,34 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 		result[digest] = data
 	}
 	return result, nil
+}
+
+func nativeReverseHistoryBinding(ctx context.Context, reader driver.Reader, records []nativeRecord) *dumpformat.HistoryBindingEvidence {
+	var binding struct {
+		Profile     driver.RestoreImportProfile `json:"profile"`
+		RequestHash string                      `json:"request_hash"`
+	}
+	for _, record := range records {
+		if record.Ref.ID == "instance_config/restore-import/binding" {
+			if json.Unmarshal(record.Body, &binding) != nil || binding.Profile.HistoryDigest == "" {
+				return nil
+			}
+			request, err := binding.Profile.RequestHash()
+			if err != nil || request != binding.RequestHash {
+				return nil
+			}
+			principal, err := driver.PrincipalKey(binding.Profile.Admission.Actor)
+			if err != nil {
+				return nil
+			}
+			receipt, err := reader.IdempotencyByKey(ctx, principal, binding.Profile.AgentLabel(), binding.Profile.Method, binding.Profile.IdempotencyKey)
+			if err != nil || receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Revision != receipt.Commit.Revision {
+				return nil
+			}
+			return &dumpformat.HistoryBindingEvidence{RequestHash: request, Revision: string(receipt.Commit.Revision), Incarnation: receipt.Changeset.Incarnation}
+		}
+	}
+	return nil
 }
 
 func isDigest(value string) bool {

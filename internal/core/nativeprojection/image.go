@@ -289,13 +289,14 @@ func derivedProfile(plan *restorePlan) string {
 }
 
 type ArchiveEvidence struct {
-	ArchiveSHA256           string                     `json:"archive_sha256"`
-	DerivedSHA256           string                     `json:"derived_sha256"`
-	Profile                 string                     `json:"profile"`
-	SourceStore             string                     `json:"source_store"`
-	Members                 map[string]dumpformat.File `json:"members"`
-	NativeCaptureFiles      map[string]dumpformat.File `json:"native_capture_files,omitempty"`
-	NativeDecodedLimitBytes uint64                     `json:"native_decoded_limit_bytes,omitempty"`
+	ArchiveSHA256           string                             `json:"archive_sha256"`
+	DerivedSHA256           string                             `json:"derived_sha256"`
+	Profile                 string                             `json:"profile"`
+	SourceStore             string                             `json:"source_store"`
+	Members                 map[string]dumpformat.File         `json:"members"`
+	NativeCaptureFiles      map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
+	NativeDecodedLimitBytes uint64                             `json:"native_decoded_limit_bytes,omitempty"`
+	HistoryBinding          *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
 }
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {

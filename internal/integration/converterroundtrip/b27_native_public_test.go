@@ -7,12 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -22,7 +22,9 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
@@ -507,12 +509,12 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("native historical marker was adopted as an active import: found=%t err=%v", found, err)
 			}
-			assertNativeHistoricalReverseRefusal(t, target.runtime.Store)
+			assertNativeHistoricalReverseSucceeds(t, target.runtime.Store, reference.Data, reference.Archive)
 			target.reopen()
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("first target reopen changed native provenance/readback")
 			}
-			assertNativeHistoricalReverseRefusal(t, target.runtime.Store)
+			assertNativeHistoricalReverseSucceeds(t, target.runtime.Store, reference.Data, reference.Archive)
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("first target reopen adopted historical marker: found=%t err=%v", found, err)
 			}
@@ -520,7 +522,7 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("second target reopen changed native provenance/readback")
 			}
-			assertNativeHistoricalReverseRefusal(t, target.runtime.Store)
+			assertNativeHistoricalReverseSucceeds(t, target.runtime.Store, reference.Data, reference.Archive)
 			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
 				t.Fatalf("second target reopen adopted historical marker: found=%t err=%v", found, err)
 			}
@@ -528,14 +530,95 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 	}
 }
 
-// Native backup/restore retains the historical marker and live native rows,
-// but has no converter source-root blob. Reverse therefore remains a typed
-// fail-closed P25 boundary until that source root is retained explicitly.
-func assertNativeHistoricalReverseRefusal(t *testing.T, store driver.Store) {
+func assertNativeHistoricalReverseSucceeds(t *testing.T, store driver.Store, source []byte, archive *dumpformat.Archive) {
 	t.Helper()
-	_, err := converterroundtrip.ReverseRestored(context.Background(), store)
-	var refusal converterroundtrip.ReverseRefusal
-	if !errors.As(err, &refusal) || refusal.Reason != "invalid_source_evidence" {
-		t.Fatalf("native historical reverse refusal changed: %v", err)
+	directives := make([]ontologymigration.Directive, 0, len(archive.Manifest().Ontology))
+	for _, directive := range archive.Manifest().Ontology {
+		directives = append(directives, ontologymigration.Directive{
+			ID: directive.ID, Kind: ontologymigration.Kind(directive.Kind),
+			Target: ontologymigration.Target{Project: directive.Target.Project, Type: directive.Target.Type, ID: directive.Target.ID},
+			From:   directive.From, To: directive.To,
+		})
+	}
+	options := reverseconverter.Options{All: true, Directives: directives}
+	actual, err := converterroundtrip.ReverseRestoredWithOptions(context.Background(), store, options)
+	if err != nil {
+		t.Fatalf("native historical reverse failed: %v", err)
+	}
+	want, err := reverseconverter.ConvertArchiveWithOptions(source, options)
+	if err != nil || !bytes.Equal(actual.Result.JSONL, want.JSONL) || !reflect.DeepEqual(actual.Result.Projection, want.Projection) {
+		t.Fatalf("native historical reverse differs from source: err=%v", err)
+	}
+	assertNativeHistoricalBeadsReadback(t, actual.Result)
+}
+
+func assertNativeHistoricalBeadsReadback(t *testing.T, result reverseconverter.Result) {
+	t.Helper()
+	const binary = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/bd"
+	const wantHash = "9370e9a9234aed2697403a59a7d0c65b6d261c99720d386f5ad446535fc0bdd5"
+	data, err := os.ReadFile(binary)
+	digest := sha256.Sum256(data)
+	if err != nil || hex.EncodeToString(digest[:]) != wantHash {
+		t.Fatalf("pinned Beads artifact changed: err=%v", err)
+	}
+	root := t.TempDir()
+	workspace := filepath.Join(root, "beads")
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PATH=/usr/bin:/bin", "HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"), "BEADS_DIR=" + filepath.Join(workspace, ".beads"), "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_AUTHOR_NAME=Public roundtrip", "GIT_AUTHOR_EMAIL=public@example.invalid", "GIT_COMMITTER_NAME=Public roundtrip", "GIT_COMMITTER_EMAIL=public@example.invalid"}
+	run := func(args ...string) []byte {
+		cmd := exec.CommandContext(context.Background(), binary, args...)
+		cmd.Dir, cmd.Env = workspace, env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("bd %s failed: %v output=%s", args[0], err, out)
+		}
+		return out
+	}
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run("init", "--prefix", "review-project", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
+	input := filepath.Join(workspace, "reverse.jsonl")
+	if err := os.WriteFile(input, result.JSONL, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("import", input, "--json")
+	var listed []map[string]any
+	if err := json.Unmarshal(run("list", "--all", "--include-ephemeral", "--include-gates", "--json"), &listed); err != nil {
+		t.Fatal("bd list JSON", err)
+	}
+	wantIDs := map[string]bool{}
+	for _, issue := range result.Projection.Issues {
+		wantIDs[issue.ID] = true
+	}
+	gotIDs := map[string]bool{}
+	for _, issue := range listed {
+		if id, ok := issue["id"].(string); ok {
+			gotIDs[id] = true
+		}
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("bd list readback IDs differ: got=%d want=%d", len(gotIDs), len(wantIDs))
+	}
+	for _, issue := range result.Projection.Issues {
+		var shown []map[string]any
+		if err := json.Unmarshal(run("show", issue.ID, "--json"), &shown); err != nil || len(shown) == 0 {
+			t.Fatalf("bd show readback for %s failed: %v", issue.ID, err)
+		}
+	}
+	ids := make([]string, 0, len(wantIDs))
+	for id := range wantIDs {
+		ids = append(ids, id)
+	}
+	if len(result.Projection.Edges) != 0 {
+		var dependencies []map[string]any
+		args := append([]string{"dep", "list"}, ids...)
+		args = append(args, "--json")
+		if err := json.Unmarshal(run(args...), &dependencies); err != nil || len(dependencies) != len(result.Projection.Edges) {
+			t.Fatalf("bd dependency readback differs: got=%d want=%d err=%v", len(dependencies), len(result.Projection.Edges), err)
+		}
 	}
 }

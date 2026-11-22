@@ -366,6 +366,12 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 				if err != nil {
 					return err
 				}
+				if err := projectNativeStatusForReverse(&current, *dump); err != nil {
+					return err
+				}
+				if err := projectNativeTypeForReverse(&current, *dump); err != nil {
+					return err
+				}
 				dump.Records[kind][i] = current
 				continue
 			}
@@ -430,14 +436,19 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 		return err
 	}
 	receipt, err := reader.IdempotencyByKey(ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
-	if err != nil || receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != reader.Snapshot().Incarnation {
+	expectedRevision := (*model.Revision)(nil)
+	if receipt == nil && archive.HistoryBinding != nil && archive.HistoryBinding.RequestHash == request {
+		revision := model.Revision(archive.HistoryBinding.Revision)
+		expectedRevision = &revision
+	}
+	if err != nil || receipt != nil && (receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != reader.Snapshot().Incarnation) || receipt == nil && expectedRevision == nil {
 		return driver.ErrConflict
 	}
 	rows, err := reader.Get(ctx, []model.Ref{marker.Ref})
 	if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, marker.Body) {
 		return driver.ErrConflict
 	}
-	return validateHistoryRecovery(ctx, reader, p, archive, receipt)
+	return validateHistoryRecovery(ctx, reader, p, archive, receipt, expectedRevision)
 }
 
 func projectLiveBead(source reverseconverter.Record, row driver.Record, dump reverseconverter.Dump) (reverseconverter.Record, error) {

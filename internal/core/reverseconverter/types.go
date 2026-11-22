@@ -14,6 +14,7 @@ import (
 	"sort"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 )
 
 const (
@@ -30,8 +31,14 @@ type Project struct {
 	IDMode         string            `json:"id_mode"`
 	HashLength     int               `json:"hash_length"`
 	HashNamespaces []string          `json:"hash_namespaces,omitempty"`
+	Statuses       []ProjectStatus   `json:"statuses,omitempty"`
 	LastID         uint64            `json:"last_id"`
 	ChildCounters  map[string]uint64 `json:"child_counters"`
+}
+
+type ProjectStatus struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
 }
 
 type Kind struct {
@@ -47,24 +54,25 @@ type File struct {
 }
 
 type Manifest struct {
-	Format                     string            `json:"format"`
-	Schema                     int               `json:"schema"`
-	Reference                  string            `json:"beads_reference"`
-	StoreID                    string            `json:"store_id"`
-	Machine                    string            `json:"machine"`
-	MainVersion                int               `json:"main_version"`
-	IgnoredVersion             int               `json:"ignored_version"`
-	Scope                      string            `json:"scope"`
-	History                    string            `json:"history"`
-	Projects                   []Project         `json:"projects"`
-	Kinds                      []Kind            `json:"kind_registry"`
-	Files                      map[string]File   `json:"files"`
-	Sources                    []json.RawMessage `json:"sources"`
-	Warnings                   []string          `json:"warnings"`
-	Verification               map[string]string `json:"verification"`
-	SourceFieldsContract       string            `json:"source_fields_contract,omitempty"`
-	SourcePlaneAddressContract string            `json:"source_plane_address_contract,omitempty"`
-	StatusCategoryContract     string            `json:"status_category_contract,omitempty"`
+	Format                     string                        `json:"format"`
+	Schema                     int                           `json:"schema"`
+	Reference                  string                        `json:"beads_reference"`
+	StoreID                    string                        `json:"store_id"`
+	Machine                    string                        `json:"machine"`
+	MainVersion                int                           `json:"main_version"`
+	IgnoredVersion             int                           `json:"ignored_version"`
+	Scope                      string                        `json:"scope"`
+	History                    string                        `json:"history"`
+	Projects                   []Project                     `json:"projects"`
+	Ontology                   []ontologymigration.Directive `json:"ontology,omitempty"`
+	Kinds                      []Kind                        `json:"kind_registry"`
+	Files                      map[string]File               `json:"files"`
+	Sources                    []json.RawMessage             `json:"sources"`
+	Warnings                   []string                      `json:"warnings"`
+	Verification               map[string]string             `json:"verification"`
+	SourceFieldsContract       string                        `json:"source_fields_contract,omitempty"`
+	SourcePlaneAddressContract string                        `json:"source_plane_address_contract,omitempty"`
+	StatusCategoryContract     string                        `json:"status_category_contract,omitempty"`
 }
 
 type Provenance struct {

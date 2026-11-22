@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
@@ -413,6 +414,11 @@ func projectNativeTypeForReverse(projected *reverseconverter.Record, dump revers
 	switch nativeType {
 	case "task", "bug", "feature", "epic", "chore":
 		return nil
+	}
+	for _, directive := range dump.Manifest.Ontology {
+		if directive.Target.Project == projected.Project && directive.Target.Type == nativeType && directive.Kind == ontologymigration.MapType {
+			return nil
+		}
 	}
 	if err := mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType}); err != nil {
 		return err

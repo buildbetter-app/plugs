@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 )
 
 // Read is the rollback boundary for plug-dump/1. The canonical dumpformat
@@ -66,8 +67,16 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 			IDMode:         project.IDMode,
 			HashLength:     project.HashLength,
 			HashNamespaces: append([]string(nil), project.HashNamespaces...),
+			Statuses:       cloneProjectStatuses(project.Statuses),
 			LastID:         project.LastID,
 			ChildCounters:  cloneUintMap(project.ChildCounters),
+		})
+	}
+	for _, directive := range source.Ontology {
+		manifest.Ontology = append(manifest.Ontology, ontologymigration.Directive{
+			ID: directive.ID, Kind: ontologymigration.Kind(directive.Kind),
+			Target: ontologymigration.Target{Project: directive.Target.Project, Type: directive.Target.Type, ID: directive.Target.ID},
+			From:   directive.From, To: directive.To,
 		})
 	}
 	for _, kind := range source.Kinds {
@@ -106,6 +115,14 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 		}
 	}
 	return dump, nil
+}
+
+func cloneProjectStatuses(statuses []dumpformat.ProjectStatus) []ProjectStatus {
+	cloned := make([]ProjectStatus, 0, len(statuses))
+	for _, status := range statuses {
+		cloned = append(cloned, ProjectStatus{Name: status.Name, Category: status.Category})
+	}
+	return cloned
 }
 
 func cloneStringMap(input map[string]string) map[string]string {

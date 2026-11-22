@@ -487,7 +487,10 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 			return driver.ErrRestoreBindingMismatch{Field: "historyHeader"}
 		}
 		revision := model.Natural64(header.Head + 1)
-		if receipt.Commit.Revision != revision || receipt.Changeset.Revision != revision {
+		if receipt != nil && (receipt.Commit.Revision != revision || receipt.Changeset.Revision != revision) {
+			return driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
+		}
+		if receipt == nil && (expectedRevision == nil || *expectedRevision != revision) {
 			return driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
 		}
 		if owned {
@@ -539,7 +542,13 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	revision++
 	left, _ := json.Marshal(got)
 	right, _ := json.Marshal(want)
-	if !bytes.Equal(left, right) || receipt.Commit.Revision != model.Natural64(revision) || receipt.Changeset.Revision != model.Natural64(revision) {
+	if !bytes.Equal(left, right) {
+		return driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
+	}
+	if receipt != nil && (receipt.Commit.Revision != model.Natural64(revision) || receipt.Changeset.Revision != model.Natural64(revision)) {
+		return driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
+	}
+	if receipt == nil && (expectedRevision == nil || *expectedRevision != model.Natural64(revision)) {
 		return driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
 	}
 	return nil
