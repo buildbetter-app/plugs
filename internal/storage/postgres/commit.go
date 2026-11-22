@@ -254,6 +254,13 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if previous != nil {
 			if previous.RequestHash != h.RequestHash || previous.Changeset.Kind == "" {
+				if t.importRestore != nil {
+					field := "requestHash"
+					if previous.RequestHash == h.RequestHash {
+						field = "receipt.response"
+					}
+					return zero, driver.ErrRestoreBindingMismatch{Field: field}
+				}
 				return zero, driver.ErrConflict
 			}
 			value := previous.Changeset

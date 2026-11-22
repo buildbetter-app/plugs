@@ -44,7 +44,7 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 		}
 	}
 	if len(bindingRows) != 1 || bindingRows[0].Kind != "instance_config" || json.Unmarshal(bindingRows[0].Body, &binding) != nil {
-		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrRestoreBindingMismatch{Field: "source.importBinding"}
 	}
 	profile, err := binding.Profile.Detached()
 	if err != nil {
@@ -60,11 +60,11 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 		}
 	}
 	if len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
-		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrRestoreBindingMismatch{Field: "source.commitBinding"}
 	}
 	var commitBinding driver.SourcePlaneCommitBindingV1
 	if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil {
-		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrRestoreBindingMismatch{Field: "source.commitBinding"}
 	}
 	if commitBinding.StoreID != meta.StoreID || commitBinding.Incarnation != meta.Incarnation {
 		// A native dump/restore preserves the original source binding for
@@ -74,7 +74,7 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 	}
 	request, err := profile.RequestHash()
 	if err != nil || request != binding.RequestHash {
-		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrConflict
+		return driver.RestoreImportProfile{}, Report{}, false, driver.ErrRestoreBindingMismatch{Field: "requestHash"}
 	}
 	report, err := RecoverImport(ctx, target, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
 	return profile, report, true, err
@@ -87,11 +87,11 @@ func recoverSourceImport(ctx context.Context, target driver.Store, profile drive
 	}
 	bound, err := profile.Detached()
 	if err != nil || bound.SourcePlanes == nil || check.ArchiveSHA256 != bound.ArchiveDigest || check.DerivedSHA256 != bound.DerivedDigest {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "verification.digest"}
 	}
 	plan, err := bound.SourcePlanes.Plan()
 	if err != nil || len(plan.Providers) != 1 {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "source.providers"}
 	}
 	request, err := bound.RequestHash()
 	if err != nil {
@@ -114,7 +114,7 @@ func recoverSourceImport(ctx context.Context, target driver.Store, profile drive
 // current origin checks use that same observation; this helper never reopens it.
 func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot, meta driver.Meta, bound driver.RestoreImportProfile, check Verification, plan driver.SourcePlanePlanV1, request string, prepared ...*receivingEvidence) (Report, []byte, error) {
 	if r.Snapshot().At == nil || r.Snapshot().Incarnation != meta.Incarnation {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, driver.ErrRestoreCommitConflict{Cause: driver.ErrConflict}
 	}
 	meta.Head = *r.Snapshot().At
 	var source *receivingEvidence
@@ -137,7 +137,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		}
 	}()
 	if source == nil || source.requestHash != request {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "requestHash"}
 	}
 	report, err := recoverImportReader(ctx, r, meta, bound, check, request, source)
 	if err != nil {
@@ -148,13 +148,13 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	for _, result := range report.Receipt.Commit.Results {
 		if result.Ref.ID == driver.SourcePlaneCommitRecordID {
 			if receiptBytes != nil || !result.Ref.Branch.IsZero() || result.Revision != report.Receipt.Commit.Revision {
-				return Report{}, nil, driver.ErrConflict
+				return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"}
 			}
 			receiptBytes = result.Record
 		}
 	}
 	if len(receiptBytes) == 0 || json.Unmarshal(receiptBytes, &binding) != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"}
 	}
 	floor := model.Natural64(1)
 	if bound.HistoryMode == driver.RestoreHistoryModeFull ||
@@ -163,11 +163,14 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	initial := driver.Meta{StoreID: meta.StoreID, Incarnation: meta.Incarnation, Head: report.Receipt.Commit.Revision, HistoryFloor: floor}
 	if err := binding.Validate(bound, initial); err != nil {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitBinding"}
 	}
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
-	if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, receiptBytes) {
-		return Report{}, nil, driver.ErrConflict
+	if err != nil {
+		return Report{}, nil, err
+	}
+	if len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, receiptBytes) {
+		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitRecord"}
 	}
 	cp, err := r.SourcePlaneCheckpoint(plan.Providers[0].Namespace)
 	if err != nil {
@@ -176,12 +179,15 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	// Origin is immutable; generation and the live logical image may advance.
 	inspector := pluginhost.NewDurableState(nil, nil, "workflow", "default").(driver.SourcePlaneOriginReader)
 	origin, current, err := inspector.InspectSourcePlaneOrigin(cp)
-	if err != nil || origin != binding.Providers[0].Origin || cp.Generation < origin.InitialGeneration {
-		return Report{}, nil, driver.ErrConflict
+	if err != nil {
+		return Report{}, nil, err
+	}
+	if origin != binding.Providers[0].Origin || cp.Generation < origin.InitialGeneration {
+		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.origin"}
 	}
 	if cp.Generation == origin.InitialGeneration {
 		if err := driver.ValidateSourcePlaneInitialCheckpoint(cp, binding.Providers[0]); err != nil {
-			return Report{}, nil, driver.ErrConflict
+			return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.checkpoint"}
 		}
 	}
 	if source.beforeInspection != nil {
@@ -224,14 +230,14 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	initialImage, err := workflowplugin.InspectSourceReverseImageContext(ctx, logical)
 	if err != nil {
-		return Report{}, nil, sourceInspectionFailure(err, driver.ErrConflict)
+		return Report{}, nil, sourceInspectionFailure(err, driver.ErrRestoreBindingMismatch{Field: "source.reverseImage"})
 	}
 	currentImage, err := workflowplugin.InspectSourceReverseImageContext(ctx, current)
 	if err != nil {
-		return Report{}, nil, sourceInspectionFailure(err, driver.ErrConflict)
+		return Report{}, nil, sourceInspectionFailure(err, driver.ErrRestoreBindingMismatch{Field: "source.reverseImage"})
 	}
 	if initialImage.OriginSHA256 == "" || initialImage.OriginSHA256 != currentImage.OriginSHA256 {
-		return Report{}, nil, driver.ErrConflict
+		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.originDigest"}
 	}
 	report.Archive, report.SourcePlanes, report.collection = archive, &binding, source.collection
 	keepArchive = true
@@ -242,7 +248,9 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 // Known durable publication sanitizes failures separately at its outer boundary.
 func sourceInspectionFailure(cause, malformed error) error {
 	var limit *dumpformat.NativeDeltaDecodedLimitError
-	if errors.As(cause, &limit) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+	var commitConflict driver.ErrRestoreCommitConflict
+	var fenced driver.ErrFenced
+	if errors.As(cause, &limit) || errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
 	return malformed

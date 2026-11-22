@@ -97,7 +97,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		return zero, err
 	}
 	if s.state != base || s.head != t {
-		return zero, driver.ErrConflict
+		return zero, driver.ErrRestoreCommitConflict{Cause: driver.ErrConflict}
 	}
 	if err := t.checkCheckpointGuards(); err != nil {
 		return zero, err

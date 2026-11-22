@@ -2,6 +2,7 @@ package driver
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
@@ -13,6 +14,44 @@ var (
 	ErrCheckpointConflict = errors.New("driver checkpoint generation conflict")
 	ErrUnsupported        = errors.New("driver capability unsupported")
 )
+
+// ErrRestoreBindingMismatch identifies an import receipt/profile field that
+// disagrees with the durable publication. It remains a driver conflict for
+// callers that only understand ErrConflict, while restore boundaries can
+// retain the exact semantic cause.
+type ErrRestoreBindingMismatch struct {
+	Field string
+}
+
+func (e ErrRestoreBindingMismatch) Error() string {
+	if e.Field == "" {
+		return "driver transaction conflict: restore import binding does not match the durable receipt"
+	}
+	return fmt.Sprintf("driver transaction conflict: restore import binding field %s does not match the durable receipt", e.Field)
+}
+
+func (e ErrRestoreBindingMismatch) Unwrap() error { return ErrConflict }
+
+// ErrRestoreCommitConflict identifies a storage publication race after the
+// import binding has been admitted. It is retryable at the restore API
+// boundary, but it does not add a retry or change the storage transaction.
+type ErrRestoreCommitConflict struct {
+	Cause error
+}
+
+func (e ErrRestoreCommitConflict) Error() string {
+	if e.Cause == nil {
+		return "restore import commit conflicted with concurrent store state"
+	}
+	return fmt.Sprintf("restore import commit conflicted with concurrent store state: %v", e.Cause)
+}
+
+func (e ErrRestoreCommitConflict) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{ErrConflict}
+	}
+	return []error{ErrConflict, e.Cause}
+}
 
 // ErrorMapping exposes only the closed catalog mapping and typed details;
 // adapters own JSON-RPC encoding. It recognizes wrapped value and pointer

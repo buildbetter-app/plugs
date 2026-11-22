@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,6 +176,102 @@ func TestRestoreTerminalStatusStillRequiresInitiatingPrincipal(t *testing.T) {
 	var forbidden *model.Error
 	if err == nil || !errors.As(err, &forbidden) || forbidden.Data.Code != "forbidden" || forbidden.Data.Hint != "restore session caller changed" {
 		t.Fatalf("terminal session disclosed to a different principal: %v", err)
+	}
+}
+
+func TestRestoreImportConflictClassificationAcrossStores(t *testing.T) {
+	ctx := context.Background()
+	var archiveBytes []byte
+	var err error
+	paths := []string{"../../integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar", "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar"}
+	if testSrcDir := os.Getenv("TEST_SRCDIR"); testSrcDir != "" {
+		workspace := os.Getenv("TEST_WORKSPACE")
+		if workspace == "" {
+			workspace = "_main"
+		}
+		paths = append([]string{filepath.Join(testSrcDir, workspace, "internal/integration/converterroundtrip/testdata/synthetic-plug-dump-1.tar")}, paths...)
+	}
+	for _, path := range paths {
+		archiveBytes, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+	}
+	if len(archiveBytes) == 0 {
+		t.Fatal(err)
+	}
+	archive, err := dumpformat.Read(bytes.NewReader(archiveBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestValue, err := wire.DecodeJSON(mustMember(t, archive, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(archive.Manifest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestHash := sha(canonical)
+
+	for _, driverName := range []string{"memory", "sqlite"} {
+		for _, testCase := range []struct {
+			name  string
+			err   error
+			code  model.ErrorCode
+			hint  string
+			retry bool
+		}{
+			{name: "binding", err: driver.ErrRestoreBindingMismatch{Field: "requestHash"}, code: "restore_violation", hint: "driver transaction conflict: restore import binding field requestHash does not match the durable receipt"},
+			{name: "commit", err: driver.ErrRestoreCommitConflict{Cause: driver.ErrConflict}, code: "busy", hint: "restore import commit conflicted with concurrent store state: driver transaction conflict", retry: true},
+			{name: "lease", err: driver.ErrFenced{ExpectedEpoch: 1, ObservedEpoch: 2}, code: "busy", hint: "active storage lease was lost", retry: true},
+		} {
+			t.Run(driverName+"/"+testCase.name, func(t *testing.T) {
+				var target driver.Store
+				var closeTarget func() error
+				if driverName == "memory" {
+					target = memory.New()
+					closeTarget = target.Close
+				} else {
+					path := filepath.Join(t.TempDir(), "restore.db")
+					target, err = (sqlite.Driver{}).Open(ctx, driver.Config{DSN: path})
+					if err != nil {
+						t.Fatal(err)
+					}
+					closeTarget = target.Close
+				}
+				defer closeTarget()
+				lease, err := target.Lease(ctx, "restore-conflict-test", driver.LeaseTTL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lease.Release(ctx)
+				manager := restore.NewManager(target, lease, trustedPresenceVerifier())
+				manager.SetImportHook(func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, string, string, model.WriteMeta, restore.Presence) (restore.RestoreStatus, error) {
+					return restore.RestoreStatus{}, testCase.err
+				})
+				status, err := manager.BeginAs(ctx, model.PrincipalRef{Kind: "user", ID: "restore-owner"}, manifestValue.(map[string]any), "head", restore.Presence(presence))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for pageNo, offset := uint64(0), 0; offset < len(archiveBytes); pageNo++ {
+					end := offset + 512
+					if end > len(archiveBytes) {
+						end = len(archiveBytes)
+					}
+					chunk := archiveBytes[offset:end]
+					if _, err := manager.ChunkAs(ctx, model.PrincipalRef{Kind: "user", ID: "restore-owner"}, status.RestoreID, pageNo, chunk, sha(chunk), restore.Presence(presence)); err != nil {
+						t.Fatal(err)
+					}
+					offset = end
+				}
+				_, err = manager.Finish(ctx, status.RestoreID, manifestHash, model.PrincipalRef{Kind: "user", ID: "restore-owner"}, model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "restore-conflict-test"}, restore.Presence(presence))
+				var typed *model.Error
+				if err == nil || !errors.As(err, &typed) || typed.Data.Code != testCase.code || typed.Data.Hint != testCase.hint || typed.Data.Retryable != testCase.retry {
+					t.Fatalf("classification=%v want code=%s retry=%t hint=%q", err, testCase.code, testCase.retry, testCase.hint)
+				}
+			})
+		}
 	}
 }
 

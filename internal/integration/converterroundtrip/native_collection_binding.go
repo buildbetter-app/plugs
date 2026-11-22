@@ -50,13 +50,13 @@ func BindNativeCaptureCollectionImport(ctx context.Context, issuer *historyverif
 		}
 		binding, err := driver.NewSourcePlaneImportBindingV1(plan)
 		if err == nil && uint64(len(binding.CanonicalPlan)) != n {
-			return driver.SourcePlaneImportBindingV1{}, driver.ErrConflict
+			return driver.SourcePlaneImportBindingV1{}, driver.ErrRestoreBindingMismatch{Field: "canonicalPlan"}
 		}
 		return binding, err
 	}
 	wantImage, wantSize := plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize
 	if wantImage == "" && wantSize != 0 {
-		return nil, driver.ErrConflict
+		return nil, driver.ErrRestoreBindingMismatch{Field: "logicalImage"}
 	}
 	plan.Providers = append([]driver.SourcePlaneProviderV1(nil), plan.Providers...)
 	if wantImage == "" {
@@ -77,7 +77,7 @@ func BindNativeCaptureCollectionImport(ctx context.Context, issuer *historyverif
 	}
 	p.logical = image.LogicalImage()
 	if wantImage != "" && (wantImage != image.SHA256() || wantSize != uint64(len(p.logical))) {
-		return nil, driver.ErrConflict
+		return nil, driver.ErrRestoreBindingMismatch{Field: "logicalImage"}
 	}
 	plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize = image.SHA256(), uint64(len(p.logical))
 	profile.SourcePlanes = nil
@@ -100,7 +100,7 @@ func BindNativeCaptureCollectionImport(ctx context.Context, issuer *historyverif
 // The caller must discard the copy before closing the preparation/report.
 func (p *PreparedNativeCaptureCollectionImport) Profile() (driver.RestoreImportProfile, error) {
 	if p == nil || p.prepared == nil {
-		return driver.RestoreImportProfile{}, driver.ErrConflict
+		return driver.RestoreImportProfile{}, driver.ErrRestoreBindingMismatch{Field: "preparedCollection"}
 	}
 	return nativeDetachedProfile(p.prepared.archive, p.prepared.profile)
 }
@@ -118,7 +118,7 @@ func (p *PreparedNativeCaptureCollectionImport) Close() error {
 // ownership moves into Report.Close; the publication algorithm is unchanged.
 func (p *PreparedNativeCaptureCollectionImport) RestoreWithLease(ctx context.Context, target driver.Store, lease driver.ActiveLease) (Report, error) {
 	if p == nil || p.prepared == nil {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "preparedCollection"}
 	}
 	owned := p.prepared
 	p.prepared = nil

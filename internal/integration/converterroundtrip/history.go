@@ -410,13 +410,19 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	ctx, release := dumpformat.WithNativeDeltaAccountingScope(ctx)
 	defer release()
 	if p.HistoryTime == "" || evidence.ArchiveSHA256 != p.ArchiveDigest {
-		return driver.ErrConflict
+		if p.HistoryTime == "" {
+			return driver.ErrRestoreBindingMismatch{Field: "historyTime"}
+		}
+		return driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	// Rebuild from the authenticated original envelope. A merged archive has
 	// independent ranges; the aggregate Range cannot stand in for any source.
 	raw, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
-	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
-		return driver.ErrConflict
+	if err != nil {
+		return err
+	}
+	if hashBytes(raw) != evidence.ArchiveSHA256 {
+		return driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	archive, collection, err := readRetainedReceivingArchive(ctx, r, raw, evidence, p)
 	if err != nil {
@@ -443,11 +449,11 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	defer release()
 	ctx = archive.WithNativeDeltaAccounting(ctx)
 	if archive.SHA256() != p.ArchiveDigest {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	when, err := time.Parse(time.RFC3339Nano, p.HistoryTime)
 	if err != nil {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "historyTime"}
 	}
 	if archive.HasNativeCaptureCollection() || archive.HasNativeDelta() && p.HistoryMode == driver.RestoreHistoryModeFull {
 		var stream *historyverify.NativeArchiveStream
@@ -457,7 +463,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 		}
 		if stream == nil {
 			if archive.HasNativeCaptureCollection() {
-				return driver.ErrConflict
+				return driver.ErrRestoreBindingMismatch{Field: "history.stream"}
 			}
 			stream, err = historyverify.PrepareNativeArchive(ctx, archive, p, when)
 			if err != nil {
@@ -467,19 +473,22 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 			defer stream.Close()
 		}
 		rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
-		if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
-			return driver.ErrConflict
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 || rows[0].Kind != "beads-archive" {
+			return driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 		}
 		if err := stream.ValidateEvidence(ctx, p, rows[0].Body); err != nil {
 			return nativeDeltaRecoveryError(err)
 		}
 		header := stream.Header()
 		if header.First != 1 || header.Head == ^uint64(0) {
-			return driver.ErrConflict
+			return driver.ErrRestoreBindingMismatch{Field: "historyHeader"}
 		}
 		revision := model.Natural64(header.Head + 1)
 		if receipt.Commit.Revision != revision || receipt.Changeset.Revision != revision {
-			return driver.ErrConflict
+			return driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
 		}
 		if owned {
 			if err := stream.Close(); err != nil {
@@ -498,16 +507,22 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 		}
 	}
 	digest, err := nativeHistoryDigest(archive, history)
-	if err != nil || digest != p.HistoryDigest {
-		return driver.ErrConflict
+	if err != nil {
+		return nativeDeltaRecoveryError(err)
+	}
+	if digest != p.HistoryDigest {
+		return driver.ErrRestoreBindingMismatch{Field: "historyDigest"}
 	}
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
-	if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
-		return driver.ErrConflict
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 || rows[0].Kind != "beads-archive" {
+		return driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 	}
 	var got driver.HistoryImportEvidence
 	if err = json.Unmarshal(rows[0].Body, &got); err != nil {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 	}
 	want := driver.HistoryImportEvidence{Source: history.Source, Mode: p.HistoryMode, Complete: history.Complete, First: history.First, Head: history.Head, Floor: model.Natural64(0), Gaps: append([]driver.SourceHistoryGap{}, history.Gaps...), Mapping: []driver.SourceImportRevision{}}
 	want.NativeBoundaries = append([]driver.NativeHistoryBoundary(nil), history.NativeBoundaries...)
@@ -525,7 +540,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	left, _ := json.Marshal(got)
 	right, _ := json.Marshal(want)
 	if !bytes.Equal(left, right) || receipt.Commit.Revision != model.Natural64(revision) || receipt.Changeset.Revision != model.Natural64(revision) {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
 	}
 	return nil
 }

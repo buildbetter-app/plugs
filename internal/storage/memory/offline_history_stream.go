@@ -52,8 +52,14 @@ func (s *historyStreamStage) Begin(ctx context.Context, b driver.OfflineHistoryS
 	if err := t.check(ctx); err != nil {
 		return err
 	}
-	if t.stream != nil || s.private != nil || b.Current != t.store.state.meta || b.Lifetime != driver.CheckpointLifetimeProcess {
-		return driver.ErrConflict
+	if t.stream != nil || s.private != nil {
+		return driver.ErrRestoreBindingMismatch{Field: "stream.state"}
+	}
+	if b.Lifetime != driver.CheckpointLifetimeProcess {
+		return driver.ErrRestoreBindingMismatch{Field: "stream.lifetime"}
+	}
+	if b.Current != t.store.state.meta {
+		return driver.ErrRestoreCommitConflict{Cause: driver.ErrConflict}
 	}
 	private, err := historystream.New(ctx, b, s.proof)
 	if err != nil {
@@ -86,7 +92,7 @@ func (s *historyStreamStage) Stage(ctx context.Context, r model.Revision, f driv
 		return err
 	}
 	if s.private == nil {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "stream.state"}
 	}
 	return s.private.Stage(ctx, r, f)
 }
@@ -103,8 +109,17 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 	if err := t.check(ctx); err != nil {
 		return zero, err
 	}
-	if s.private == nil || !t.hasHead || store.head != t || t.restore == nil || *t.restore != s.binding.Meta || store.state.meta != s.binding.Current || s.binding.Lifetime != driver.CheckpointLifetimeProcess {
-		return zero, driver.ErrConflict
+	if s.private == nil || !t.hasHead || t.restore == nil {
+		return zero, driver.ErrRestoreBindingMismatch{Field: "stream.state"}
+	}
+	if s.binding.Lifetime != driver.CheckpointLifetimeProcess {
+		return zero, driver.ErrRestoreBindingMismatch{Field: "stream.lifetime"}
+	}
+	if *t.restore != s.binding.Meta {
+		return zero, driver.ErrRestoreBindingMismatch{Field: "stream.meta"}
+	}
+	if store.head != t || store.state.meta != s.binding.Current {
+		return zero, driver.ErrRestoreCommitConflict{Cause: driver.ErrConflict}
 	}
 	if err := store.restoreEmpty(); err != nil {
 		return zero, err
