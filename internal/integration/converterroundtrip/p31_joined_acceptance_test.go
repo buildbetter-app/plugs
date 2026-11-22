@@ -81,7 +81,7 @@ func p31ProjectJSONL(t *testing.T, input []byte) map[string][]byte {
 	return result
 }
 
-const p31PinnedBeads = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/" + string([]byte{98, 100})
+var p31PinnedBeads = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/" + string([]byte{98, 100})
 
 func p31BeadsIssueCore(value map[string]any) map[string]any {
 	copy := map[string]any{}
