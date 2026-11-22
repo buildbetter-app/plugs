@@ -117,6 +117,9 @@ func newFixtureWithClocks(t *testing.T, engine string, application, storage *tes
 	issue := base.Types["issue"]
 	issue.Name = "Other work"
 	base.Types["other"] = issue
+	for _, typ := range []string{"merge-request", "gate", "molecule", "rig", "agent", "role", "message", "epic"} {
+		base.Types[typ] = issue
+	}
 	no := false
 	base.Types["infrastructure"] = ontology.Type{Name: "Infrastructure", Workflow: "issue", ReadyEligible: &no}
 	snapshot, problems := ontology.Compile(base, nil, nil)

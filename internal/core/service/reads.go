@@ -309,7 +309,8 @@ func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef
 	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
-		if (parents != nil && !parents[id]) || !matchesReadyFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
+		readyFilter, included := readyFilterForRow(row, req.Filter)
+		if (parents != nil && !parents[id]) || !included || !matchesReadyFilter(row, req.Project, readyFilter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
 		if workflowBlocked[row.doc.ID] || row.doc.Fields["blocked"] == true {
