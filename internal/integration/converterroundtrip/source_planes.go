@@ -25,7 +25,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		return driver.RestoreImportProfile{}, err
 	}
 	if profile.SourcePlanes != nil {
-		return driver.RestoreImportProfile{}, driver.ErrConflict
+		return driver.RestoreImportProfile{}, driver.ErrRestoreBindingMismatch{Field: "sourcePlanes"}
 	}
 	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, input)
 	if err != nil {
@@ -37,7 +37,7 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 
 func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
 	if profile.SourcePlanes != nil {
-		return driver.RestoreImportProfile{}, driver.ErrConflict
+		return driver.RestoreImportProfile{}, driver.ErrRestoreBindingMismatch{Field: "sourcePlanes"}
 	}
 	var err error
 	// Bind one trusted restore clock before lowering current state. In
@@ -58,7 +58,7 @@ func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile
 	plan.Providers = append([]driver.SourcePlaneProviderV1(nil), plan.Providers...)
 	wantImage, wantSize := plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize
 	if wantImage == "" && wantSize != 0 {
-		return driver.RestoreImportProfile{}, driver.ErrConflict
+		return driver.RestoreImportProfile{}, driver.ErrRestoreBindingMismatch{Field: "logicalImage"}
 	}
 	if wantImage == "" {
 		plan.Providers[0].LogicalImageSHA256 = strings.Repeat("0", 64)
@@ -87,7 +87,7 @@ func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile
 		return driver.RestoreImportProfile{}, err
 	}
 	if wantImage != "" && (wantImage != imageHash || wantSize != imageSize) {
-		return driver.RestoreImportProfile{}, driver.ErrConflict
+		return driver.RestoreImportProfile{}, driver.ErrRestoreBindingMismatch{Field: "logicalImage"}
 	}
 	plan.Providers[0].LogicalImageSHA256, plan.Providers[0].LogicalImageSize = imageHash, imageSize
 	binding, releaseFinalBinding, err := driver.NewSourcePlaneImportBindingWithAccounting(plan, nativeprojection.ProfileAccounting(archive))
@@ -103,7 +103,7 @@ func bindSourceArchive(ctx context.Context, archive *dumpformat.Archive, profile
 		return driver.RestoreImportProfile{}, err
 	}
 	if wantDerived != "" && wantDerived != derived {
-		return driver.RestoreImportProfile{}, driver.ErrConflict
+		return driver.RestoreImportProfile{}, driver.ErrRestoreBindingMismatch{Field: "derivedDigest"}
 	}
 	profile.DerivedDigest = derived
 	if profile.HistoryMode != driver.RestoreHistoryModeSnapshot {
@@ -225,7 +225,7 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 		return empty, err
 	}
 	if final && (len(plan.Providers) != 1 || plan.Providers[0].LogicalImageSHA256 != prepared.SHA256() || plan.Providers[0].LogicalImageSize != uint64(len(logical))) {
-		return empty, driver.ErrConflict
+		return empty, driver.ErrRestoreBindingMismatch{Field: "logicalImage"}
 	}
 	if budget := dumpformat.NativeDeltaBudgetFromContext(outputOwner.WithNativeDeltaAccounting(context.Background())); budget != nil {
 		budget.Retain()
@@ -392,7 +392,7 @@ func prepareSourcePublication(ctx context.Context, capability driver.WorkflowChe
 	}
 	mutation := prepared.Mutation
 	if mutation.StoreID != restored.StoreID || mutation.Incarnation != restored.Incarnation || mutation.Key != plan.Providers[0].Namespace || mutation.Expected != 0 {
-		return driver.SourcePlaneCommitBindingV1{}, driver.ErrConflict
+		return driver.SourcePlaneCommitBindingV1{}, driver.ErrRestoreBindingMismatch{Field: "sourcePlaneCommit"}
 	}
 	if err = writer.StageCheckpoint(ctx, mutation.Key, mutation.Expected, mutation.Payload); err != nil {
 		return driver.SourcePlaneCommitBindingV1{}, err

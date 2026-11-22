@@ -23,6 +23,10 @@ func nativeDeltaRecoveryError(cause error) error {
 	if errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
+	var bindingMismatch driver.ErrRestoreBindingMismatch
+	if errors.As(cause, &bindingMismatch) {
+		return cause
+	}
 	var limit *dumpformat.NativeDeltaDecodedLimitError
 	if errors.As(cause, &limit) {
 		return errors.Join(driver.ErrRestoreBindingMismatch{Field: "nativeDelta"}, cause)

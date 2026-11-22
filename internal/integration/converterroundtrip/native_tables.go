@@ -98,7 +98,7 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 	}
 	raw, err := reader.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
 	if err != nil || hashBytes(raw) != profile.ArchiveDigest {
-		return nil, nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	archive, collection, err := readRetainedReceivingArchive(ctx, reader, raw, evidence, profile)
 	if err != nil {
@@ -125,11 +125,11 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 	}
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil {
-		return nil, nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "historyTime"}
 	}
 	if prepared == nil {
 		if archive.HasNativeCaptureCollection() {
-			return nil, nil, nil, nil, driver.ErrConflict
+			return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "history.stream"}
 		}
 		plan, planErr := buildPlanWithProfile(archive, &profile, when, ctx)
 		if planErr != nil {
@@ -143,7 +143,7 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 		markers, markerErr := reader.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
 		want, encodeErr := json.Marshal(nativeSnapshotHistoryEvidence(policy))
 		if markerErr != nil || encodeErr != nil || len(markers) != 1 || markers[0].Kind != "beads-archive" || !bytes.Equal(markers[0].Body, want) {
-			return nil, nil, nil, nil, driver.ErrConflict
+			return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 		}
 		var original json.RawMessage
 		for _, result := range receipt.Commit.Results {
@@ -152,12 +152,12 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 			}
 		}
 		if !bytes.Equal(original, want) {
-			return nil, nil, nil, nil, driver.ErrConflict
+			return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "historyReceipt"}
 		}
 	}
 	want, err := json.Marshal(nativeFamilyEvidence{Contract: archive.Manifest().SourceFamilyContract, RestoreTime: when.UTC().Format(time.RFC3339Nano), Families: reports, Schemas: schemas, Histories: histories, NativeDeltaHistory: policy})
 	if err != nil {
-		return nil, nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "nativeFamilyEvidence"}
 	}
 	var committed json.RawMessage
 	for _, result := range receipt.Commit.Results {
@@ -167,7 +167,7 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 	}
 	rows, err := reader.Get(ctx, []model.Ref{model.RefByID(NativeFamilyReportID, model.Natural64(0))})
 	if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, want) || !bytes.Equal(committed, want) {
-		return nil, nil, nil, nil, driver.ErrConflict
+		return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "nativeFamilyEvidence"}
 	}
 	return reports, schemas, histories, policy, nil
 }

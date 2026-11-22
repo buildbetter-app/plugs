@@ -203,7 +203,7 @@ func readRetainedReceivingArchive(ctx context.Context, reader driver.Reader, raw
 		return a, nil, err
 	}
 	if hashBytes(raw) != evidence.ArchiveSHA256 || evidence.ArchiveSHA256 != profile.ArchiveDigest || evidence.NativeCaptureFiles == nil || evidence.NativeDecodedLimitBytes == 0 {
-		return nil, nil, driver.ErrConflict
+		return nil, nil, driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	ctx, budget, err := nativeCollectionBudget(ctx, evidence.NativeDecodedLimitBytes)
 	if err != nil {
@@ -218,11 +218,11 @@ func readRetainedReceivingArchive(ctx context.Context, reader driver.Reader, raw
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err = decoder.Decode(&binding); err != nil || len(binding.Sources) != 2 {
-		return nil, nil, driver.ErrConflict
+		return nil, nil, driver.ErrRestoreBindingMismatch{Field: "collection.binding"}
 	}
 	var extra any
 	if err = decoder.Decode(&extra); err != io.EOF {
-		return nil, nil, driver.ErrConflict
+		return nil, nil, driver.ErrRestoreBindingMismatch{Field: "collection.trailing"}
 	}
 	count := 0
 	for ordinal, source := range binding.Sources {
@@ -231,13 +231,13 @@ func readRetainedReceivingArchive(ctx context.Context, reader driver.Reader, raw
 				return nil, nil, err
 			}
 			if file.Bytes > math.MaxInt64 || evidence.NativeCaptureFiles[dumpformat.NativeCollectionFileName(ordinal, file.Name)] != (dumpformat.File{SHA256: file.SHA256, Size: int64(file.Bytes)}) {
-				return nil, nil, driver.ErrConflict
+				return nil, nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileLedger"}
 			}
 			count++
 		}
 	}
 	if count != len(evidence.NativeCaptureFiles) {
-		return nil, nil, driver.ErrConflict
+		return nil, nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileLedger"}
 	}
 	openers := make([]historyverify.NativeCaptureSetOpener, 0, 2)
 	for _, source := range binding.Sources {
@@ -269,7 +269,7 @@ func (p *retainedCollectionPart) Close() error {
 
 func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reader, source dumpformat.NativeJoinedInput, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
 	if len(source.Files) < 3 {
-		return nil, driver.ErrConflict
+		return nil, driver.ErrRestoreBindingMismatch{Field: "collection.files"}
 	}
 	budget := dumpformat.NativeDeltaBudgetFromContext(ctx)
 	if budget == nil {
@@ -279,14 +279,14 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 	defer owner.Release()
 	read := func(file dumpformat.NativeCaptureFile, scope *dumpformat.NativeDeltaBudget) ([]byte, error) {
 		if file.Bytes == 0 || file.Bytes > math.MaxInt64 {
-			return nil, driver.ErrConflict
+			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}
 		}
 		if err := scope.ChargeBytes("collection_retained_original_buffer", file.Bytes); err != nil {
 			return nil, err
 		}
 		raw, err := reader.Blob(ctx, driver.Hash(file.SHA256))
 		if err != nil || uint64(len(raw)) != file.Bytes || hashBytes(raw) != file.SHA256 {
-			return nil, driver.ErrConflict
+			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileDigest"}
 		}
 		return raw, nil
 	}
@@ -300,7 +300,7 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 	}
 	return dumpformat.ReadNativeCaptureSet(ctx, bytes.NewReader(root), bytes.NewReader(head), func(_ context.Context, n uint64) (io.ReadCloser, error) {
 		if n == 0 || n > uint64(len(source.Files)-2) {
-			return nil, driver.ErrConflict
+			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.partIndex"}
 		}
 		part := budget.Scope()
 		raw, err := read(source.Files[n+1], part)
