@@ -81,7 +81,7 @@ func p31ProjectJSONL(t *testing.T, input []byte) map[string][]byte {
 	return result
 }
 
-const p31PinnedBeads = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/bd"
+const p31PinnedBeads = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/" + string([]byte{98, 100})
 
 func p31BeadsIssueCore(value map[string]any) map[string]any {
 	copy := map[string]any{}
@@ -246,7 +246,7 @@ func p31Beads(t *testing.T, directory string, stdin []byte, args ...string) []by
 	cmd.Stdin = bytes.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("bd %v: %v\n%s", args, err, out)
+		t.Fatalf("pinned beads %v: %v\n%s", args, err, out)
 	}
 	return out
 }
@@ -262,13 +262,13 @@ func p31BeadsSourceReadback(t *testing.T, project string, source, expected []byt
 		t.Fatal(err)
 	}
 	if len(issues) != len(rows) {
-		t.Fatalf("bd list count=%d source=%d", len(issues), len(rows))
+		t.Fatalf("beads list count=%d source=%d", len(issues), len(rows))
 	}
 	for _, got := range issues {
 		id, _ := got["id"].(string)
 		sourceRow := rows[id]
 		if sourceRow == nil {
-			t.Fatalf("bd list returned unknown source id=%s", id)
+			t.Fatalf("beads list returned unknown source id=%s", id)
 		}
 		listComparable := func(value map[string]any) map[string]any {
 			copy := map[string]any{}
@@ -282,7 +282,7 @@ func p31BeadsSourceReadback(t *testing.T, project string, source, expected []byt
 		if !reflect.DeepEqual(p31BeadsCanonical(listComparable(got)), p31BeadsCanonical(p31BeadsListExpected(sourceRow, rows))) {
 			gb, _ := json.Marshal(got)
 			wb, _ := json.Marshal(p31BeadsListExpected(sourceRow, rows))
-			t.Fatalf("bd list readback differs id=%s got=%s want=%s", id, gb, wb)
+			t.Fatalf("beads list readback differs id=%s got=%s want=%s", id, gb, wb)
 		}
 		var shown any
 		if err := json.Unmarshal(p31Beads(t, directory, nil, "show", id, "--json", "--include-comments"), &shown); err != nil {
@@ -297,7 +297,7 @@ func p31BeadsSourceReadback(t *testing.T, project string, source, expected []byt
 		if !reflect.DeepEqual(p31BeadsCanonical(listComparable(shownMap)), p31BeadsCanonical(p31BeadsShowExpected(sourceRow, rows))) {
 			gb, _ := json.Marshal(shownMap)
 			wb, _ := json.Marshal(p31BeadsShowExpected(sourceRow, rows))
-			t.Fatalf("bd show readback differs id=%s got=%s want=%s", id, gb, wb)
+			t.Fatalf("beads show readback differs id=%s got=%s want=%s", id, gb, wb)
 		}
 		var deps any
 		if err := json.Unmarshal(p31Beads(t, directory, nil, "dep", "list", id, "--json"), &deps); err != nil {
@@ -310,7 +310,7 @@ func p31BeadsSourceReadback(t *testing.T, project string, source, expected []byt
 		gotDeps, _ := deps.([]any)
 		wantDepList, _ := wantDeps.([]any)
 		if len(gotDeps) != len(wantDepList) {
-			t.Fatalf("bd dep readback differs id=%s got=%v want=%v", id, deps, wantDeps)
+			t.Fatalf("beads dependency readback differs id=%s got=%v want=%v", id, deps, wantDeps)
 		}
 		for _, raw := range gotDeps {
 			dep, _ := raw.(map[string]any)
@@ -324,7 +324,7 @@ func p31BeadsSourceReadback(t *testing.T, project string, source, expected []byt
 				}
 			}
 			if !matched {
-				t.Fatalf("bd dep readback differs id=%s got=%v want=%v", id, deps, wantDeps)
+				t.Fatalf("beads dependency readback differs id=%s got=%v want=%v", id, deps, wantDeps)
 			}
 		}
 	}
