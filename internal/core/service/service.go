@@ -645,7 +645,7 @@ func (s *Service) ClaimNextWithOutcome(ctx context.Context, by model.PrincipalRe
 	repeatedConflictThisPass := false
 	conflictRestarts := 0
 	for {
-		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.Agent, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed})
+		page, err := s.ClaimNextReadyPage(ctx, by, ReadyRequest{Project: req.Project, Agent: meta.Agent, ViewID: req.ViewID, Filter: req.Filter, Limit: 1000, Position: position, ClaimNextSeed: selectionSeed, claimNext: true})
 		if err != nil {
 			return nil, err
 		}

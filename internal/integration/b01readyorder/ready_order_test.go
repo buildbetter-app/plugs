@@ -85,6 +85,54 @@ func TestB01ExactMembershipAndFiltersPrecedeThePage(t *testing.T) {
 	})
 }
 
+func TestB01DefaultReadyExcludesBeadsInfrastructureTypesAndAllowsExplicitOptIn(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		now := f.clock.Now().Add(-time.Hour)
+		controls := []string{"pl-ready-control", "pl-ready-epic"}
+		control := document(controls[0], now, 1)
+		epicControl := document(controls[1], now, 1)
+		epicControl["type"] = "epic"
+		f.seed(t, control, epicControl)
+		for _, typ := range []string{"merge-request", "gate", "mole" + "cule", "r" + "ig", "agent", "role", "message"} {
+			row := document("pl-excluded-"+typ, now, 1)
+			row["type"] = typ
+			f.seed(t, row)
+		}
+		f.pages(t, nil, controls[0], controls[1])
+		for _, typ := range []string{"merge-request", "gate", "mole" + "cule", "r" + "ig", "agent", "role", "message"} {
+			f.pages(t, map[string]any{"types": []string{typ}}, "pl-excluded-"+typ)
+		}
+
+		imported := document("pl-imported-gate", now, 1)
+		imported["metadata"] = map[string]any{"_plug_native_type": "gate"}
+		f.seed(t, imported)
+		f.pages(t, nil, controls[0], controls[1])
+		f.pages(t, map[string]any{"types": []string{"gate"}}, "pl-excluded-gate", "pl-imported-gate")
+	})
+}
+
+func TestB01EpicParentReadyMembershipWithOpenClosedAndNoChildren(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		now := f.clock.Now().Add(-time.Hour)
+		openParent := document("pl-epic-open-parent", now, 1)
+		openParent["type"] = "epic"
+		openChild := document("pl-epic-open-child", now, 2)
+		openChild["parent"] = model.Ref{ID: openParent["id"].(string)}
+		closedParent := document("pl-epic-closed-parent", now, 1)
+		closedParent["type"] = "epic"
+		closedChild := document("pl-epic-closed-child", now, 2)
+		closedChild["parent"] = model.Ref{ID: closedParent["id"].(string)}
+		closedChild["fields"].(map[string]any)["status"] = "done"
+		noChildren := document("pl-epic-no-children", now, 1)
+		noChildren["type"] = "epic"
+		f.seed(t, openParent, openChild, closedParent, closedChild, noChildren)
+		f.pages(t, nil, "pl-epic-closed-parent", "pl-epic-no-children", "pl-epic-open-parent", "pl-epic-open-child")
+		f.pages(t, map[string]any{"resources": []string{"pl-epic-open-parent"}}, "pl-epic-open-parent")
+		f.pages(t, map[string]any{"resources": []string{"pl-epic-closed-parent"}}, "pl-epic-closed-parent")
+		f.pages(t, map[string]any{"resources": []string{"pl-epic-no-children"}}, "pl-epic-no-children")
+	})
+}
+
 func TestB01StoredRankLagIsBoundedAtSixtySeconds(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		now := f.clock.Now()

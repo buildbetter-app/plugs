@@ -309,7 +309,8 @@ func (s *Service) readyItemsFromGraph(ctx context.Context, by model.PrincipalRef
 	for _, id := range graphIDs {
 		row := graph[id]
 		st := state(row.doc)
-		if (parents != nil && !parents[id]) || !matchesReadyFilter(row, req.Project, req.Filter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
+		readyFilter, included := readyFilterForRow(row, req.Filter, !req.claimNext)
+		if (parents != nil && !parents[id]) || !included || !matchesReadyFilter(row, req.Project, readyFilter) || st.Template || !s.ontology.effective(st.Project).ReadyEligible(st.Type, st.Status) {
 			continue
 		}
 		if workflowBlocked[row.doc.ID] || row.doc.Fields["blocked"] == true {
@@ -1006,6 +1007,7 @@ func (s *Service) workflowGetResult(item workflowplugin.ItemView) (GetResult, er
 // ClaimNextReadyPage is the queue-specific live pager. A revision change
 // restarts its offset from the beginning of the newly observed ready set.
 func (s *Service) ClaimNextReadyPage(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
+	req.claimNext = true
 	return s.readyCombined(ctx, by, req, true)
 }
 
@@ -1019,6 +1021,7 @@ func (s *Service) ReadyCandidates(ctx context.Context, by model.PrincipalRef, re
 	if reader == nil {
 		return nil, failure("internal_error", "ready probe reader is unavailable")
 	}
+	req.claimNext = true
 	items, _, err := s.readyItems(ctx, by, req, reader)
 	return items, err
 }

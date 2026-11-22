@@ -273,6 +273,10 @@ type ReadyRequest struct {
 	// from the wire; claimNext derives it from the selector and request key so
 	// equal-priority candidates can spread without changing bead.ready order.
 	ClaimNextSeed string
+	// claimNext marks the internal queue selector. The bead.ready type
+	// exclusions are scoped to the public ready read and are not applied to
+	// claimNext's existing bounded vocabulary.
+	claimNext bool
 	// authorizationFilter is a composition-root capability used by the guarded
 	// RPC adapter. The core service applies it to each complete ready candidate
 	// before cutting a page; it is never populated from wire input.
