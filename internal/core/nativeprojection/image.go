@@ -296,6 +296,7 @@ type ArchiveEvidence struct {
 	Members                 map[string]dumpformat.File         `json:"members"`
 	NativeCaptureFiles      map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
 	NativeDecodedLimitBytes uint64                             `json:"native_decoded_limit_bytes,omitempty"`
+	NativeIncarnation       string                             `json:"native_incarnation,omitempty"`
 	HistoryBinding          *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
 }
 

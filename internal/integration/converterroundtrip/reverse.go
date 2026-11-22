@@ -437,8 +437,11 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 	}
 	receipt, err := reader.IdempotencyByKey(ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
 	expectedRevision := (*model.Revision)(nil)
-	if receipt == nil && archive.HistoryBinding != nil && archive.HistoryBinding.RequestHash == request {
+	if receipt == nil && archive.HistoryBinding != nil && archive.HistoryBinding.RequestHash == request && archive.HistoryBinding.Incarnation != "" {
 		revision := model.Revision(archive.HistoryBinding.Revision)
+		if revision.Validate() != nil {
+			return driver.ErrConflict
+		}
 		expectedRevision = &revision
 	}
 	if err != nil || receipt != nil && (receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != reader.Snapshot().Incarnation) || receipt == nil && expectedRevision == nil {
@@ -447,6 +450,29 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 	rows, err := reader.Get(ctx, []model.Ref{marker.Ref})
 	if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, marker.Body) {
 		return driver.ErrConflict
+	}
+	// A native restore intentionally has no idempotency receipt for the
+	// original converter request. The retained source-plane commit binding is
+	// the authenticated copy of that receipt's target incarnation, so require
+	// the carried evidence to agree with it before replaying history.
+	if receipt == nil {
+		if archive.HistoryBinding == nil || archive.NativeIncarnation == "" || archive.HistoryBinding.Incarnation != archive.NativeIncarnation {
+			return driver.ErrConflict
+		}
+		commitRows, getErr := reader.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+		if p.SourcePlanes != nil && (getErr != nil || len(commitRows) != 1 || commitRows[0].Kind != "instance_config") {
+			return driver.ErrConflict
+		}
+		if getErr == nil && len(commitRows) == 1 && commitRows[0].Kind == "instance_config" {
+			var commitBinding driver.SourcePlaneCommitBindingV1
+			if json.Unmarshal(commitRows[0].Body, &commitBinding) != nil ||
+				commitBinding.RequestHash != request ||
+				commitBinding.StoreID != p.SourceStoreID ||
+				commitBinding.Incarnation != archive.HistoryBinding.Incarnation ||
+				commitBinding.Revision != *expectedRevision {
+				return driver.ErrConflict
+			}
+		}
 	}
 	return validateHistoryRecovery(ctx, reader, p, archive, receipt, expectedRevision)
 }

@@ -65,6 +65,7 @@ go_test(
         "//internal/core/nativeprojection",
         "//internal/core/pipeline",
         "//internal/core/reverseconverter",
+        "//internal/core/ontologymigration",
         "//internal/core/service",
         "//internal/core/port",
         "//internal/core/authz",

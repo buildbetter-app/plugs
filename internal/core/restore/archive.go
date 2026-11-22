@@ -116,6 +116,7 @@ type nativeReverseEvidence struct {
 	Members            map[string]dumpformat.File         `json:"members"`
 	NativeCaptureFiles map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
 	SourceStore        string                             `json:"source_store"`
+	NativeIncarnation  string                             `json:"native_incarnation,omitempty"`
 	HistoryBinding     *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
 }
 
@@ -218,6 +219,7 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 				continue
 			}
 			evidence.HistoryBinding = historyBinding
+			evidence.NativeIncarnation = meta.Incarnation
 			body, marshalErr := json.Marshal(evidence)
 			if marshalErr == nil {
 				records[i].Body = body
