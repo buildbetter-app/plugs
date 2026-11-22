@@ -92,7 +92,7 @@ func (s *historyStreamStage) Stage(ctx context.Context, r model.Revision, f driv
 		return err
 	}
 	if s.private == nil {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "stream.state"}
 	}
 	return s.private.Stage(ctx, r, f)
 }
