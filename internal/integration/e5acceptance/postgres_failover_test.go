@@ -441,13 +441,13 @@ func startFailoverContainers(t *testing.T) *failoverContainers {
 		t.Fatalf("failover network create failed: %v %s", err, output)
 	}
 	t.Cleanup(func() {
-		_, _ = e5Docker("rm", "-f", c.primary, c.standby)
+		_, _ = e5Docker("rm", "-f", "-v", c.primary, c.standby)
 		_, _ = e5Docker("network", "rm", c.network)
 	})
-	if output, err := e5Docker("run", "-d", "--rm", "--name", c.primary, "--hostname", "primary", "--network", c.network, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB="+failoverDatabase, "-p", "127.0.0.1::5432", e5PostgresImage, "postgres", "-c", "wal_level=replica", "-c", "max_wal_senders=10", "-c", "max_replication_slots=2", "-c", "hot_standby=on", "-c", "listen_addresses=*"); err != nil {
+	if output, err := e5Docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", c.primary, "--hostname", "primary", "--network", c.network, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB="+failoverDatabase, "-p", "127.0.0.1::5432", e5PostgresImage, "postgres", "-c", "wal_level=replica", "-c", "max_wal_senders=10", "-c", "max_replication_slots=2", "-c", "hot_standby=on", "-c", "listen_addresses=*"); err != nil {
 		t.Fatalf("failover primary start failed: %v %s", err, output)
 	}
-	if output, err := e5Docker("run", "-d", "--rm", "--name", c.standby, "--hostname", "standby", "--network", c.network, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB="+failoverDatabase, "-p", "127.0.0.1::5432", e5PostgresImage, "tail", "-f", "/dev/null"); err != nil {
+	if output, err := e5Docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", c.standby, "--hostname", "standby", "--network", c.network, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB="+failoverDatabase, "-p", "127.0.0.1::5432", e5PostgresImage, "tail", "-f", "/dev/null"); err != nil {
 		t.Fatalf("failover standby shell start failed: %v %s", err, output)
 	}
 	primaryPort := containerPort(t, c.primary)

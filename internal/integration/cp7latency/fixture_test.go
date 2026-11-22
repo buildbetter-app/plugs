@@ -111,11 +111,11 @@ func openStore(t *testing.T, engine string) driver.Store {
 		t.Fatalf("undeclared engine %q", engine)
 	}
 	name := fmt.Sprintf("plug-swarm-cp7-latency-%d-%d", os.Getpid(), time.Now().UnixNano())
-	if out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", postgresImage); err != nil {
+	if out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", postgresImage); err != nil {
 		t.Fatalf("owned PostgreSQL start: %v %s", err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := docker("rm", "-f", name); err != nil {
+		if out, err := docker("rm", "-f", "-v", name); err != nil {
 			t.Errorf("owned PostgreSQL cleanup: %v %s", err, out)
 		}
 	})

@@ -40,14 +40,14 @@ func ownedPostgres(t *testing.T) string {
 		t.Fatal(err)
 	}
 	name := "plug-b13-public-" + hex.EncodeToString(random[:])
-	out, err := docker("run", "-d", "--rm", "--name", name,
+	out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b13",
 		"-p", "127.0.0.1::5432", postgresImage)
 	if err != nil {
 		t.Fatalf("owned PostgreSQL start failed: %v %s", err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := docker("rm", "-f", name); err != nil {
+		if out, err := docker("rm", "-f", "-v", name); err != nil {
 			t.Errorf("owned PostgreSQL cleanup failed: %v %s", err, out)
 		}
 	})

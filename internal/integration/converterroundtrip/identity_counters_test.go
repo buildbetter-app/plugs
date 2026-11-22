@@ -350,13 +350,13 @@ func identityPostgresDSN(t *testing.T) string {
 	}
 	name := "plug-swarm-i6-identity-" + hashBytes([]byte(t.TempDir()))[:16]
 	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
-	if out, err := docker(ctx, "run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_identity", "-p", "127.0.0.1::5432", image); err != nil {
+	if out, err := docker(ctx, "run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_identity", "-p", "127.0.0.1::5432", image); err != nil {
 		t.Fatalf("real PostgreSQL start failed: %v %s", err, out)
 	}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		if out, err := docker(cleanupCtx, "rm", "-f", name); err != nil {
+		if out, err := docker(cleanupCtx, "rm", "-f", "-v", name); err != nil {
 			t.Errorf("owned PostgreSQL cleanup failed: %v %s", err, out)
 		}
 	})

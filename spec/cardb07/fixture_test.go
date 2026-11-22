@@ -441,13 +441,13 @@ func b07Postgres(t *testing.T, root string) string {
 		b07JSON(t, filepath.Join(root, fmt.Sprintf("docker-%02d.json", seq)), map[string]any{"argv": cmd.Args, "combined_output": string(out), "error": fmt.Sprint(e), "output_sha256": b07Hash(out)})
 		return out, e
 	}
-	out, e := run("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b07", "-p", "127.0.0.1::5432", image)
+	out, e := run("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b07", "-p", "127.0.0.1::5432", image)
 	if e != nil {
 		t.Fatalf("owned PostgreSQL start: %v %s", e, out)
 	}
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() {
-		out, e := run("rm", "-f", name)
+		out, e := run("rm", "-f", "-v", name)
 		if e != nil || strings.TrimSpace(string(out)) != name {
 			t.Errorf("owned PostgreSQL cleanup: %v %s", e, out)
 		}

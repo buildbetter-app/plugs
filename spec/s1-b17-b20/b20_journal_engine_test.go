@@ -45,12 +45,12 @@ func b20JournalHarness(t *testing.T, engine string) *b17Harness {
 		}
 		return cmd.CombinedOutput()
 	}
-	out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b20", "-p", "127.0.0.1::5432", image)
+	out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b20", "-p", "127.0.0.1::5432", image)
 	if err != nil {
 		t.Fatalf("start owned B20 PostgreSQL: %v %s", err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := docker("rm", "-f", name); err != nil {
+		if out, err := docker("rm", "-f", "-v", name); err != nil {
 			t.Errorf("remove owned B20 PostgreSQL: %v %s", err, out)
 		}
 	})

@@ -55,7 +55,7 @@ func runWithEngine(m *testing.M) (code int) {
 		return 1
 	}
 	name := "plug-swarm-v3-accept-postgres-" + id
-	out, err := docker("run", "-d", "--rm", "--name", name,
+	out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_acceptance",
 		"-p", "127.0.0.1::5432", engineImage)
 	if err != nil {
@@ -63,7 +63,7 @@ func runWithEngine(m *testing.M) (code int) {
 		return 1
 	}
 	defer func() {
-		if out, err := docker("rm", "-f", name); err != nil {
+		if out, err := docker("rm", "-f", "-v", name); err != nil {
 			fmt.Fprintf(os.Stderr, "owned engine cleanup failed: %v %s\n", err, out)
 			code = 1
 		}

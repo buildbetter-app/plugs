@@ -429,10 +429,10 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	t.Helper()
 	name := fmt.Sprintf("plug-swarm-s1-b01-b04-%d-%d", os.Getpid(), time.Now().UnixNano())
 	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
-	if output, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", image, "-c", "shared_preload_libraries=pg_stat_statements", "-c", "session_preload_libraries=auto_explain", "-c", "pg_stat_statements.track=all", "-c", "pg_stat_statements.track_utility=on", "-c", "auto_explain.log_min_duration=250ms", "-c", "auto_explain.log_analyze=on", "-c", "auto_explain.log_buffers=on", "-c", "auto_explain.log_format=json", "-c", "auto_explain.log_nested_statements=on", "-c", "auto_explain.log_timing=off", "-c", "auto_explain.log_settings=on", "-c", "log_min_duration_statement=250", "-c", "log_lock_waits=on", "-c", "deadlock_timeout=100ms", "-c", "log_error_verbosity=verbose", "-c", "log_min_error_statement=error", "-c", "log_line_prefix=%m [%p] %q%u@%d SQLSTATE=%e "); err != nil {
+	if output, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", image, "-c", "shared_preload_libraries=pg_stat_statements", "-c", "session_preload_libraries=auto_explain", "-c", "pg_stat_statements.track=all", "-c", "pg_stat_statements.track_utility=on", "-c", "auto_explain.log_min_duration=250ms", "-c", "auto_explain.log_analyze=on", "-c", "auto_explain.log_buffers=on", "-c", "auto_explain.log_format=json", "-c", "auto_explain.log_nested_statements=on", "-c", "auto_explain.log_timing=off", "-c", "auto_explain.log_settings=on", "-c", "log_min_duration_statement=250", "-c", "log_lock_waits=on", "-c", "deadlock_timeout=100ms", "-c", "log_error_verbosity=verbose", "-c", "log_min_error_statement=error", "-c", "log_line_prefix=%m [%p] %q%u@%d SQLSTATE=%e "); err != nil {
 		t.Fatalf("postgres start: %v %s", err, output)
 	}
-	t.Cleanup(func() { _, _ = docker("rm", "-f", name) })
+	t.Cleanup(func() { _, _ = docker("rm", "-f", "-v", name) })
 	output, err := docker("port", name, "5432/tcp")
 	if err != nil {
 		t.Fatalf("postgres port: %v %s", err, output)

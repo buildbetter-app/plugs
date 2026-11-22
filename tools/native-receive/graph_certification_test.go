@@ -193,13 +193,13 @@ func graphPostgres(t *testing.T) string {
 		return exec.CommandContext(ctx, "docker", append([]string{"--host=unix:///var/run/docker.sock"}, args...)...).CombinedOutput()
 	}
 	name := "plug-graph-cert-" + graphcertfixture.Hash([]byte(t.TempDir()))[:16]
-	if out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=graph_cert", "-p", "127.0.0.1::5432", "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"); err != nil {
+	if out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=graph_cert", "-p", "127.0.0.1::5432", "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"); err != nil {
 		t.Fatal(err, string(out))
 	}
 	t.Cleanup(func() {
 		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if out, err := exec.CommandContext(c, "docker", "--host=unix:///var/run/docker.sock", "rm", "-f", name).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(c, "docker", "--host=unix:///var/run/docker.sock", "rm", "-f", "-v", name).CombinedOutput(); err != nil {
 			t.Error(err, string(out))
 		}
 	})

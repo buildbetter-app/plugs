@@ -54,7 +54,7 @@ func randomSuffix() string {
 func TestMain(m *testing.M) {
 	code := func() int {
 		name := "plug-swarm-v3-sql-reader-snapshots-" + strconv.Itoa(os.Getpid()) + "-" + randomSuffix()
-		out, err := docker("run", "-d", "--rm", "--name", name,
+		out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name,
 			"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
 			"-e", "POSTGRES_DB=plug_snapshots_boot",
 			"-p", "127.0.0.1::5432", postgresImage)
@@ -64,7 +64,7 @@ func TestMain(m *testing.M) {
 		}
 		postgresContainer = name
 		defer func() {
-			if out, err := docker("rm", "-f", name); err != nil {
+			if out, err := docker("rm", "-f", "-v", name); err != nil {
 				fmt.Fprintf(os.Stderr, "owned PostgreSQL cleanup failed: %v %s\n", err, out)
 			}
 		}()

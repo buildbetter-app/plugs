@@ -407,10 +407,10 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 	t.Helper()
 	name := fmt.Sprintf("plug-swarm-s1-b01-b04-%d-%d", os.Getpid(), time.Now().UnixNano())
 	const image = "postgres@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
-	if output, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", image); err != nil {
+	if output, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", "127.0.0.1::5432", image); err != nil {
 		t.Fatalf("postgres start: %v %s", err, output)
 	}
-	t.Cleanup(func() { _, _ = docker("rm", "-f", name) })
+	t.Cleanup(func() { _, _ = docker("rm", "-f", "-v", name) })
 	output, err := docker("port", name, "5432/tcp")
 	if err != nil {
 		t.Fatalf("postgres port: %v %s", err, output)

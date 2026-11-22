@@ -691,14 +691,14 @@ func startB09Postgres(t *testing.T, target *b09ReplayTarget) string {
 		}
 		return cmd.CombinedOutput()
 	}
-	if out, err := docker(ctx, "run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b09_native", "-p", "127.0.0.1::5432", b09PostgresImage); err != nil {
+	if out, err := docker(ctx, "run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_b09_native", "-p", "127.0.0.1::5432", b09PostgresImage); err != nil {
 		t.Fatalf("real PostgreSQL start failed: %v %s", err, out)
 	}
 	target.container = name
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		if out, err := docker(cleanupCtx, "rm", "-f", name); err != nil {
+		if out, err := docker(cleanupCtx, "rm", "-f", "-v", name); err != nil {
 			t.Errorf("PostgreSQL cleanup: %v %s", err, out)
 		} else {
 			t.Log("B09 cleanup PostgreSQL container removed")
