@@ -528,6 +528,11 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		Changes:  changes, LockKeys: lockKeys(requests),
 	})
 	if err != nil {
+		var bindingMismatch driver.ErrRestoreBindingMismatch
+		var commitConflict driver.ErrRestoreCommitConflict
+		if errors.Is(err, driver.ErrConflict) && !errors.As(err, &bindingMismatch) && !errors.As(err, &commitConflict) {
+			err = driver.ErrRestoreCommitConflict{Cause: err}
+		}
 		var uncertain driver.ErrIndeterminate
 		if !errors.As(err, &uncertain) || uncertain.IdempotencyKey != report.IdempotencyKey {
 			return report, err
@@ -603,10 +608,10 @@ func restoreImportReplay(ctx context.Context, target driver.Store, meta driver.M
 		return Report{}, false, nil
 	}
 	if receipt.RequestHash != request {
-		return Report{}, false, driver.ErrConflict
+		return Report{}, false, driver.ErrRestoreBindingMismatch{Field: "requestHash"}
 	}
 	if receipt.ResponsePending {
-		return Report{}, false, driver.ErrConflict
+		return Report{}, false, driver.ErrRestoreBindingMismatch{Field: "receipt.responsePending"}
 	}
 	recovered, err := RecoverImport(ctx, target, profile, Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest})
 	if err != nil {
@@ -622,7 +627,7 @@ func restoreImportReplay(ctx context.Context, target driver.Store, meta driver.M
 // Restore retry still refuses a populated target, including a prior restore.
 func Recover(ctx context.Context, target driver.Store, check Verification) (Report, error) {
 	if !validDigest(check.ArchiveSHA256) || !validDigest(check.DerivedSHA256) {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "verification.digest"}
 	}
 	key, request := recoveryScope(check)
 	meta, err := target.Meta(ctx)
@@ -640,16 +645,16 @@ func Recover(ctx context.Context, target driver.Store, check Verification) (Repo
 		return Report{}, err
 	}
 	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision.String() != "1" || receipt.Commit.Revision.String() != "1" || receipt.Changeset.IdempotencyKey != key {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt"}
 	}
 	// Bind recovery to the durable archive marker as well as the receipt.
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil || len(rows) != 1 {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.archiveMarker"}
 	}
 	var evidence archiveEvidence
 	if err = json.Unmarshal(rows[0].Body, &evidence); err != nil || evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.archiveMarker"}
 	}
 	return Report{Restored: meta, IdempotencyKey: key, RequestHash: request, Recovered: true}, nil
 }
@@ -663,7 +668,7 @@ func RecoverImport(ctx context.Context, target driver.Store, profile driver.Rest
 	}
 	bound, err := profile.Detached()
 	if err != nil || !validDigest(check.ArchiveSHA256) || !validDigest(check.DerivedSHA256) || check.ArchiveSHA256 != bound.ArchiveDigest || check.DerivedSHA256 != bound.DerivedDigest {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "verification.digest"}
 	}
 	request, err := bound.RequestHash()
 	if err != nil {
@@ -691,7 +696,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		return Report{}, err
 	}
 	if receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != meta.Incarnation || receipt.Changeset.Revision != receipt.Commit.Revision || receipt.Changeset.IdempotencyKey != bound.IdempotencyKey || bound.HistoryDigest == "" && receipt.Commit.Revision.String() != "1" {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt"}
 	}
 	var evidence archiveEvidence
 	var evidenceRecord []byte
@@ -704,34 +709,37 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		switch {
 		case result.Ref.ID == "restore/archive":
 			if evidenceRecord != nil {
-				return Report{}, driver.ErrConflict
+				return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.restoreArchive"}
 			}
 			evidenceRecord = result.Record
 			if err = json.Unmarshal(result.Record, &evidence); err != nil {
-				return Report{}, driver.ErrConflict
+				return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.restoreArchive"}
 			}
 		case result.Ref.ID == importBindingRecordID:
 			if err = json.Unmarshal(result.Record, &binding); err != nil {
-				return Report{}, driver.ErrConflict
+				return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.importBinding"}
 			}
 		case strings.HasPrefix(result.Ref.ID, "instance_config/restore-import/project/"):
 			var metadata importProjectMetadata
 			if err = json.Unmarshal(result.Record, &metadata); err != nil {
-				return Report{}, driver.ErrConflict
+				return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.projectMetadata"}
 			}
 			projectRecords[result.Ref.ID] = metadata
 		}
 	}
 	if evidence.ArchiveSHA256 != check.ArchiveSHA256 || evidence.DerivedSHA256 != check.DerivedSHA256 || !reflect.DeepEqual(binding.Profile, bound) || binding.RequestHash != request || len(projectRecords) != len(binding.Projects) {
-		return Report{}, driver.ErrConflict
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.binding"}
 	}
 	if evidence.NativeCaptureFiles != nil {
 		// The immutable receipt is the authority for the admitted ceiling and
 		// complete raw-file ledger. Compare the pinned current marker before
 		// allocating or reading any capture part, including on clean recovery.
 		rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
-		if err != nil || len(rows) != 1 || rows[0].Kind != "restore-archive" || !bytes.Equal(rows[0].Body, evidenceRecord) {
-			return Report{}, driver.ErrConflict
+		if err != nil {
+			return Report{}, err
+		}
+		if len(rows) != 1 || rows[0].Kind != "restore-archive" || !bytes.Equal(rows[0].Body, evidenceRecord) {
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.restoreArchive"}
 		}
 	}
 	for _, project := range binding.Projects {
@@ -742,7 +750,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			sourceOK = json.Unmarshal(rawSource, &source) == nil
 		}
 		if !ok || !reflect.DeepEqual(metadata.SourceIdentity, project.SourceIdentity) || metadata.Project != project.SourceAllocator.Prefix || !reflect.DeepEqual(metadata.ImportProfile, bound) || !sourceOK || !reflect.DeepEqual(source, project.SourceAllocator) || !reflect.DeepEqual(metadata.TargetAllocator, project.TargetAllocator) {
-			return Report{}, driver.ErrConflict
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.projectMetadata"}
 		}
 	}
 	projectRefs := make([]model.Ref, 0, len(binding.Projects)+1)
@@ -751,8 +759,11 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		projectRefs = append(projectRefs, model.RefByID(importProjectRecordID(project.SourceAllocator.Prefix), model.Natural64(0)))
 	}
 	protectedRows, err := r.Get(ctx, projectRefs)
-	if err != nil || len(protectedRows) != len(projectRefs) {
-		return Report{}, driver.ErrConflict
+	if err != nil {
+		return Report{}, err
+	}
+	if len(protectedRows) != len(projectRefs) {
+		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.protectedRecords"}
 	}
 	for _, row := range protectedRows {
 		var receiptRecord json.RawMessage
@@ -763,7 +774,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			}
 		}
 		if len(receiptRecord) == 0 || !bytes.Equal(receiptRecord, row.Body) {
-			return Report{}, driver.ErrConflict
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.protectedRecords"}
 		}
 	}
 	if err = compareImportBinding(ctx, r, evidence, binding); err != nil {
@@ -773,13 +784,16 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	if len(prepared) != 0 {
 		source = prepared[0]
 		if source == nil || source.requestHash != request || source.archive != nil && source.archive.SHA256() != bound.ArchiveDigest {
-			return Report{}, driver.ErrConflict
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "receivingEvidence"}
 		}
 	}
 	if (source == nil || source.archive == nil) && (bound.HistoryDigest != "" || bound.SourcePlanes != nil) {
 		raw, readErr := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
-		if readErr != nil || hashBytes(raw) != bound.ArchiveDigest {
-			return Report{}, driver.ErrConflict
+		if readErr != nil {
+			return Report{}, readErr
+		}
+		if hashBytes(raw) != bound.ArchiveDigest {
+			return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.archiveDigest"}
 		}
 		archive, collection, readErr := readRetainedReceivingArchive(ctx, r, raw, evidence, bound)
 		if readErr != nil {
@@ -858,7 +872,7 @@ func importProjectRecordID(prefix string) string {
 func compareImportBinding(ctx context.Context, r driver.Reader, evidence archiveEvidence, binding importBindingEvidence) error {
 	manifestFile, ok := evidence.Members["manifest.json"]
 	if !ok {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "receipt.manifest"}
 	}
 	manifestRaw, err := r.Blob(ctx, driver.Hash(manifestFile.SHA256))
 	if err != nil {
@@ -873,10 +887,10 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 			return err
 		}
 	} else if binding.Profile.HistoryTime == "" || binding.Profile.HistoryMode == driver.RestoreHistoryModeFull && manifest.History != "verified" && manifest.SourceFamilyContract != "beads-source-families/1" || binding.Profile.HistoryMode == driver.RestoreHistoryModePartial && manifest.History != "verified" && manifest.History != "available-unverified" {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "history"}
 	}
 	if len(binding.Projects) != len(manifest.Projects) {
-		return driver.ErrConflict
+		return driver.ErrRestoreBindingMismatch{Field: "projects"}
 	}
 	allocators, ok := r.(driver.AllocatorReader)
 	if !ok {
@@ -891,11 +905,14 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 			}
 		}
 		if found == nil || !reflect.DeepEqual(found.SourceAllocator, source) || found.TargetAllocator.Prefix != source.Prefix {
-			return driver.ErrConflict
+			return driver.ErrRestoreBindingMismatch{Field: "project.allocator"}
 		}
 		actual, err := allocators.LoadAllocator(ctx, found.TargetAllocator.Prefix)
-		if err != nil || !allocatorContinues(found.TargetAllocator, actual) {
-			return driver.ErrConflict
+		if err != nil {
+			return err
+		}
+		if !allocatorContinues(found.TargetAllocator, actual) {
+			return driver.ErrRestoreBindingMismatch{Field: "project.targetAllocator"}
 		}
 	}
 	return nil

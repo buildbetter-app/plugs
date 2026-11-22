@@ -15,11 +15,19 @@ import (
 )
 
 func nativeDeltaRecoveryError(cause error) error {
+	if cause == nil {
+		return driver.ErrRestoreBindingMismatch{Field: "nativeDelta"}
+	}
+	var commitConflict driver.ErrRestoreCommitConflict
+	var fenced driver.ErrFenced
+	if errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
 	var limit *dumpformat.NativeDeltaDecodedLimitError
 	if errors.As(cause, &limit) {
-		return errors.Join(driver.ErrConflict, cause)
+		return errors.Join(driver.ErrRestoreBindingMismatch{Field: "nativeDelta"}, cause)
 	}
-	return driver.ErrConflict
+	return errors.Join(driver.ErrRestoreBindingMismatch{Field: "nativeDelta"}, cause)
 }
 
 // BindNativeCaptureSetImport consumes an already completely verified set. The

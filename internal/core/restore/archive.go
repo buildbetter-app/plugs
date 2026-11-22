@@ -849,8 +849,18 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		if importErr != nil {
 			if errors.Is(importErr, driver.ErrRestoreTargetNotEmpty) {
 				importErr = &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires a fully empty store"}}
-			} else if errors.Is(importErr, driver.ErrConflict) {
-				importErr = &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore import binding does not match the durable receipt"}}
+			} else {
+				var commitConflict driver.ErrRestoreCommitConflict
+				var bindingMismatch driver.ErrRestoreBindingMismatch
+				var fenced driver.ErrFenced
+				switch {
+				case errors.As(importErr, &fenced):
+					importErr = &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: "active storage lease was lost"}}
+				case errors.As(importErr, &commitConflict):
+					importErr = &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Hint: commitConflict.Error()}}
+				case errors.As(importErr, &bindingMismatch):
+					importErr = &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: bindingMismatch.Error()}}
+				}
 			}
 			return m.fail(id, importErr)
 		}

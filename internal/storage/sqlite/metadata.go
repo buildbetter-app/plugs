@@ -35,6 +35,9 @@ func (t *transaction) replay(ctx context.Context, c *sql.Conn, h driver.Changese
 		return nil, err
 	}
 	if value != nil && value.RequestHash != h.RequestHash {
+		if h.Kind == model.ChangesetRestore {
+			return nil, driver.ErrRestoreBindingMismatch{Field: "requestHash"}
+		}
 		return nil, driver.ErrConflict
 	}
 	return value, nil

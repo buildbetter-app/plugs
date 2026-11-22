@@ -47,7 +47,7 @@ func nativeReceivingStage(tx driver.WriteTx, proof historyverify.Checkpoint) (dr
 func restoreNativeReceivingStream(ctx context.Context, archive *dumpformat.Archive, target driver.Store, suppliedLease driver.ActiveLease, profile driver.RestoreImportProfile, plan nativeprojection.Plan, sourceLogical []byte, retainedArchive *dumpformat.Archive, releasePlan func()) (report Report, restoreErr error) {
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil || when.IsZero() || sourceLogical == nil {
-		return report, driver.ErrConflict
+		return report, driver.ErrRestoreBindingMismatch{Field: "profile.historyTime"}
 	}
 	stream, err := historyverify.PrepareNativeArchive(ctx, archive, profile, when)
 	if err != nil {
@@ -87,7 +87,7 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	}
 	when, err := time.Parse(time.RFC3339Nano, profile.HistoryTime)
 	if err != nil || when.IsZero() || sourceLogical == nil {
-		return report, driver.ErrConflict
+		return report, driver.ErrRestoreBindingMismatch{Field: "profile.historyTime"}
 	}
 	image, err := plan.SnapshotWithAccounting(archive)
 	if err != nil {
@@ -273,6 +273,13 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 		}
 	}
 	commit, err := prepared.Commit(ctx, driver.ChangesetHeader{Incarnation: restored.Incarnation, Kind: model.ChangesetRestore, Time: when, Principal: profile.Admission.Actor, Chain: []string{}, Method: profile.Method, AgentLabel: profile.AgentLabel(), IdempotencyKey: report.IdempotencyKey, RequestHash: report.RequestHash, Response: model.Commit{Revision: restored.Head, Results: results, Warnings: []model.Warning{}}, Changes: changes, LockKeys: lockKeys(requests)})
+	if err != nil {
+		var bindingMismatch driver.ErrRestoreBindingMismatch
+		var commitConflict driver.ErrRestoreCommitConflict
+		if errors.Is(err, driver.ErrConflict) && !errors.As(err, &bindingMismatch) && !errors.As(err, &commitConflict) {
+			err = driver.ErrRestoreCommitConflict{Cause: err}
+		}
+	}
 	check := Verification{ArchiveSHA256: profile.ArchiveDigest, DerivedSHA256: profile.DerivedDigest}
 	commitCause := err
 	if commitCause != nil {

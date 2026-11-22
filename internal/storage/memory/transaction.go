@@ -502,11 +502,17 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 		}
 		if previous, exists := s.state.replays[key]; exists && s.now().Before(previous.at.Add(driver.IdempotencyWindow)) {
 			if previous.value.RequestHash != header.RequestHash {
+				if t.importRestore != nil {
+					return model.Changeset{}, driver.ErrRestoreBindingMismatch{Field: "requestHash"}
+				}
 				return model.Changeset{}, driver.ErrConflict
 			}
 			if previous.value.Changeset.Kind == "" {
 				// This scope completed without a graph commit. Callers replay its
 				// Commit through IdempotencyByKey or CommitNoop, never invent a log.
+				if t.importRestore != nil {
+					return model.Changeset{}, driver.ErrRestoreBindingMismatch{Field: "receipt.response"}
+				}
 				return model.Changeset{}, driver.ErrConflict
 			}
 			copy, err := cloneJSON(previous.value.Changeset)

@@ -491,6 +491,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if replay != nil {
 			if replay.Changeset.Kind == "" {
+				if t.importRestore != nil {
+					return driver.ErrRestoreBindingMismatch{Field: "receipt.response"}
+				}
 				return driver.ErrConflict
 			}
 			result = replay.Changeset
