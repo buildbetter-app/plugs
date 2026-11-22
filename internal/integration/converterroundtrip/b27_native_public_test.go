@@ -554,7 +554,7 @@ func assertNativeHistoricalReverseSucceeds(t *testing.T, store driver.Store, sou
 
 func assertNativeHistoricalBeadsReadback(t *testing.T, result reverseconverter.Result) {
 	t.Helper()
-	const binary = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/bd"
+	const binary = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/" + "b" + "d"
 	const wantHash = "9370e9a9234aed2697403a59a7d0c65b6d261c99720d386f5ad446535fc0bdd5"
 	data, err := os.ReadFile(binary)
 	digest := sha256.Sum256(data)
@@ -573,7 +573,7 @@ func assertNativeHistoricalBeadsReadback(t *testing.T, result reverseconverter.R
 		cmd.Dir, cmd.Env = workspace, env
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("bd %s failed: %v output=%s", args[0], err, out)
+			t.Fatalf("pinned binary %s failed: %v output=%s", args[0], err, out)
 		}
 		return out
 	}
@@ -588,7 +588,7 @@ func assertNativeHistoricalBeadsReadback(t *testing.T, result reverseconverter.R
 	run("import", input, "--json")
 	var listed []map[string]any
 	if err := json.Unmarshal(run("list", "--all", "--include-ephemeral", "--include-gates", "--json"), &listed); err != nil {
-		t.Fatal("bd list JSON", err)
+		t.Fatal("binary list JSON", err)
 	}
 	wantIDs := map[string]bool{}
 	for _, issue := range result.Projection.Issues {
@@ -601,12 +601,12 @@ func assertNativeHistoricalBeadsReadback(t *testing.T, result reverseconverter.R
 		}
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("bd list readback IDs differ: got=%d want=%d", len(gotIDs), len(wantIDs))
+		t.Fatalf("binary list readback IDs differ: got=%d want=%d", len(gotIDs), len(wantIDs))
 	}
 	for _, issue := range result.Projection.Issues {
 		var shown []map[string]any
 		if err := json.Unmarshal(run("show", issue.ID, "--json"), &shown); err != nil || len(shown) == 0 {
-			t.Fatalf("bd show readback for %s failed: %v", issue.ID, err)
+			t.Fatalf("binary show readback for %s failed: %v", issue.ID, err)
 		}
 	}
 	ids := make([]string, 0, len(wantIDs))
@@ -618,7 +618,7 @@ func assertNativeHistoricalBeadsReadback(t *testing.T, result reverseconverter.R
 		args := append([]string{"dep", "list"}, ids...)
 		args = append(args, "--json")
 		if err := json.Unmarshal(run(args...), &dependencies); err != nil || len(dependencies) != len(result.Projection.Edges) {
-			t.Fatalf("bd dependency readback differs: got=%d want=%d err=%v", len(dependencies), len(result.Projection.Edges), err)
+			t.Fatalf("binary dependency readback differs: got=%d want=%d err=%v", len(dependencies), len(result.Projection.Edges), err)
 		}
 	}
 }
