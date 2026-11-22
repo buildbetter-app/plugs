@@ -229,11 +229,11 @@ func disposablePostgres(t *testing.T) string {
 		}
 		return cmd.CombinedOutput()
 	}
-	if out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=authz", "-p", "127.0.0.1::5432", image); err != nil {
+	if out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=authz", "-p", "127.0.0.1::5432", image); err != nil {
 		t.Fatalf("disposable Postgres start: %v %s", err, out)
 	}
 	t.Cleanup(func() {
-		if out, err := docker("rm", "-f", name); err != nil {
+		if out, err := docker("rm", "-f", "-v", name); err != nil {
 			t.Errorf("disposable Postgres cleanup: %v %s", err, out)
 		}
 	})

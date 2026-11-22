@@ -42,13 +42,13 @@ func docker(args ...string) ([]byte, error) {
 func TestMain(m *testing.M) {
 	code := func() int {
 		name := fmt.Sprintf("plug-swarm-v3-cli-sql-e2e-%d", time.Now().UnixNano())
-		out, err := docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test", "-p", "127.0.0.1::5432", postgresImage)
+		out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test", "-p", "127.0.0.1::5432", postgresImage)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "real PostgreSQL start failed: %v %s\n", err, out)
 			return 1
 		}
 		defer func() {
-			if out, err := docker("rm", "-f", name); err != nil {
+			if out, err := docker("rm", "-f", "-v", name); err != nil {
 				fmt.Fprintf(os.Stderr, "owned PostgreSQL cleanup failed: %v %s\n", err, out)
 			}
 		}()

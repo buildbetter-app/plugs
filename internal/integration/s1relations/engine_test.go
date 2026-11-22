@@ -49,7 +49,7 @@ func TestMain(m *testing.M) { os.Exit(withPostgres(m)) }
 // the PostgreSQL member of the required store matrix.
 func withPostgres(m *testing.M) (code int) {
 	name := "plug-swarm-s1-relations-" + nonce()
-	out, err := docker("run", "-d", "--rm", "--name", name,
+	out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test",
 		"-p", "127.0.0.1::5432", postgresImage)
 	if err != nil {
@@ -57,7 +57,7 @@ func withPostgres(m *testing.M) (code int) {
 		return 1
 	}
 	defer func() {
-		if out, err := docker("rm", "-f", name); err != nil {
+		if out, err := docker("rm", "-f", "-v", name); err != nil {
 			fmt.Fprintf(os.Stderr, "remove owned PostgreSQL: %v %s\n", err, out)
 			code = 1
 		}

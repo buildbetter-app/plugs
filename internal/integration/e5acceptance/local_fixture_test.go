@@ -72,12 +72,12 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 	name := fmt.Sprintf("plug-swarm-e5-lease-%d", os.Getpid())
-	if output, err := e5Docker("run", "-d", "--rm", "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_e5", "-p", "127.0.0.1::5432", e5PostgresImage); err != nil {
+	if output, err := e5Docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_e5", "-p", "127.0.0.1::5432", e5PostgresImage); err != nil {
 		fmt.Fprintf(os.Stderr, "disposable PostgreSQL start failed: %v %s\n", err, output)
 		os.Exit(1)
 	}
 	cleanup := func() {
-		if output, err := e5Docker("rm", "-f", name); err != nil {
+		if output, err := e5Docker("rm", "-f", "-v", name); err != nil {
 			fmt.Fprintf(os.Stderr, "disposable PostgreSQL cleanup failed: %v %s\n", err, output)
 		}
 	}

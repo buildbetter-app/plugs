@@ -35,7 +35,7 @@ func TestMain(m *testing.M) {
 			return 1
 		}
 		name := "plug-swarm-offline-history-" + id
-		out, err := docker("run", "-d", "--rm", "--name", name,
+		out, err := docker("run", "-d", "--rm", "--label", "plug.test.run="+os.Getenv("PLUG_TEST_CONTAINER_LABEL"), "--name", name,
 			"-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=plug_test",
 			"-p", "127.0.0.1::5432", pgImage)
 		if err != nil {
@@ -43,7 +43,7 @@ func TestMain(m *testing.M) {
 			return 1
 		}
 		defer func() {
-			if out, err := docker("rm", "-f", name); err != nil {
+			if out, err := docker("rm", "-f", "-v", name); err != nil {
 				fmt.Fprintf(os.Stderr, "PostgreSQL cleanup failed: %v %s\n", err, out)
 			}
 		}()
