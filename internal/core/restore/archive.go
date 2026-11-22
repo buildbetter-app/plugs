@@ -218,6 +218,9 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 			if json.Unmarshal(records[i].Body, &evidence) != nil {
 				continue
 			}
+			if !hasConverterReverseEvidence(evidence) {
+				continue
+			}
 			evidence.HistoryBinding = historyBinding
 			evidence.NativeIncarnation = meta.Incarnation
 			body, marshalErr := json.Marshal(evidence)
@@ -391,25 +394,7 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 		if json.Unmarshal(record.Body, &evidence) != nil {
 			continue
 		}
-		// Native capture-set evidence belongs to the native history recovery
-		// contract. It is intentionally not promoted into converter reverse
-		// evidence here, preserving the P23 refusal boundary for native-only
-		// backups. Offline converter archives have no capture-file ledger and
-		// use the source envelope/member ledger below.
-		if len(evidence.NativeCaptureFiles) != 0 {
-			continue
-		}
-		if strings.HasPrefix(evidence.SourceStore, "native/") {
-			continue
-		}
-		converterMembers := false
-		for path := range evidence.Members {
-			if strings.HasPrefix(path, "records/") && path != "records/native.ndjson" {
-				converterMembers = true
-				break
-			}
-		}
-		if !converterMembers {
+		if !hasConverterReverseEvidence(evidence) {
 			continue
 		}
 		if isDigest(evidence.ArchiveSHA256) {
@@ -440,6 +425,23 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 		result[digest] = data
 	}
 	return result, nil
+}
+
+func hasConverterReverseEvidence(evidence nativeReverseEvidence) bool {
+	// Native capture-set evidence belongs to the native history recovery
+	// contract. It is intentionally not promoted into converter reverse
+	// evidence here, preserving the P23 refusal boundary for native-only
+	// backups. Offline converter archives have no capture-file ledger and
+	// use the source envelope/member ledger below.
+	if len(evidence.NativeCaptureFiles) != 0 || strings.HasPrefix(evidence.SourceStore, "native/") {
+		return false
+	}
+	for path := range evidence.Members {
+		if strings.HasPrefix(path, "records/") && path != "records/native.ndjson" {
+			return true
+		}
+	}
+	return false
 }
 
 func nativeReverseHistoryBinding(ctx context.Context, reader driver.Reader, records []nativeRecord) *dumpformat.HistoryBindingEvidence {
