@@ -80,30 +80,39 @@ func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []
 	}
 	if evidence.NativeCaptureFiles == nil {
 		rows, err := reader.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
-		if err != nil || len(rows) != 1 || json.Unmarshal(rows[0].Body, &evidence) != nil {
-			return nil, driver.ErrConflict
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) != 1 || json.Unmarshal(rows[0].Body, &evidence) != nil {
+			return nil, driver.ErrRestoreBindingMismatch{Field: "receipt.restoreArchive"}
 		}
 	}
 	if evidence.ArchiveSHA256 != hashBytes(raw) {
-		return nil, driver.ErrConflict
+		return nil, driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	file, ok := evidence.NativeCaptureFiles["head.tar"]
 	if !ok {
-		return nil, driver.ErrConflict
+		return nil, driver.ErrRestoreBindingMismatch{Field: "capture.head"}
 	}
 	head, err := reader.Blob(ctx, driver.Hash(file.SHA256))
-	if err != nil || int64(len(head)) != file.Size || hashBytes(head) != file.SHA256 {
-		return nil, driver.ErrConflict
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(head)) != file.Size || hashBytes(head) != file.SHA256 {
+		return nil, driver.ErrRestoreBindingMismatch{Field: "capture.head"}
 	}
 	return dumpformat.ReadNativeCaptureSet(ctx, bytes.NewReader(raw), bytes.NewReader(head), func(ctx context.Context, n uint64) (io.ReadCloser, error) {
 		name := fmt.Sprintf("parts/%020d.part", n)
 		file, ok := evidence.NativeCaptureFiles[name]
 		if !ok {
-			return nil, driver.ErrConflict
+			return nil, driver.ErrRestoreBindingMismatch{Field: "capture.partIndex"}
 		}
 		data, err := reader.Blob(ctx, driver.Hash(file.SHA256))
-		if err != nil || int64(len(data)) != file.Size || hashBytes(data) != file.SHA256 {
-			return nil, driver.ErrConflict
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) != file.Size || hashBytes(data) != file.SHA256 {
+			return nil, driver.ErrRestoreBindingMismatch{Field: "capture.partDigest"}
 		}
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained recovery option", PrepareReceiving: true})
