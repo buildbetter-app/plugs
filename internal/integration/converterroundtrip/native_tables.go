@@ -97,7 +97,10 @@ func recoverNativeFamilies(ctx context.Context, reader driver.Reader, profile dr
 		return nil, nil, nil, nil, nil
 	}
 	raw, err := reader.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
-	if err != nil || hashBytes(raw) != profile.ArchiveDigest {
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if hashBytes(raw) != profile.ArchiveDigest {
 		return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	archive, collection, err := readRetainedReceivingArchive(ctx, reader, raw, evidence, profile)
@@ -141,8 +144,14 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 	policy := prepared.nativeDeltaHistory
 	if profile.NativeDeltaHistory != nil && profile.HistoryMode == driver.RestoreHistoryModeSnapshot {
 		markers, markerErr := reader.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+		if markerErr != nil {
+			return nil, nil, nil, nil, markerErr
+		}
 		want, encodeErr := json.Marshal(nativeSnapshotHistoryEvidence(policy))
-		if markerErr != nil || encodeErr != nil || len(markers) != 1 || markers[0].Kind != "beads-archive" || !bytes.Equal(markers[0].Body, want) {
+		if encodeErr != nil {
+			return nil, nil, nil, nil, encodeErr
+		}
+		if len(markers) != 1 || markers[0].Kind != "beads-archive" || !bytes.Equal(markers[0].Body, want) {
 			return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 		}
 		var original json.RawMessage
@@ -166,7 +175,10 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 		}
 	}
 	rows, err := reader.Get(ctx, []model.Ref{model.RefByID(NativeFamilyReportID, model.Natural64(0))})
-	if err != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, want) || !bytes.Equal(committed, want) {
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, want) || !bytes.Equal(committed, want) {
 		return nil, nil, nil, nil, driver.ErrRestoreBindingMismatch{Field: "nativeFamilyEvidence"}
 	}
 	return reports, schemas, histories, policy, nil

@@ -285,7 +285,10 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 			return nil, err
 		}
 		raw, err := reader.Blob(ctx, driver.Hash(file.SHA256))
-		if err != nil || uint64(len(raw)) != file.Bytes || hashBytes(raw) != file.SHA256 {
+		if err != nil {
+			return nil, err
+		}
+		if uint64(len(raw)) != file.Bytes || hashBytes(raw) != file.SHA256 {
 			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileDigest"}
 		}
 		return raw, nil

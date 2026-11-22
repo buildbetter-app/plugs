@@ -418,7 +418,10 @@ func validateHistoryRecovery(ctx context.Context, r driver.Reader, p driver.Rest
 	// Rebuild from the authenticated original envelope. A merged archive has
 	// independent ranges; the aggregate Range cannot stand in for any source.
 	raw, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
-	if err != nil || hashBytes(raw) != evidence.ArchiveSHA256 {
+	if err != nil {
+		return err
+	}
+	if hashBytes(raw) != evidence.ArchiveSHA256 {
 		return driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
 	archive, collection, err := readRetainedReceivingArchive(ctx, r, raw, evidence, p)
@@ -470,7 +473,10 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 			defer stream.Close()
 		}
 		rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
-		if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
+		if err != nil {
+			return err
+		}
+		if len(rows) != 1 || rows[0].Kind != "beads-archive" {
 			return driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 		}
 		if err := stream.ValidateEvidence(ctx, p, rows[0].Body); err != nil {
@@ -501,11 +507,17 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 		}
 	}
 	digest, err := nativeHistoryDigest(archive, history)
-	if err != nil || digest != p.HistoryDigest {
+	if err != nil {
+		return nativeDeltaRecoveryError(err)
+	}
+	if digest != p.HistoryDigest {
 		return driver.ErrRestoreBindingMismatch{Field: "historyDigest"}
 	}
 	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
-	if err != nil || len(rows) != 1 || rows[0].Kind != "beads-archive" {
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 || rows[0].Kind != "beads-archive" {
 		return driver.ErrRestoreBindingMismatch{Field: "historyEvidence"}
 	}
 	var got driver.HistoryImportEvidence
