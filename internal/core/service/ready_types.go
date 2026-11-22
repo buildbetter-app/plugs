@@ -41,12 +41,17 @@ func readySourceType(doc pipeline.Document) string {
 	return doc.Type
 }
 
-func readyFilterForRow(row storedBead, filter *Filter) (*Filter, bool) {
+func readyFilterForRow(row storedBead, filter *Filter, applyDefaultExclusions bool) (*Filter, bool) {
 	sourceType := readySourceType(row.doc)
 	if filter == nil || len(filter.Types) == 0 {
-		if _, excluded := defaultReadyExcludedTypes[sourceType]; excluded {
-			return nil, false
+		if applyDefaultExclusions {
+			if _, excluded := defaultReadyExcludedTypes[sourceType]; excluded {
+				return nil, false
+			}
 		}
+		return filter, true
+	}
+	if !applyDefaultExclusions {
 		return filter, true
 	}
 	if !slices.Contains(filter.Types, sourceType) || slices.Contains(filter.Types, row.doc.Type) {
