@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os/exec"
 	"reflect"
 	"sort"
@@ -82,7 +83,7 @@ func p31ProjectJSONL(t *testing.T, input []byte) map[string][]byte {
 
 const p31PinnedBD = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/bd"
 
-func p31BDComparable(value map[string]any) map[string]any {
+func p31BDIssueCore(value map[string]any) map[string]any {
 	copy := map[string]any{}
 	for key, item := range value {
 		switch key {
@@ -92,6 +93,150 @@ func p31BDComparable(value map[string]any) map[string]any {
 		copy[key] = item
 	}
 	return copy
+}
+
+func p31BDSourceRows(t *testing.T, expected []byte) map[string]map[string]any {
+	t.Helper()
+	rows := map[string]map[string]any{}
+	for _, line := range bytes.Split(bytes.TrimSpace(expected), []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal(line, &row); err != nil {
+			t.Fatal(err)
+		}
+		if row["_type"] != "issue" {
+			continue
+		}
+		id, _ := row["id"].(string)
+		if id == "" {
+			t.Fatal("source issue omitted id")
+		}
+		rows[id] = row
+	}
+	return rows
+}
+
+func p31BDCanonical(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		copy := map[string]any{}
+		for key, item := range typed {
+			if key == "metadata" {
+				if raw, ok := item.(string); ok {
+					var decoded any
+					if json.Unmarshal([]byte(raw), &decoded) == nil {
+						copy[key] = p31BDCanonical(decoded)
+						continue
+					}
+				}
+			}
+			copy[key] = p31BDCanonical(item)
+		}
+		return copy
+	case []any:
+		copy := make([]any, len(typed))
+		for i, item := range typed {
+			copy[i] = p31BDCanonical(item)
+		}
+		return copy
+	default:
+		return value
+	}
+}
+
+func p31BDListExpected(source map[string]any, rows map[string]map[string]any) map[string]any {
+	want := p31BDIssueCore(source)
+	dependencies, _ := source["dependencies"].([]any)
+	if len(dependencies) != 0 {
+		listDependencies := make([]any, 0, len(dependencies))
+		for _, raw := range dependencies {
+			dependency, _ := raw.(map[string]any)
+			item := map[string]any{}
+			for _, key := range []string{"issue_id", "depends_on_id", "type", "created_at", "created_by", "metadata"} {
+				if value, ok := dependency[key]; ok {
+					item[key] = value
+				}
+			}
+			listDependencies = append(listDependencies, item)
+		}
+		want["dependencies"] = listDependencies
+	}
+	comments, _ := source["comments"].([]any)
+	dependencyCount := 0
+	for _, raw := range dependencies {
+		dependency, _ := raw.(map[string]any)
+		if dependency["type"] != "parent-child" {
+			dependencyCount++
+		}
+	}
+	want["dependency_count"] = float64(dependencyCount)
+	want["comment_count"] = float64(len(comments))
+	if len(comments) != 0 {
+		want["comments_omitted"] = true
+	}
+	id, _ := source["id"].(string)
+	dependentCount := 0
+	for _, candidate := range rows {
+		candidateDependencies, _ := candidate["dependencies"].([]any)
+		for _, raw := range candidateDependencies {
+			dependency, _ := raw.(map[string]any)
+			if dependency["depends_on_id"] == id && dependency["type"] != "parent-child" {
+				dependentCount++
+			}
+		}
+	}
+	want["dependent_count"] = float64(dependentCount)
+	for _, raw := range dependencies {
+		dependency, _ := raw.(map[string]any)
+		if dependency["type"] == "parent-child" {
+			want["parent"] = dependency["depends_on_id"]
+			break
+		}
+	}
+	return want
+}
+
+func p31BDShowExpected(source map[string]any, rows map[string]map[string]any) map[string]any {
+	want := p31BDIssueCore(source)
+	dependencies, _ := source["dependencies"].([]any)
+	if len(dependencies) != 0 {
+		showDependencies := make([]any, 0, len(dependencies))
+		for _, raw := range dependencies {
+			dependency, _ := raw.(map[string]any)
+			id, _ := dependency["depends_on_id"].(string)
+			item := p31BDIssueCore(rows[id])
+			item["dependency_type"] = dependency["type"]
+			showDependencies = append(showDependencies, item)
+		}
+		want["dependencies"] = showDependencies
+	}
+	if comments, ok := source["comments"]; ok {
+		want["comments"] = comments
+	}
+	want["dependency_count"] = float64(len(dependencies))
+	comments, _ := source["comments"].([]any)
+	want["comment_count"] = float64(len(comments))
+	for _, raw := range dependencies {
+		dependency, _ := raw.(map[string]any)
+		if dependency["type"] == "parent-child" {
+			want["parent"] = dependency["depends_on_id"]
+			break
+		}
+	}
+	dependentCount := 0
+	for _, candidate := range rows {
+		candidateDependencies, _ := candidate["dependencies"].([]any)
+		for _, raw := range candidateDependencies {
+			dependency, _ := raw.(map[string]any)
+			if dependency["depends_on_id"] == source["id"] {
+				dependentCount++
+			}
+		}
+	}
+	want["dependent_count"] = float64(dependentCount)
+	return want
 }
 
 func p31BD(t *testing.T, directory string, stdin []byte, args ...string) []byte {
@@ -108,6 +253,7 @@ func p31BD(t *testing.T, directory string, stdin []byte, args ...string) []byte 
 
 func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) {
 	t.Helper()
+	rows := p31BDSourceRows(t, expected)
 	directory := t.TempDir()
 	p31BD(t, directory, nil, "init", "--prefix", project, "--non-interactive", "--quiet")
 	p31BD(t, directory, source, "import", "-")
@@ -115,33 +261,31 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 	if err := json.Unmarshal(p31BD(t, directory, nil, "list", "--all", "--json"), &issues); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]map[string]any{}
-	for _, line := range bytes.Split(bytes.TrimSpace(expected), []byte{'\n'}) {
-		if len(line) == 0 {
-			continue
-		}
-		var row map[string]any
-		if json.Unmarshal(line, &row) != nil {
-			t.Fatal("invalid source jsonl")
-		}
-		if row["_type"] != "issue" {
-			continue
-		}
-		id, _ := row["id"].(string)
-		want[id] = row
-	}
-	if len(issues) != len(want) {
-		t.Fatalf("bd list count=%d source=%d", len(issues), len(want))
+	if len(issues) != len(rows) {
+		t.Fatalf("bd list count=%d source=%d", len(issues), len(rows))
 	}
 	for _, got := range issues {
 		id, _ := got["id"].(string)
-		if !reflect.DeepEqual(p31BDComparable(got), p31BDComparable(want[id])) {
+		sourceRow := rows[id]
+		if sourceRow == nil {
+			t.Fatalf("bd list returned unknown source id=%s", id)
+		}
+		listComparable := func(value map[string]any) map[string]any {
+			copy := map[string]any{}
+			for key, item := range value {
+				if key != "revision" {
+					copy[key] = item
+				}
+			}
+			return copy
+		}
+		if !reflect.DeepEqual(p31BDCanonical(listComparable(got)), p31BDCanonical(p31BDListExpected(sourceRow, rows))) {
 			gb, _ := json.Marshal(got)
-			wb, _ := json.Marshal(want[id])
+			wb, _ := json.Marshal(p31BDListExpected(sourceRow, rows))
 			t.Fatalf("bd list readback differs id=%s got=%s want=%s", id, gb, wb)
 		}
 		var shown any
-		if err := json.Unmarshal(p31BD(t, directory, nil, "show", id, "--json"), &shown); err != nil {
+		if err := json.Unmarshal(p31BD(t, directory, nil, "show", id, "--json", "--include-comments"), &shown); err != nil {
 			t.Fatal(err)
 		}
 		shownMap, _ := shown.(map[string]any)
@@ -150,16 +294,16 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 				shownMap, _ = list[0].(map[string]any)
 			}
 		}
-		if !reflect.DeepEqual(p31BDComparable(shownMap), p31BDComparable(want[id])) {
+		if !reflect.DeepEqual(p31BDCanonical(listComparable(shownMap)), p31BDCanonical(p31BDShowExpected(sourceRow, rows))) {
 			gb, _ := json.Marshal(shownMap)
-			wb, _ := json.Marshal(want[id])
+			wb, _ := json.Marshal(p31BDShowExpected(sourceRow, rows))
 			t.Fatalf("bd show readback differs id=%s got=%s want=%s", id, gb, wb)
 		}
 		var deps any
 		if err := json.Unmarshal(p31BD(t, directory, nil, "dep", "list", id, "--json"), &deps); err != nil {
 			t.Fatal(err)
 		}
-		wantDeps := want[id]["dependencies"]
+		wantDeps := sourceRow["dependencies"]
 		if wantDeps == nil {
 			wantDeps = []any{}
 		}
@@ -170,13 +314,11 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 		}
 		for _, raw := range gotDeps {
 			dep, _ := raw.(map[string]any)
-			if dep["id"] == nil {
-				continue
-			}
 			matched := false
 			for _, expected := range wantDepList {
 				e, _ := expected.(map[string]any)
-				if dep["id"] == e["depends_on_id"] && dep["dependency_type"] == e["type"] {
+				depID, _ := e["depends_on_id"].(string)
+				if dep["id"] == depID && dep["dependency_type"] == e["type"] && reflect.DeepEqual(p31BDIssueCore(depWithoutDependencyType(dep)), p31BDIssueCore(rows[depID])) {
 					matched = true
 					break
 				}
@@ -186,6 +328,16 @@ func p31BDSourceReadback(t *testing.T, project string, source, expected []byte) 
 			}
 		}
 	}
+}
+
+func depWithoutDependencyType(value map[string]any) map[string]any {
+	copy := map[string]any{}
+	for key, item := range value {
+		if key != "dependency_type" {
+			copy[key] = item
+		}
+	}
+	return copy
 }
 
 func TestP31JoinedCurrentReceiverReverseDirectAndNativeRestoredAllDrivers(t *testing.T) {
@@ -207,11 +359,13 @@ func TestP31JoinedCurrentReceiverReverseDirectAndNativeRestoredAllDrivers(t *tes
 			}
 			defer release()
 			profile := joinedPhysicalProfile(t, ctx, ledger, store, lease)
+			ledger.assertTraversals(t, 0, 1, true)
 			report, err := RestoreNativeCaptureCollectionImportWithLease(op, ledger.binding, ledger.sources(), store, lease, profile)
 			if err != nil {
 				t.Fatal(err)
 			}
 			report.Close()
+			ledger.assertTraversals(t, 0, 2, true)
 			check := func(label string, current driver.Store) {
 				t.Helper()
 				got, err := ReverseRestoredWithOptions(ctx, current, reverseconverter.Options{All: true})
@@ -256,6 +410,18 @@ func TestP31JoinedCurrentReceiverReverseDirectAndNativeRestoredAllDrivers(t *tes
 				target, targetLease = targetReopen()
 			}
 			check("native-restored", target)
+			tampered := tamperNativeEvidenceRootForTest(t, nativeBytes)
+			tamperedArchive, err := dumpformat.Read(bytes.NewReader(tampered))
+			if err != nil {
+				t.Fatal(err)
+			}
+			badTarget, badLease, _ := openIdentityTarget(t, engine)
+			restoreNativeHeadForTest(t, ctx, badTarget, badLease, tampered, tamperedArchive.Manifest())
+			_, err = ReverseRestoredWithOptions(ctx, badTarget, reverseconverter.Options{All: true})
+			var refusal ReverseRefusal
+			if !errors.As(err, &refusal) || refusal.Reason != "source_receipt_archive_or_origin_mismatch" {
+				t.Fatalf("tampered native evidence was accepted: %v", err)
+			}
 			_ = reopen
 		})
 	}
