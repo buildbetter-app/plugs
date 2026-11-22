@@ -585,13 +585,14 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 	if record.Source.Table != dumpformat.DurableEntityTable && record.Source.Table != dumpformat.EphemeralEntityTable {
 		reasons = append(reasons, fmt.Sprintf("bead %q has source table %q, want issues", record.ID, record.Source.Table))
 	}
+	nativeGate := manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && (text(body["source_type"]) == "gate" || text(record.Source.Fields["issue_type"]) == "gate")
 	for key := range body {
 		if !supportedBeadBodyFields[key] {
 			report.UnsupportedFields = append(report.UnsupportedFields, "bead/"+record.ID+"/"+key)
 			reasons = append(reasons, fmt.Sprintf("bead %q has unsupported field %q", record.ID, key))
 		}
 	}
-	if record.ID == "" || text(body["type"]) != "issue" {
+	if record.ID == "" || text(body["type"]) != "issue" && !nativeGate {
 		reasons = append(reasons, fmt.Sprintf("bead %q is not a representable issue", record.ID))
 		return nil, reasons
 	}
@@ -620,12 +621,16 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 	if typ == "" {
 		typ = text(record.Source.Fields["issue_type"])
 	}
+	nativeType := typ
 	if sourceType, present := record.Source.Fields["issue_type"]; present && sourceType != nil {
 		if _, ok := sourceType.(string); !ok {
 			reasons = append(reasons, fmt.Sprintf("bead %q source issue_type is not a string", record.ID))
 		} else if text(sourceType) != typ {
 			reasons = append(reasons, fmt.Sprintf("bead %q body/source issue type mismatch", record.ID))
 		}
+	}
+	if nativeGate {
+		typ = "task"
 	}
 	if !supportedIssueTypes[typ] {
 		matches := directives.matching(record.Project, record.ID, typ)
@@ -637,6 +642,10 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 			directives.markUsed(matches[0], report)
 		default:
 			reasons = append(reasons, fmt.Sprintf("bead %q has conflicting map_type directives for kind %q", record.ID, typ))
+		}
+		if manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && len(matches) == 1 {
+			typ = "task"
+			nativeGate = true
 		}
 	}
 	title := text(body["title"])
@@ -664,7 +673,36 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 		reasons = append(reasons, fmt.Sprintf("bead %q status is not a string", record.ID))
 	}
 	statusFieldPresent = statusFieldPresent && status != ""
-	if status != "" && !supportedStatuses[status] {
+	customStatusCategory := ""
+	for _, project := range manifest.Projects {
+		if project.Prefix != record.Project {
+			continue
+		}
+		for _, candidate := range project.Statuses {
+			if candidate.Name == status {
+				customStatusCategory = candidate.Category
+				break
+			}
+		}
+	}
+	nativeStatusMapped := false
+	nativeStatusOriginal, nativeCategoryOriginal := status, customStatusCategory
+	nativeMetadata, _ := dumpformat.SourceMetadataObject(body["metadata"])
+	_, nativeStatusPreserved := nativeMetadata["_plug_native_status"]
+	if !nativeStatusPreserved && manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && customStatusCategory != "" {
+		switch customStatusCategory {
+		case "active":
+			status, category = "open", "unstarted"
+		case "wip":
+			status, category = "in_progress", "started"
+		case "frozen":
+			status, category = "blocked", "backlog"
+		case "done":
+			status, category, outcome = "closed", "completed", "success"
+		}
+		nativeStatusMapped = nativeStatusOriginal != status || nativeCategoryOriginal != category
+	}
+	if status != "" && !supportedStatuses[status] && customStatusCategory == "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has unsupported status %q", record.ID, status))
 	}
 	if status == "" {
@@ -672,10 +710,14 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 		if status == "" {
 			reasons = append(reasons, fmt.Sprintf("bead %q category %q cannot be represented by Beads", record.ID, category))
 		}
-	} else if expected := categoryForStatus(status); expected != category {
+	} else if expected := categoryForStatus(status); expected != category && !(customStatusCategory != "" && customStatusCategory == category) {
 		reasons = append(reasons, fmt.Sprintf("bead %q status/category mismatch (%q/%q)", record.ID, status, category))
 	}
-	if category == "completed" {
+	// Native status catalogs use their literal category names. The native
+	// catalog's `done` category carries the same authenticated outcome
+	// contract as the portable `completed` category.
+	completedCategory := category == "completed" || customStatusCategory == "done"
+	if completedCategory {
 		if outcome != "success" && outcome != "failure" {
 			reasons = append(reasons, fmt.Sprintf("bead %q completed status lacks success/failure outcome", record.ID))
 		}
@@ -708,6 +750,25 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 	metadata = cloneMap(metadata)
 	if metadata == nil {
 		metadata = map[string]any{}
+	}
+	if nativeGate {
+		if existing, exists := metadata["_plug_native_type"]; exists && !jsonEquivalent(existing, nativeType) {
+			reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native type", record.ID))
+		} else {
+			metadata["_plug_native_type"] = nativeType
+		}
+	}
+	if nativeStatusMapped && (nativeStatusOriginal != "" && !nativeStatusCompatible(nativeCategoryOriginal, nativeStatusOriginal)) {
+		if existing, exists := metadata["_plug_native_status"]; exists && !jsonEquivalent(existing, nativeStatusOriginal) {
+			reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native status", record.ID))
+		} else {
+			metadata["_plug_native_status"] = nativeStatusOriginal
+		}
+		if existing, exists := metadata["_plug_native_status_category"]; exists && !jsonEquivalent(existing, nativeCategoryOriginal) {
+			reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native status category", record.ID))
+		} else {
+			metadata["_plug_native_status_category"] = nativeCategoryOriginal
+		}
 	}
 	for _, field := range dumpformat.OpaqueIssueFields() {
 		value, present := record.Source.Fields[field]
@@ -1144,7 +1205,14 @@ func convertMemory(record Record, config bool, report *Report) (memoryLine, erro
 		if err != nil {
 			return memoryLine{}, err
 		}
-		return memoryLine{RecordType: "memory", Key: ConfigMemoryPrefix + sourceKey, Value: value}, nil
+		key := ConfigMemoryPrefix + sourceKey
+		// Merged source archives authenticate a project namespace on each
+		// config record. Preserve that namespace in the Beads memory key so
+		// equal config names from distinct projects remain distinct.
+		if record.Source.Identity != nil && record.Source.Identity.Project != "" {
+			key = ConfigMemoryPrefix + record.Source.Identity.Project + "/" + sourceKey
+		}
+		return memoryLine{RecordType: "memory", Key: key, Value: value}, nil
 	}
 	return memoryLine{}, fmt.Errorf("unsupported memory kind %q", record.Kind)
 }
@@ -1375,6 +1443,21 @@ func categoryForStatus(status string) string {
 		return "completed"
 	default:
 		return ""
+	}
+}
+
+func nativeStatusCompatible(category, status string) bool {
+	switch category {
+	case "active":
+		return status == "open"
+	case "wip":
+		return status == "in_progress" || status == "hook"+"ed"
+	case "frozen":
+		return status == "blocked" || status == "deferred" || status == "pinned" || status == "frozen"
+	case "done":
+		return status == "closed"
+	default:
+		return false
 	}
 }
 

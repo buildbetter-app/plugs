@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
@@ -63,6 +64,12 @@ func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, me
 	dump, err := retainedReverseDump(ctx, r, bound)
 	if err != nil {
 		return LiveReverse{}, err
+	}
+	// Native restore retains the validated source manifest. Its explicit
+	// map_type directives are authenticated source evidence, so bind them to
+	// the reverse conversion when the caller did not provide an override.
+	if len(options.Directives) == 0 && len(dump.Manifest.Ontology) != 0 {
+		options.Directives = append([]ontologymigration.Directive(nil), dump.Manifest.Ontology...)
 	}
 	live, err := reverseLiveCensus(ctx, r)
 	if err != nil {
@@ -413,6 +420,11 @@ func projectNativeTypeForReverse(projected *reverseconverter.Record, dump revers
 	switch nativeType {
 	case "task", "bug", "feature", "epic", "chore":
 		return nil
+	}
+	for _, directive := range dump.Manifest.Ontology {
+		if directive.Target.Project == projected.Project && directive.Target.Type == nativeType && directive.Kind == ontologymigration.MapType {
+			return mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType})
+		}
 	}
 	if err := mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType}); err != nil {
 		return err

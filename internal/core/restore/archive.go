@@ -105,6 +105,21 @@ type nativeRecord struct {
 	Body     json.RawMessage `json:"body"`
 }
 
+// nativeReverseEvidence is the durable converter evidence retained in the
+// restore/archive record. Native dumps copy only blobs named by this ledger,
+// which keeps ordinary native backups compact while preserving the exact
+// content-addressed source envelope needed by reverse conversion.
+type nativeReverseEvidence struct {
+	ArchiveSHA256      string                             `json:"archive_sha256"`
+	DerivedSHA256      string                             `json:"derived_sha256"`
+	Profile            string                             `json:"profile"`
+	Members            map[string]dumpformat.File         `json:"members"`
+	NativeCaptureFiles map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
+	SourceStore        string                             `json:"source_store"`
+	NativeIncarnation  string                             `json:"native_incarnation,omitempty"`
+	HistoryBinding     *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
+}
+
 func archiveDigest(paths []string, members map[string][]byte) string {
 	h := sha256.New()
 	for _, path := range paths {
@@ -194,6 +209,37 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 		cursor = page.NextCursor
 	}
 	sort.Slice(records, func(i, j int) bool { return nativeRecordKey(records[i]) < nativeRecordKey(records[j]) })
+	if historyBinding := nativeReverseHistoryBinding(ctx, reader, records); historyBinding != nil {
+		for i := range records {
+			if records[i].Ref.ID != "restore/archive" {
+				continue
+			}
+			var evidence nativeReverseEvidence
+			if json.Unmarshal(records[i].Body, &evidence) != nil {
+				continue
+			}
+			if !hasConverterReverseEvidence(evidence) {
+				continue
+			}
+			evidence.HistoryBinding = historyBinding
+			evidence.NativeIncarnation = meta.Incarnation
+			body, marshalErr := json.Marshal(evidence)
+			if marshalErr == nil {
+				records[i].Body = body
+			}
+		}
+	}
+
+	// A converter restore retains its source envelope and referenced members as
+	// content-addressed blobs. Carry those exact blobs into a native backup so
+	// a later native restore can satisfy the same authenticated reverse path.
+	// Missing blobs are deliberately omitted for compatibility with older
+	// native-only backups. Their restore remains valid, and reverse retains its
+	// typed invalid_source_evidence refusal instead of inventing provenance.
+	reverseBlobs, err := nativeReverseEvidenceBlobs(ctx, reader, records)
+	if err != nil {
+		return nil, dumpformat.Manifest{}, err
+	}
 
 	refs := make(map[string]model.Ref, len(records))
 	for _, record := range records {
@@ -299,6 +345,9 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 		"changesets.ndjson":              changesetData.Bytes(),
 		dumpformat.NativeAllocatorMember: allocatorData,
 	}
+	for digest, data := range reverseBlobs {
+		members["blobs/"+digest] = data
+	}
 	paths := make([]string, 0, len(members)+1)
 	for path := range members {
 		paths = append(paths, path)
@@ -333,6 +382,99 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 		return nil, dumpformat.Manifest{}, fmt.Errorf("dump exceeds %d bytes", maxDumpBytes)
 	}
 	return data, manifest, nil
+}
+
+func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, records []nativeRecord) (map[string][]byte, error) {
+	digests := map[string]bool{}
+	for _, record := range records {
+		if record.Ref.ID != "restore/archive" {
+			continue
+		}
+		var evidence nativeReverseEvidence
+		if json.Unmarshal(record.Body, &evidence) != nil {
+			continue
+		}
+		if !hasConverterReverseEvidence(evidence) {
+			continue
+		}
+		if isDigest(evidence.ArchiveSHA256) {
+			digests[evidence.ArchiveSHA256] = true
+		}
+		for _, file := range evidence.Members {
+			if isDigest(file.SHA256) {
+				digests[file.SHA256] = true
+			}
+		}
+		for _, file := range evidence.NativeCaptureFiles {
+			if isDigest(file.SHA256) {
+				digests[file.SHA256] = true
+			}
+		}
+	}
+	paths := make([]string, 0, len(digests))
+	for digest := range digests {
+		paths = append(paths, digest)
+	}
+	sort.Strings(paths)
+	result := make(map[string][]byte, len(paths))
+	for _, digest := range paths {
+		data, err := reader.Blob(ctx, driver.Hash(digest))
+		if err != nil || memberDigest(data) != digest {
+			continue
+		}
+		result[digest] = data
+	}
+	return result, nil
+}
+
+func hasConverterReverseEvidence(evidence nativeReverseEvidence) bool {
+	// Native capture-set evidence belongs to the native history recovery
+	// contract. It is intentionally not promoted into converter reverse
+	// evidence here, preserving the P23 refusal boundary for native-only
+	// backups. Offline converter archives have no capture-file ledger and
+	// use the source envelope/member ledger below.
+	if len(evidence.NativeCaptureFiles) != 0 || strings.HasPrefix(evidence.SourceStore, "native/") {
+		return false
+	}
+	for path := range evidence.Members {
+		if strings.HasPrefix(path, "records/") && path != "records/native.ndjson" {
+			return true
+		}
+	}
+	return false
+}
+
+func nativeReverseHistoryBinding(ctx context.Context, reader driver.Reader, records []nativeRecord) *dumpformat.HistoryBindingEvidence {
+	var binding struct {
+		Profile     driver.RestoreImportProfile `json:"profile"`
+		RequestHash string                      `json:"request_hash"`
+	}
+	for _, record := range records {
+		if record.Ref.ID == "instance_config/restore-import/binding" {
+			if json.Unmarshal(record.Body, &binding) != nil || binding.Profile.HistoryDigest == "" {
+				return nil
+			}
+			request, err := binding.Profile.RequestHash()
+			if err != nil || request != binding.RequestHash {
+				return nil
+			}
+			principal, err := driver.PrincipalKey(binding.Profile.Admission.Actor)
+			if err != nil {
+				return nil
+			}
+			receipt, err := reader.IdempotencyByKey(ctx, principal, binding.Profile.AgentLabel(), binding.Profile.Method, binding.Profile.IdempotencyKey)
+			if err != nil || receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Revision != receipt.Commit.Revision {
+				return nil
+			}
+			return &dumpformat.HistoryBindingEvidence{RequestHash: request, Revision: string(receipt.Commit.Revision), Incarnation: receipt.Changeset.Incarnation}
+		}
+	}
+	return nil
+}
+
+func isDigest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
 }
 
 func nativeRecordKey(record nativeRecord) string {
@@ -1051,6 +1193,33 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	for _, record := range records {
 		if err := pipeline.PutSourceRecord(ctx, tx, record); err != nil {
 			return model.Changeset{}, err
+		}
+	}
+	// Native dumps may carry converter reverse evidence as content-addressed
+	// blobs. Publish each authenticated blob in the same atomic restore as its
+	// records. Legacy native archives simply have no matching members here.
+	blobPaths := make([]string, 0)
+	for path := range archive.Manifest().Files {
+		if strings.HasPrefix(path, "blobs/") {
+			blobPaths = append(blobPaths, path)
+		}
+	}
+	sort.Strings(blobPaths)
+	for _, path := range blobPaths {
+		name := strings.TrimPrefix(path, "blobs/")
+		if !isDigest(name) {
+			return model.Changeset{}, fmt.Errorf("native evidence blob path is not content-addressed")
+		}
+		data, ok := archive.NativeMember(path)
+		if !ok || memberDigest(data) != name {
+			return model.Changeset{}, fmt.Errorf("native evidence blob digest mismatch")
+		}
+		actual, err := tx.PutBlob(ctx, data)
+		if err != nil {
+			return model.Changeset{}, err
+		}
+		if string(actual) != name {
+			return model.Changeset{}, fmt.Errorf("native evidence blob digest mismatch")
 		}
 	}
 	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {

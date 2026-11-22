@@ -821,7 +821,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		}
 	}
 	if bound.HistoryDigest != "" {
-		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, source.archive, source.history, source.stream); err != nil {
+		if err = validateHistoryRecoveryArchive(ctx, r, bound, evidence, receipt, nil, source.archive, source.history, source.stream); err != nil {
 			return Report{}, nativeDeltaRecoveryError(err)
 		}
 	}
