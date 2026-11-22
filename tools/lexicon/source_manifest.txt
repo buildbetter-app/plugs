@@ -746,6 +746,7 @@ internal/integration/converterroundtrip/receiving_stream.go
 internal/integration/converterroundtrip/receiving_stream_test.go
 internal/integration/converterroundtrip/repair_test.go
 internal/integration/converterroundtrip/restore.go
+internal/integration/converterroundtrip/restore_finish_driver_fault_test.go
 internal/integration/converterroundtrip/restore_lease_test.go
 internal/integration/converterroundtrip/reverse.go
 internal/integration/converterroundtrip/reverse_loss.go
