@@ -386,6 +386,7 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 
 func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, records []nativeRecord) (map[string][]byte, error) {
 	digests := map[string]bool{}
+	joined := false
 	for _, record := range records {
 		if record.Ref.ID != "restore/archive" {
 			continue
@@ -396,6 +397,9 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 		}
 		if !hasConverterReverseEvidence(evidence) {
 			continue
+		}
+		if len(evidence.NativeCaptureFiles) != 0 && strings.HasPrefix(evidence.SourceStore, "merge-") {
+			joined = true
 		}
 		if isDigest(evidence.ArchiveSHA256) {
 			digests[evidence.ArchiveSHA256] = true
@@ -420,6 +424,9 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 	for _, digest := range paths {
 		data, err := reader.Blob(ctx, driver.Hash(digest))
 		if err != nil || memberDigest(data) != digest {
+			if joined {
+				return nil, fmt.Errorf("joined reverse evidence blob %s is unavailable or changed", digest)
+			}
 			continue
 		}
 		result[digest] = data
@@ -429,11 +436,14 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 
 func hasConverterReverseEvidence(evidence nativeReverseEvidence) bool {
 	// Native capture-set evidence belongs to the native history recovery
-	// contract. It is intentionally not promoted into converter reverse
-	// evidence here, preserving the P23 refusal boundary for native-only
-	// backups. Offline converter archives have no capture-file ledger and
-	// use the source envelope/member ledger below.
-	if len(evidence.NativeCaptureFiles) != 0 || strings.HasPrefix(evidence.SourceStore, "native/") {
+	// contract. A joined source-plane import is the one native form that also
+	// has a converter reverse path. Its aggregate store is the authenticated
+	// merge namespace. Keep single-source native backups on the P23 refusal
+	// boundary, and retain only the joined capture ledger for that reverse path.
+	if len(evidence.NativeCaptureFiles) != 0 {
+		return strings.HasPrefix(evidence.SourceStore, "merge-")
+	}
+	if strings.HasPrefix(evidence.SourceStore, "native/") {
 		return false
 	}
 	for path := range evidence.Members {

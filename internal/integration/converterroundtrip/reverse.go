@@ -478,6 +478,10 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 }
 
 func projectLiveBead(source reverseconverter.Record, row driver.Record, dump reverseconverter.Dump) (reverseconverter.Record, error) {
+	return projectLiveBeadWithOpaque(source, row, dump, nil)
+}
+
+func projectLiveBeadWithOpaque(source reverseconverter.Record, row driver.Record, dump reverseconverter.Dump, dynamicOpaque map[string]string) (reverseconverter.Record, error) {
 	doc, err := pipeline.DecodeDocument(row.Body)
 	if err != nil || doc.ID != source.ID || doc.Project != source.Project || doc.Type != stringValue(source.Body["type"]) {
 		return reverseconverter.Record{}, ReverseRefusal{"changed_source_identity"}
@@ -521,6 +525,17 @@ func projectLiveBead(source reverseconverter.Record, row driver.Record, dump rev
 	opaque := map[string]bool{}
 	for _, field := range dumpformat.OpaqueIssueFields() {
 		key := "beads." + field
+		opaque[key] = true
+		var value any
+		if decodeReverseJSON(doc.Metadata[key], &value) != nil {
+			return reverseconverter.Record{}, ReverseRefusal{"missing_opaque_metadata"}
+		}
+		source.Source.Fields[field] = value
+	}
+	for field, key := range dynamicOpaque {
+		if _, alreadyHandled := opaque[key]; alreadyHandled {
+			continue
+		}
 		opaque[key] = true
 		var value any
 		if decodeReverseJSON(doc.Metadata[key], &value) != nil {

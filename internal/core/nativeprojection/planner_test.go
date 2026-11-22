@@ -1,12 +1,34 @@
 package nativeprojection
 
 import (
-	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestProducerAndReverseShareOpaqueMetadataKeySet(t *testing.T) {
+	entity := driver.SourceEntityKey{Project: "ops", Plane: dumpformat.DurableEntityTable, ID: "ops-1"}
+	plan := driver.SourcePlanePlanV1{
+		Dispositions: []driver.SourcePlaneDispositionV1{{
+			Key: "task", Fields: []driver.SourcePlaneFieldRuleV1{
+				{Source: "id", Target: "id", Disposition: "exact-map"},
+				{Source: "started_at", Target: "beads.started_at", Disposition: "opaque-metadata"},
+				{Source: "notes", Target: "beads.notes", Disposition: "opaque-metadata"},
+			},
+		}},
+		Entities: []driver.SourcePlaneEntityV1{{Source: entity, DispositionKey: "task"}},
+	}
+	want := map[driver.SourceEntityKey]map[string]string{entity: {
+		"started_at": "beads.started_at",
+		"notes":      "beads.notes",
+	}}
+	if got := OpaqueMetadataTargets(plan); !reflect.DeepEqual(got, want) {
+		t.Fatalf("producer/reverse opaque metadata key set diverged: got=%v want=%v", got, want)
+	}
+}
 
 func closeTimeRecord(value any) dumpformat.Record {
 	return dumpformat.Record{

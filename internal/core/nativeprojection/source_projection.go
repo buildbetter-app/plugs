@@ -3,6 +3,8 @@ package nativeprojection
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -14,6 +16,33 @@ type SourceCoreProjection struct {
 	fields         map[driver.SourceEntityKey]map[string]bool
 	opaque         map[driver.SourceEntityKey][]string
 	inertRelations map[driver.SourceEdgeKey]bool
+}
+
+// OpaqueMetadataTargets is the single producer/reverse contract for source
+// fields carried as beads.<field> metadata. Both sides use the source field
+// name, because the planner emits that exact key for every opaque rule.
+func OpaqueMetadataTargets(plan driver.SourcePlanePlanV1) map[driver.SourceEntityKey]map[string]string {
+	dispositions := make(map[string]driver.SourcePlaneDispositionV1, len(plan.Dispositions))
+	for _, disposition := range plan.Dispositions {
+		dispositions[disposition.Key] = disposition
+	}
+	result := make(map[driver.SourceEntityKey]map[string]string)
+	for _, entity := range plan.Entities {
+		disposition, ok := dispositions[entity.DispositionKey]
+		if !ok {
+			continue
+		}
+		for _, field := range disposition.Fields {
+			if field.Disposition != "opaque-metadata" {
+				continue
+			}
+			if result[entity.Source] == nil {
+				result[entity.Source] = map[string]string{}
+			}
+			result[entity.Source][field.Source] = "beads." + field.Source
+		}
+	}
+	return result
 }
 
 func NewSourceCoreProjection(profile *driver.RestoreImportProfile, archives ...*dumpformat.Archive) (SourceCoreProjection, error) {
@@ -40,18 +69,14 @@ func NewSourceCoreProjection(profile *driver.RestoreImportProfile, archives ...*
 	projection.entities = make(map[driver.SourceEntityKey]driver.SourcePlaneEntityV1, len(plan.Entities))
 	projection.fields = make(map[driver.SourceEntityKey]map[string]bool, len(plan.Entities))
 	projection.opaque = make(map[driver.SourceEntityKey][]string, len(plan.Entities))
+	opaqueTargets := OpaqueMetadataTargets(plan)
 	for _, e := range plan.Entities {
 		projection.entities[e.Source] = e
 		projection.fields[e.Source] = dispositions[e.DispositionKey]
-		for _, d := range plan.Dispositions {
-			if d.Key == e.DispositionKey {
-				for _, rule := range d.Fields {
-					if rule.Disposition == "opaque-metadata" {
-						projection.opaque[e.Source] = append(projection.opaque[e.Source], rule.Source)
-					}
-				}
-			}
+		for field := range opaqueTargets[e.Source] {
+			projection.opaque[e.Source] = append(projection.opaque[e.Source], field)
 		}
+		sort.Strings(projection.opaque[e.Source])
 	}
 	projection.relations = make(map[driver.SourceEdgeKey]driver.SourcePlaneRelationV1, len(plan.Relations))
 	for _, relation := range plan.Relations {

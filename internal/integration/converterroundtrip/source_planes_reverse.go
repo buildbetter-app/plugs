@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
 	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -116,6 +117,7 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 	for _, project := range dump.Manifest.Projects {
 		delete(live, importProjectRecordID(project.Prefix))
 	}
+	dynamicOpaque := nativeprojection.OpaqueMetadataTargets(plan)
 	// Native publication retains authenticated family/history and ontology
 	// records for source readback. They are restore bookkeeping, not reverse
 	// source rows.
@@ -223,7 +225,7 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 				if !included[entity.TargetID] {
 					continue
 				}
-				projected, err := projectLiveBead(source, row, coreDump)
+				projected, err := projectLiveBeadWithOpaque(source, row, coreDump, dynamicOpaque[driver.SourceEntityKey{Project: source.Project, Plane: source.Source.Table, ID: source.ID}])
 				if err != nil {
 					return err
 				}
