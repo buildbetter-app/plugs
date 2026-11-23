@@ -180,6 +180,9 @@ type Result struct {
 	Digest     string
 	Projection Projection
 	Report     Report
+	// ProvenanceEmitted identifies the legacy Plug-native metadata channel.
+	// BeadsDestination results carry only source user metadata.
+	ProvenanceEmitted bool
 }
 
 // Refusal is a typed fail-closed conversion error. Reasons are stable enough

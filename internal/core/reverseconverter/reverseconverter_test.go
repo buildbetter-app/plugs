@@ -696,6 +696,150 @@ func TestConvertCarriesEdgeIdentityEnvelope(t *testing.T) {
 	}
 }
 
+func TestConvertBeadsDestinationPreservesUserMetadataAndUnwrapsEdges(t *testing.T) {
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Body["metadata"] = map[string]any{
+		"custom": map[string]any{"text": "kept", "number": json.Number("9007199254740993")},
+	}
+	dump.Records["edge"][0].Body["metadata"] = map[string]any{"why": "kept", "number": json.Number("9007199254740993")}
+	result, err := ConvertWithOptions(dump, Options{BeadsDestination: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issue issueLine
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var candidate issueLine
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&candidate); err == nil && candidate.ID == "demo-3" {
+			issue = candidate
+			break
+		}
+	}
+	if !reflect.DeepEqual(issue.Metadata, dump.Records["bead"][0].Body["metadata"]) {
+		t.Fatalf("issue metadata changed: got=%#v", issue.Metadata)
+	}
+	for key := range issue.Metadata {
+		if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "_plug_") {
+			t.Fatalf("Plug bookkeeping leaked into Beads metadata: %q", key)
+		}
+	}
+	if len(issue.Dependencies) != 0 {
+		t.Fatalf("unexpected dependencies on demo-3: %+v", issue.Dependencies)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var candidate issueLine
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&candidate); err == nil && candidate.ID == "demo-2" {
+			if candidate.Dependencies[0].Metadata != `{"number":9007199254740993,"why":"kept"}` {
+				t.Fatalf("edge metadata changed: %q", candidate.Dependencies[0].Metadata)
+			}
+			return
+		}
+	}
+	t.Fatal("edge owner was not emitted")
+}
+
+func TestConvertBeadsDestinationPreservesNullMetadata(t *testing.T) {
+	dump := cloneDump(fixtureDump())
+	dump.Records["bead"][0].Body["metadata"] = nil
+	dump.Records["edge"][0].Body["metadata"] = nil
+	result, err := ConvertWithOptions(dump, Options{BeadsDestination: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issueNull, edgeNull := false, false
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		if bytes.Contains(line, []byte(`"id":"demo-3"`)) && bytes.Contains(line, []byte(`"metadata":null`)) {
+			issueNull = true
+		}
+		if bytes.Contains(line, []byte(`"id":"demo-2"`)) && bytes.Contains(line, []byte(`"metadata":null`)) {
+			edgeNull = true
+		}
+	}
+	if !issueNull || !edgeNull {
+		t.Fatalf("null metadata was not retained: %s", result.JSONL)
+	}
+}
+
+func TestConvertBeadsDestinationUnwrapsExistingEdgeEnvelope(t *testing.T) {
+	dump := cloneDump(fixtureDump())
+	for i := range dump.Manifest.Kinds {
+		if dump.Manifest.Kinds[i].Name == "edge" {
+			dump.Manifest.Kinds[i].Version = dumpformat.EdgeVersionTypedDependencies
+		}
+	}
+	envelope := map[string]any{"_plug_edge_id": "edge-1", "_plug_metadata": map[string]any{}}
+	dump.Records["edge"][0].Body["metadata"] = envelope
+	dump.Records["edge"][0].Source.Fields["metadata"] = envelope
+	result, err := ConvertWithOptions(dump, Options{BeadsDestination: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		var candidate issueLine
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&candidate); err == nil && candidate.ID == "demo-2" {
+			if len(candidate.Dependencies) != 1 || candidate.Dependencies[0].Metadata != "{}" {
+				t.Fatalf("existing edge envelope was not unwrapped: %+v", candidate.Dependencies)
+			}
+			return
+		}
+	}
+	t.Fatal("edge owner was not emitted")
+}
+
+func TestConvertBeadsDestinationPreservesMappedNativeTypes(t *testing.T) {
+	for _, issueType := range []string{"rig", "merge-request", "molecule"} {
+		t.Run(issueType, func(t *testing.T) {
+			dump := unknownTypeDump(issueType)
+			// Native source-plane projection may expose a portable body alias
+			// while the authenticated physical field retains the custom type.
+			dump.Records["bead"][0].Body["source_type"] = "task"
+			result, err := ConvertWithOptions(dump, Options{
+				BeadsDestination: true,
+				Directives:       []ontologymigration.Directive{allowTypeDirective(issueType)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(result.JSONL, []byte(`"issue_type":"`+issueType+`"`)) {
+				t.Fatalf("custom issue type was rewritten: %s", result.JSONL)
+			}
+			if bytes.Contains(result.JSONL, []byte(`"_plug_native_type"`)) {
+				t.Fatalf("native type provenance leaked: %s", result.JSONL)
+			}
+		})
+	}
+}
+
+func TestConvertBeadsDestinationPreservesNativeGateType(t *testing.T) {
+	dump := unknownTypeDump("gate")
+	dump.Manifest.MainVersion = 66
+	dump.Manifest.IgnoredVersion = 26
+	dump.Manifest.SourcePlaneAddressContract = dumpformat.SourcePlaneAddressContract
+	dump.Manifest.StatusCategoryContract = dumpformat.StatusCategoryContract
+	dump.Records["bead"][0].Body["source_type"] = "gate"
+	dump.Records["bead"][0].Body["type"] = "issue"
+
+	result, err := ConvertWithOptions(dump, Options{BeadsDestination: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row issueLine
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		if err := json.Unmarshal(line, &row); err == nil && row.ID == "demo-3" {
+			if row.IssueType != "gate" {
+				t.Fatalf("native gate type was rewritten: %s", line)
+			}
+			return
+		}
+	}
+	t.Fatal("native gate row was not emitted")
+}
+
 func TestReadUsesCanonicalArchiveValidator(t *testing.T) {
 	records := []byte(`{"kind":"bead","id":"demo-1","project":"demo","body":{"type":"issue","source_type":"task","title":"one","status_category":"unstarted","priority":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},"source":{"table":"issues","fields":{"status":"open"}}}` + "\n")
 	// The old reader accepted this shallow fixture despite its missing

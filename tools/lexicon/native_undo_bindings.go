@@ -7,10 +7,14 @@ var undoLiteralBindings = map[string][]undoLiteralBinding{
 			279: "34fb37d65837c429ad6815e11cb7b8c0272f2dbd76416f2cee235d9f0f27df4c",
 		}},
 	},
-	// One exact native metadata source field in the B11 roundtrip expectation.
+	// Native metadata fields and source types used in the reverse-fidelity fixtures.
 	"internal/integration/converterroundtrip/source_planes_reverse_test.go": {
-		{name: "TestB11AdmittedNativeReverseMetadataPreservationAndConflicts", kind: "func", contextSHA256: "af115a46d71889942aa3296bdd12c88f699b2546c7c46b2898c9af4ed4409514", literals: map[int]string{
-			5617: "d970864cb90f9999b51854fc17275db9ccf9f49ac8b2ef429dd265c005c410b3",
+		{name: "TestB11AdmittedNativeReverseMetadataPreservationAndConflicts", kind: "func", contextSHA256: "23e20f2ccd4590634fbd3062d1a9c1ab19d38f611de91cf09f01b1daba5fd59e", literals: map[int]string{
+			3302: "d970864cb90f9999b51854fc17275db9ccf9f49ac8b2ef429dd265c005c410b3",
+		}},
+		{name: "TestP35CustomTypesAndOpaqueMetadataAllDrivers", kind: "func", contextSHA256: "3de830d39898f36e572338439c67bc6ee43b2c785c6b156fa32b0e3c930892ca", literals: map[int]string{
+			104: "c00ae0a63348054ecc8343f23278fe13bfa5c44255e208ff6102ffc2d7910a53",
+			128: "cd282cd375dcc40a9fa0f06a7b72f24b7cacb587af40aea3f53227cbd6cb1124",
 		}},
 	},
 	"spec/cardb11/native_test.go": {

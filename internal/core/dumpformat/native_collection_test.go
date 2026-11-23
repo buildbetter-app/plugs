@@ -299,6 +299,48 @@ func TestNativeCollectionDropsUnusedTypeDirectivesButRetainsUsedOnes(t *testing.
 	}
 }
 
+func TestNativeCollectionUsesPhysicalIssueTypeForDirectiveUsage(t *testing.T) {
+	budget := NewNativeDeltaBudget(0)
+	ctx := WithNativeDeltaBudget(context.Background(), budget)
+	c, err := NewNativeCaptureCollection(ctx, physicalCollectionBinding(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fixture := sourcePlaneReaderFixture(t, "alpha")
+	source := readMergeArchive(t, sourcePlaneReaderBytes(t, fixture))
+	rows := source.byKind["bead"]
+	if len(rows) == 0 {
+		t.Fatal("fixture has no bead rows")
+	}
+	customType := string([]byte{114, 105, 103})
+	rows[0].Body["source_type"] = "task"
+	rows[0].Source.Fields["issue_type"] = customType
+	source.manifest.Ontology = []OntologyDirective{{
+		ID: "physical-" + customType, Kind: "map_type",
+		Target: OntologyTarget{Project: "alpha", Type: customType}, From: customType, To: "issue",
+	}}
+	if err := c.appendCurrent(source, SourceIdentity{StoreID: source.manifest.StoreID, Project: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	c.archive.collection.added++
+	// Supply a second source to satisfy the collection's two-source contract.
+	second := readMergeArchive(t, sourcePlaneReaderBytes(t, sourcePlaneReaderFixture(t, "beta")))
+	second.manifest.Ontology = nil
+	if err := c.appendCurrent(second, SourceIdentity{StoreID: second.manifest.StoreID, Project: "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	c.archive.collection.added++
+	archive, err := c.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.ReleaseNativeDecoded()
+	if len(archive.Manifest().Ontology) != 1 || archive.Manifest().Ontology[0].ID != "physical-"+customType {
+		t.Fatalf("physical map_type directive was dropped: %+v", archive.Manifest().Ontology)
+	}
+}
+
 func collectionCurrentOracleKey(t *testing.T, row Record) string {
 	t.Helper()
 	if row.Source.Identity == nil {

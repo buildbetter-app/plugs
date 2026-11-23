@@ -49,12 +49,15 @@ type EdgeMetadataProjection struct {
 	Predicate *model.LinkMetadata
 	Value     any
 	Envelope  bool
+	// Present distinguishes an ID-only envelope, which represents absent
+	// metadata, from an explicit SQL NULL value.
+	Present bool
 }
 
 // InspectSourceEdgeMetadata applies the same validation used by the reader
 // and planner. It never changes the input or reinterprets unknown nested text.
 func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (EdgeMetadataProjection, error) {
-	result := EdgeMetadataProjection{Value: cloneValue(value)}
+	result := EdgeMetadataProjection{Value: cloneValue(value), Present: value != nil}
 	if version == 1 {
 		if kind == "waits-for" {
 			predicate, err := SourceWaitsForMetadata(value)
@@ -97,6 +100,7 @@ func InspectSourceEdgeMetadata(version int, edgeID, kind string, value any) (Edg
 			payload, present := object["_plug_metadata"]
 			result.Envelope = true
 			result.Value = cloneValue(payload)
+			result.Present = present
 			if !present {
 				return result, nil // ID-only is absent metadata, never explicit {}.
 			}

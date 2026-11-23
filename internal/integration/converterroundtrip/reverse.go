@@ -17,6 +17,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/nativeprojection"
+	"github.com/buildbetter-app/plugs/internal/core/ontologymigration"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -93,6 +94,12 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if err != nil {
 		return LiveReverse{}, err
 	}
+	// Retained direct dumps carry the authenticated ontology alongside their
+	// records. Bind those directives when the caller did not provide an
+	// override, matching the native restore path.
+	if len(options.Directives) == 0 && len(dump.Manifest.Ontology) != 0 {
+		options.Directives = append([]ontologymigration.Directive(nil), dump.Manifest.Ontology...)
+	}
 	live, err := reverseLiveCensus(ctx, r)
 	if err != nil {
 		return LiveReverse{}, err
@@ -101,7 +108,7 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if err != nil {
 		return LiveReverse{}, err
 	}
-	if err := projectLiveDump(ctx, r, &dump, live); err != nil {
+	if err := projectLiveDump(ctx, r, &dump, live, !options.BeadsDestination); err != nil {
 		return LiveReverse{}, err
 	}
 	converted, err := reverseconverter.ConvertWithOptions(dump, options)
@@ -292,7 +299,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...drive
 	return reverseconverter.ReadBytes(archive.Bytes())
 }
 
-func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reverseconverter.Dump, live map[string]driver.Record) error {
+func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reverseconverter.Dump, live map[string]driver.Record, emitProvenance bool) error {
 	var archiveBinding archiveEvidence
 	if json.Unmarshal(live["restore/archive"].Body, &archiveBinding) != nil {
 		return ReverseRefusal{"invalid_source_evidence"}
@@ -366,10 +373,10 @@ func projectLiveDump(ctx context.Context, reader driver.Reader, dump *reversecon
 				if err != nil {
 					return err
 				}
-				if err := projectNativeStatusForReverse(&current, *dump); err != nil {
+				if err := projectNativeStatusForReverse(&current, *dump, emitProvenance); err != nil {
 					return err
 				}
-				if err := projectNativeTypeForReverse(&current, *dump); err != nil {
+				if err := projectNativeTypeForReverse(&current, *dump, emitProvenance); err != nil {
 					return err
 				}
 				dump.Records[kind][i] = current
