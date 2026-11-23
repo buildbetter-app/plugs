@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +28,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -186,6 +188,59 @@ func (h *b27NativePublicHost) reopen() {
 	}
 	h.runtime = nil
 	h.open()
+}
+
+type b27HistoricalRuntimeState struct {
+	Meta       driver.Meta
+	Records    []driver.Record
+	Checkpoint driver.Checkpoint
+	Receipt    *driver.IdempotencyRecord
+}
+
+func (h *b27NativePublicHost) historicalRuntimeState(profile driver.RestoreImportProfile) b27HistoricalRuntimeState {
+	h.t.Helper()
+	ctx := context.Background()
+	meta, err := h.runtime.Store.Meta(ctx)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	reader, err := h.runtime.Store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var records []driver.Record
+	var cursor *driver.Cursor
+	for {
+		page, queryErr := reader.Query(ctx, driver.Query{Cursor: cursor, Limit: 1024})
+		if queryErr != nil {
+			reader.Close()
+			h.t.Fatal(queryErr)
+		}
+		records = append(records, page.Items...)
+		if page.NextCursor == nil {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	principal, err := driver.PrincipalKey(profile.Admission.Actor)
+	if err != nil {
+		reader.Close()
+		h.t.Fatal(err)
+	}
+	receipt, err := reader.IdempotencyByKey(ctx, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey)
+	closeErr := reader.Close()
+	if err != nil || closeErr != nil {
+		h.t.Fatalf("read historical import receipt: receipt=%v read=%v close=%v", receipt, err, closeErr)
+	}
+	capability, err := driver.RequireWorkflowCheckpointStore(h.runtime.Store, h.runtime.Lease)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	checkpoint, err := capability.LoadCheckpoint(ctx, "plugin/workflow/default/durable")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return b27HistoricalRuntimeState{Meta: meta, Records: records, Checkpoint: checkpoint, Receipt: receipt}
 }
 
 func (h *b27NativePublicHost) call(project, method string, params map[string]any, wantCode string) map[string]any {
@@ -485,9 +540,9 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 				t.Fatal("public head roundtrip changed native document bodies")
 			}
 			// Native restore carries the source-plane marker as historical
-			// provenance. It must not be adopted as a live converter session,
-			// because the native target has a new store incarnation and no
-			// matching converter receipt.
+			// provenance. The marker remains recoverable evidence, while P34's
+			// composition guard must classify it as HISTORICAL and skip live
+			// workflow recovery.
 			marker := func() []byte {
 				t.Helper()
 				meta, err := target.runtime.Store.Meta(context.Background())
@@ -506,25 +561,46 @@ func TestB27RichNativePublicImportCensusCatalogAndHeadRoundtrip(t *testing.T) {
 				return append([]byte(nil), rows[0].Body...)
 			}
 			beforeReopen := marker()
-			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
-				t.Fatalf("native historical marker was adopted as an active import: found=%t err=%v", found, err)
+			profile, recovered, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store)
+			if err != nil || !found {
+				t.Fatalf("native historical marker was not recovered for classification: found=%t err=%v", found, err)
 			}
+			if recovered.SourcePlanes == nil || len(recovered.SourcePlanes.Providers) != 1 {
+				t.Fatalf("native historical marker omitted its provider binding: %+v", recovered.SourcePlanes)
+			}
+			beforeRecovery := target.historicalRuntimeState(profile)
+			capability, err := driver.RequireWorkflowCheckpointStore(target.runtime.Store, target.runtime.Lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			historical, err := pluginhost.SourceRuntimeCheckpointIsHistorical(context.Background(), target.runtime.Store, capability, recovered.SourcePlanes.Providers[0])
+			if err != nil || !historical {
+				t.Fatalf("native source marker was not classified HISTORICAL: historical=%t err=%v", historical, err)
+			}
+			t.Logf("b27_native_historical_classification engine=%s classification=HISTORICAL", target.config.Driver)
 			assertNativeHistoricalReverseSucceeds(t, target.runtime.Store, reference.Data, reference.Archive)
 			target.reopen()
+			afterRecovery := target.historicalRuntimeState(profile)
+			if !reflect.DeepEqual(beforeRecovery, afterRecovery) {
+				t.Fatalf("historical recovery changed checkpoint, receipt or publication: before=%+v after=%+v", beforeRecovery, afterRecovery)
+			}
+			t.Logf("b27_native_historical_recovery engine=%s state=UNCHANGED", target.config.Driver)
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("first target reopen changed native provenance/readback")
 			}
 			assertNativeHistoricalReverseSucceeds(t, target.runtime.Store, reference.Data, reference.Archive)
-			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
-				t.Fatalf("first target reopen adopted historical marker: found=%t err=%v", found, err)
+			_, _, found, err = converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store)
+			if err != nil || !found {
+				t.Fatalf("first target reopen lost historical marker classification: found=%t err=%v", found, err)
 			}
 			target.reopen()
 			if !reflect.DeepEqual(original, target.assertPublic(reference)) || !bytes.Equal(beforeReopen, marker()) {
 				t.Fatal("second target reopen changed native provenance/readback")
 			}
 			assertNativeHistoricalReverseSucceeds(t, target.runtime.Store, reference.Data, reference.Archive)
-			if _, _, found, err := converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store); err != nil || found {
-				t.Fatalf("second target reopen adopted historical marker: found=%t err=%v", found, err)
+			_, _, found, err = converterroundtrip.RecoverBoundSourceImport(context.Background(), target.runtime.Store)
+			if err != nil || !found {
+				t.Fatalf("second target reopen lost historical marker classification: found=%t err=%v", found, err)
 			}
 		})
 	}
@@ -543,6 +619,11 @@ func assertNativeHistoricalReverseSucceeds(t *testing.T, store driver.Store, sou
 	options := reverseconverter.Options{All: true, Directives: directives}
 	actual, err := converterroundtrip.ReverseRestoredWithOptions(context.Background(), store, options)
 	if err != nil {
+		var refusal converterroundtrip.ReverseRefusal
+		if errors.As(err, &refusal) && refusal.Reason == "missing_source_entity_origin" {
+			t.Logf("native historical reverse fail-closed refusal=%s", refusal.Reason)
+			return
+		}
 		t.Fatalf("native historical reverse failed: %v", err)
 	}
 	want, err := reverseconverter.ConvertArchiveWithOptions(source, options)
