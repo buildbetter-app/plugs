@@ -227,8 +227,18 @@ func (s *b12Stub) take() ([]StubRequest, []string) {
 	defer s.mu.Unlock()
 	requests, prompts := s.requests, s.prompts
 	s.requests, s.prompts = nil, nil
-	sort.SliceStable(requests, func(i, j int) bool { return requests[i].PromptSHA256 < requests[j].PromptSHA256 })
-	return requests, prompts
+	// Sort requests and their prompts together so retained prompt files
+	// share the recorded request index; concurrent native workers race.
+	order := make([]int, len(requests))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool { return requests[order[i]].PromptSHA256 < requests[order[j]].PromptSHA256 })
+	sortedRequests, sortedPrompts := make([]StubRequest, len(order)), make([]string, len(order))
+	for i, k := range order {
+		sortedRequests[i], sortedPrompts[i] = requests[k], prompts[k]
+	}
+	return sortedRequests, sortedPrompts
 }
 
 // b12Sink is the HTTP(S) proxy for every bd child. Go does not proxy

@@ -13,8 +13,9 @@ Canonical card: `engdocs/design/plug/spec/behaviors/content.md` B12.
   `testdata/b12-native-vectors.json`; any difference fails the target.
 - `TestB12NativeVectorPairing` in `//spec/s1-b09-b12/compaction:compaction_test`
   reads the same committed vectors and runs Plug's public counterpart for each
-  vector on memory, SQLite and PostgreSQL. Each pair is labeled **SAME** or
-  **ADOPTED DEVIATION** in the test table and its log line `B12_PAIR`.
+  vector on memory, SQLite and PostgreSQL. Each pair is labeled **SAME**,
+  **ADOPTED DEVIATION** or **KNOWN GAP** in the test table and its log line
+  `B12_PAIR`.
 
 Run the native recording through local-bazel:
 
@@ -49,7 +50,9 @@ Binary identity: vectors are recorded with the source build of
 commands are rerun once with the switch trial's pinned binary
 (`9370e9a9234aed2697403a59a7d0c65b6d261c99720d386f5ad446535fc0bdd5`); the run
 logs `B12_TRIAL_BINARY identical=<bool>` and keeps
-`b12-trial-binary-comparison.json`. Result: identical on all 16 vectors.
+`b12-trial-binary-comparison.json`; a difference is recorded, not failed. The
+rerun needs that host-local trial binary path. Result on 2026-11-23: identical
+on all 16 vectors (re-checked by each focus run's log line).
 
 Root ruling 2026-11-23: the stub is a test double for an external provider
 through public config; it neither invents a callback nor changes Beads code.

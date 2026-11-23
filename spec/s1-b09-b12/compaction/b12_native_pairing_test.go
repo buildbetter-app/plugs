@@ -18,8 +18,8 @@ import (
 
 // B12 card pairing. Every vector recorded from the pinned native Beads build
 // (//spec/cardb12:native_compaction_record_test) is paired here with Plug's
-// public behavior on memory, SQLite and PostgreSQL. Each pair is labeled SAME
-// or ADOPTED DEVIATION; deviations name the binding ruling.
+// public behavior on memory, SQLite and PostgreSQL. Each pair is labeled SAME,
+// ADOPTED DEVIATION (naming its binding ruling) or KNOWN GAP (pending decision).
 //
 // Native AI provider stubbed via public ai.base_url; summary content not under
 // test; Beads source unmodified (pinned 9d6fff76 source build).
@@ -52,6 +52,7 @@ type b12NativeVector struct {
 	Name           string           `json:"name"`
 	Exit           int              `json:"exit"`
 	Stderr         string           `json:"stderr"`
+	Stdout         json.RawMessage  `json:"stdout"`
 	Before         []b12NativeIssue `json:"before"`
 	After          []b12NativeIssue `json:"after"`
 	SnapshotsAfter []struct {
@@ -154,6 +155,13 @@ func (p *b12Pair) refuse(key string) {
 	p.assertNoReceipt("admin.compact", key)
 }
 
+func (p *b12Pair) assertSummaries(want int32) {
+	p.t.Helper()
+	if got := p.summaries.Load(); got != want {
+		p.t.Fatalf("Plug summary provider calls=%d want %d", got, want)
+	}
+}
+
 func (p *b12Pair) compact(key string, ref map[string]any) map[string]any {
 	p.t.Helper()
 	commit := p.call("admin.compact", key, map[string]any{"dryRun": false}, "")
@@ -211,6 +219,7 @@ func b12PairCases() []b12PairCase {
 			ref := p.record("open", v.Before[0], false)
 			p.clock = p.clock.Add(2000 * 24 * time.Hour)
 			p.refuse("open-refused")
+			p.assertSummaries(0)
 			p.assertText(ref, v.Before[0])
 		}},
 		{"apply-recent-refused", b12Same, "closed under 30 days is ineligible; exact 30/90-day boundaries use Plug's controlled clock (TestB12PublicTierBoundariesHistoryReplayReversalAndReopen)", func(t *testing.T, engine string, v b12NativeVector, _ map[string]b12NativeVector) {
@@ -219,6 +228,7 @@ func b12PairCases() []b12PairCase {
 			ref := p.record("recent", v.Before[0], true)
 			p.age(time.Hour)
 			p.refuse("recent-refused")
+			p.assertSummaries(0)
 			p.assertText(ref, v.Before[0])
 		}},
 		{"apply-summary-not-smaller-refused", b12Same, "a summary that is not smaller is refused with the original intact", func(t *testing.T, engine string, v b12NativeVector, _ map[string]b12NativeVector) {
@@ -227,6 +237,7 @@ func b12PairCases() []b12PairCase {
 			ref := p.record("not-smaller", v.Before[0], true)
 			p.age(2000 * 24 * time.Hour)
 			p.refuse("not-smaller-refused")
+			p.assertSummaries(1) // Refused for the size rule, after the provider ran.
 			p.assertText(ref, v.Before[0])
 		}},
 		{"apply-tier-one", b12Deviation, "snapshot before overwrite: Plug keeps the original as a permanent history version (P45/P73); native manual --apply writes no snapshot row and appends an audit comment", func(t *testing.T, engine string, v b12NativeVector, _ map[string]b12NativeVector) {
@@ -249,6 +260,7 @@ func b12PairCases() []b12PairCase {
 			p.age(31 * 24 * time.Hour)
 			p.compact("repeat-first", ref)
 			p.refuse("repeat-refused")
+			p.assertSummaries(1) // Refused at selection; no second provider call.
 			p.assertText(ref, v.After[0])
 		}},
 		{"restore-after-apply-no-snapshot", b12Deviation, "native cannot restore a manual --apply (no snapshot); Plug restores from permanent history through D32-checked history.revert", func(t *testing.T, engine string, v b12NativeVector, all map[string]b12NativeVector) {
@@ -321,6 +333,15 @@ func b12PairCases() []b12PairCase {
 			if v.Exit != 0 || v.FullImageChanged || len(v.StubRequests) != 0 || !reflect.DeepEqual(v.Before, v.After) {
 				t.Fatalf("native auto dry-run wrote or called the provider: %+v", v)
 			}
+			var preview struct {
+				DryRun     bool `json:"dry_run"`
+				Candidates []struct {
+					ID string `json:"id"`
+				} `json:"candidates"`
+			}
+			if err := json.Unmarshal(v.Stdout, &preview); err != nil || !preview.DryRun || len(preview.Candidates) != 1 || preview.Candidates[0].ID != v.Before[0].ID {
+				t.Fatalf("native auto dry-run did not name its candidate: %s %v", v.Stdout, err)
+			}
 			p := newB12Pair(t, engine, tierOne)
 			ref := p.record("auto-dry", v.Before[0], true)
 			p.age(31 * 24 * time.Hour)
@@ -356,13 +377,20 @@ func b12PairCases() []b12PairCase {
 			ref := p.record("auto-long", v.Before[0], true)
 			p.age(31 * 24 * time.Hour)
 			p.refuse("auto-long")
+			p.assertSummaries(1)
 			p.assertText(ref, v.Before[0])
 		}},
 		{"restore-preview", b12Same, "the pre-compaction text is readable without writing (native restore preview, Plug history.get)", func(t *testing.T, engine string, v b12NativeVector, all map[string]b12NativeVector) {
-			if v.Exit != 0 || v.FullImageChanged {
-				t.Fatalf("native restore preview wrote: %+v", v)
-			}
 			original := all["auto-tier-one"].Before[0]
+			var shown map[string]any
+			if v.Exit != 0 || v.FullImageChanged || json.Unmarshal(v.Stdout, &shown) != nil {
+				t.Fatalf("native restore preview wrote or printed no record: %+v", v)
+			}
+			for name, want := range map[string]string{"description": original.Description, "design": original.Design, "notes": original.Notes, "acceptance_criteria": original.AcceptanceCriteria} {
+				if shown[name] != want {
+					t.Fatalf("native restore preview %s=%v want original %q", name, shown[name], want)
+				}
+			}
 			p := newB12Pair(t, engine, func(service.CompactionInput) string { return b12PairStub })
 			ref := p.record("preview", original, true)
 			closed := p.meta().Head
@@ -486,10 +514,15 @@ func b12PlugRepeatedCalls(t *testing.T, engine string, v b12NativeVector) {
 		t.Fatalf("batch fixture order changed: %v", order)
 	}
 	p.clock = p.closedAt.Add(31 * 24 * time.Hour)
+	if len(v.StubRequests) != len(order) {
+		t.Fatalf("native batch provider calls=%d candidates=%d", len(v.StubRequests), len(order))
+	}
 	p.compact("batch-call-1", refs[order[0]])
 	for i := 2; i <= len(order); i++ {
 		p.refuse(fmt.Sprintf("batch-call-%d", i))
 	}
+	// Every refusal ran the provider on the same head-of-line record.
+	p.assertSummaries(int32(len(order)))
 	for _, id := range order[1:] {
 		for _, issue := range v.Before {
 			if issue.ID == id {
