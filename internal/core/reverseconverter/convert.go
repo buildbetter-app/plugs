@@ -632,10 +632,10 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 			reasons = append(reasons, fmt.Sprintf("bead %q source issue_type is not a string", record.ID))
 		}
 	}
-	if nativeGate {
-		typ = "task"
-	}
-	if !supportedIssueTypes[typ] {
+	// Native gate records are admitted by the catalog contract even though
+	// their body projection is the generic issue shape. Keep the authenticated
+	// physical type for the Beads destination instead of relabeling it as task.
+	if !supportedIssueTypes[typ] && !nativeGate {
 		matches := directives.matching(record.Project, record.ID, typ)
 		switch len(matches) {
 		case 0:

@@ -815,6 +815,31 @@ func TestConvertBeadsDestinationPreservesMappedNativeTypes(t *testing.T) {
 	}
 }
 
+func TestConvertBeadsDestinationPreservesNativeGateType(t *testing.T) {
+	dump := unknownTypeDump("gate")
+	dump.Manifest.MainVersion = 66
+	dump.Manifest.IgnoredVersion = 26
+	dump.Manifest.SourcePlaneAddressContract = dumpformat.SourcePlaneAddressContract
+	dump.Manifest.StatusCategoryContract = dumpformat.StatusCategoryContract
+	dump.Records["bead"][0].Body["source_type"] = "gate"
+	dump.Records["bead"][0].Body["type"] = "issue"
+
+	result, err := ConvertWithOptions(dump, Options{BeadsDestination: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var row issueLine
+	for _, line := range bytes.Split(bytes.TrimSpace(result.JSONL), []byte{'\n'}) {
+		if err := json.Unmarshal(line, &row); err == nil && row.ID == "demo-3" {
+			if row.IssueType != "gate" {
+				t.Fatalf("native gate type was rewritten: %s", line)
+			}
+			return
+		}
+	}
+	t.Fatal("native gate row was not emitted")
+}
+
 func TestReadUsesCanonicalArchiveValidator(t *testing.T) {
 	records := []byte(`{"kind":"bead","id":"demo-1","project":"demo","body":{"type":"issue","source_type":"task","title":"one","status_category":"unstarted","priority":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},"source":{"table":"issues","fields":{"status":"open"}}}` + "\n")
 	// The old reader accepted this shallow fixture despite its missing
