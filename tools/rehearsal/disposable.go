@@ -1938,6 +1938,7 @@ func validateSavedImage(b RuntimeBundle) error {
 		}
 		current := selectDescriptor(index.Manifests)
 		selectedManifestDigest = strings.TrimPrefix(current.Digest, "sha256:")
+		layers = nil
 		for depth := 0; depth < 3; depth++ {
 			name := "blobs/sha256/" + strings.TrimPrefix(current.Digest, "sha256:")
 			raw := memberBytes[name]
