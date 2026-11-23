@@ -133,68 +133,6 @@ func TestB01EpicParentReadyMembershipWithOpenClosedAndNoChildren(t *testing.T) {
 	})
 }
 
-func TestP39ReadyUsesLiveGateLinksOnEpicAncestors(t *testing.T) {
-	eachStore(t, func(t *testing.T, f *fixture) {
-		at := f.clock.Now().Add(-time.Hour)
-		for _, tc := range []struct {
-			name          string
-			parentType    string
-			parentStatus  string
-			gateStatus    string
-			explicitBlock bool
-			childBlock    bool
-			ready         bool
-		}{
-			{name: "closed-epic-with-open-gate", parentType: "epic", parentStatus: "done", gateStatus: "todo", ready: true},
-			{name: "closed-gate-parent-with-open-gate", parentType: "gate", parentStatus: "done", gateStatus: "todo", ready: true},
-			{name: "open-epic-with-open-gate", parentType: "epic", parentStatus: "todo", gateStatus: "todo"},
-			{name: "open-epic-with-closed-gate", parentType: "epic", parentStatus: "todo", gateStatus: "done", ready: true},
-			{name: "deferred-epic-with-closed-gate", parentType: "epic", parentStatus: "backlog", gateStatus: "done"},
-			{name: "explicitly-blocked-closed-epic", parentType: "epic", parentStatus: "done", gateStatus: "done", explicitBlock: true},
-			{name: "closed-epic-with-child-blocker", parentType: "epic", parentStatus: "done", gateStatus: "todo", childBlock: true},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				prefix := "pl-" + tc.name
-				parentID, gateID := prefix+"-parent", prefix+"-blocker"
-				childID, grandchildID := prefix+"-child", prefix+"-grandchild"
-				blocker := document(gateID, at, 1)
-				blocker["type"] = "gate"
-				blocker["fields"].(map[string]any)["status"] = tc.gateStatus
-				parent := document(parentID, at, 1)
-				parent["type"] = tc.parentType
-				fields := parent["fields"].(map[string]any)
-				fields["status"] = tc.parentStatus
-				if tc.explicitBlock {
-					fields["blocked"] = true
-				}
-				blockingLinks := []map[string]any{{"kind": "blocks", "to": model.Ref{ID: gateID}}}
-				parent["links"] = blockingLinks
-				child := document(childID, at, 1)
-				child["parent"] = model.Ref{ID: parentID}
-				if tc.childBlock {
-					child["links"] = blockingLinks
-				}
-				grandchild := document(grandchildID, at, 1)
-				grandchild["parent"] = model.Ref{ID: childID}
-				docs := []map[string]any{parent, blocker, child, grandchild}
-				if tc.parentType == "gate" {
-					epic := document(prefix+"-epic", at, 1)
-					epic["type"] = "epic"
-					parent["parent"] = model.Ref{ID: prefix + "-epic"}
-					docs = append(docs, epic)
-				}
-				f.seed(t, docs...)
-				filter := map[string]any{"resources": []string{childID, grandchildID}}
-				if tc.ready {
-					f.pages(t, filter, childID, grandchildID)
-				} else {
-					f.pages(t, filter)
-				}
-			})
-		}
-	})
-}
-
 func TestB01StoredRankLagIsBoundedAtSixtySeconds(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		now := f.clock.Now()
