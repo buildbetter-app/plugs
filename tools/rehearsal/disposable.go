@@ -1922,7 +1922,8 @@ func validateSavedImage(b RuntimeBundle) error {
 			return fmt.Errorf("saved image manifest invalid")
 		}
 		configName, layers = legacyManifests[0].Config, legacyManifests[0].Layers
-	} else if raw := memberBytes["index.json"]; raw != nil {
+	}
+	if raw := memberBytes["index.json"]; raw != nil {
 		var index imageManifest
 		if json.Unmarshal(raw, &index) != nil || len(index.Manifests) == 0 {
 			return fmt.Errorf("saved image index invalid")
