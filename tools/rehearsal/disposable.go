@@ -1961,6 +1961,16 @@ func validateSavedImage(b RuntimeBundle) error {
 	if configName == "" || len(layers) == 0 && memberBytes["manifest.json"] == nil {
 		return fmt.Errorf("saved runnable image does not match image pin")
 	}
+	// ImageDigest follows Docker image-ID semantics. For an OCI archive that
+	// means the selected manifest's config digest, rather than its manifest
+	// descriptor digest or an arbitrary blob digest.
+	selectedConfigDigest := strings.TrimSuffix(filepath.Base(configName), ".json")
+	if strings.HasPrefix(configName, "blobs/sha256/") {
+		selectedConfigDigest = strings.TrimPrefix(selectedConfigDigest, "sha256:")
+	}
+	if selectedConfigDigest != b.ImageDigest {
+		return fmt.Errorf("saved image config digest does not match image pin")
+	}
 	rawConfig := memberBytes[configName]
 	if rawConfig == nil || members[configName] != strings.TrimPrefix(filepath.Base(configName), "sha256:") && strings.HasPrefix(configName, "blobs/sha256/") {
 		return fmt.Errorf("saved image config digest or content mismatch")

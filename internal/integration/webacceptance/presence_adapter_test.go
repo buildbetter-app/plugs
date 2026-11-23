@@ -18,10 +18,7 @@ var presenceAdapter []byte
 var presenceAdapterChecks []byte
 
 func TestPresenceDOMAdapterPreparation(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("preparation unit checks require installed Node:", err)
-	}
+	node := hermeticNode(t)
 	dir := t.TempDir()
 	for name, data := range map[string][]byte{
 		"presence_dom_adapter.mjs":   presenceAdapter,
