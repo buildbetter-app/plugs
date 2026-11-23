@@ -267,6 +267,38 @@ func TestNativeCollectionAsymmetricKindsConserveEveryCurrentRecord(t *testing.T)
 	}
 }
 
+func TestNativeCollectionDropsUnusedTypeDirectivesButRetainsUsedOnes(t *testing.T) {
+	budget := NewNativeDeltaBudget(0)
+	ctx := WithNativeDeltaBudget(context.Background(), budget)
+	c, err := NewNativeCaptureCollection(ctx, physicalCollectionBinding(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, prefix := range []string{"alpha", "beta"} {
+		fixture := sourcePlaneReaderFixture(t, prefix)
+		source := readMergeArchive(t, sourcePlaneReaderBytes(t, fixture))
+		source.manifest.Ontology = []OntologyDirective{
+			{ID: "used-" + prefix, Kind: "map_type", Target: OntologyTarget{Project: prefix, Type: "task"}, From: "task", To: "issue"},
+			{ID: "unused-" + prefix, Kind: "map_type", Target: OntologyTarget{Project: prefix, Type: "unused"}, From: "unused", To: "issue"},
+		}
+		identity := SourceIdentity{StoreID: source.manifest.StoreID, Project: prefix}
+		if err := c.appendCurrent(source, identity); err != nil {
+			t.Fatal(err)
+		}
+		c.archive.collection.added++
+	}
+	archive, err := c.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.ReleaseNativeDecoded()
+	directives := archive.Manifest().Ontology
+	if len(directives) != 2 || directives[0].ID != "used-alpha" || directives[1].ID != "used-beta" {
+		t.Fatalf("type directive census=%+v", directives)
+	}
+}
+
 func collectionCurrentOracleKey(t *testing.T, row Record) string {
 	t.Helper()
 	if row.Source.Identity == nil {

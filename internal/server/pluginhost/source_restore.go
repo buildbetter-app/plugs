@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -42,6 +43,73 @@ func NewSourceRuntimeState(ctx context.Context, store driver.WorkflowCheckpointS
 		return nil, err
 	}
 	return d, nil
+}
+
+// SourceRuntimeCheckpointIsHistorical compares the retained checkpoint origin
+// with the authenticated provider binding. A native restore may retain the
+// source commit marker while its checkpoint namespace still carries the
+// pre-restore origin. That provenance means the namespace is historical and
+// must not be adopted as a live provider.
+func SourceRuntimeCheckpointIsHistorical(ctx context.Context, target driver.Store, store driver.WorkflowCheckpointStore, binding driver.SourcePlaneProviderCommitV1) (bool, error) {
+	if target == nil || store == nil {
+		return false, driver.ErrUnsupported
+	}
+	if err := validateSourceProvider(binding.Provider); err != nil {
+		return false, err
+	}
+	if err := validateSourceOrigin(binding.Origin); err != nil {
+		return false, err
+	}
+	meta, err := target.Meta(ctx)
+	if err != nil {
+		return false, err
+	}
+	if historical, err := restoredHistoryMarker(ctx, target, meta.Incarnation, binding); err != nil || historical {
+		return historical, err
+	}
+	snapshot, err := store.ReadSourcePlaneSnapshot(ctx, driver.View{Branch: model.Natural64(0), Incarnation: meta.Incarnation}, []string{binding.Provider.Namespace})
+	if err != nil {
+		if errors.Is(err, driver.ErrCheckpointConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer snapshot.Close()
+	checkpoint, err := snapshot.SourcePlaneCheckpoint(binding.Provider.Namespace)
+	if err != nil {
+		return false, err
+	}
+	origin, _, err := (&durableAccess{}).InspectSourcePlaneOrigin(checkpoint)
+	if err != nil {
+		return false, err
+	}
+	return origin != binding.Origin, nil
+}
+
+func restoredHistoryMarker(ctx context.Context, target driver.Store, incarnation string, binding driver.SourcePlaneProviderCommitV1) (bool, error) {
+	reader, err := target.Read(ctx, driver.View{Branch: model.Natural64(0), Incarnation: incarnation})
+	if err != nil {
+		return false, err
+	}
+	defer reader.Close()
+	rows, err := reader.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	if err != nil || len(rows) == 0 {
+		return false, err
+	}
+	if len(rows) != 1 || rows[0].Kind != "restore-archive" {
+		return false, nil
+	}
+	var marker struct {
+		NativeIncarnation string `json:"native_incarnation"`
+		HistoryBinding    *struct {
+			RequestHash string `json:"request_hash"`
+			Incarnation string `json:"incarnation"`
+		} `json:"history_binding"`
+	}
+	if err := json.Unmarshal(rows[0].Body, &marker); err != nil {
+		return false, nil
+	}
+	return marker.HistoryBinding != nil && marker.NativeIncarnation == incarnation && marker.HistoryBinding.Incarnation == incarnation && marker.HistoryBinding.RequestHash == binding.Origin.RequestHash, nil
 }
 
 func sourceDigest(value string) bool {
