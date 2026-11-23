@@ -69,12 +69,6 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	if err != nil {
 		return Result{}, err
 	}
-	// Preflight the parent through the host's scoped read authority before
-	// classifying its presence or project. A missing or cross-project parent
-	// must remain indistinguishable from an unreadable one.
-	if _, err := cfg.AuthorizeScope(ctx, by, content, parent, nil); err != nil {
-		return Result{}, mapped(err)
-	}
 	if _, err := s.authorizeRef(ctx, by, parent, req.Project); err != nil {
 		return Result{}, err
 	}
