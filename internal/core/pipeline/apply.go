@@ -152,12 +152,19 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 		}
 		w.observePhaseSince(preCtx, PhaseReplay, phaseStarted, nil)
 
+		// Preparation may resolve aliases in an operation union arm. Give each
+		// retry its own detached request image so a prior attempt cannot rewrite
+		// the operation seen by the next one.
+		attemptCS, err := clone(cs)
+		if err != nil {
+			return port.WriteOutcome{}, failure("invalid_params", err.Error())
+		}
 		phaseStarted = time.Now()
 		var p *prepared
 		if memoryMethod(meta.Method) {
-			p, err = w.prepareMemory(preCtx, reader, by, cs, meta)
+			p, err = w.prepareMemory(preCtx, reader, by, attemptCS, meta)
 		} else {
-			p, err = w.prepareSourceOperations(preCtx, reader, by, cs, meta, release)
+			p, err = w.prepareSourceOperations(preCtx, reader, by, attemptCS, meta, release)
 			if err == nil && p.leaseRefusal != nil {
 				// Only an authorized caller learns that a bead is claimed by
 				// someone else or has no live claim; anyone else is refused by

@@ -170,3 +170,52 @@ func TestAtomicBatchAndReplay(t *testing.T) {
 		t.Fatalf("versions=%+v err=%v", versions, err)
 	}
 }
+
+func TestReparentRetryUsesFreshOperationCopy(t *testing.T) {
+	h := setup(t)
+	interferer := h.writer()
+	var calls atomic.Int32
+	var retriedTarget, retriedParent model.Ref
+	w := h.writer(WithValidators(ValidatorBinding{ID: "reparent-retry", Validator: validatorFunc(func(_ context.Context, proposal port.ProposedChange, _ port.SnapshotReader) (port.Verdict, error) {
+		if calls.Add(1) == 1 {
+			if _, err := interferer.Apply(context.Background(), by, model.ChangeSet{Ops: []model.Op{create("interference")}}, meta(102)); err != nil {
+				return port.Verdict{}, err
+			}
+		} else {
+			for _, change := range proposal.Changes {
+				if change.Op.Kind == model.OpReparent {
+					retriedTarget = change.Op.Reparent.Target
+					retriedParent = *change.Op.Reparent.Parent
+					break
+				}
+			}
+		}
+		return port.Verdict{Allow: true}, nil
+	})}))
+	parent := model.Ref{Key: "parent"}
+	change := model.ChangeSet{Ops: []model.Op{
+		create("parent"),
+		create("child"),
+		{Kind: model.OpReparent, Reparent: &model.ReparentOp{Target: model.Ref{Key: "child"}, Parent: &parent}},
+	}}
+	commit, err := w.Apply(context.Background(), by, change, meta(103))
+	if err != nil {
+		t.Fatalf("reparent retry failed: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("validator calls=%d, want 2", calls.Load())
+	}
+	if len(commit.Results) != 3 {
+		t.Fatalf("commit results=%d, want 3", len(commit.Results))
+	}
+	if retriedTarget != commit.Results[1].Ref || retriedParent != commit.Results[0].Ref {
+		t.Fatalf("retry reused resolved refs from the first attempt: target=%v parent=%v results=%v", retriedTarget, retriedParent, commit.Results)
+	}
+	child, err := DecodeDocument(commit.Results[1].Record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Parent == nil || *child.Parent != commit.Results[0].Ref {
+		t.Fatalf("reparented child parent=%v, want %v", child.Parent, commit.Results[0].Ref)
+	}
+}
