@@ -5,6 +5,7 @@ go_test(
     size = "large",
     srcs = glob(["*_test.go"]),
     args = ["-test.v"],
+    data = ["//spec/cardb12:native_vectors"],
     tags = ["local", "requires-network"],
     deps = [
         "//internal/core/model",

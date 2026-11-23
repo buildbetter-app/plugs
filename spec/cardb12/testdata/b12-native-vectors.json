@@ -1,0 +1,1121 @@
+[
+  {
+    "name": "apply-open-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--id",
+      "b12-open",
+      "--summary",
+      "<summary:tier-one>"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "{\n  \"error\": \"b12-open is not eligible for Tier 1 compaction: issue is not closed (status: open)\",\n  \"hint\": \"use --force to bypass eligibility checks\",\n  \"schema_version\": 1\n}",
+    "before": [
+      {
+        "id": "b12-open",
+        "status": "open",
+        "description": "Original public description for b12-open. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-open.",
+        "notes": "Original public notes for b12-open.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-open.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-open",
+        "status": "open",
+        "description": "Original public description for b12-open. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-open.",
+        "notes": "Original public notes for b12-open.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-open.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "apply-recent-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--id",
+      "b12-recent",
+      "--summary",
+      "<summary:tier-one>"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "{\n  \"error\": \"b12-recent is not eligible for Tier 1 compaction: closed only 0 days ago (need 30+)\",\n  \"hint\": \"use --force to bypass eligibility checks\",\n  \"schema_version\": 1\n}",
+    "before": [
+      {
+        "id": "b12-recent",
+        "status": "closed",
+        "description": "Original public description for b12-recent. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-recent.",
+        "notes": "Original public notes for b12-recent.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-recent.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-recent",
+        "status": "closed",
+        "description": "Original public description for b12-recent. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-recent.",
+        "notes": "Original public notes for b12-recent.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-recent.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "apply-summary-not-smaller-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--id",
+      "b12-apply",
+      "--summary",
+      "<summary:not-smaller>"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "{\n  \"error\": \"summary (1120 bytes) is not shorter than original (234 bytes)\",\n  \"hint\": \"use --force to bypass size validation\",\n  \"schema_version\": 1\n}",
+    "before": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Original public description for b12-apply. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-apply.",
+        "notes": "Original public notes for b12-apply.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-apply.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Original public description for b12-apply. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-apply.",
+        "notes": "Original public notes for b12-apply.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-apply.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "apply-tier-one",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--id",
+      "b12-apply",
+      "--summary",
+      "<summary:tier-one>"
+    ],
+    "ai_environment": false,
+    "exit": 0,
+    "stdout": {
+      "compacted_size": 26,
+      "elapsed_ms": "<volatile>",
+      "issue_id": "b12-apply",
+      "original_size": 234,
+      "reduction_pct": 88.88888888888889,
+      "saved_bytes": 208,
+      "schema_version": 1,
+      "success": true,
+      "tier": 1
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Original public description for b12-apply. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-apply.",
+        "notes": "Original public notes for b12-apply.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-apply.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [
+      {
+        "issue_id": "b12-apply",
+        "actor": "agent",
+        "comment": "Tier 1 compaction: 234 → 26 bytes (saved 208, 88.9%)"
+      }
+    ],
+    "stub_requests": [],
+    "full_image_changed": true
+  },
+  {
+    "name": "apply-tier-one-repeat-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--id",
+      "b12-apply",
+      "--summary",
+      "<summary:tier-one>"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "{\n  \"error\": \"b12-apply is not eligible for Tier 1 compaction: already compacted at tier 1 or higher\",\n  \"hint\": \"use --force to bypass eligibility checks\",\n  \"schema_version\": 1\n}",
+    "before": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "restore-after-apply-no-snapshot",
+    "args": [
+      "--json",
+      "restore",
+      "b12-apply",
+      "--apply"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "Error: no archived snapshot for b12-apply; cannot safely restore content\nHint: this issue was compacted before snapshot archiving existed.\n      Run 'bd restore b12-apply' (without --apply) to view the best-effort\n      version reconstructed from Dolt history.",
+    "before": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "apply-tier-two-level-zero-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--tier",
+      "2",
+      "--id",
+      "b12-tier2",
+      "--summary",
+      "<summary:tier-two>"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "Error: Tier 2 compaction is not yet implemented; only --tier 1 is available",
+    "before": [
+      {
+        "id": "b12-tier2",
+        "status": "closed",
+        "description": "Original public description for b12-tier2. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-tier2.",
+        "notes": "Original public notes for b12-tier2.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-tier2.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-tier2",
+        "status": "closed",
+        "description": "Original public description for b12-tier2. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-tier2.",
+        "notes": "Original public notes for b12-tier2.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-tier2.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "apply-tier-two-level-one-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--tier",
+      "2",
+      "--id",
+      "b12-apply",
+      "--summary",
+      "<summary:tier-two>"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "Error: Tier 2 compaction is not yet implemented; only --tier 1 is available",
+    "before": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-apply",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "apply-dry-run",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--apply",
+      "--dry-run",
+      "--id",
+      "b12-dry",
+      "--summary",
+      "<summary:tier-one>"
+    ],
+    "ai_environment": false,
+    "exit": 0,
+    "stdout": {
+      "compacted_size": 26,
+      "elapsed_ms": "<volatile>",
+      "issue_id": "b12-dry",
+      "original_size": 226,
+      "reduction_pct": 88.49557522123894,
+      "saved_bytes": 200,
+      "schema_version": 1,
+      "success": true,
+      "tier": 1
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-dry",
+        "status": "closed",
+        "description": "Original public description for b12-dry. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-dry.",
+        "notes": "Original public notes for b12-dry.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-dry.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-dry",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "226"
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [
+      {
+        "issue_id": "b12-dry",
+        "actor": "agent",
+        "comment": "Tier 1 compaction: 226 → 26 bytes (saved 200, 88.5%)"
+      }
+    ],
+    "stub_requests": [],
+    "full_image_changed": true
+  },
+  {
+    "name": "auto-missing-key-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--auto",
+      "--id",
+      "b12-auto"
+    ],
+    "ai_environment": false,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "Error: --auto mode requires ANTHROPIC_API_KEY, MINIMAX_API_KEY, or ai.api_key in config",
+    "before": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "auto-dry-run",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--auto",
+      "--dry-run",
+      "--id",
+      "b12-auto"
+    ],
+    "ai_environment": true,
+    "exit": 0,
+    "stdout": {
+      "candidates": [
+        {
+          "age_days": "<volatile>",
+          "closed_at": "<volatile>",
+          "content_size": 230,
+          "id": "b12-auto",
+          "title": "Auto summary public record"
+        }
+      ],
+      "dry_run": true,
+      "schema_version": 1,
+      "summary": {
+        "total_candidates": 1,
+        "total_content_bytes": 230
+      },
+      "tier": 1
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "auto-tier-one",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--auto",
+      "--id",
+      "b12-auto"
+    ],
+    "ai_environment": true,
+    "exit": 0,
+    "stdout": {
+      "compacted_size": 36,
+      "elapsed_ms": "<volatile>",
+      "issue_id": "b12-auto",
+      "original_size": 230,
+      "reduction_pct": 84.34782608695653,
+      "saved_bytes": 194,
+      "schema_version": 1,
+      "success": true,
+      "tier": 1
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "230"
+      }
+    ],
+    "snapshots_after": [
+      {
+        "issue_id": "b12-auto",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+          "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-auto.",
+          "notes": "Original public notes for b12-auto.",
+          "title": "Auto summary public record"
+        }
+      }
+    ],
+    "comments_added": [
+      {
+        "issue_id": "b12-auto",
+        "actor": "compactor",
+        "comment": "Tier 1 compaction: 230 → 36 bytes (saved 194)"
+      }
+    ],
+    "stub_requests": [
+      {
+        "method": "POST",
+        "path": "/v1/messages",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "roles": [
+          "user"
+        ],
+        "prompt_bytes": 923,
+        "prompt_sha256": "c2ce1da75f85bd98080f560f10d357b7e5e56b21b45707f8fc79336e841bcc20",
+        "dummy_key_header": true,
+        "long_variant": false
+      }
+    ],
+    "full_image_changed": true
+  },
+  {
+    "name": "auto-summary-not-smaller-refused",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--auto",
+      "--id",
+      "b12-autolong"
+    ],
+    "ai_environment": true,
+    "exit": 1,
+    "stdout": null,
+    "stderr": "Error: compaction would increase size (246 → 2720 bytes), keeping original",
+    "before": [
+      {
+        "id": "b12-autolong",
+        "status": "closed",
+        "description": "Original public description for b12-autolong. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-autolong.",
+        "notes": "Original public notes for b12-autolong.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-autolong.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-autolong",
+        "status": "closed",
+        "description": "Original public description for b12-autolong. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-autolong.",
+        "notes": "Original public notes for b12-autolong.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-autolong.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "snapshots_after": [],
+    "comments_added": [
+      {
+        "issue_id": "b12-autolong",
+        "actor": "compactor",
+        "comment": "Tier 1 compaction skipped: summary (2720 bytes) not shorter than original (246 bytes)"
+      }
+    ],
+    "stub_requests": [
+      {
+        "method": "POST",
+        "path": "/v1/messages",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "roles": [
+          "user"
+        ],
+        "prompt_bytes": 952,
+        "prompt_sha256": "37476ba0ca49e79cb203c36506d9ea95a8bace2628a063f57d141bd327d541fd",
+        "dummy_key_header": true,
+        "long_variant": true
+      }
+    ],
+    "full_image_changed": true
+  },
+  {
+    "name": "restore-preview",
+    "args": [
+      "--json",
+      "restore",
+      "b12-auto"
+    ],
+    "ai_environment": false,
+    "exit": 0,
+    "stdout": {
+      "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+      "closed_at": "<volatile>",
+      "compacted_at": "<volatile>",
+      "compacted_at_commit": "<volatile>",
+      "compaction_level": 1,
+      "created_at": "<volatile>",
+      "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+      "design": "Original public design for b12-auto.",
+      "id": "b12-auto",
+      "issue_type": "task",
+      "notes": "Original public notes for b12-auto.",
+      "original_size": 230,
+      "priority": 2,
+      "schema_version": 1,
+      "status": "closed",
+      "title": "Auto summary public record",
+      "updated_at": "<volatile>"
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "230"
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "230"
+      }
+    ],
+    "snapshots_after": [
+      {
+        "issue_id": "b12-auto",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+          "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-auto.",
+          "notes": "Original public notes for b12-auto.",
+          "title": "Auto summary public record"
+        }
+      }
+    ],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": false
+  },
+  {
+    "name": "restore-apply-snapshot",
+    "args": [
+      "--json",
+      "restore",
+      "b12-auto",
+      "--apply"
+    ],
+    "ai_environment": false,
+    "exit": 0,
+    "stdout": {
+      "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+      "closed_at": "<volatile>",
+      "compacted_at_commit": "<volatile>",
+      "created_at": "<volatile>",
+      "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+      "design": "Original public design for b12-auto.",
+      "id": "b12-auto",
+      "issue_type": "task",
+      "notes": "Original public notes for b12-auto.",
+      "priority": 2,
+      "schema_version": 1,
+      "status": "closed",
+      "title": "Auto summary public record",
+      "updated_at": "<volatile>"
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "230"
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": "0"
+      }
+    ],
+    "snapshots_after": [
+      {
+        "issue_id": "b12-auto",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+          "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-auto.",
+          "notes": "Original public notes for b12-auto.",
+          "title": "Auto summary public record"
+        }
+      }
+    ],
+    "comments_added": [],
+    "stub_requests": [],
+    "full_image_changed": true
+  },
+  {
+    "name": "auto-batch-mixed",
+    "args": [
+      "--json",
+      "admin",
+      "compact",
+      "--auto",
+      "--all"
+    ],
+    "ai_environment": true,
+    "exit": 0,
+    "stdout": {
+      "elapsed_ms": "<volatile>",
+      "failed": 1,
+      "original_size": 698,
+      "saved_bytes": 590,
+      "schema_version": 1,
+      "succeeded": 3,
+      "success": true,
+      "tier": 1,
+      "total": 4
+    },
+    "stderr": "",
+    "before": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-auto.",
+        "notes": "Original public notes for b12-auto.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": "0"
+      },
+      {
+        "id": "b12-autolong",
+        "status": "closed",
+        "description": "Original public description for b12-autolong. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-autolong.",
+        "notes": "Original public notes for b12-autolong.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-autolong.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      },
+      {
+        "id": "b12-batch",
+        "status": "closed",
+        "description": "Original public description for b12-batch. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-batch.",
+        "notes": "Original public notes for b12-batch.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-batch.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      },
+      {
+        "id": "b12-dry",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "226"
+      },
+      {
+        "id": "b12-tier2",
+        "status": "closed",
+        "description": "Original public description for b12-tier2. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-tier2.",
+        "notes": "Original public notes for b12-tier2.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-tier2.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      }
+    ],
+    "after": [
+      {
+        "id": "b12-auto",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "230"
+      },
+      {
+        "id": "b12-autolong",
+        "status": "closed",
+        "description": "Original public description for b12-autolong. It is deliberately long enough to be compacted by a shorter summary.",
+        "design": "Original public design for b12-autolong.",
+        "notes": "Original public notes for b12-autolong.",
+        "acceptance_criteria": "Original public acceptance criteria for b12-autolong.",
+        "compaction_level": "0",
+        "compacted_at_present": false,
+        "original_size": ""
+      },
+      {
+        "id": "b12-batch",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      },
+      {
+        "id": "b12-dry",
+        "status": "closed",
+        "description": "Tier one supplied summary.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "226"
+      },
+      {
+        "id": "b12-tier2",
+        "status": "closed",
+        "description": "Stub summary: closed public fixture.",
+        "design": "",
+        "notes": "",
+        "acceptance_criteria": "",
+        "compaction_level": "1",
+        "compacted_at_present": true,
+        "original_size": "234"
+      }
+    ],
+    "snapshots_after": [
+      {
+        "issue_id": "b12-auto",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+          "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-auto.",
+          "notes": "Original public notes for b12-auto.",
+          "title": "Auto summary public record"
+        }
+      },
+      {
+        "issue_id": "b12-auto",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-auto.",
+          "description": "Original public description for b12-auto. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-auto.",
+          "notes": "Original public notes for b12-auto.",
+          "title": "Auto summary public record"
+        }
+      },
+      {
+        "issue_id": "b12-batch",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-batch.",
+          "description": "Original public description for b12-batch. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-batch.",
+          "notes": "Original public notes for b12-batch.",
+          "title": "Batch public record"
+        }
+      },
+      {
+        "issue_id": "b12-tier2",
+        "compaction_level": "1",
+        "snapshot": {
+          "acceptance_criteria": "Original public acceptance criteria for b12-tier2.",
+          "description": "Original public description for b12-tier2. It is deliberately long enough to be compacted by a shorter summary.",
+          "design": "Original public design for b12-tier2.",
+          "notes": "Original public notes for b12-tier2.",
+          "title": "Tier two ordering public record"
+        }
+      }
+    ],
+    "comments_added": [
+      {
+        "issue_id": "b12-auto",
+        "actor": "compactor",
+        "comment": "Tier 1 compaction: 230 → 36 bytes (saved 194)"
+      },
+      {
+        "issue_id": "b12-autolong",
+        "actor": "compactor",
+        "comment": "Tier 1 compaction skipped: summary (2720 bytes) not shorter than original (246 bytes)"
+      },
+      {
+        "issue_id": "b12-batch",
+        "actor": "compactor",
+        "comment": "Tier 1 compaction: 234 → 36 bytes (saved 198)"
+      },
+      {
+        "issue_id": "b12-tier2",
+        "actor": "compactor",
+        "comment": "Tier 1 compaction: 234 → 36 bytes (saved 198)"
+      }
+    ],
+    "stub_requests": [
+      {
+        "method": "POST",
+        "path": "/v1/messages",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "roles": [
+          "user"
+        ],
+        "prompt_bytes": 952,
+        "prompt_sha256": "37476ba0ca49e79cb203c36506d9ea95a8bace2628a063f57d141bd327d541fd",
+        "dummy_key_header": true,
+        "long_variant": true
+      },
+      {
+        "method": "POST",
+        "path": "/v1/messages",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "roles": [
+          "user"
+        ],
+        "prompt_bytes": 920,
+        "prompt_sha256": "6e2e24d18a6e4c949bfbabb71396d515b1d3fc39d31e975adeb34991a06f2cb9",
+        "dummy_key_header": true,
+        "long_variant": false
+      },
+      {
+        "method": "POST",
+        "path": "/v1/messages",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "roles": [
+          "user"
+        ],
+        "prompt_bytes": 932,
+        "prompt_sha256": "8d1fd5e82f5e620bf4af39c116fbdd207801229328398eeb064f5ee37748b046",
+        "dummy_key_header": true,
+        "long_variant": false
+      },
+      {
+        "method": "POST",
+        "path": "/v1/messages",
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1024,
+        "roles": [
+          "user"
+        ],
+        "prompt_bytes": 923,
+        "prompt_sha256": "c2ce1da75f85bd98080f560f10d357b7e5e56b21b45707f8fc79336e841bcc20",
+        "dummy_key_header": true,
+        "long_variant": false
+      }
+    ],
+    "full_image_changed": true
+  }
+]
