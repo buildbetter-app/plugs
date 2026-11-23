@@ -417,6 +417,16 @@ func projectNativeTypeForReverse(projected *reverseconverter.Record, dump revers
 		return nil
 	}
 	nativeType := stringValue(projected.Source.Fields["issue_type"])
+	// The native status contract authenticates gate as a physical source type.
+	// Native collection filtering may remove its map_type directive because the
+	// gate is admitted by the contract itself. Preserve that authenticated type
+	// instead of falling through to the generic task projection.
+	if nativeType == "gate" && dump.Manifest.StatusCategoryContract == dumpformat.StatusCategoryContract {
+		projected.Body["type"] = "issue"
+		projected.Body["source_type"] = nativeType
+		projected.Source.Fields["issue_type"] = nativeType
+		return nil
+	}
 	switch nativeType {
 	case "task", "bug", "feature", "epic", "chore":
 		return nil

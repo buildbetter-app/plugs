@@ -340,6 +340,26 @@ func TestProjectNativeStatusForReverseArchivesIncompatibleBuiltin(t *testing.T) 
 	}
 }
 
+func TestProjectNativeTypeForReversePreservesAuthenticatedGate(t *testing.T) {
+	for _, emitProvenance := range []bool{false, true} {
+		projected := reverseconverter.Record{
+			Kind: "bead", ID: "ops-bgk", Project: "ops",
+			Body:   map[string]any{"type": "issue", "source_type": "task", "metadata": map[string]any{}},
+			Source: reverseconverter.Provenance{Table: dumpformat.DurableEntityTable, Fields: map[string]any{"issue_type": "gate"}},
+		}
+		dump := reverseconverter.Dump{Manifest: reverseconverter.Manifest{
+			SourcePlaneAddressContract: dumpformat.SourcePlaneAddressContract,
+			StatusCategoryContract:     dumpformat.StatusCategoryContract,
+		}}
+		if err := projectNativeTypeForReverse(&projected, dump, emitProvenance); err != nil {
+			t.Fatal(err)
+		}
+		if projected.Body["source_type"] != "gate" || projected.Source.Fields["issue_type"] != "gate" {
+			t.Fatalf("authenticated gate type changed: emitProvenance=%v body=%#v source=%#v", emitProvenance, projected.Body, projected.Source.Fields)
+		}
+	}
+}
+
 // This declared synthetic history proves admitted metadata behavior, not native
 // capture or native-history qualification. Every history image carries the same
 // user metadata and explicit custom-type mapping as its admitted head.
