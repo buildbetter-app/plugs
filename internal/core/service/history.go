@@ -178,6 +178,9 @@ func (s *Service) beginHistoryMemoryAccess(ctx context.Context, by model.Princip
 		}
 	}
 	if record == nil || record.Kind == "" || record.Kind == "memory" && !present {
+		if err := s.authorizeMissingMemory(ctx, by, ref); err != nil {
+			return historyMemoryAccess{}, historyAuthzError(s, false, err)
+		}
 		return historyMemoryAccess{}, historyMemoryNotFound()
 	}
 	access := historyMemoryAccess{kind: record.Kind, incarnation: r.Snapshot().Incarnation}
@@ -189,6 +192,9 @@ func (s *Service) beginHistoryMemoryAccess(ctx context.Context, by model.Princip
 		return historyMemoryAccess{}, err
 	}
 	if !eligible || memory.ID != ref.ID {
+		if err := s.authorizeMissingMemory(ctx, by, ref); err != nil {
+			return historyMemoryAccess{}, historyAuthzError(s, false, err)
+		}
 		return historyMemoryAccess{}, historyMemoryNotFound()
 	}
 	document, _, err := pipeline.DecodeMemoryRecord(*record)

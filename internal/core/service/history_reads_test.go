@@ -232,6 +232,9 @@ func TestHistoryMemoryRequiresCurrentSameLifetime(t *testing.T) {
 	calls := 0
 	svc := New(f.store, f.lease, f.writer, WithMemoryReadAuthorizer(MemoryReadAuthorizerFunc(func(_ context.Context, _ model.PrincipalRef, memory Memory) (bool, error) {
 		calls++
+		if memory.Content == "" {
+			return true, nil
+		}
 		if memory.Content != "current-secret" {
 			t.Fatalf("old content or tombstone supplied to policy: %+v", memory)
 		}
@@ -241,8 +244,8 @@ func TestHistoryMemoryRequiresCurrentSameLifetime(t *testing.T) {
 		value, err := read.run(ctx, svc, anonymous)
 		assertHistoryRefusal(t, value, err, "not_found")
 	}
-	if calls != 0 {
-		t.Fatal("deleted memory invoked authorization without a current value")
+	if calls == 0 {
+		t.Fatal("deleted memory did not authorize its missing identity before refusal")
 	}
 	recreated := recreateHistoryMemory(t, f, ref, "replacement")
 	current := saveHistoryMemory(t, f, "current-secret")
@@ -402,7 +405,8 @@ func TestHistoryDeletedMemoryWithoutKindEvidenceIsHidden(t *testing.T) {
 				return nil
 			}
 			svc := New(store, f.lease, f.writer, WithMemoryReadAuthorizer(MemoryReadAuthorizerFunc(func(context.Context, model.PrincipalRef, Memory) (bool, error) {
-				t.Fatal("classification authorized old content")
+				// Missing history identity is authorized with an ID-only
+				// placeholder before the non-disclosing refusal.
 				return true, nil
 			})))
 			for _, read := range memoryHistoryReads(first.Results[0].Ref, first.Revision, second.Revision) {

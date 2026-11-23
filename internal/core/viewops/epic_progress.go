@@ -69,6 +69,9 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	if err != nil {
 		return Result{}, err
 	}
+	if _, err := s.authorizeRef(ctx, by, parent, req.Project); err != nil {
+		return Result{}, err
+	}
 	parentRow, exists := findStored(rows, parent.ID)
 	if !exists || (req.Project != "" && parentRow.doc.Project != req.Project) {
 		return Result{}, failure("not_found", "epic was not found")

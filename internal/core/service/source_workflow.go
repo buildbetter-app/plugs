@@ -119,6 +119,20 @@ func (s *Service) SourceWorkflowProject(ref model.Ref) (string, bool) {
 	return project, ok
 }
 
+// SourceAddressProject reports whether a source-facing address was admitted
+// for the requested project. It exposes only the immutable address binding so
+// the guarded RPC can authorize the alias before resolving its current target.
+func (s *Service) SourceAddressProject(project string, ref model.Ref) (string, bool) {
+	source := s.source.Load()
+	if source == nil || project == "" || !ref.IsID() || !ref.Branch.IsZero() {
+		return "", false
+	}
+	if !source.addresses[sourceAddress{project, ref.ID}] {
+		return "", false
+	}
+	return project, true
+}
+
 // ResolveSourceAddress is an active-first current-view address lookup. A
 // known source with no remaining target refuses instead of falling through to
 // an unrelated ordinary record with the same naked ID.

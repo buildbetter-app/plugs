@@ -31,7 +31,18 @@ func (s *GuardedService) historyRead(ctx context.Context, by model.PrincipalRef,
 	if err != nil {
 		return nil, "", err
 	}
+	// A missing or malformed bead must still traverse the caller's read
+	// decision before this boundary returns the non-disclosing not_found
+	// response. Existing memory records use their separate domain authorization
+	// path below, so do not apply bead policy before identifying that kind.
 	if len(rows) != 1 {
+		allowed, err := s.checker.readDecision(ctx, snapshot, by, "bead.get", ref)
+		if err != nil {
+			return nil, "", err
+		}
+		if !allowed {
+			return nil, "", notFound()
+		}
 		return nil, "", notFound()
 	}
 	switch rows[0].Kind {
@@ -50,6 +61,13 @@ func (s *GuardedService) historyRead(ctx context.Context, by model.PrincipalRef,
 		binding, err := s.checker.ReadAuthorityBinding(ctx, by, snapshot)
 		return reader, binding, err
 	default:
+		allowed, err := s.checker.readDecision(ctx, snapshot, by, "bead.get", ref)
+		if err != nil {
+			return nil, "", err
+		}
+		if !allowed {
+			return nil, "", notFound()
+		}
 		return nil, "", notFound()
 	}
 }

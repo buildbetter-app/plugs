@@ -45,8 +45,33 @@ const claimNextConflictRestartBudget = 1
 
 func (s *GuardedService) Get(ctx context.Context, by model.PrincipalRef, req service.GetRequest) (service.GetResult, error) {
 	if source, ok := s.delegate.(interface {
+		SourceAddressProject(string, model.Ref) (string, bool)
 		ResolveSourceAddress(context.Context, model.PrincipalRef, string, model.Ref) (model.Ref, bool, error)
 	}); ok {
+		if project, known := source.SourceAddressProject(req.Project, req.ID); known {
+			_, snapshot, closeReader, err := s.current(ctx, nil)
+			if err != nil {
+				return service.GetResult{}, err
+			}
+			caller, err := s.checker.callerFor(ctx, by)
+			if err != nil {
+				closeReader()
+				return service.GetResult{}, authzError(err)
+			}
+			authority, err := s.checker.load(ctx, snapshot, caller)
+			if err != nil {
+				closeReader()
+				return service.GetResult{}, &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+			}
+			allowed, err := s.sourceReadAddress(ctx, caller, authority, req.ID, project, "bead.get")
+			closeReader()
+			if err != nil {
+				return service.GetResult{}, err
+			}
+			if !allowed {
+				return service.GetResult{}, notFound()
+			}
+		}
 		resolved, _, err := source.ResolveSourceAddress(ctx, by, req.Project, req.ID)
 		if err != nil {
 			return service.GetResult{}, err
@@ -161,13 +186,15 @@ func (s *GuardedService) AuthorizeReadBatch(ctx context.Context, by model.Princi
 	}
 	allowed := make([]bool, len(resources))
 	for i, ref := range refs {
-		if !present[ref.ID] {
-			continue
-		}
+		// Run the caller's per-resource policy for every requested reference,
+		// including absent rows. Presence only controls whether an authorized
+		// result can be returned. Skipping Match for misses would let this batch
+		// path classify existence before the read boundary.
 		allowed[i], err = template.Match(ctx, facts, authz.Resource{Kind: authz.Bead, Ref: ref})
 		if err != nil {
 			return nil, authzError(err)
 		}
+		allowed[i] = allowed[i] && present[ref.ID]
 	}
 	binding, err := s.checker.readAuthorityBinding(ctx, caller, authority, snapshot)
 	if err != nil {

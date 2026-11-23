@@ -735,6 +735,53 @@ func currentHistory(t *testing.T, open storeFactory) {
 	}
 }
 
+func TestP27UnauthorizedExistingAndMissingIDsRefuseAcrossDrivers(t *testing.T) {
+	countDrivers(t, func(t *testing.T, open storeFactory) {
+		f := matrixFixture(t, open)
+		view := f.reader(t).Snapshot()
+		if view.At == nil {
+			t.Fatal("matrix fixture has no pinned head")
+		}
+		by := model.PrincipalRef{Kind: "user", ID: "user:p27-denied", Caveats: map[string]any{
+			"refs": []model.Ref{fixtureRef(7)},
+		}}
+		existing := fixtureRef(1)
+		missing := fixtureRef(999)
+		asOf := map[string]any{"revision": *view.At, "incarnation": view.Incarnation}
+		for _, method := range []string{"bead.get", "history.get", "history.diff"} {
+			t.Run(method, func(t *testing.T) {
+				params := func(ref model.Ref) map[string]any {
+					switch method {
+					case "bead.get":
+						return map[string]any{"id": ref}
+					case "history.get":
+						return map[string]any{"ref": ref, "asOf": asOf}
+					default:
+						return map[string]any{"ref": ref, "fromRevision": model.Natural64(1), "toRevision": *view.At}
+					}
+				}
+				refusal := func(ref model.Ref, key int) reply {
+					got := f.call(t, by, method, params(ref), key)
+					if got.Error == nil || got.Error.Data.Code != "not_found" || len(got.Result) != 0 {
+						if got.Error == nil {
+							t.Fatalf("%s %s returned success: result=%s", method, ref.ID, got.Result)
+						}
+						t.Fatalf("%s %s was not a non-disclosing not_found: code=%q message=%q data=%+v result=%s", method, ref.ID, got.Error.Data.Code, got.Error.Message, got.Error.Data, got.Result)
+					}
+					return got
+				}
+				existingReply := refusal(existing, 27001)
+				missingReply := refusal(missing, 27002)
+				existingReply.Error.Data.TraceID = ""
+				missingReply.Error.Data.TraceID = ""
+				if !reflect.DeepEqual(existingReply.Error.Data, missingReply.Error.Data) {
+					t.Fatalf("existing and missing refusals differ: existing=%+v missing=%+v", existingReply.Error, missingReply.Error)
+				}
+			})
+		}
+	})
+}
+
 func postImage(t *testing.T, open storeFactory) {
 	f := newFixtureOn(t, open(t), nil)
 	ctx := context.Background()

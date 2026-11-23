@@ -147,6 +147,13 @@ func (s *Service) authorizeMemory(ctx context.Context, by model.PrincipalRef, me
 	return allowed, nil
 }
 
+// authorizeMissingMemory runs the current policy before an absent or
+// ineligible reference becomes the non-disclosing not_found response.
+func (s *Service) authorizeMissingMemory(ctx context.Context, by model.PrincipalRef, ref model.Ref) error {
+	_, err := s.authorizeMemory(ctx, by, Memory{ID: ref.ID})
+	return err
+}
+
 // History authorization uses the same persisted-envelope checks and visibility
 // boundary as public memory reads before it can return any historical body.
 func decodeMemoryRecord(record driver.Record) (Memory, error) {
@@ -227,6 +234,9 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 		return Memory{}, mapped(err)
 	}
 	if len(rows) != 1 || rows[0].Kind != "memory" {
+		if err := s.authorizeMissingMemory(ctx, by, req.ID); err != nil {
+			return Memory{}, err
+		}
 		return Memory{}, failure("not_found", "memory was not found")
 	}
 	memory, eligible, err := readPublicMemory(ctx, r, rows[0])
@@ -234,6 +244,9 @@ func (s *Service) MemoryGet(ctx context.Context, by model.PrincipalRef, req Memo
 		return Memory{}, err
 	}
 	if !eligible {
+		if err := s.authorizeMissingMemory(ctx, by, req.ID); err != nil {
+			return Memory{}, err
+		}
 		return Memory{}, failure("not_found", "memory was not found")
 	}
 	allowed, err := s.authorizeMemory(ctx, by, memory)
