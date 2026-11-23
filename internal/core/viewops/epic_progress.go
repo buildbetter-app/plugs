@@ -69,6 +69,12 @@ func (s *Service) runEpicProgress(ctx context.Context, by model.PrincipalRef, re
 	if err != nil {
 		return Result{}, err
 	}
+	// Preflight the parent through the host's scoped read authority before
+	// classifying its presence or project. A missing or cross-project parent
+	// must remain indistinguishable from an unreadable one.
+	if _, err := cfg.AuthorizeScope(ctx, by, content, parent, nil); err != nil {
+		return Result{}, mapped(err)
+	}
 	parentRow, exists := findStored(rows, parent.ID)
 	if !exists || (req.Project != "" && parentRow.doc.Project != req.Project) {
 		return Result{}, failure("not_found", "epic was not found")
