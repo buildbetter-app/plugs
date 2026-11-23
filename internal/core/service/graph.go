@@ -304,16 +304,18 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
 			return false, nil
 		}
-		// An open parent alone is not a blocker. Deferred/backlog ancestors
-		// and their live blockers suppress the entire subtree, using each
-		// ancestor's own project ontology from the same complete snapshot.
+		// Deferred/backlog ancestors and explicit blocks suppress the subtree.
+		// A terminal ancestor's dependency links no longer gate its children.
+		// Continue walking to check the remaining ancestor chain.
 		category, known := o.effective(row.doc.Project).Category(state(row.doc).Status)
-		if !known || category.Backlog() {
+		if !known || category.Backlog() || row.doc.Fields["blocked"] == true {
 			return false, nil
 		}
-		unblocked, err := o.noOpenBlockers(row.doc, graph)
-		if err != nil || !unblocked {
-			return unblocked, err
+		if !category.Terminal() {
+			unblocked, err := o.noOpenBlockers(row.doc, graph)
+			if err != nil || !unblocked {
+				return unblocked, err
+			}
 		}
 		seen[parent.ID] = true
 		doc = row.doc
