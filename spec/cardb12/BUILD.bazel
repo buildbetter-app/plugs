@@ -1,0 +1,33 @@
+load("@rules_go//go:def.bzl", "go_test")
+
+# Manual native recording: builds the pinned Beads source with the shared
+# canonical recipe and records B12 compaction vectors on an owned Dolt server.
+# Run through local-bazel with PLUG_SOURCE_MODULE_ROOT (added by local-bazel).
+go_test(
+    name = "native_compaction_record_test",
+    srcs = ["native_test.go"],
+    args = ["-test.v"],
+    data = [
+        "testdata/b12-native-vectors.json",
+        "//internal/publicnative:dolt_runtime",
+        "//spec/s1-b09-native:lexicon_files",
+    ],
+    env = {"PLUG_PINNED_DOLT_BINARY": "$(rlocationpath //internal/publicnative:dolt_runtime)"},
+    size = "enormous",
+    tags = ["local", "manual"],
+    timeout = "eternal",
+    deps = ["//internal/publicnative"],
+)
+
+# The committed native vectors that the Plug pairing test consumes.
+filegroup(
+    name = "native_vectors",
+    srcs = ["testdata/b12-native-vectors.json"],
+    visibility = ["//spec/s1-b09-b12/compaction:__pkg__"],
+)
+
+filegroup(
+    name = "lexicon_files",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
