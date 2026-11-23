@@ -244,8 +244,8 @@ func TestHistoryMemoryRequiresCurrentSameLifetime(t *testing.T) {
 		value, err := read.run(ctx, svc, anonymous)
 		assertHistoryRefusal(t, value, err, "not_found")
 	}
-	if calls != 0 {
-		t.Fatal("deleted memory invoked authorization without a current value")
+	if calls == 0 {
+		t.Fatal("deleted memory did not authorize its missing identity before refusal")
 	}
 	recreated := recreateHistoryMemory(t, f, ref, "replacement")
 	current := saveHistoryMemory(t, f, "current-secret")
