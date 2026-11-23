@@ -10,21 +10,21 @@ import (
 	"testing"
 )
 
-func TestValidateSavedImageAcceptsPinnedOCIConfigDigest(t *testing.T) {
+func TestValidateSavedImageAcceptsPinnedOCIManifestDigest(t *testing.T) {
 	fixture := writeOCIValidationArchive(t)
 	bundle := fixture.bundle
-	bundle.ImageDigest = fixture.configDigest
+	bundle.ImageDigest = fixture.manifestDigest
 	if err := validateSavedImage(bundle); err != nil {
-		t.Fatalf("valid selected config pin refused: %v", err)
+		t.Fatalf("valid selected manifest pin refused: %v", err)
 	}
 }
 
 func TestValidateSavedImageRefusesPinnedBlobWithDifferentManifestConfig(t *testing.T) {
 	fixture := writeOCIValidationArchive(t)
 	bundle := fixture.bundle
-	bundle.ImageDigest = fixture.alternateConfigDigest
+	bundle.ImageDigest = fixture.alternateManifestDigest
 	if err := validateSavedImage(bundle); err == nil {
-		t.Fatal("archive accepted a pinned config blob different from the selected manifest config")
+		t.Fatal("archive accepted a pinned manifest blob with a different selected config")
 	}
 }
 
@@ -33,15 +33,15 @@ func TestValidateSavedImageRefusesPinNamingNonConfigBlob(t *testing.T) {
 	bundle := fixture.bundle
 	bundle.ImageDigest = fixture.layerDigest
 	if err := validateSavedImage(bundle); err == nil {
-		t.Fatal("archive accepted a layer digest as the image config pin")
+		t.Fatal("archive accepted a layer digest as the image manifest pin")
 	}
 }
 
 type ociValidationFixture struct {
-	bundle                RuntimeBundle
-	configDigest          string
-	alternateConfigDigest string
-	layerDigest           string
+	bundle                  RuntimeBundle
+	manifestDigest          string
+	alternateManifestDigest string
+	layerDigest             string
 }
 
 func writeOCIValidationArchive(t *testing.T) ociValidationFixture {
@@ -66,7 +66,7 @@ func writeOCIValidationArchive(t *testing.T) ociValidationFixture {
 	configDigest := digestBytes(configRaw)
 	alternateBody := map[string]any{"alternate": true, "config": configBody["config"], "rootfs": configBody["rootfs"]}
 	alternateRaw := marshalOCIJSON(t, alternateBody)
-	alternateDigest := digestBytes(alternateRaw)
+	alternateConfigDigest := digestBytes(alternateRaw)
 	manifestBody := map[string]any{
 		"schemaVersion": 2,
 		"config":        map[string]string{"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + configDigest},
@@ -74,16 +74,27 @@ func writeOCIValidationArchive(t *testing.T) ociValidationFixture {
 	}
 	manifestRaw := marshalOCIJSON(t, manifestBody)
 	manifestDigest := digestBytes(manifestRaw)
+	alternateManifestBody := map[string]any{
+		"schemaVersion": 2,
+		"config":        map[string]string{"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + alternateConfigDigest},
+		"layers":        []map[string]string{{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": "sha256:" + layerDigest}},
+	}
+	alternateManifestRaw := marshalOCIJSON(t, alternateManifestBody)
+	alternateManifestDigest := digestBytes(alternateManifestRaw)
 	indexRaw := marshalOCIJSON(t, map[string]any{
 		"schemaVersion": 2,
-		"manifests":     []map[string]any{{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + manifestDigest, "platform": map[string]string{"os": "linux", "architecture": "amd64"}}},
+		"manifests": []map[string]any{
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + manifestDigest, "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
+			{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + alternateManifestDigest, "platform": map[string]string{"os": "linux", "architecture": "arm64"}},
+		},
 	})
 	archive := new(bytes.Buffer)
 	writer := tar.NewWriter(archive)
 	writeOCIEntry(t, writer, "index.json", indexRaw)
 	writeOCIEntry(t, writer, "blobs/sha256/"+manifestDigest, manifestRaw)
+	writeOCIEntry(t, writer, "blobs/sha256/"+alternateManifestDigest, alternateManifestRaw)
 	writeOCIEntry(t, writer, "blobs/sha256/"+configDigest, configRaw)
-	writeOCIEntry(t, writer, "blobs/sha256/"+alternateDigest, alternateRaw)
+	writeOCIEntry(t, writer, "blobs/sha256/"+alternateConfigDigest, alternateRaw)
 	writeOCIEntry(t, writer, "blobs/sha256/"+layerDigest, layer)
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
@@ -91,7 +102,7 @@ func writeOCIValidationArchive(t *testing.T) ociValidationFixture {
 	if err := os.WriteFile(bundle.ImagePath, archive.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	return ociValidationFixture{bundle: bundle, configDigest: configDigest, alternateConfigDigest: alternateDigest, layerDigest: layerDigest}
+	return ociValidationFixture{bundle: bundle, manifestDigest: manifestDigest, alternateManifestDigest: alternateManifestDigest, layerDigest: layerDigest}
 }
 
 func marshalOCIJSON(t *testing.T, value any) []byte {

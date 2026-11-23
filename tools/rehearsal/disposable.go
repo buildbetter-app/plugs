@@ -1915,6 +1915,7 @@ func validateSavedImage(b RuntimeBundle) error {
 	}
 
 	configName := ""
+	selectedManifestDigest := ""
 	layers := []string{}
 	if raw := memberBytes["manifest.json"]; raw != nil {
 		if json.Unmarshal(raw, &legacyManifests) != nil || len(legacyManifests) != 1 {
@@ -1935,6 +1936,7 @@ func validateSavedImage(b RuntimeBundle) error {
 			return items[0]
 		}
 		current := selectDescriptor(index.Manifests)
+		selectedManifestDigest = strings.TrimPrefix(current.Digest, "sha256:")
 		for depth := 0; depth < 3; depth++ {
 			name := "blobs/sha256/" + strings.TrimPrefix(current.Digest, "sha256:")
 			raw := memberBytes[name]
@@ -1961,15 +1963,19 @@ func validateSavedImage(b RuntimeBundle) error {
 	if configName == "" || len(layers) == 0 && memberBytes["manifest.json"] == nil {
 		return fmt.Errorf("saved runnable image does not match image pin")
 	}
-	// ImageDigest follows Docker image-ID semantics. For an OCI archive that
-	// means the selected manifest's config digest, rather than its manifest
-	// descriptor digest or an arbitrary blob digest.
-	selectedConfigDigest := strings.TrimSuffix(filepath.Base(configName), ".json")
-	if strings.HasPrefix(configName, "blobs/sha256/") {
-		selectedConfigDigest = strings.TrimPrefix(selectedConfigDigest, "sha256:")
-	}
-	if selectedConfigDigest != b.ImageDigest {
-		return fmt.Errorf("saved image config digest does not match image pin")
+	// Docker 29's OCI image ID is the selected top-level manifest descriptor
+	// digest. Legacy archives retain the image ID in the config member name.
+	// In both formats the pin must identify the selected image metadata, never
+	// an unrelated config or layer blob.
+	if selectedManifestDigest != "" {
+		if selectedManifestDigest != b.ImageDigest {
+			return fmt.Errorf("saved image manifest digest does not match image pin")
+		}
+	} else {
+		selectedConfigDigest := strings.TrimSuffix(filepath.Base(configName), ".json")
+		if selectedConfigDigest != b.ImageDigest {
+			return fmt.Errorf("saved image config digest does not match image pin")
+		}
 	}
 	rawConfig := memberBytes[configName]
 	if rawConfig == nil || members[configName] != strings.TrimPrefix(filepath.Base(configName), "sha256:") && strings.HasPrefix(configName, "blobs/sha256/") {
