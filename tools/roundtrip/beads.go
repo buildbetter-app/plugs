@@ -296,12 +296,16 @@ func runBeads(ctx context.Context, options beadsOptions, output string, source *
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", "beads_raw_export_refused", "FAIL"
 		return
 	}
-	assessBeadsReadback(output, source, live.JSONL, result)
+	assessBeadsReadbackWithMode(output, source, live.JSONL, live.ProvenanceEmitted, result)
 }
 
 // Assessment is also exercised against immutable, originally executed public
 // outputs. Replaying those bytes is a parser/refusal control, not a native run.
 func assessBeadsReadback(output string, source *dumpformat.Archive, submitted []byte, result *outcome) {
+	assessBeadsReadbackWithMode(output, source, submitted, true, result)
+}
+
+func assessBeadsReadbackWithMode(output string, source *dumpformat.Archive, submitted []byte, provenanceEmitted bool, result *outcome) {
 	readback, err := readProducedBeadsArchive(filepath.Join(output, "beads-raw-readback.tar"))
 	var actual *dumpformat.Archive
 	if err == nil {
@@ -324,8 +328,10 @@ func assessBeadsReadback(output string, source *dumpformat.Archive, submitted []
 		return
 	}
 	result.BeadsReadbackSHA256 = actual.SHA256()
-	result.SourceFieldLosses = nativeOpaqueLosses(source, actual)
-	if reason := compareRawReadback(submitted, actual); reason != "" {
+	if provenanceEmitted {
+		result.SourceFieldLosses = nativeOpaqueLosses(source, actual)
+	}
+	if reason := compareRawReadbackMode(submitted, actual, provenanceEmitted); reason != "" {
 		result.Status, result.Reason, result.BeadsReadback = "BLOCK", reason, "FAIL"
 		return
 	}
@@ -376,6 +382,10 @@ func nativeOpaqueLosses(source, actual *dumpformat.Archive) []string {
 // Compare the actual exporter's raw SQL field images to the bytes submitted
 // to bd import. Projection and the original source archive are not readback.
 func compareRawReadback(expected []byte, actual *dumpformat.Archive) string {
+	return compareRawReadbackMode(expected, actual, true)
+}
+
+func compareRawReadbackMode(expected []byte, actual *dumpformat.Archive, provenanceEmitted bool) string {
 	rows := map[string]dumpformat.Record{}
 	for _, row := range actual.Records("bead") {
 		rows[row.ID] = row
@@ -478,14 +488,30 @@ func compareRawReadback(expected []byte, actual *dumpformat.Archive) string {
 			return "beads_raw_edge_census_changed"
 		}
 		delete(edges, key)
-		// Source dependency IDs may be reallocated. Its retained envelope must
-		// still preserve the exact original identity and metadata.
-		var envelope any
-		if text, ok := want["metadata"].(string); !ok || decodeNumberJSON([]byte(text), &envelope) != nil {
-			return "beads_expected_edge_invalid"
-		}
-		if !sameJSON(envelope, s["metadata"]) {
-			return "beads_raw_edge_metadata_changed"
+		if provenanceEmitted {
+			// Source dependency IDs may be reallocated. Its retained envelope
+			// still preserves the exact original identity and metadata.
+			var envelope any
+			if text, ok := want["metadata"].(string); !ok || decodeNumberJSON([]byte(text), &envelope) != nil {
+				return "beads_expected_edge_invalid"
+			}
+			if !sameJSON(envelope, s["metadata"]) {
+				return "beads_raw_edge_metadata_changed"
+			}
+		} else {
+			// Beads JSONL stores dependency metadata as JSON text while the
+			// source reader exposes the decoded value. Compare the values after
+			// decoding valid JSON text, preserving literal non-JSON SQL text.
+			wantMetadata := want["metadata"]
+			if text, ok := wantMetadata.(string); ok {
+				var decoded any
+				if decodeNumberJSON([]byte(text), &decoded) == nil {
+					wantMetadata = decoded
+				}
+			}
+			if !sameJSON(wantMetadata, s["metadata"]) {
+				return "beads_raw_edge_metadata_changed"
+			}
 		}
 		for _, field := range []string{"created_by", "thread_id"} {
 			if !sameOptionalText(want[field], s[field]) {

@@ -325,7 +325,7 @@ func TestProjectNativeStatusForReverseArchivesIncompatibleBuiltin(t *testing.T) 
 		SourcePlaneAddressContract: dumpformat.SourcePlaneAddressContract,
 		StatusCategoryContract:     dumpformat.StatusCategoryContract,
 	}}
-	if err := projectNativeStatusForReverse(&projected, dump); err != nil {
+	if err := projectNativeStatusForReverse(&projected, dump, true); err != nil {
 		t.Fatal(err)
 	}
 	if got := projected.Body["status_category"]; got != "started" {
@@ -546,6 +546,24 @@ func TestB11AdmittedNativeReverseMetadataPreservationAndConflicts(t *testing.T) 
 					}
 					if len(result.Result.Projection.Edges) != 1 || result.Result.Projection.Edges[0].From != "pl-42v" || result.Result.Projection.Edges[0].To != "pl-43w" || result.Result.Projection.Edges[0].Type != "relates-to" {
 						t.Fatal("admitted durable edge changed", result.Result.Projection.Edges)
+					}
+					if tc.name == "absent" {
+						beadsResult, beadsErr := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{All: true, BeadsDestination: true})
+						if beadsErr != nil {
+							t.Fatal("Beads destination reverse", beadsErr)
+						}
+						beadsRows := sourceReverseRows(t, beadsResult.Result.JSONL)
+						for _, id := range []string{"pl-42v", "pl-43w"} {
+							row := beadsRows[id]
+							if !sameReverseJSON(row["metadata"], metadata) || row["issue_type"] != "rich_kind" {
+								t.Fatalf("Beads destination changed source metadata/type for %s: %#v", id, row)
+							}
+							for key := range row["metadata"].(map[string]any) {
+								if strings.HasPrefix(key, "beads.") || strings.HasPrefix(key, "_plug_") {
+									t.Fatalf("Beads destination leaked provenance key %q", key)
+								}
+							}
+						}
 					}
 				}
 				if !reflect.DeepEqual(before, savedLabelImport(t, store, report.Archive, profile, "")) {

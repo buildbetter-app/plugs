@@ -234,10 +234,10 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 						projected.Body[field], projected.Source.Fields[field] = source.Body[field], source.Source.Fields[field]
 					}
 				}
-				if err := projectNativeStatusForReverse(&projected, *dump); err != nil {
+				if err := projectNativeStatusForReverse(&projected, *dump, !options.BeadsDestination); err != nil {
 					return err
 				}
-				if err := projectNativeTypeForReverse(&projected, *dump); err != nil {
+				if err := projectNativeTypeForReverse(&projected, *dump, !options.BeadsDestination); err != nil {
 					return err
 				}
 				dump.Records[kind][i] = projected
@@ -326,10 +326,10 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 }
 
 // Native status catalogs retain source names and categories that the generic
-// JSONL reverse converter cannot emit as live Beads workflow values. Preserve
-// those exact native values in metadata, then project only the converter-facing
-// status/category pair for this authenticated source-plane route.
-func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump) error {
+// JSONL reverse converter cannot emit as live Beads workflow values. Legacy
+// Plug-native output retains those exact values in provenance metadata, while
+// BeadsDestination keeps them in the authenticated source fields.
+func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump, emitProvenance bool) error {
 	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract || dump.Manifest.StatusCategoryContract != dumpformat.StatusCategoryContract {
 		return nil
 	}
@@ -362,14 +362,12 @@ func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reve
 	default:
 		return ReverseRefusal{"unsupported_native_status_category"}
 	}
-	if nativeStatusCompatible(nativeCategory, nativeStatus) {
-		projected.Source.Fields["status"] = status
-		return nil
-	}
-	if err := mergeNativeReverseMetadata(projected, map[string]any{
-		"_plug_native_status": nativeStatus, "_plug_native_status_category": nativeCategory,
-	}); err != nil {
-		return err
+	if emitProvenance && !nativeStatusCompatible(nativeCategory, nativeStatus) {
+		if err := mergeNativeReverseMetadata(projected, map[string]any{
+			"_plug_native_status": nativeStatus, "_plug_native_status_category": nativeCategory,
+		}); err != nil {
+			return err
+		}
 	}
 	projected.Source.Fields["status"] = status
 	return nil
@@ -414,7 +412,7 @@ func nativeStatusCompatible(category, status string) bool {
 	}
 }
 
-func projectNativeTypeForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump) error {
+func projectNativeTypeForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump, emitProvenance bool) error {
 	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract {
 		return nil
 	}
@@ -425,11 +423,16 @@ func projectNativeTypeForReverse(projected *reverseconverter.Record, dump revers
 	}
 	for _, directive := range dump.Manifest.Ontology {
 		if directive.Target.Project == projected.Project && directive.Target.Type == nativeType && directive.Kind == ontologymigration.MapType {
-			return mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType})
+			if emitProvenance {
+				return mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType})
+			}
+			return nil
 		}
 	}
-	if err := mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType}); err != nil {
-		return err
+	if emitProvenance {
+		if err := mergeNativeReverseMetadata(projected, map[string]any{"_plug_native_type": nativeType}); err != nil {
+			return err
+		}
 	}
 	projected.Body["type"] = "issue"
 	projected.Body["source_type"] = "task"

@@ -218,8 +218,8 @@ func TestOwnedRoundtripPreservesWideNumbersThroughLiveReverseAndPrivateEvidence(
 		t.Fatalf("owned restore/live-edit/reverse path refused: %+v", result)
 	}
 	submitted, err := os.ReadFile(filepath.Join(output, "reverse-live.jsonl"))
-	if err != nil || !bytes.Contains(submitted, []byte(`"beads.timeout_ns":9007199254740993`)) {
-		t.Fatal("owned live reverse rounded the original wide integer")
+	if err != nil || bytes.Contains(submitted, []byte(`"beads.timeout_ns"`)) || bytes.Contains(submitted, []byte(`"_plug_source_fields"`)) {
+		t.Fatal("owned live reverse leaked Plug provenance metadata")
 	}
 	_, _, original, _ := originalReadbackControl(t, false)
 	var expected []map[string]any

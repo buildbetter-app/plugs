@@ -9,7 +9,7 @@ var undoLiteralBindings = map[string][]undoLiteralBinding{
 	},
 	// One exact native metadata source field in the B11 roundtrip expectation.
 	"internal/integration/converterroundtrip/source_planes_reverse_test.go": {
-		{name: "TestB11AdmittedNativeReverseMetadataPreservationAndConflicts", kind: "func", contextSHA256: "af115a46d71889942aa3296bdd12c88f699b2546c7c46b2898c9af4ed4409514", literals: map[int]string{
+		{name: "TestB11AdmittedNativeReverseMetadataPreservationAndConflicts", kind: "func", contextSHA256: "c2d1fd46dfe0e29c0400f46599b720905d272907f414941357fa5a0ff4b4284c", literals: map[int]string{
 			5617: "d970864cb90f9999b51854fc17275db9ccf9f49ac8b2ef429dd265c005c410b3",
 		}},
 	},

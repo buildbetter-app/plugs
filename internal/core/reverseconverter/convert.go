@@ -57,6 +57,7 @@ type dependencyLine struct {
 	CreatedAt         string            `json:"created_at,omitempty"`
 	CreatedBy         string            `json:"created_by,omitempty"`
 	Metadata          string            `json:"metadata,omitempty"`
+	MetadataNull      bool              `json:"-"`
 	ThreadID          string            `json:"thread_id,omitempty"`
 }
 
@@ -93,7 +94,7 @@ type issueLine struct {
 	DeferUntil         string           `json:"defer_until,omitempty"`
 	ExternalRef        string           `json:"external_ref,omitempty"`
 	SourceSystem       string           `json:"source_system,omitempty"`
-	Metadata           map[string]any   `json:"metadata,omitempty"`
+	Metadata           map[string]any   `json:"metadata"`
 	Labels             []string         `json:"labels,omitempty"`
 	Dependencies       []dependencyLine `json:"dependencies,omitempty"`
 	Comments           []commentLine    `json:"comments,omitempty"`
@@ -290,7 +291,7 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 			}
 			continue
 		}
-		issue, issueReasons := convertBead(record, dump.Manifest, &report, &typeSet)
+		issue, issueReasons := convertBead(record, dump.Manifest, &report, &typeSet, !options.BeadsDestination)
 		reasons = append(reasons, issueReasons...)
 		if issue != nil {
 			if _, exists := working[issue.Line.ID]; exists {
@@ -311,7 +312,7 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 				edgeIDs[[2]string{record.Source.Table, record.ID}] = true
 			}
 		}
-		reasons = append(reasons, convertEdge(record, working, manifestEdgeVersion(dump.Manifest), &report)...)
+		reasons = append(reasons, convertEdge(record, working, manifestEdgeVersion(dump.Manifest), &report, !options.BeadsDestination)...)
 	}
 	for _, record := range sortedRecords(comments) {
 		if from := working[text(record.Body["issue_id"])]; from != nil && from.Omitted {
@@ -458,7 +459,7 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 		out.WriteByte('\n')
 		projection.Memories = append(projection.Memories, MemoryProjection{Key: memory.Key, Value: memory.Value})
 	}
-	result := Result{JSONL: out.Bytes(), Projection: projection, Report: report}
+	result := Result{JSONL: out.Bytes(), Projection: projection, Report: report, ProvenanceEmitted: !options.BeadsDestination}
 	result.Digest = digestBytes(result.JSONL)
 	result.Report.OutputDigest = result.Digest
 	normalizeReport(&result.Report)
@@ -578,7 +579,7 @@ func validateDumpShape(dump Dump, report *Report, converter *Converter) error {
 	return nil
 }
 
-func convertBead(record Record, manifest Manifest, report *Report, directives *typeDirectives) (*workingIssue, []string) {
+func convertBead(record Record, manifest Manifest, report *Report, directives *typeDirectives, emitProvenance bool) (*workingIssue, []string) {
 	body := record.Body
 	var reasons []string
 	reasons = append(reasons, unsupportedSourceFieldsForManifest(record, report, manifest)...)
@@ -618,16 +619,17 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 			addUnique(&report.ArchivedSourceFields, "bead/"+record.ID+"/source/pinned")
 		}
 	}
-	typ := text(body["source_type"])
+	// The authenticated physical issue_type is authoritative. The body is a
+	// projection and may contain a portable alias such as task for a custom
+	// native type. Directives must therefore be matched against the physical
+	// value and the emitted issue_type must retain it.
+	typ := text(record.Source.Fields["issue_type"])
 	if typ == "" {
-		typ = text(record.Source.Fields["issue_type"])
+		typ = text(body["source_type"])
 	}
-	nativeType := typ
 	if sourceType, present := record.Source.Fields["issue_type"]; present && sourceType != nil {
 		if _, ok := sourceType.(string); !ok {
 			reasons = append(reasons, fmt.Sprintf("bead %q source issue_type is not a string", record.ID))
-		} else if text(sourceType) != typ {
-			reasons = append(reasons, fmt.Sprintf("bead %q body/source issue type mismatch", record.ID))
 		}
 	}
 	if nativeGate {
@@ -643,10 +645,6 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 			directives.markUsed(matches[0], report)
 		default:
 			reasons = append(reasons, fmt.Sprintf("bead %q has conflicting map_type directives for kind %q", record.ID, typ))
-		}
-		if manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && len(matches) == 1 {
-			typ = "task"
-			nativeGate = true
 		}
 	}
 	title := text(body["title"])
@@ -686,8 +684,8 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 			}
 		}
 	}
-	nativeStatusMapped := false
 	nativeStatusOriginal, nativeCategoryOriginal := status, customStatusCategory
+	nativeStatusMapped := false
 	nativeMetadata, _ := dumpformat.SourceMetadataObject(body["metadata"])
 	_, nativeStatusPreserved := nativeMetadata["_plug_native_status"]
 	if !nativeStatusPreserved && manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && customStatusCategory != "" {
@@ -749,26 +747,28 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 		}
 	}
 	metadata = cloneMap(metadata)
-	if metadata == nil {
-		metadata = map[string]any{}
-	}
-	if nativeGate {
-		if existing, exists := metadata["_plug_native_type"]; exists && !jsonEquivalent(existing, nativeType) {
-			reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native type", record.ID))
-		} else {
-			metadata["_plug_native_type"] = nativeType
+	if emitProvenance {
+		if metadata == nil {
+			metadata = map[string]any{}
 		}
-	}
-	if nativeStatusMapped && (nativeStatusOriginal != "" && !nativeStatusCompatible(nativeCategoryOriginal, nativeStatusOriginal)) {
-		if existing, exists := metadata["_plug_native_status"]; exists && !jsonEquivalent(existing, nativeStatusOriginal) {
-			reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native status", record.ID))
-		} else {
-			metadata["_plug_native_status"] = nativeStatusOriginal
+		if nativeGate {
+			if existing, exists := metadata["_plug_native_type"]; exists && !jsonEquivalent(existing, typ) {
+				reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native type", record.ID))
+			} else {
+				metadata["_plug_native_type"] = typ
+			}
 		}
-		if existing, exists := metadata["_plug_native_status_category"]; exists && !jsonEquivalent(existing, nativeCategoryOriginal) {
-			reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native status category", record.ID))
-		} else {
-			metadata["_plug_native_status_category"] = nativeCategoryOriginal
+		if nativeStatusMapped && nativeStatusOriginal != "" && !nativeStatusCompatible(nativeCategoryOriginal, nativeStatusOriginal) {
+			if existing, exists := metadata["_plug_native_status"]; exists && !jsonEquivalent(existing, nativeStatusOriginal) {
+				reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native status", record.ID))
+			} else {
+				metadata["_plug_native_status"] = nativeStatusOriginal
+			}
+			if existing, exists := metadata["_plug_native_status_category"]; exists && !jsonEquivalent(existing, nativeCategoryOriginal) {
+				reasons = append(reasons, fmt.Sprintf("bead %q metadata conflicts with native status category", record.ID))
+			} else {
+				metadata["_plug_native_status_category"] = nativeCategoryOriginal
+			}
 		}
 	}
 	for _, field := range dumpformat.OpaqueIssueFields() {
@@ -782,38 +782,33 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 				continue
 			}
 		}
-		key := "beads." + field
-		if existing, exists := metadata[key]; exists {
-			if !jsonEquivalent(existing, value) {
-				reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, field, key))
+		if emitProvenance {
+			key := "beads." + field
+			if existing, exists := metadata[key]; exists {
+				if !jsonEquivalent(existing, value) {
+					reasons = append(reasons, fmt.Sprintf("bead %q source field %q conflicts with metadata %q", record.ID, field, key))
+				}
+				continue
 			}
-			continue
+			metadata[key] = cloneValue(value)
 		}
-		// Keep this value opaque. The Beads importer owns its meaning; Plug
-		// carries the exact JSON value without workflow mapping.
-		metadata[key] = cloneValue(value)
 	}
-	if len(archivedSource) > 0 {
+	if emitProvenance && len(archivedSource) > 0 {
 		if _, exists := metadata["_plug_source_fields"]; exists {
 			reasons = append(reasons, fmt.Sprintf("bead %q metadata reserves _plug_source_fields", record.ID))
+		} else if encoded, err := canonicalJSON(archivedSource); err != nil {
+			reasons = append(reasons, fmt.Sprintf("bead %q source archive: %v", record.ID, err))
 		} else {
-			// Beads normalizes metadata through float64. Preserve lossless
-			// source numbers inside a canonical JSON string across readback.
-			encoded, err := canonicalJSON(archivedSource)
-			if err != nil {
-				reasons = append(reasons, fmt.Sprintf("bead %q source archive: %v", record.ID, err))
-			} else {
-				metadata["_plug_source_fields"] = encoded
-			}
+			metadata["_plug_source_fields"] = encoded
 		}
 	}
-	if !statusFieldPresent {
+	if emitProvenance && !statusFieldPresent {
 		if _, exists := metadata["_plug_status_category"]; exists {
 			reasons = append(reasons, fmt.Sprintf("bead %q reserves _plug_status_category", record.ID))
 		}
 		metadata["_plug_status_category"] = category
 	}
-	if outcome != "" {
+	if emitProvenance && outcome != "" {
 		if _, exists := metadata["_plug_status_outcome"]; exists {
 			reasons = append(reasons, fmt.Sprintf("bead %q reserves _plug_status_outcome", record.ID))
 		}
@@ -861,7 +856,7 @@ const (
 	BeadsJSONLIssueType = "issue"
 )
 
-func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int, report *Report) []string {
+func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int, report *Report, emitProvenance bool) []string {
 	body := record.Body
 	var reasons []string
 	extensions, extensionErr := dumpformat.NativeEdgeExtensions(dumpformat.Record{Kind: record.Kind, ID: record.ID, Body: record.Body, Source: dumpformat.Provenance{Table: record.Source.Table, Fields: record.Source.Fields}, NativeEdgeTokens: record.NativeEdgeTokens})
@@ -1004,43 +999,65 @@ func convertEdge(record Record, issues map[string]*workingIssue, edgeVersion int
 	if len(reasons) > 0 {
 		return reasons
 	}
-	// The pinned importer does not persist Dependency.ID; it derives a
-	// surrogate from the endpoints. Keep the Plug edge identity in a reserved
-	// metadata envelope so a Beads export/readback can recover it without
-	// changing the graph endpoints. The source metadata, when present, is
-	// carried verbatim as the envelope's _plug_metadata member.
-	envelope := map[string]any{"_plug_edge_id": record.ID}
-	if value := body["metadata"]; value != nil {
-		envelope["_plug_metadata"] = value
-	}
 	var metadata string
+	metadataNull := false
 	var err error
-	if metadataProjection.Envelope {
-		// A v2 source may already carry the exact flat identity envelope.
-		// Keep SQL text byte-for-byte; wrapping again would invent a nested
-		// reserved envelope and change the native source representation.
-		if raw, ok := body["metadata"].(string); ok {
-			metadata = raw
-		} else {
-			metadata, err = canonicalJSON(body["metadata"])
+	if emitProvenance {
+		envelope := map[string]any{"_plug_edge_id": record.ID}
+		if value := body["metadata"]; value != nil {
+			envelope["_plug_metadata"] = value
 		}
-	} else {
-		if token, present := extensions["beads.metadata"]; present && body["metadata"] != nil {
+		if metadataProjection.Envelope {
+			if raw, ok := body["metadata"].(string); ok {
+				metadata = raw
+			} else {
+				metadata, err = canonicalJSON(body["metadata"])
+			}
+		} else if token, present := extensions["beads.metadata"]; present && body["metadata"] != nil {
 			id, _ := json.Marshal(record.ID)
 			metadata = "{\"_plug_edge_id\":" + string(id) + ",\"_plug_metadata\":" + token + "}"
 		} else {
 			metadata, err = canonicalJSON(envelope)
 		}
+	} else {
+		// A source envelope is Plug's internal edge identity channel. Emit only
+		// its payload so the Beads metadata cell remains the original value.
+		value := body["metadata"]
+		metadataPresent := false
+		if _, present := body["metadata"]; present {
+			metadataPresent = true
+		}
+		if metadataProjection.Envelope {
+			value = metadataProjection.Value
+			metadataPresent = metadataProjection.Present
+		}
+		if metadataPresent {
+			metadata, metadataNull, err = edgeMetadataValue(value)
+		}
 	}
 	if err != nil {
 		return []string{fmt.Sprintf("edge %q metadata: %v", record.ID, err)}
 	}
-	dependency := dependencyLine{NativeExtensions: extensions, ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
+	dependency := dependencyLine{NativeExtensions: extensions, ID: record.ID, IssueID: from, DependsOnID: to, Type: edgeType, Metadata: metadata, MetadataNull: metadataNull, ThreadID: text(body["thread_id"]), CreatedAt: timestamp(record.Source.Fields["created_at"]), CreatedBy: text(record.Source.Fields["created_by"])}
 	if targetKind == "depends_on_external" {
 		dependency.DependsOnID, dependency.DependsOnExternal = "", to
 	}
 	issues[from].Line.Dependencies = append(issues[from].Line.Dependencies, dependency)
 	return nil
+}
+
+// edgeMetadataValue preserves the source JSON-text representation when the
+// source carries SQL text. Structured values become the Beads dependency
+// metadata text without adding a Plug identity envelope.
+func edgeMetadataValue(value any) (string, bool, error) {
+	if value == nil {
+		return "", true, nil
+	}
+	if text, ok := value.(string); ok {
+		return text, false, nil
+	}
+	encoded, err := canonicalJSON(value)
+	return encoded, false, err
 }
 
 func convertComment(record Record, issues map[string]*workingIssue, report *Report) []string {

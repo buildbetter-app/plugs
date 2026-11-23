@@ -14,6 +14,10 @@ import (
 type Options struct {
 	All        bool
 	Directives []ontologymigration.Directive
+	// BeadsDestination emits only source user metadata. The default keeps the
+	// legacy Plug provenance channel for callers that feed the JSONL back into
+	// Plug-native admission.
+	BeadsDestination bool
 	// NativeImport selects the bounded physical importer, which cannot carry
 	// every SQL source cell. Opaque JSONL serialization alone retains those
 	// cells in metadata and does not claim physical restoration.

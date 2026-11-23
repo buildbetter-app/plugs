@@ -194,7 +194,7 @@ func run(args []string) outcome {
 	result.RestoredHead, result.HistoryFloor = report.Restored.Head.String(), report.Restored.HistoryFloor.String()
 	result.RestoredIncarnation = string(report.Restored.Incarnation)
 	result.Stage = "baseline_reverse"
-	reverseOptions := reverseconverter.Options{All: *all}
+	reverseOptions := reverseconverter.Options{All: *all, BeadsDestination: true}
 	baseline, err := converterroundtrip.ReverseRestoredWithOptions(ctx, store, reverseOptions)
 	if err != nil {
 		result.Reason = reverseReason(err)

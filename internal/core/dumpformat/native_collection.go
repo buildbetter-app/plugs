@@ -270,10 +270,10 @@ func nativeCollectionDirectiveUsed(source *Archive, directive OntologyDirective)
 		if record.Project != directive.Target.Project || directive.Target.ID != "" && record.ID != directive.Target.ID {
 			continue
 		}
-		typ, _ := record.Body["source_type"].(string)
-		if typ == "" {
-			typ, _ = record.Source.Fields["issue_type"].(string)
-		}
+		// The body source_type can be rewritten by the P32 alias/import
+		// projection. The authenticated physical issue_type is authoritative
+		// for deciding whether this directive belongs in the collection.
+		typ, _ := record.Source.Fields["issue_type"].(string)
 		if typ == directive.Target.Type {
 			return true
 		}

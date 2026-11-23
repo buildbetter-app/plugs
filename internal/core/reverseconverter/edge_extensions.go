@@ -54,12 +54,15 @@ func marshalNativeDependency(dependency dependencyLine) ([]byte, error) {
 	}
 	for key, token := range dependency.NativeExtensions {
 		field := strings.TrimPrefix(key, "beads.")
-		// Metadata retains the existing edge identity envelope. Its _plug_metadata
-		// payload was built from this exact token, without canonicalizing it.
+		// Metadata is emitted from the source payload by convertEdge. Native
+		// extensions never add a Plug identity envelope to the Beads cell.
 		if field == "metadata" {
 			continue
 		}
 		fields[field] = json.RawMessage(token)
+	}
+	if dependency.MetadataNull {
+		fields["metadata"] = json.RawMessage("null")
 	}
 	return marshalTokenObject(fields)
 }
