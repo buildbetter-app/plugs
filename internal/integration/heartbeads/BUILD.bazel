@@ -3,8 +3,11 @@ load("@rules_go//go:def.bzl", "go_test")
 go_test(
     name = "heartbeads_test",
     srcs = ["fixture_test.go", "process_test.go"],
-    data = ["//cmd/plug:plug"] + glob(["testdata/**"]),
-    env = {"PLUG_BINARY": "$(rootpath //cmd/plug:plug)"},
+    data = ["//cmd/plug:plug", "@node_linux_amd64//:node_runtime", "@node_linux_amd64//:bin/node"] + glob(["testdata/**"]),
+    env = {
+        "PLUG_BINARY": "$(rootpath //cmd/plug:plug)",
+        "PLUG_HEARTBEADS_NODE": "$(rlocationpath @node_linux_amd64//:bin/node)",
+    },
     deps = [
         "//internal/api/wire", "//internal/core/model", "//internal/core/ontology",
         "//internal/core/pipeline", "//internal/core/restore", "//internal/core/service",

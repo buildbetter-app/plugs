@@ -5,7 +5,7 @@ go_test(
     size = "large",
     srcs = glob(["*_test.go"], exclude = ["presence_adapter_test.go"]),
     embedsrcs = ["browser_check.mjs", "e3_browser_check.mjs"],
-    env_inherit = ["PATH"],
+    env_inherit = ["PATH", "PLUG_P33_REAL_DOCKER"],
     args = ["-test.v"],
     tags = ["exclusive"],
     deps = [
