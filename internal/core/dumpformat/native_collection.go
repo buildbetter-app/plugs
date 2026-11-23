@@ -223,7 +223,11 @@ func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity Source
 		return c.archive.manifest.Kinds[i].Name < c.archive.manifest.Kinds[j].Name
 	})
 	c.archive.manifest.Projects = append(c.archive.manifest.Projects, manifest.Projects...)
-	c.archive.manifest.Ontology = append(c.archive.manifest.Ontology, manifest.Ontology...)
+	for _, directive := range manifest.Ontology {
+		if nativeCollectionDirectiveUsed(source, directive) {
+			c.archive.manifest.Ontology = append(c.archive.manifest.Ontology, directive)
+		}
+	}
 	for _, disposition := range manifest.Sources {
 		v := disposition
 		v.Identity = &identity
@@ -252,6 +256,29 @@ func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity Source
 		c.entries = append(c.entries, entry)
 	}
 	return nil
+}
+
+func nativeCollectionDirectiveUsed(source *Archive, directive OntologyDirective) bool {
+	// Native status catalogs project gate records to the built-in task shape
+	// before reverse conversion. Their map_type declaration is therefore not
+	// consumed by the strict reverse converter even when a gate row exists in
+	// the source image.
+	if directive.Target.Type == "gate" && source.manifest.SourcePlaneAddressContract == SourcePlaneAddressContract && source.manifest.StatusCategoryContract == StatusCategoryContract {
+		return false
+	}
+	for _, record := range source.Records("bead") {
+		if record.Project != directive.Target.Project || directive.Target.ID != "" && record.ID != directive.Target.ID {
+			continue
+		}
+		typ, _ := record.Body["source_type"].(string)
+		if typ == "" {
+			typ, _ = record.Source.Fields["issue_type"].(string)
+		}
+		if typ == directive.Target.Type {
+			return true
+		}
+	}
+	return false
 }
 
 // NativeCollectionFileName is an ordinal-qualified provenance path, never a

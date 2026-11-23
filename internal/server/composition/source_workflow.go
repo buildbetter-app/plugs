@@ -62,6 +62,19 @@ func (r *Runtime) recoverSourceWorkflow(ctx context.Context) error {
 	if err != nil || !found {
 		return err
 	}
+	if report.SourcePlanes != nil && len(report.SourcePlanes.Providers) == 1 {
+		capability, err := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease)
+		if err != nil {
+			return err
+		}
+		historical, err := pluginhost.SourceRuntimeCheckpointIsHistorical(ctx, r.Store, capability, report.SourcePlanes.Providers[0])
+		if err != nil {
+			return err
+		}
+		if historical {
+			return report.Close()
+		}
+	}
 	return r.installSourceWorkflow(ctx, profile, report)
 }
 
