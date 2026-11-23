@@ -22,7 +22,7 @@ type sourceWriteSlice struct {
 
 func (s *sourceWriteSlice) SourceBeadReference(ref model.Ref) bool {
 	_, found := s.projects[ref.ID]
-	return found && workflowItemRef(ref) && authz.CanonicalRef(ref) == nil
+	return found && authz.CanonicalRef(ref) == nil
 }
 
 func (s *sourceWriteSlice) ProjectForBead(ctx context.Context, ref model.Ref) (authz.ProjectBinding, error) {
@@ -95,6 +95,28 @@ func (s *GuardedService) sourceRead(ctx context.Context, caller authz.Caller, au
 	if !found || bound != project {
 		return false, nil
 	}
+	return s.sourceReadBound(ctx, caller, authority, ref, bound, method)
+}
+
+// sourceReadAddress authorizes a source-facing alias against its immutable
+// imported project before asking the provider to resolve an active target.
+// This keeps a retired or absent source target on the same non-disclosing
+// boundary as an unreadable target.
+func (s *GuardedService) sourceReadAddress(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref, project, method string) (bool, error) {
+	host, ok := s.delegate.(interface {
+		SourceAddressProject(string, model.Ref) (string, bool)
+	})
+	if !ok {
+		return false, nil
+	}
+	bound, found := host.SourceAddressProject(project, ref)
+	if !found || bound != project {
+		return false, nil
+	}
+	return s.sourceReadBound(ctx, caller, authority, ref, bound, method)
+}
+
+func (s *GuardedService) sourceReadBound(ctx context.Context, caller authz.Caller, authority *slice, ref model.Ref, bound, method string) (bool, error) {
 	registry, found := authority.projectByName(bound)
 	if !found {
 		return false, nil
