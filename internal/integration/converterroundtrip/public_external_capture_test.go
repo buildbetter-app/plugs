@@ -1,6 +1,7 @@
 package converterroundtrip
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -514,6 +515,25 @@ func publicProofWrite(t *testing.T, path string, raw []byte) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func publicProofArchiveWrite(t *testing.T, archive *tar.Writer, name string, raw []byte) {
+	t.Helper()
+	if err := archive.WriteHeader(&tar.Header{Name: name, Mode: 0444, Size: int64(len(raw))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archive.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func publicProofArchiveJSON(t *testing.T, archive *tar.Writer, name string, value any) {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicProofArchiveWrite(t, archive, name, append(raw, '\n'))
 }
 
 func publicProofJSON(t *testing.T, path string, value any) {
@@ -1427,10 +1447,23 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 		}
 		byState[n] = append(byState[n], entry)
 	}
-	dir := filepath.Join(output, phase)
-	if err := os.Mkdir(dir, 0700); err != nil {
+	archivePath := filepath.Join(output, phase+".tar")
+	archiveFile, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0444)
+	if err != nil {
 		t.Fatal(err)
 	}
+	archive := tar.NewWriter(archiveFile)
+	defer func() {
+		if err := archive.Close(); err != nil {
+			t.Error(err)
+		}
+		if err := archiveFile.Sync(); err != nil {
+			t.Error(err)
+		}
+		if err := archiveFile.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, seq := range snapshots {
 		publicProofGuard(t)
 		entries := byState[seq]
@@ -1515,9 +1548,9 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 				t.Fatal("independent exact old table bytes differ", entry.Kind, seq, entry.Family)
 			}
 			name := fmt.Sprintf("%s-%020d-%s", entry.Kind, entry.Sequence, entry.Family)
-			publicProofWrite(t, filepath.Join(dir, name+".table.json"), actual)
-			publicProofJSON(t, filepath.Join(dir, name+".records.json"), records)
-			publicProofJSON(t, filepath.Join(dir, name+".proof.json"), map[string]any{"kind": entry.Kind, "sequence": entry.Sequence, "commit_id": entry.CommitID, "family": entry.Family, "history": entry.History, "source_rows": entry.SourceRows, "actual_rows": meta.RowCount, "actual_meta": 1, "expected_bytes": entry.Bytes, "expected_sha256": entry.SHA256, "actual_sha256": hashBytes(actual), "bytes_equal": true, "meta": meta})
+			publicProofArchiveWrite(t, archive, name+".table.json", actual)
+			publicProofArchiveJSON(t, archive, name+".records.json", records)
+			publicProofArchiveJSON(t, archive, name+".proof.json", map[string]any{"kind": entry.Kind, "sequence": entry.Sequence, "commit_id": entry.CommitID, "family": entry.Family, "history": entry.History, "source_rows": entry.SourceRows, "actual_rows": meta.RowCount, "actual_meta": 1, "expected_bytes": entry.Bytes, "expected_sha256": entry.SHA256, "actual_sha256": hashBytes(actual), "bytes_equal": true, "meta": meta})
 			if entry.Family == req.JournalTable {
 				t.Logf("public_native_journal phase=%s kind=%s sequence=%d source_rows=%d actual_rows=%d actual_meta=1 bytes=%d sha256=%s exact=true", phase, entry.Kind, entry.Sequence, entry.SourceRows, meta.RowCount, len(actual), hashBytes(actual))
 			}
@@ -1531,7 +1564,7 @@ func publicProofIndependentReadback(t *testing.T, ctx context.Context, store dri
 			receipt["restore_mode"] = mode
 			receipt["authenticated_baseline_without_mapping"] = seq != 0 && mode == driver.RestoreHistoryModePartial && first > 1 && seq == first-1
 		}
-		publicProofJSON(t, filepath.Join(dir, fmt.Sprintf("snapshot-%020d.json", seq)), receipt)
+		publicProofArchiveJSON(t, archive, fmt.Sprintf("snapshot-%020d.json", seq), receipt)
 	}
 }
 
