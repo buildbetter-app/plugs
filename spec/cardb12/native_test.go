@@ -44,11 +44,14 @@ var pinnedSource = publicnative.CanonicalSource{
 }
 
 const (
-	b12DummyKey     = "b12-loopback-dummy-key-not-a-secret"
-	b12LongMarker   = "LONG-SUMMARY-FIXTURE"
-	b12StubSummary  = "Stub summary: closed public fixture."
-	b12VectorsPath  = "testdata/b12-native-vectors.json"
-	b12NativeTarget = "//cmd/bd:bd"
+	b12DummyKey    = "b12-loopback-dummy-key-not-a-secret"
+	b12LongMarker  = "LONG-SUMMARY-FIXTURE"
+	b12StubSummary = "Stub summary: closed public fixture."
+	b12VectorsPath = "testdata/b12-native-vectors.json"
+	// The reviewed native protocol inputs name the production executable label
+	// and the non-interactive environment; B13 binds the same file and digest.
+	b12NativeInputs       = "spec/s1-b09-native/native_inputs.json"
+	b12NativeInputsSHA256 = "a7ddd9047eb94e54cdaa138b1adf756c5088a50bc01605ee2c6eafbfb9d0d9c2"
 	// The switch trial's pinned binary (also bound by converterroundtrip B27).
 	b12TrialBinary    = "/tmp/plug-swarm/work/restore-roundtrip-r2-20261031/" + "b" + "d"
 	b12TrialBinarySHA = "9370e9a9234aed2697403a59a7d0c65b6d261c99720d386f5ad446535fc0bdd5"
@@ -56,6 +59,9 @@ const (
 
 // b12LongStubSummary is longer than every fixture's text, so native's real
 // summary-not-smaller check refuses on the --auto path.
+// b12NonInteractive is read from the reviewed native protocol inputs.
+var b12NonInteractive string
+
 var b12LongStubSummary = strings.Repeat("Deliberately longer stub summary. ", 80)
 
 // Fixture text is public and fixed. Sizes are chosen so the supplied tier-one
@@ -568,7 +574,19 @@ func TestB12NativeCompactionVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkout := os.Getenv("PLUG_SOURCE_MODULE_ROOT")
-	builder := publicnative.SourceBuilder{T: t, Root: root, SourceDirectory: filepath.Join(checkout, "spec/s1-b09-native/testdata"), Target: b12NativeTarget}
+	protocol, err := os.ReadFile(filepath.Join(checkout, b12NativeInputs))
+	if err != nil || b12Hash(protocol) != b12NativeInputsSHA256 {
+		t.Fatal("reviewed native protocol inputs differ", err)
+	}
+	var inputs struct {
+		ExporterLabel  string `json:"exporter_label"`
+		NonInteractive string `json:"noninteractive_environment"`
+	}
+	if err := b12Decode(protocol, &inputs); err != nil || inputs.ExporterLabel == "" || inputs.NonInteractive == "" {
+		t.Fatal("native protocol inputs incomplete", err)
+	}
+	b12NonInteractive = inputs.NonInteractive
+	builder := publicnative.SourceBuilder{T: t, Root: root, SourceDirectory: filepath.Join(checkout, "spec/s1-b09-native/testdata"), Target: inputs.ExporterLabel}
 	candidate := strings.TrimSpace(string(builder.Command(checkout, "b12-candidate-head", "/usr/bin/git", []string{"rev-parse", "HEAD"})))
 	b12JSON(t, filepath.Join(root, "b12-request-binding.json"), map[string]any{"candidate": candidate, "target": os.Getenv("TEST_TARGET"), "run": os.Getenv("GITHUB_RUN_ID"), "workflow_ref": os.Getenv("GITHUB_WORKFLOW_REF"), "native_source": pinnedSource, "committed_vectors_sha256": b12Hash(committedRaw), "ai_provider": "native AI provider stubbed via public ai.base_url; summary content not under test; Beads source unmodified"})
 	binary := builder.Build(pinnedSource)
@@ -637,9 +655,10 @@ func recordB12Native(t *testing.T, binary, dir, wantCommit string, check func(*t
 	stub, sink := startStub(t), startSink(t)
 	base := []string{"PATH=/tmp/plug-swarm/bin/worker-safe:/usr/bin:/bin", "HOME=" + home, "USER=b12-public", "TZ=UTC", "LC_ALL=C", "NO_COLOR=1", "CI=true", "DO_NOT_TRACK=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=B12 Public", "GIT_AUTHOR_EMAIL=b12@example.invalid", "GIT_COMMITTER_NAME=B12 Public", "GIT_COMMITTER_EMAIL=b12@example.invalid", "TMPDIR=" + tmp, "BEADS_ACTOR=b12-public-recorder", "BEADS_NO_DAEMON=1"}
 	proxy := "http://" + sink.addr
-	plain := append(server.ChildEnv(base), "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy, "BD_NON_INTERACTIVE=1")
-	// ai.base_url via its documented BD_AI_BASE_URL binding (config.go:900).
-	ai := append(append([]string(nil), plain...), "ANTHROPIC_API_KEY="+b12DummyKey, "BD_AI_BASE_URL=http://"+stub.addr)
+	plain := append(server.ChildEnv(base), "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy, b12NonInteractive)
+	// The stub address is the public ai.base_url key in project config.yaml
+	// (written after init); only the dummy key differs between environments.
+	ai := append(append([]string(nil), plain...), "ANTHROPIC_API_KEY="+b12DummyKey)
 	n := &b12Native{t: t, root: dir, dir: project, binary: binary, plainEnv: plain, aiEnv: ai, stub: stub, sink: sink, summaryFiles: map[string]string{}, tableName: regexp.MustCompile(`^[A-Za-z0-9_]+$`)}
 	server.RegisterBeadsCleanup(t, binary, project, plain)
 	var version struct{ Commit, Build string }
@@ -651,6 +670,24 @@ func recordB12Native(t *testing.T, binary, dir, wantCommit string, check func(*t
 	}
 	n.must("init", "init", "--server", "--external", "--server-host", "127.0.0.1", "--server-port", strconv.Itoa(server.Port), "--database", "b12_native", "--prefix", "b12", "--skip-hooks", "--skip-agents", "--non-interactive", "--quiet")
 	server.RequireDatabaseDir(t, "b12_native")
+	configPath := filepath.Join(project, ".beads", "config.yaml")
+	config, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if regexp.MustCompile(`(?m)^ai:`).Match(config) {
+		t.Fatal("native init already wrote an ai section; refusing to merge config")
+	}
+	if len(config) != 0 && config[len(config)-1] != '\n' {
+		config = append(config, '\n')
+	}
+	config = append(config, []byte("ai:\n  base_url: http://"+stub.addr+"\n")...)
+	if err := os.WriteFile(configPath, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "project-config.yaml"), config, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	recent := b12Fixture("b12-recent", "Recently closed public record")
 	recentClosed := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)

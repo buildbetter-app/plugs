@@ -31,9 +31,10 @@ Native AI provider stubbed via public ai.base_url; summary content not under
 test; Beads source unmodified (pinned 9d6fff76 source build; the built binary's
 SHA-256 is logged as `B12_NATIVE_BINARY` and kept in the build receipt).
 
-- `bd admin compact --auto` runs its real client. `ai.base_url` is set through
-  its documented `BD_AI_BASE_URL` binding to a stub on `127.0.0.1:<ephemeral>`,
-  with a dummy `ANTHROPIC_API_KEY`. The stub returns a fixed short summary, or a
+- `bd admin compact --auto` runs its real client. The public `ai.base_url` key
+  in the workspace's `.beads/config.yaml` (appended after `init`, bytes kept as
+  `project-config.yaml`) names a stub on `127.0.0.1:<ephemeral>`; AI vectors add
+  a dummy `ANTHROPIC_API_KEY`. The stub returns a fixed short summary, or a
   fixed longer one when the prompt carries the `LONG-SUMMARY-FIXTURE` title, so
   native's own summary-not-smaller check runs for real.
 - Each stub request's shape (method, path, model, max_tokens, roles, prompt
