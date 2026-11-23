@@ -269,7 +269,8 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 }
 
 // Resource admission and cancellation are not evidence of corrupt source data.
-// Known durable publication sanitizes failures separately at its outer boundary.
+// Recovery and live reverse also return this mapping directly to callers.
+// Keep semantic inspection diagnostics out of the returned refusal.
 func sourceInspectionFailure(cause, malformed error) error {
 	var limit *dumpformat.NativeDeltaDecodedLimitError
 	var commitConflict driver.ErrRestoreCommitConflict
@@ -277,5 +278,5 @@ func sourceInspectionFailure(cause, malformed error) error {
 	if errors.As(cause, &limit) || errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
-	return fmt.Errorf("%w: %v", malformed, cause)
+	return malformed
 }
