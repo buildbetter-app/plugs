@@ -211,10 +211,14 @@ func isDenied(err error) bool {
 }
 
 func (s *Service) authorize(ctx context.Context, by model.PrincipalRef, row stored) (bool, error) {
+	return s.authorizeRef(ctx, by, row.record.Ref, row.doc.Project)
+}
+
+func (s *Service) authorizeRef(ctx context.Context, by model.PrincipalRef, ref model.Ref, project string) (bool, error) {
 	if s.cfg.AuthorizeRead == nil {
 		return true, nil
 	}
-	err := s.cfg.AuthorizeRead(ctx, by, model.ResourceRef{Kind: "bead", Ref: row.record.Ref}, row.doc.Project)
+	err := s.cfg.AuthorizeRead(ctx, by, model.ResourceRef{Kind: "bead", Ref: ref}, project)
 	if err == nil {
 		return true, nil
 	}

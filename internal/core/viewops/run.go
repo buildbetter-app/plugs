@@ -795,10 +795,16 @@ func (s *Service) Explain(ctx context.Context, by model.PrincipalRef, req Explai
 		return ExplainResult{}, mapped(err)
 	}
 	if len(rows) != 1 || rows[0].Kind != "bead" {
+		if _, err := s.authorizeRef(ctx, by, ref, project); err != nil {
+			return ExplainResult{}, err
+		}
 		return ExplainResult{}, failure("not_found", "bead is not readable")
 	}
 	doc, err := decodeDocument(rows[0].Body)
 	if err != nil || doc.ID != req.ItemID {
+		if _, authErr := s.authorizeRef(ctx, by, ref, project); authErr != nil {
+			return ExplainResult{}, authErr
+		}
 		return ExplainResult{}, failure("not_found", "bead is not readable")
 	}
 	row := stored{record: rows[0], doc: doc}
