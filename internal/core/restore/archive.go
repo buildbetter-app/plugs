@@ -1215,6 +1215,10 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		records, err = restoreStreamRecords(ctx, streamed)
 	}
 	if err != nil {
+		var limit *driver.ReverseJSONLimitError
+		if streamed != nil && errors.As(err, &limit) {
+			return model.Changeset{}, err
+		}
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
 	if projection := archive.Manifest().NativeReverseProjection; projection != nil {

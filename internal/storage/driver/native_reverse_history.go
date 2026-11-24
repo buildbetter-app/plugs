@@ -43,9 +43,14 @@ func ReadNativeHistoryMarkerFields(raw []byte) (map[string]json.RawMessage, erro
 // CheckReverseRecordJSON bounds JSON expansion before decoding. A transcript
 // marker streams its two ordered ledgers one field at a time, so the bound
 // applies to each ledger entry instead of the aggregate number of entries.
-func CheckReverseRecordJSON(ref Ref, kind string, raw []byte, reserve int) error {
+func CheckReverseRecordJSON(ref Ref, kind string, raw []byte, enclosingDepth int) error {
 	if !IsNativeHeadHistoryMarker(ref, kind) {
-		_, err := ReverseJSONStructure(raw, reserve)
+		_, err := ReverseJSONFootprint(raw, enclosingDepth)
+		return err
+	}
+	// The complete marker remains bounded in wire size and depth. Its
+	// ordered ledgers are never decoded as one graph.
+	if _, err := scanReverseJSON(raw, enclosingDepth); err != nil {
 		return err
 	}
 	fields, err := ReadNativeHistoryMarkerFields(raw)

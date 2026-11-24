@@ -1,6 +1,7 @@
 package restore_test
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -10,7 +11,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/cli"
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -215,4 +219,91 @@ func TestReverseHeadStreamOverLegacyCap(t *testing.T) {
 		t.Fatalf("typed export limit differs: error=%v reads=%d output=%d", err, input.peak, output.Len())
 	}
 	t.Logf("export refusal code=%s archive bytes=%d limit bytes=%d", overflow.Code(), overflow.ArchiveBytes, overflow.LimitBytes)
+}
+
+func TestStreamedNativeRestorePreservesJSONLimit(t *testing.T) {
+	_, image := nativeProfileArchive(t)
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Close()
+	lease, err := store.Lease(ctx, "typed-json-limit", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	manager := restore.NewManager(store, lease, trustedPresenceVerifier())
+	for _, resource := range []string{"nesting_depth", "value_bytes"} {
+		t.Run(resource, func(t *testing.T) {
+			const prefix = `{"ref":{"id":"public"},"kind":"bead","revision":1,"body":`
+			limit := driver.NativeHeadJSONDepth
+			body := strings.Repeat("[", limit) + "0" + strings.Repeat("]", limit)
+			if resource == "value_bytes" {
+				limit = driver.NativeHeadRecordBytes
+				body = `"` + strings.Repeat("x", limit-len(prefix)-2) + `"`
+			}
+			line := []byte(prefix + body + "}\n")
+			data, manifestDigest := rewriteStreamedTestRecord(t, image, line)
+			_, err := manager.RestoreReverseHead(ctx, bytes.NewReader(data), int64(len(data)), manifestDigest, sha(data),
+				model.PrincipalRef{Kind: "user", ID: "restore-owner"}, model.WriteMeta{}, restore.Presence(presence))
+			var refusal *driver.ReverseJSONLimitError
+			if !errors.As(err, &refusal) || refusal.Code() != "reverse_json_limit" ||
+				refusal.Resource != resource || refusal.Measured != uint64(limit+1) ||
+				refusal.Limit != uint64(limit) || errors.Is(err, driver.ErrConflict) {
+				t.Fatalf("streamed restore changed typed limit: %v", err)
+			}
+			t.Logf("restore refusal %v", refusal)
+			assertEmptyRestoreTarget(t, ctx, store)
+		})
+	}
+}
+
+func rewriteStreamedTestRecord(t *testing.T, image *dumpformat.Archive, record []byte) ([]byte, string) {
+	t.Helper()
+	manifest := image.Manifest()
+	manifest.VersionCount, manifest.ChangesetCount = 0, 0
+	const recordPath = "records/native.ndjson"
+	paths := make([]string, 0, len(manifest.Files))
+	for path := range manifest.Files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	members := make(map[string][]byte, len(paths))
+	imageHash := sha256.New()
+	for _, path := range paths {
+		raw, ok := image.NativeMember(path)
+		if !ok {
+			t.Fatalf("fixture lacks %s", path)
+		}
+		switch path {
+		case recordPath:
+			raw = record
+		case "versions.ndjson", "changesets.ndjson":
+			raw = nil
+		}
+		members[path] = raw
+		manifest.Files[path] = dumpformat.File{Size: int64(len(raw)), SHA256: sha(raw)}
+		_, _ = io.WriteString(imageHash, path)
+		_, _ = imageHash.Write(raw)
+	}
+	manifest.NativeDigest = hex.EncodeToString(imageHash.Sum(nil))
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	members["manifest.json"] = manifestRaw
+	var out bytes.Buffer
+	tarWriter := tar.NewWriter(&out)
+	for _, path := range append([]string{"manifest.json"}, paths...) {
+		raw := members[path]
+		if err := tarWriter.WriteHeader(&tar.Header{Name: path, Mode: 0600, Size: int64(len(raw)), ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes(), sha(manifestRaw)
 }

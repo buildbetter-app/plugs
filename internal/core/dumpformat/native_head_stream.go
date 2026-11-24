@@ -212,6 +212,9 @@ func DecodeReverseOriginFields(raw []byte) (int, error) {
 
 // ValidateNativeHeadRecord validates one streamed native NDJSON record.
 func ValidateNativeHeadRecord(raw []byte) error {
+	if err := driver.CheckReverseJSONWire(raw); err != nil {
+		return err
+	}
 	var record struct {
 		Ref      model.Ref       `json:"ref"`
 		Kind     string          `json:"kind"`
@@ -224,7 +227,7 @@ func ValidateNativeHeadRecord(raw []byte) error {
 		record.Ref.Validate() != nil || len(record.Body) == 0 {
 		return fmt.Errorf("invalid streamed native record envelope")
 	}
-	if err := driver.CheckReverseRecordJSON(record.Ref, record.Kind, record.Body, 64); err != nil {
+	if err := driver.CheckReverseRecordJSON(record.Ref, record.Kind, record.Body, 1); err != nil {
 		return err
 	}
 	_, err := strictReverseFieldCount(raw, true)

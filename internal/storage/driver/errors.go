@@ -15,6 +15,20 @@ var (
 	ErrUnsupported        = errors.New("driver capability unsupported")
 )
 
+// ReverseJSONLimitError reports which offline JSON resource exhausted its
+// budget before decoding. Decoded bytes are an estimated allocation charge.
+type ReverseJSONLimitError struct {
+	Resource string `json:"resource"`
+	Measured uint64 `json:"measured"`
+	Limit    uint64 `json:"limit"`
+}
+
+func (e *ReverseJSONLimitError) Code() string { return "reverse_json_limit" }
+
+func (e *ReverseJSONLimitError) Error() string {
+	return fmt.Sprintf("%s: %s measured %d, limit %d", e.Code(), e.Resource, e.Measured, e.Limit)
+}
+
 // ErrRestoreBindingMismatch identifies an import receipt/profile field that
 // disagrees with the durable publication. It remains a driver conflict for
 // callers that only understand ErrConflict, while restore boundaries can

@@ -764,21 +764,48 @@ const NativeHeadMaterialBytes = 64 << 20
 // SQLite stores the body as base64. Include its expansion and the identity.
 const NativeHeadStorageRowBytes = NativeHeadRecordBytes*4/3 + (1 << 20)
 
-// CheckReverseJSONShape bounds the structural expansion of one reverse
-// record before any generic JSON decoder runs. It counts container and
-// separator tokens outside strings. Syntax and Unicode are checked separately.
+// NativeHeadJSONDepth matches the strict native JSON parser's nesting bound.
+const NativeHeadJSONDepth = 128
+
+// CheckReverseJSONShape admits one value before a generic JSON decoder runs.
 func CheckReverseJSONShape(raw []byte) error {
-	_, err := ReverseJSONStructure(raw, 0)
+	_, err := ReverseJSONFootprint(raw, 0)
 	return err
 }
 
-// ReverseJSONStructure also returns the observed expanded shape for callers
-// that retain many decoded values at once. reserve covers an enclosing wire
-// object when only the body is present at the time of admission.
-func ReverseJSONStructure(raw []byte, reserve int) (int, error) {
-	const maxStructure = 64 << 10
+// CheckReverseJSONWire admits a complete encoded value before decoding
+// smaller pieces. It does not account an entire decoded graph.
+func CheckReverseJSONWire(raw []byte) error {
+	_, err := scanReverseJSON(raw, 0)
+	return err
+}
+
+// ReverseJSONFootprint checks wire bytes and nesting, and estimates the
+// decoded space for callers that retain a complete value. The token scan
+// keeps no token strings or container entries. Syntax, Unicode and duplicate
+// keys are checked by the caller's strict decoder.
+func ReverseJSONFootprint(raw []byte, enclosingDepth int) (uint64, error) {
+	footprint, err := scanReverseJSON(raw, enclosingDepth)
+	if err != nil {
+		return 0, err
+	}
+	if footprint > NativeHeadMaterialBytes {
+		return 0, &ReverseJSONLimitError{Resource: "decoded_bytes", Measured: footprint, Limit: NativeHeadMaterialBytes}
+	}
+	return footprint, nil
+}
+
+func scanReverseJSON(raw []byte, depth int) (uint64, error) {
+	if len(raw) > NativeHeadRecordBytes {
+		return 0, &ReverseJSONLimitError{Resource: "value_bytes", Measured: uint64(len(raw)), Limit: NativeHeadRecordBytes}
+	}
+	// Reserve space for a decoded string copy and the decoder's input. A
+	// container and each array item or object entry reserve room for Go
+	// values and slice or map growth, even when their JSON spelling is short.
+	const entryBytes = 96
+	footprint := uint64(len(raw)) * 2
+	peak := depth
 	var quoted, escape bool
-	structure := reserve
 	for _, char := range raw {
 		if quoted {
 			if escape {
@@ -793,14 +820,20 @@ func ReverseJSONStructure(raw []byte, reserve int) (int, error) {
 		switch char {
 		case '"':
 			quoted = true
-		case '{', '[', ',', ':':
-			structure++
-			if structure > maxStructure {
-				return structure, fmt.Errorf("reverse JSON structure exceeds buffer bound")
-			}
+		case '{', '[':
+			depth++
+			peak = max(peak, depth)
+			footprint += entryBytes
+		case '}', ']':
+			depth--
+		case ',', ':':
+			footprint += entryBytes
 		}
 	}
-	return structure, nil
+	if peak > NativeHeadJSONDepth {
+		return 0, &ReverseJSONLimitError{Resource: "nesting_depth", Measured: uint64(peak), Limit: NativeHeadJSONDepth}
+	}
+	return footprint, nil
 }
 
 // NativeReverseReceiptReader reads the authoritative final receipt for offline

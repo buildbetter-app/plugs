@@ -27,11 +27,17 @@ func nativeDeltaRecoveryError(cause error) error {
 	if errors.As(cause, &bindingMismatch) {
 		return cause
 	}
-	var limit *dumpformat.NativeDeltaDecodedLimitError
-	if errors.As(cause, &limit) {
-		return errors.Join(driver.ErrRestoreBindingMismatch{Field: "nativeDelta"}, cause)
+	if isNativeDeltaResourceLimit(cause) {
+		return cause
 	}
 	return errors.Join(driver.ErrRestoreBindingMismatch{Field: "nativeDelta"}, cause)
+}
+
+func isNativeDeltaResourceLimit(err error) bool {
+	var jsonLimit *driver.ReverseJSONLimitError
+	var decodedLimit *dumpformat.NativeDeltaDecodedLimitError
+	var recordLimit *dumpformat.NativeDeltaRecordLimitError
+	return errors.As(err, &jsonLimit) || errors.As(err, &decodedLimit) || errors.As(err, &recordLimit)
 }
 
 // BindNativeCaptureSetImport consumes an already completely verified set. The
