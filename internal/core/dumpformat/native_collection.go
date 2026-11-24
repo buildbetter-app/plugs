@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -35,9 +37,18 @@ type nativeCaptureCollection struct {
 	binding    NativeJoinedBinding
 	metadata   []NativeHistoryMetadata
 	files      map[string]File
+	config     *os.File
+	configPath string
+	elements   []nativeConfigElement
 	added      int
 	ready      bool
 	commitment []byte
+}
+
+type nativeConfigElement struct {
+	entry  externalEntry
+	offset int64
+	size   int64
 }
 
 // NativeCaptureCollection keeps only the joint CURRENT portable image and
@@ -108,7 +119,17 @@ func NewNativeCaptureCollection(ctx context.Context, binding NativeJoinedBinding
 	if err = decodeJSON(raw, &detached); err != nil {
 		return nil, err
 	}
-	state := &nativeCaptureCollection{binding: detached, files: map[string]File{}, commitment: raw}
+	config, err := os.CreateTemp("", "plug-native-config-*")
+	if err != nil {
+		return nil, err
+	}
+	state := &nativeCaptureCollection{binding: detached, files: map[string]File{}, commitment: raw, config: config, configPath: config.Name()}
+	defer func() {
+		if !ok {
+			_ = config.Close()
+			_ = os.Remove(config.Name())
+		}
+	}()
 	a := &Archive{sha256: digest(raw), nativeBudget: owner, collection: state, byKind: map[string][]Record{}, members: map[string][]byte{}}
 	a.manifest.StoreID = "merge-" + a.sha256
 	ok = true
@@ -244,12 +265,27 @@ func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity Source
 			c.archive.byKind[kind] = append(c.archive.byKind[kind], namespaceRecord(row, identity))
 		}
 	}
-	if err := c.archive.ChargeNativeDeltaBytes("collection_config_decode", uint64(len(source.members["config/sources.json"]))*4); err != nil {
-		return err
-	}
+	state := c.archive.collection
 	if err := streamConfigEntries(source.members["config/sources.json"], func(entry externalEntry, _ []byte) error {
 		entry.Identity = &identity
-		c.entries = append(c.entries, entry)
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if err := c.archive.ChargeNativeDeltaBytes("collection_config_element", uint64(len(encoded))); err != nil {
+			return err
+		}
+		if err := c.archive.ChargeNativeDeltaJSON("collection_sidecar_element", entry); err != nil {
+			return err
+		}
+		offset, err := state.config.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if _, err := state.config.Write(encoded); err != nil {
+			return err
+		}
+		state.elements = append(state.elements, nativeConfigElement{entry: externalEntry{Identity: entry.Identity, Input: entry.Input}, offset: offset, size: int64(len(encoded))})
 		return nil
 	}); err != nil {
 		return err
@@ -326,17 +362,26 @@ func (c *NativeCaptureCollection) Finish() (*Archive, error) {
 		a.members[kind.File] = data.Bytes()
 		a.manifest.Files[kind.File] = File{SHA256: digest(data.Bytes()), Size: int64(data.Len())}
 	}
-	sort.Slice(c.entries, func(i, j int) bool { return compareExternalEntries(c.entries[i], c.entries[j]) < 0 })
-	if err := a.ChargeNativeDeltaJSON("collection_sidecars", c.entries); err != nil {
-		return nil, err
+	state := a.collection
+	sort.Slice(state.elements, func(i, j int) bool {
+		return compareExternalEntries(state.elements[i].entry, state.elements[j].entry) < 0
+	})
+	var config bytes.Buffer
+	config.WriteByte('[')
+	for i, element := range state.elements {
+		if i != 0 {
+			config.WriteByte(',')
+		}
+		raw := make([]byte, element.size)
+		if _, err := state.config.ReadAt(raw, element.offset); err != nil {
+			return nil, err
+		}
+		config.Write(raw)
 	}
-	config, err := json.Marshal(c.entries)
-	if err != nil {
-		return nil, err
-	}
-	config = append(config, '\n')
-	a.members["config/sources.json"] = config
-	a.manifest.Files["config/sources.json"] = File{SHA256: digest(config), Size: int64(len(config))}
+	config.WriteString("]\n")
+	encodedConfig := config.Bytes()
+	a.members["config/sources.json"] = encodedConfig
+	a.manifest.Files["config/sources.json"] = File{SHA256: digest(encodedConfig), Size: int64(len(encodedConfig))}
 	if err := a.ChargeNativeDeltaJSON("collection_manifest_encoding", a.manifest); err != nil {
 		return nil, err
 	}
@@ -346,7 +391,11 @@ func (c *NativeCaptureCollection) Finish() (*Archive, error) {
 	}
 	a.members["manifest.json"] = raw
 	a.collection.ready = true
-	c.entries = nil
+	_ = state.config.Close()
+	_ = os.Remove(state.configPath)
+	state.config = nil
+	state.configPath = ""
+	state.elements = nil
 	return a, nil
 }
 
@@ -385,8 +434,11 @@ func (c *NativeCaptureCollection) Close() {
 	c.closed = true
 	a := c.archive
 	c.archive = nil
-	c.entries = nil
 	if a != nil {
+		if a.collection != nil && a.collection.config != nil {
+			_ = a.collection.config.Close()
+			_ = os.Remove(a.collection.configPath)
+		}
 		a.byKind = nil
 		a.members = nil
 		a.collection = nil
