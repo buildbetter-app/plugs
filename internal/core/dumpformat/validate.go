@@ -115,18 +115,51 @@ func readArchiveWithBudget(reader io.Reader, nativeDeltaAttachment bool, budget 
 // The v2 attachment already owns an admitted head buffer; parse it directly
 // rather than creating another complete io.ReadAll/tar copy.
 func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDeltaBudget) (*Archive, error) {
+	if err := validateTarEnd(bytes.NewReader(data), int64(len(data))); err != nil {
+		return nil, err
+	}
+	return readArchiveMembers(bytes.NewReader(data), data, digest(data), nativeDeltaAttachment, budget, nil)
+}
+
+func validateTarEnd(raw io.ReaderAt, size int64) error {
+	var end, zero [1024]byte
+	if size < int64(len(end)) || size%512 != 0 {
+		return fmt.Errorf("invalid tar length or end blocks")
+	}
+	if _, err := raw.ReadAt(end[:], size-int64(len(end))); err != nil || end != zero {
+		return fmt.Errorf("invalid tar length or end blocks")
+	}
+	return nil
+}
+
+type tarPadding struct{}
+
+func (tarPadding) Write(raw []byte) (int, error) {
+	for _, value := range raw {
+		if value != 0 {
+			return 0, fmt.Errorf("unaccounted trailing archive data")
+		}
+	}
+	return len(raw), nil
+}
+
+func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAttachment bool, budget, bufferBound *NativeDeltaBudget) (*Archive, error) {
 	var decodeWork *NativeDeltaBudget
 	if budget != nil {
 		decodeWork = budget.Scope()
 		defer decodeWork.Release()
 	}
-	if len(data) < 1024 || len(data)%512 != 0 || !bytes.Equal(data[len(data)-1024:], make([]byte, 1024)) {
-		return nil, fmt.Errorf("invalid tar length or end blocks")
+	charge := func(owner *NativeDeltaBudget, phase string, size uint64) error {
+		if bufferBound != nil {
+			if err := bufferBound.ChargeBytes(phase, size); err != nil {
+				return err
+			}
+		}
+		return owner.ChargeBytes(phase, size)
 	}
 
 	members := map[string][]byte{}
 	paths := []string{}
-	input := bytes.NewReader(data)
 	tr := tar.NewReader(input)
 	for {
 		header, nextErr := tr.Next()
@@ -152,7 +185,7 @@ func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDelt
 		if budget == nil {
 			member, readErr = io.ReadAll(tr)
 		} else {
-			if err := budget.ChargeBytes("head_member_payloads", uint64(header.Size)); err != nil {
+			if err := charge(budget, "head_member_payloads", uint64(header.Size)); err != nil {
 				return nil, err
 			}
 			member = make([]byte, int(header.Size))
@@ -166,13 +199,24 @@ func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDelt
 			// admitted from its compact escaped source preimage before any
 			// legacy validator parses or transforms it.
 			var count uint64
-			lines := [][]byte{member}
-			if strings.HasSuffix(header.Name, ".ndjson") {
-				lines = bytes.Split(member, []byte{'\n'})
-			}
-			for _, line := range lines {
+			for rest := member; len(rest) != 0; {
+				line := rest
+				if strings.HasSuffix(header.Name, ".ndjson") {
+					line, rest, _ = bytes.Cut(rest, []byte{'\n'})
+				} else {
+					rest = nil
+				}
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
+				}
+				if bufferBound != nil {
+					structure, err := driver.ReverseJSONStructure(line, 0)
+					if err != nil {
+						return nil, err
+					}
+					if err := bufferBound.ChargeBytes("head_decoded_shapes", uint64(structure)*96); err != nil {
+						return nil, err
+					}
 				}
 				c := deltaSizeCounter{}
 				if err := c.raw(line); err != nil {
@@ -182,16 +226,16 @@ func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDelt
 					return nil, err
 				}
 			}
-			if err := budget.ChargeBytes("head_decoded_payloads", count); err != nil {
+			if err := charge(budget, "head_decoded_payloads", count); err != nil {
 				return nil, err
 			}
 			for _, phase := range []string{"head_validation_input", "head_shape_input", "head_typed_input"} {
-				if err := decodeWork.ChargeBytes(phase, uint64(len(member))); err != nil {
+				if err := charge(decodeWork, phase, uint64(len(member))); err != nil {
 					return nil, err
 				}
 			}
 			for _, phase := range []string{"head_validation_tokens", "head_shape_values"} {
-				if err := decodeWork.ChargeBytes(phase, count); err != nil {
+				if err := charge(decodeWork, phase, count); err != nil {
 					return nil, err
 				}
 			}
@@ -199,10 +243,8 @@ func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDelt
 		members[header.Name] = member
 		paths = append(paths, header.Name)
 	}
-	for _, value := range data[len(data)-input.Len():] {
-		if value != 0 {
-			return nil, fmt.Errorf("unaccounted trailing archive data")
-		}
+	if _, err := io.Copy(tarPadding{}, input); err != nil {
+		return nil, err
 	}
 	if len(paths) == 0 || paths[0] != "manifest.json" || !sort.StringsAreSorted(paths[1:]) {
 		return nil, fmt.Errorf("manifest must be first and remaining members sorted")
@@ -248,9 +290,9 @@ func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDelt
 		if err := validateNativeArchive(manifest, members, paths); err != nil {
 			return nil, err
 		}
-		return &Archive{sha256: digest(data), manifest: manifest, members: members, native: true, nativeBudget: budget}, nil
+		return &Archive{sha256: sha, manifest: manifest, members: members, native: true, nativeBudget: budget}, nil
 	}
-	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" {
+	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" || manifest.NativeReverseProjection != nil {
 		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
 	}
 	if err := validateManifest(manifest, members); err != nil {
@@ -264,7 +306,7 @@ func readArchiveData(data []byte, nativeDeltaAttachment bool, budget *NativeDelt
 	if budget == nil {
 		retainedTar = append([]byte(nil), data...)
 	}
-	archive := &Archive{sha256: digest(data), tarBytes: retainedTar, manifest: manifest, members: members, byKind: byKind, migration: migration, nativeBudget: budget}
+	archive := &Archive{sha256: sha, tarBytes: retainedTar, manifest: manifest, members: members, byKind: byKind, migration: migration, nativeBudget: budget}
 	if !nativeDeltaAttachment {
 		if err := validateNativeSourceHistories(archive); err != nil {
 			return nil, err
@@ -321,7 +363,7 @@ func allowedMember(name string) bool {
 func validateNativeArchive(manifest Manifest, members map[string][]byte, paths []string) error {
 	if manifest.Format != Format || manifest.Schema != 1 || manifest.Scope != "plug-native-store" ||
 		manifest.NativeStoreID == "" || manifest.NativeIncarnation == "" || manifest.NativeHead == "" ||
-		manifest.NativeDigest == "" || manifest.RecordCount < 0 || manifest.VersionCount < 0 || manifest.ChangesetCount < 0 {
+		manifest.NativeDigest == "" || manifest.NativeReverseProjection != nil || manifest.RecordCount < 0 || manifest.VersionCount < 0 || manifest.ChangesetCount < 0 {
 		return fmt.Errorf("unsupported native archive manifest")
 	}
 	if manifest.History != "full" && manifest.History != "head" {
@@ -459,25 +501,32 @@ func validateNativeLines(data []byte, want int, label string) error {
 		return fmt.Errorf("native %s count mismatch", label)
 	}
 	for _, line := range lines {
-		var value any
-		if err := decodeJSON(line, &value); err != nil {
-			return fmt.Errorf("invalid native %s: %w", label, err)
+		if err := validateNativeLine(line, label); err != nil {
+			return err
 		}
-		object, ok := value.(map[string]any)
-		if !ok {
-			return fmt.Errorf("native %s must be an object", label)
+	}
+	return nil
+}
+
+func validateNativeLine(line []byte, label string) error {
+	var value any
+	if err := decodeJSON(line, &value); err != nil {
+		return fmt.Errorf("invalid native %s: %w", label, err)
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("native %s must be an object", label)
+	}
+	if label == "record" {
+		kind, ok := object["kind"].(string)
+		if !ok || !knownNativeKinds[kind] {
+			return fmt.Errorf("unknown native record kind %q", kind)
 		}
-		if label == "record" {
-			kind, ok := object["kind"].(string)
-			if !ok || !knownNativeKinds[kind] {
-				return fmt.Errorf("unknown native record kind %q", kind)
-			}
-			if _, ok := object["ref"].(map[string]any); !ok {
-				return fmt.Errorf("native record ref must be an object")
-			}
-			if _, ok := object["body"]; !ok {
-				return fmt.Errorf("native record body is required")
-			}
+		if _, ok := object["ref"].(map[string]any); !ok {
+			return fmt.Errorf("native record ref must be an object")
+		}
+		if _, ok := object["body"]; !ok {
+			return fmt.Errorf("native record body is required")
 		}
 	}
 	return nil
@@ -611,12 +660,14 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 		if !ok || len(member) == 0 || member[len(member)-1] != '\n' {
 			return nil, nil, fmt.Errorf("missing or unterminated kind records for %s", kind.Name)
 		}
-		lines := bytes.Split(member[:len(member)-1], []byte{'\n'})
-		if len(lines) != kind.Count {
+		if bytes.Count(member, []byte{'\n'}) != kind.Count {
 			return nil, nil, fmt.Errorf("record count mismatch for %s", kind.Name)
 		}
-		rows := make([]Record, 0, len(lines))
-		for _, line := range lines {
+		// Avoid an untrusted, up-front allocation of a slice per line.
+		var rows []Record
+		for rest := member; len(rest) != 0; {
+			line, tail, _ := bytes.Cut(rest, []byte{'\n'})
+			rest = tail
 			var record Record
 			if err := decodeJSON(line, &record); err != nil {
 				return nil, nil, fmt.Errorf("invalid %s record: %w", kind.Name, err)
@@ -776,43 +827,47 @@ func decodeJSON(data []byte, target any) error {
 }
 
 func checkValue(decoder *json.Decoder, depth int) error {
+	_, err := countJSONValue(decoder, depth)
+	return err
+}
+
+func countJSONValue(decoder *json.Decoder, depth int) (int, error) {
 	if depth > 128 {
-		return fmt.Errorf("JSON nesting exceeds 128")
+		return 0, fmt.Errorf("JSON nesting exceeds 128")
 	}
 	token, err := decoder.Token()
 	if err != nil {
-		return fmt.Errorf("invalid JSON")
+		return 0, fmt.Errorf("invalid JSON")
 	}
-	if delimiter, ok := token.(json.Delim); ok {
-		switch delimiter {
-		case '{':
-			seen := map[string]bool{}
-			for decoder.More() {
-				keyToken, err := decoder.Token()
-				if err != nil {
-					return fmt.Errorf("invalid JSON object")
-				}
-				key, ok := keyToken.(string)
-				if !ok || seen[key] {
-					return fmt.Errorf("duplicate or invalid JSON key")
-				}
-				seen[key] = true
-				if err := checkValue(decoder, depth+1); err != nil {
-					return err
-				}
-			}
-		case '[':
-			for decoder.More() {
-				if err := checkValue(decoder, depth+1); err != nil {
-					return err
-				}
-			}
-		default:
-			return fmt.Errorf("invalid JSON delimiter")
-		}
-		if _, err := decoder.Token(); err != nil {
-			return fmt.Errorf("invalid JSON container")
-		}
+	delimiter, container := token.(json.Delim)
+	if !container {
+		return 1, nil
 	}
-	return nil
+	if delimiter != '{' && delimiter != '[' {
+		return 0, fmt.Errorf("invalid JSON delimiter")
+	}
+	var seen map[string]bool
+	if delimiter == '{' {
+		seen = make(map[string]bool)
+	}
+	var total int
+	for decoder.More() {
+		if seen != nil {
+			keyToken, err := decoder.Token()
+			key, ok := keyToken.(string)
+			if err != nil || !ok || seen[key] {
+				return 0, fmt.Errorf("duplicate or invalid JSON key")
+			}
+			seen[key] = true
+		}
+		n, err := countJSONValue(decoder, depth+1)
+		if err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	if _, err := decoder.Token(); err != nil {
+		return 0, fmt.Errorf("invalid JSON container")
+	}
+	return max(total, 1), nil
 }

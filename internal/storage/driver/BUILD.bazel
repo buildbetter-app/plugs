@@ -21,6 +21,7 @@ go_library(
         "offline_restore_hash.go",
         "offline_history.go",
         "native_delta_history.go",
+        "native_reverse_history.go",
         "offline_history_stream.go",
         "offline_history_source_order.go",
         "offline_history_stream_consume.go",

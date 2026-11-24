@@ -26,7 +26,7 @@ func RecoverBoundSourceImport(ctx context.Context, target driver.Store) (driver.
 	if err != nil {
 		return driver.RestoreImportProfile{}, Report{}, false, err
 	}
-	rows, readErr := r.Get(ctx, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+	rows, readErr := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 	closeErr := r.Close()
 	if readErr != nil {
 		return driver.RestoreImportProfile{}, Report{}, false, readErr
@@ -155,7 +155,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		}
 	}
 	if len(receiptBytes) == 0 || json.Unmarshal(receiptBytes, &binding) != nil {
-		rows, rowErr := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+		rows, rowErr := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 		if rowErr != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
 			return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"}
 		}
@@ -189,7 +189,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		keepArchive = true
 		return report, logical, nil
 	}
-	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 	if err != nil {
 		return Report{}, nil, err
 	}

@@ -204,6 +204,7 @@ internal/core/dumpformat/native_delta_row_codec.go
 internal/core/dumpformat/native_delta_size.go
 internal/core/dumpformat/native_delta_size_test.go
 internal/core/dumpformat/native_delta_wire.go
+internal/core/dumpformat/native_head_stream.go
 internal/core/dumpformat/native_history.go
 internal/core/dumpformat/native_history_coverage.go
 internal/core/dumpformat/native_history_coverage_test.go
@@ -424,6 +425,8 @@ internal/core/restore/native_hierarchy.go
 internal/core/restore/native_ontology_test.go
 internal/core/restore/native_profile_test.go
 internal/core/restore/restore_test.go
+internal/core/restore/reverse_archive.go
+internal/core/restore/reverse_archive_test.go
 internal/core/reverseconverter/BUILD.bazel
 internal/core/reverseconverter/README.md
 internal/core/reverseconverter/archive.go
@@ -2435,6 +2438,7 @@ internal/storage/driver/keys.go
 internal/storage/driver/keys_test.go
 internal/storage/driver/native_delta_history.go
 internal/storage/driver/native_delta_history_test.go
+internal/storage/driver/native_reverse_history.go
 internal/storage/driver/offline_history.go
 internal/storage/driver/offline_history_source_order.go
 internal/storage/driver/offline_history_source_order_test.go
@@ -2620,6 +2624,8 @@ internal/storage/sqlite/README.md
 internal/storage/sqlite/allocator.go
 internal/storage/sqlite/allocator_cache_test.go
 internal/storage/sqlite/allocator_snapshot.go
+internal/storage/sqlite/blob_stream.go
+internal/storage/sqlite/blob_stream_test.go
 internal/storage/sqlite/b05_persisted_clock_test.go
 internal/storage/sqlite/boundaries_test.go
 internal/storage/sqlite/checkpoint_guard.go
@@ -2660,6 +2666,7 @@ internal/storage/sqlite/publication_lease_race_test.go
 internal/storage/sqlite/publication_lease_test.go
 internal/storage/sqlite/query_cursor_test.go
 internal/storage/sqlite/reader.go
+internal/storage/sqlite/reverse_receipt.go
 internal/storage/sqlite/receipt_identity_test.go
 internal/storage/sqlite/recordref_test.go
 internal/storage/sqlite/schema.go

@@ -19,6 +19,7 @@ type nativeDeltaAttachment struct {
 	open      NativeDeltaPartOpener
 	proof     NativeDeltaVerification
 	budget    *NativeDeltaBudget
+	spooled   bool
 	recheck   func(context.Context) error
 	prepared  *nativeDeltaPreparation
 	// usePreparedReadback reuses the authenticated retained staging view when
@@ -33,6 +34,9 @@ type NativeCaptureSetOptions struct {
 	// PrepareReceiving retains the authenticated row deltas, final checkpoints
 	// and originals from this read for restart recovery. It changes no checks.
 	PrepareReceiving bool
+	// SpoolOriginals keeps authenticated original files on disk during a
+	// prepared recovery. The caller must use the streamed file visitor.
+	SpoolOriginals bool
 }
 
 type nativeDeltaAccountingContextKey struct{}
@@ -95,24 +99,6 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 	if root.Format != NativeCaptureSetFormat || root.Contract != NativeDeltaFormat || root.PartCount == 0 || root.StreamBytes == 0 || !validDeltaSHA256(root.FinalPartSHA256) || !validDeltaSHA256(root.StreamSHA256) || root.HeadArchive.Size <= 0 || root.HeadArchive.Size > MaxArchiveBytes || !validDeltaSHA256(root.HeadArchive.SHA256) {
 		return nil, fmt.Errorf("native delta root binding differs")
 	}
-	head, err := nativeDeltaReadBounded(headInput, uint64(root.HeadArchive.Size), owner, "head_tar")
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(head)) != root.HeadArchive.Size || digest(head) != root.HeadArchive.SHA256 {
-		return nil, fmt.Errorf("native delta head attachment differs")
-	}
-	a, err := readArchiveData(head, true, owner)
-	if err != nil {
-		return nil, err
-	}
-	projects := []string{}
-	for _, p := range a.manifest.Projects {
-		projects = append(projects, p.Prefix)
-	}
-	if a.manifest.StoreID != root.StoreID || !equalJSON(projects, root.Projects) || len(projects) != 1 || !validCommitID(root.Head) {
-		return nil, fmt.Errorf("native delta root/head identity differs")
-	}
 	preparation := &nativeDeltaPreparation{owner: owner}
 	var staged *NativeDeltaPrepared
 	var callbacks *nativeDeltaRowCallbacks
@@ -125,19 +111,56 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 			}
 		}()
 		callbacks = staged.callbacks()
-		readOpen = nativeDeltaFileOpener(open, staged.budget, staged.retainFile)
+		if options.SpoolOriginals {
+			staged.spoolDir, err = os.MkdirTemp("", "plug-retained-capture-*")
+			if err != nil {
+				return nil, err
+			}
+			staged.spooled = make(map[string]NativeCaptureFile)
+			readOpen = staged.spoolPart(open)
+		} else {
+			readOpen = nativeDeltaFileOpener(open, staged.budget, staged.retainFile)
+		}
 		if err := staged.retainFile("capture-set.json", rootBytes); err != nil {
 			return nil, err
 		}
-		if err := staged.retainFile("head.tar", head); err != nil {
-			return nil, err
+	}
+
+	var a *Archive
+	if staged != nil && options.SpoolOriginals {
+		a, err = readSpooledCaptureHead(staged, root.HeadArchive, headInput)
+	} else {
+		head, readErr := nativeDeltaReadBounded(headInput, uint64(root.HeadArchive.Size), owner, "head_tar")
+		if readErr != nil {
+			return nil, readErr
 		}
+		if int64(len(head)) != root.HeadArchive.Size || digest(head) != root.HeadArchive.SHA256 {
+			return nil, fmt.Errorf("native delta head attachment differs")
+		}
+		a, err = readArchiveData(head, true, owner)
+		if err == nil && staged != nil {
+			err = staged.retainFile("head.tar", head)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	projects := []string{}
+	for _, p := range a.manifest.Projects {
+		projects = append(projects, p.Prefix)
+	}
+	if a.manifest.StoreID != root.StoreID || !equalJSON(projects, root.Projects) || len(projects) != 1 || !validCommitID(root.Head) {
+		return nil, fmt.Errorf("native delta root/head identity differs")
 	}
 	parts, err := NewNativeDeltaPartReader(ctx, root.PartCount, root.FinalPartSHA256, root.StreamSHA256, readOpen)
 	if err != nil {
 		return nil, err
 	}
 	defer parts.Close()
+	spooled := staged != nil && options.SpoolOriginals
+	if spooled {
+		ctx = context.WithValue(ctx, spooledCaptureKey{}, true)
+	}
 	h, proof, err := reconstructNativeDeltaCallbacks(ctx, parts, root, owner, nil, callbacks, true)
 	if err != nil {
 		return nil, err
@@ -175,7 +198,7 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 	}
 	a.nativeHistories = []NativeHistory{h}
 	a.sha256 = digest(rootBytes)
-	a.delta = &nativeDeltaAttachment{root: root, rootBytes: rootBytes, open: open, proof: proof, budget: owner, prepared: preparation}
+	a.delta = &nativeDeltaAttachment{root: root, rootBytes: rootBytes, open: open, proof: proof, budget: owner, spooled: spooled, prepared: preparation}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -185,6 +208,30 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 	}
 	success = true
 	return a, nil
+}
+
+// The prepared file visitor retains the exact source tar in the spool.
+// Validate its members from the file directly so legal tar padding never
+// contributes to retained or transient heap.
+func readSpooledCaptureHead(staged *NativeDeltaPrepared, binding File, input io.Reader) (*Archive, error) {
+	if err := staged.spoolFile("head.tar", input, uint64(binding.Size)); err != nil {
+		return nil, err
+	}
+	file := staged.spooled["head.tar"]
+	if int64(file.Bytes) != binding.Size || file.SHA256 != binding.SHA256 {
+		return nil, fmt.Errorf("native delta head attachment differs")
+	}
+	head, err := os.Open(filepath.Join(staged.spoolDir, "head.tar"))
+	if err != nil {
+		return nil, err
+	}
+	defer head.Close()
+	if err := validateTarEnd(head, binding.Size); err != nil {
+		return nil, err
+	}
+	const metadataAndCopyReserve = 4 << 20
+	bufferBound := NewNativeDeltaBudget(MaxArchiveBytes - metadataAndCopyReserve)
+	return readArchiveMembers(io.NewSectionReader(head, 0, binding.Size), nil, binding.SHA256, true, staged.budget, bufferBound)
 }
 
 // ReadNativeCaptureSetDirectory accepts only the canonical fixed layout. A
@@ -541,6 +588,9 @@ func (a *Archive) visitNativeDeltaOpen(ctx context.Context, visit func(NativeHis
 	defer parts.Close()
 	replay := a.delta.budget.Scope()
 	defer replay.Release()
+	if a.delta.spooled {
+		ctx = context.WithValue(ctx, spooledCaptureKey{}, true)
+	}
 	_, proof, err := reconstructNativeDeltaCallbacks(ctx, parts, a.delta.root, replay, visit, rows, true, a.nativeHistories[0].Commits)
 	if err != nil {
 		return err

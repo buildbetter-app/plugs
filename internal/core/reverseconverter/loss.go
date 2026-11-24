@@ -1,6 +1,9 @@
 package reverseconverter
 
-import "sort"
+import (
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"sort"
+)
 
 // StateLoss counts a persisted representation that Beads does not recreate.
 // Kind is an actual record/public-view kind, when one exists. Family instead
@@ -41,28 +44,7 @@ type NamespaceLoss struct {
 // Empty maps/arrays and null each occupy one field instance. Object keys and
 // container nodes with children do not add instances of their own.
 func CountFieldInstances(value any) int {
-	switch value := value.(type) {
-	case map[string]any:
-		if len(value) == 0 {
-			return 1
-		}
-		total := 0
-		for _, child := range value {
-			total += CountFieldInstances(child)
-		}
-		return total
-	case []any:
-		if len(value) == 0 {
-			return 1
-		}
-		total := 0
-		for _, child := range value {
-			total += CountFieldInstances(child)
-		}
-		return total
-	default:
-		return 1
-	}
+	return dumpformat.CountFieldInstances(value)
 }
 
 // AddLossAccounting appends the trusted host's complete snapshot census. It

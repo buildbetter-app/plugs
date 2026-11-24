@@ -472,7 +472,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 			owned = true
 			defer stream.Close()
 		}
-		rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+		rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
 		if err != nil {
 			return err
 		}
@@ -516,7 +516,7 @@ func validateHistoryRecoveryArchive(ctx context.Context, r driver.Reader, p driv
 	if digest != p.HistoryDigest {
 		return driver.ErrRestoreBindingMismatch{Field: "historyDigest"}
 	}
-	rows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
 	if err != nil {
 		return err
 	}

@@ -52,6 +52,7 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if store == nil {
 		return LiveReverse{}, ReverseRefusal{"missing_store"}
 	}
+	ctx = driver.WithNativeReverseRead(ctx)
 	meta, err := store.Meta(ctx)
 	if err != nil {
 		return LiveReverse{}, err
@@ -65,7 +66,7 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 		return LiveReverse{}, err
 	}
 	defer r.Close()
-	rows, err := r.Get(ctx, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(importBindingRecordID, model.Natural64(0))})
 	if err != nil {
 		return LiveReverse{}, err
 	}
@@ -77,7 +78,7 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 		}
 		if binding.Profile.SourcePlanes != nil {
 			retainedProfiles = append(retainedProfiles, binding.Profile)
-			commitRows, err := r.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+			commitRows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 			if err != nil || len(commitRows) != 1 || commitRows[0].Kind != "instance_config" {
 				return LiveReverse{}, ReverseRefusal{"invalid_import_binding"}
 			}
@@ -100,11 +101,11 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	if len(options.Directives) == 0 && len(dump.Manifest.Ontology) != 0 {
 		options.Directives = append([]ontologymigration.Directive(nil), dump.Manifest.Ontology...)
 	}
-	live, err := reverseLiveCensus(ctx, r)
+	live, _, err := reverseLiveCensus(ctx, r, false)
 	if err != nil {
 		return LiveReverse{}, err
 	}
-	coreLosses, namespaceLosses, err := reverseLossCensus(r, live, nil, options)
+	coreLosses, namespaceLosses, err := reverseLossCensus(r, live, nil, options, nil, false)
 	if err != nil {
 		return LiveReverse{}, err
 	}
@@ -119,35 +120,82 @@ func ReverseRestoredWithOptions(ctx context.Context, store driver.Store, options
 	return LiveReverse{Snapshot: r.Snapshot(), Result: converted}, nil
 }
 
-func reverseLiveCensus(ctx context.Context, r driver.Reader) (map[string]driver.Record, error) {
+func reverseLiveCensus(ctx context.Context, r driver.Reader, joint bool) (map[string]driver.Record, *dumpformat.NativeReverseOriginLoss, error) {
 	live := map[string]driver.Record{}
+	seen := map[string]bool{}
+	var omitted *dumpformat.NativeReverseOriginLoss
+	totalBytes, indexBytes := 0, 0
+	materialLimit, indexLimit := dumpformat.MaxArchiveBytes, dumpformat.MaxArchiveBytes
+	if joint {
+		materialLimit, indexLimit = driver.NativeHeadMaterialBytes, 4<<20
+	}
+	visit := func(row driver.Record) error {
+		if !row.Ref.IsID() || !row.Ref.Branch.IsZero() || row.Ref.ID == "" || seen[row.Ref.ID] {
+			return ReverseRefusal{"unsupported_live_census"}
+		}
+		indexBytes += len(row.Ref.ID) + 64
+		if indexBytes > indexLimit {
+			return ReverseRefusal{"unsupported_live_census"}
+		}
+		seen[row.Ref.ID] = true
+		if joint {
+			if err := driver.CheckReverseRecordJSON(row.Ref, row.Kind, row.Body, 0); err != nil {
+				return err
+			}
+		}
+		if joint && driver.IsReverseDiscardedOrigin(row.Ref, row.Kind) {
+			fields, err := dumpformat.DecodeReverseOriginFields(row.Body)
+			if err != nil {
+				return ReverseRefusal{"invalid_control_record_loss_census"}
+			}
+			if omitted == nil {
+				omitted = &dumpformat.NativeReverseOriginLoss{}
+			}
+			omitted.Records++
+			omitted.Fields += fields
+			return nil
+		}
+		totalBytes += len(row.Body)
+		if totalBytes > materialLimit {
+			return ReverseRefusal{"unsupported_live_census"}
+		}
+		live[row.Ref.ID] = row
+		return nil
+	}
+	if scan, ok := r.(driver.NativeHeadRecordReader); ok && joint {
+		if err := scan.VisitNativeHeadRecords(ctx, driver.NativeHeadStorageRowBytes, visit); err != nil {
+			return nil, nil, err
+		}
+		return live, omitted, nil
+	}
 	var cursor *driver.Cursor
-	totalBytes := 0
+	limit := 1000
+	if joint {
+		limit = 1
+	}
 	for {
-		page, err := r.Query(ctx, driver.Query{Cursor: cursor, Limit: 1000})
+		page, err := r.Query(ctx, driver.Query{Cursor: cursor, Limit: limit})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, row := range page.Items {
-			totalBytes += len(row.Body)
-			if !row.Ref.IsID() || !row.Ref.Branch.IsZero() || row.Ref.ID == "" || live[row.Ref.ID].Kind != "" || totalBytes > dumpformat.MaxArchiveBytes {
-				return nil, ReverseRefusal{"unsupported_live_census"}
+			if err := visit(row); err != nil {
+				return nil, nil, err
 			}
-			live[row.Ref.ID] = row
 		}
 		if page.NextCursor == nil {
 			break
 		}
 		if reflect.DeepEqual(cursor, page.NextCursor) {
-			return nil, ReverseRefusal{"invalid_live_cursor"}
+			return nil, nil, ReverseRefusal{"invalid_live_cursor"}
 		}
 		cursor = page.NextCursor
 	}
-	return live, nil
+	return live, omitted, nil
 }
 
 func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...driver.RestoreImportProfile) (reverseconverter.Dump, error) {
-	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil {
 		return reverseconverter.Dump{}, err
 	}
@@ -165,7 +213,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...drive
 		// and authenticate the complete native set, then adapt its detached head
 		// directly; repacking it as a portable tar would discard native
 		// disposition semantics that were already validated by the capture reader.
-		root, err := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+		root, err := readReverseMetadataBlob(ctx, r, driver.Hash(evidence.ArchiveSHA256), dumpformat.NativeDeltaRootBytes)
 		if err != nil || hashBytes(root) != evidence.ArchiveSHA256 {
 			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
 		}
@@ -442,7 +490,7 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 	if err != nil {
 		return err
 	}
-	receipt, err := reader.IdempotencyByKey(ctx, principal, p.AgentLabel(), p.Method, p.IdempotencyKey)
+	receipt, err := driver.ReadNativeReverseReceipt(ctx, reader, principal, p.AgentLabel(), p.Method, p.IdempotencyKey, nil)
 	expectedRevision := (*model.Revision)(nil)
 	if receipt == nil && archive.HistoryBinding != nil && archive.HistoryBinding.RequestHash == request && archive.HistoryBinding.Incarnation != "" {
 		revision := model.Revision(archive.HistoryBinding.Revision)
@@ -454,7 +502,7 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 	if err != nil || receipt != nil && (receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Incarnation != reader.Snapshot().Incarnation) || receipt == nil && expectedRevision == nil {
 		return driver.ErrConflict
 	}
-	rows, err := reader.Get(ctx, []model.Ref{marker.Ref})
+	rows, err := driver.GetNativeHeadRecords(ctx, reader, []model.Ref{marker.Ref})
 	if err != nil || len(rows) != 1 || !bytes.Equal(rows[0].Body, marker.Body) {
 		return driver.ErrConflict
 	}
@@ -466,7 +514,7 @@ func validateReverseHistory(ctx context.Context, reader driver.Reader, binding i
 		if archive.HistoryBinding == nil || archive.NativeIncarnation == "" || archive.HistoryBinding.Incarnation != archive.NativeIncarnation {
 			return driver.ErrConflict
 		}
-		commitRows, getErr := reader.Get(ctx, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+		commitRows, getErr := driver.GetNativeHeadRecords(ctx, reader, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
 		if p.SourcePlanes != nil && (getErr != nil || len(commitRows) != 1 || commitRows[0].Kind != "instance_config") {
 			return driver.ErrConflict
 		}

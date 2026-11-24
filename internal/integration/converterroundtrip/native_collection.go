@@ -3,9 +3,12 @@ package converterroundtrip
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"math"
 	"time"
@@ -194,6 +197,24 @@ func restorePreparedNativeCaptureCollection(ctx context.Context, p *nativeCollec
 	return report, nil
 }
 
+// Protected reverse metadata is small by format. Check the size on the
+// pinned reader before selecting or allocating the complete JSON value.
+func readReverseMetadataBlob(ctx context.Context, reader driver.Reader, hash driver.Hash, limit int64) ([]byte, error) {
+	if streams, ok := reader.(driver.BlobStreamReader); ok && driver.NativeReverseRead(ctx) {
+		source, size, err := streams.OpenBlob(ctx, hash)
+		if err != nil {
+			return nil, err
+		}
+		if size <= 0 || size > limit {
+			return nil, errors.Join(driver.ErrRestoreBindingMismatch{Field: "collection.metadataSize"}, source.Close())
+		}
+		raw := make([]byte, size)
+		_, err = io.ReadFull(source, raw)
+		return raw, errors.Join(err, source.Close())
+	}
+	return reader.Blob(ctx, hash)
+}
+
 func readRetainedReceivingArchive(ctx context.Context, reader driver.Reader, raw []byte, evidence archiveEvidence, profile driver.RestoreImportProfile) (*dumpformat.Archive, *nativeCollectionReceiving, error) {
 	var format struct {
 		Format string `json:"format"`
@@ -271,6 +292,9 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 	if len(source.Files) < 3 {
 		return nil, driver.ErrRestoreBindingMismatch{Field: "collection.files"}
 	}
+	if streams, ok := reader.(driver.BlobStreamReader); ok && options.PrepareReceiving && driver.NativeReverseRead(ctx) {
+		return streamRetainedNativeCollectionSource(ctx, streams, source, options)
+	}
 	budget := dumpformat.NativeDeltaBudgetFromContext(ctx)
 	if budget == nil {
 		return nil, driver.ErrUnsupported
@@ -313,4 +337,63 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 		}
 		return &retainedCollectionPart{Reader: bytes.NewReader(raw), owner: part}, nil
 	}, options)
+}
+
+func streamRetainedNativeCollectionSource(ctx context.Context, reader driver.BlobStreamReader, source dumpformat.NativeJoinedInput, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
+	open := func(ctx context.Context, file dumpformat.NativeCaptureFile, max uint64) (io.ReadCloser, error) {
+		if file.Bytes == 0 || file.Bytes > max {
+			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}
+		}
+		raw, size, err := reader.OpenBlob(ctx, driver.Hash(file.SHA256))
+		if err != nil {
+			return nil, err
+		}
+		if size != int64(file.Bytes) {
+			return nil, errors.Join(driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}, raw.Close())
+		}
+		return &retainedCaptureReader{raw: raw, digest: sha256.New(), want: file}, nil
+	}
+	root, err := open(ctx, source.Files[0], dumpformat.NativeDeltaRootBytes)
+	if err != nil {
+		return nil, err
+	}
+	head, err := open(ctx, source.Files[1], dumpformat.MaxArchiveBytes)
+	if err != nil {
+		return nil, errors.Join(err, root.Close())
+	}
+	options.SpoolOriginals = true
+	a, err := dumpformat.ReadNativeCaptureSet(ctx, root, head, func(ctx context.Context, ordinal uint64) (io.ReadCloser, error) {
+		if ordinal == 0 || ordinal > uint64(len(source.Files)-2) {
+			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.partIndex"}
+		}
+		return open(ctx, source.Files[ordinal+1], dumpformat.NativeDeltaPartBytes+dumpformat.NativeDeltaPartHeaderBytes)
+	}, options)
+	if err := errors.Join(err, root.Close(), head.Close()); err != nil {
+		if a != nil {
+			a.DiscardNativeCaptureSet()
+		}
+		return nil, err
+	}
+	return a, nil
+}
+
+type retainedCaptureReader struct {
+	raw    io.ReadCloser
+	digest hash.Hash
+	want   dumpformat.NativeCaptureFile
+	read   uint64
+}
+
+func (r *retainedCaptureReader) Read(p []byte) (int, error) {
+	n, err := r.raw.Read(p)
+	_, _ = r.digest.Write(p[:n])
+	r.read += uint64(n)
+	if err == io.EOF && (r.read != r.want.Bytes || hex.EncodeToString(r.digest.Sum(nil)) != r.want.SHA256) {
+		return n, driver.ErrRestoreBindingMismatch{Field: "collection.fileDigest"}
+	}
+	return n, err
+}
+
+func (r *retainedCaptureReader) Close() error {
+	return r.raw.Close()
 }

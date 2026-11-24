@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -739,6 +740,110 @@ type Reader interface {
 	// after commit or rollback. Closing never commits staged writes.
 	Close() error
 }
+
+// NativeHeadRecordReader visits current records one at a time. A driver
+// implementing this transport seam checks the encoded row size before
+// retrieving its body. The callback must not reenter the reader.
+type NativeHeadRecordReader interface {
+	VisitNativeHeadRecords(context.Context, int, func(Record) error) error
+	GetNativeHeadRecords(context.Context, []Ref) ([]Record, error)
+}
+
+func GetNativeHeadRecords(ctx context.Context, reader Reader, refs []Ref) ([]Record, error) {
+	if bounded, ok := reader.(NativeHeadRecordReader); ok && NativeReverseRead(ctx) {
+		return bounded.GetNativeHeadRecords(ctx, refs)
+	}
+	return reader.Get(ctx, refs)
+}
+
+// NativeHeadRecordBytes and NativeHeadMaterialBytes reserve room within the
+// archive copy budget for transient encodings, indexes and engine buffers.
+const NativeHeadRecordBytes = 16 << 20
+const NativeHeadMaterialBytes = 64 << 20
+
+// SQLite stores the body as base64. Include its expansion and the identity.
+const NativeHeadStorageRowBytes = NativeHeadRecordBytes*4/3 + (1 << 20)
+
+// CheckReverseJSONShape bounds the structural expansion of one reverse
+// record before any generic JSON decoder runs. It counts container and
+// separator tokens outside strings. Syntax and Unicode are checked separately.
+func CheckReverseJSONShape(raw []byte) error {
+	_, err := ReverseJSONStructure(raw, 0)
+	return err
+}
+
+// ReverseJSONStructure also returns the observed expanded shape for callers
+// that retain many decoded values at once. reserve covers an enclosing wire
+// object when only the body is present at the time of admission.
+func ReverseJSONStructure(raw []byte, reserve int) (int, error) {
+	const maxStructure = 64 << 10
+	var quoted, escape bool
+	structure := reserve
+	for _, char := range raw {
+		if quoted {
+			if escape {
+				escape = false
+			} else if char == '\\' {
+				escape = true
+			} else if char == '"' {
+				quoted = false
+			}
+			continue
+		}
+		switch char {
+		case '"':
+			quoted = true
+		case '{', '[', ',', ':':
+			structure++
+			if structure > maxStructure {
+				return structure, fmt.Errorf("reverse JSON structure exceeds buffer bound")
+			}
+		}
+	}
+	return structure, nil
+}
+
+// NativeReverseReceiptReader reads the authoritative final receipt for offline
+// reverse, keeping only result rows selected by the caller's proof. Ordinary
+// replay must use IdempotencyByKey to return the complete stored response.
+type NativeReverseReceiptReader interface {
+	ReadNativeReverseReceipt(context.Context, string, string, string, string, func(Ref) bool) (*IdempotencyRecord, error)
+}
+
+type nativeReverseReadKey struct{}
+
+// WithNativeReverseRead selects the bounded receipt and retained capture
+// readers for the trusted offline trial, including runtime reopen.
+func WithNativeReverseRead(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nativeReverseReadKey{}, true)
+}
+
+func NativeReverseRead(ctx context.Context) bool {
+	enabled, _ := ctx.Value(nativeReverseReadKey{}).(bool)
+	return enabled
+}
+
+func ReadNativeReverseReceipt(ctx context.Context, reader Reader, principal, agent, method, key string, keep func(Ref) bool) (*IdempotencyRecord, error) {
+	if bounded, ok := reader.(NativeReverseReceiptReader); ok && NativeReverseRead(ctx) {
+		return bounded.ReadNativeReverseReceipt(ctx, principal, agent, method, key, keep)
+	}
+	return reader.IdempotencyByKey(ctx, principal, agent, method, key)
+}
+
+// BlobStreamReader opens a read-only blob on the bound snapshot without loading
+// the full value into the caller. The stream must be closed before the snapshot.
+type BlobStreamReader interface {
+	OpenBlob(context.Context, Hash) (io.ReadCloser, int64, error)
+}
+
+// NativeRestoreBlobTx stages an authenticated blob source for the same commit
+// as the native restore. The source is borrowed until commit or rollback and
+// must be replayable if the transaction retries publication.
+type NativeRestoreBlobTx interface {
+	StageNativeRestoreBlobs(context.Context, NativeRestoreBlobSource) error
+}
+
+type NativeRestoreBlobSource func(func(Hash, int64, io.Reader) error) error
 
 // WriteTx inherits Reader.Close: closing rolls back unfinished work, releases
 // its resources and locks, and is a no-op after commit or rollback. It never

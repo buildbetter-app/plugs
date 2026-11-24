@@ -3,14 +3,21 @@ package converterroundtrip
 import (
 	"strings"
 
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // reverseLossCensus uses only the already pinned reader. Provider family
 // names describe serialized state, never fabricated registered content kinds.
-func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Record, plan *driver.SourcePlanePlanV1, options reverseconverter.Options) ([]reverseconverter.StateLoss, []reverseconverter.NamespaceLoss, error) {
+func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Record, plan *driver.SourcePlanePlanV1, options reverseconverter.Options, omitted *dumpformat.NativeReverseOriginLoss, projected bool) ([]reverseconverter.StateLoss, []reverseconverter.NamespaceLoss, error) {
 	core := map[string]reverseconverter.StateLoss{}
+	if omitted != nil {
+		core["beads-archive"] = reverseconverter.StateLoss{
+			Kind: "beads-archive", Disposition: "retained_source_provenance",
+			RecordCount: omitted.Records, FieldInstances: omitted.Fields,
+		}
+	}
 	for _, row := range live {
 		if row.Kind == "memory" {
 			var body map[string]any
@@ -37,9 +44,22 @@ func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Reco
 		if row.Kind != "instance_config" && row.Kind != "restore-archive" && row.Kind != "beads-archive" {
 			continue // Other unmapped core records already refuse projection.
 		}
-		var body map[string]any
-		if decodeReverseJSON(row.Body, &body) != nil || body == nil {
-			return nil, nil, ReverseRefusal{"invalid_control_record_loss_census"}
+		var fields int
+		if driver.IsNativeHeadHistoryMarker(row.Ref, row.Kind) {
+			count, err := dumpformat.CountReverseHistoryMarkerFields(row.Body)
+			if err != nil {
+				return nil, nil, ReverseRefusal{"invalid_control_record_loss_census"}
+			}
+			fields = count
+		} else {
+			var body map[string]any
+			if decodeReverseJSON(row.Body, &body) != nil || body == nil {
+				return nil, nil, ReverseRefusal{"invalid_control_record_loss_census"}
+			}
+			if projected && row.Kind == "restore-archive" && row.Ref.ID == "restore/archive" {
+				delete(body, "reverse_origin_loss")
+			}
+			fields = reverseconverter.CountFieldInstances(body)
 		}
 		loss := core[row.Kind]
 		loss.Kind, loss.Disposition = row.Kind, "retained_control_state"
@@ -47,7 +67,7 @@ func reverseLossCensus(r driver.CheckpointInventory, live map[string]driver.Reco
 			loss.Disposition = "retained_source_provenance"
 		}
 		loss.RecordCount++
-		loss.FieldInstances += reverseconverter.CountFieldInstances(body)
+		loss.FieldInstances += fields
 		core[row.Kind] = loss
 	}
 	var coreLosses []reverseconverter.StateLoss

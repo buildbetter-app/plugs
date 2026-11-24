@@ -28,6 +28,7 @@ type reader struct {
 	at             uint64
 	closed         bool
 	owner          *transaction
+	legacyBlobs    map[*legacyBlob]struct{}
 }
 
 func (s *Store) Read(ctx context.Context, v driver.View) (driver.Reader, error) {
@@ -82,6 +83,7 @@ func (r *reader) pin(ctx context.Context, v driver.View) error {
 		return err
 	}
 	if r.tx != nil {
+		_ = r.closeLegacyBlobs()
 		_ = r.tx.Rollback()
 	}
 	r.tx = tx
@@ -119,7 +121,7 @@ func (r *reader) Close() error {
 		return nil
 	}
 	r.closed = true
-	err := r.tx.Rollback()
+	err := errors.Join(r.closeLegacyBlobs(), r.tx.Rollback())
 	r.tx = nil
 	r.store.untrack(r)
 	if errors.Is(err, sql.ErrTxDone) {
@@ -256,24 +258,6 @@ func (r *reader) recordAt(ctx context.Context, id string) (driver.Record, bool, 
 	return driver.Record{Ref: last.Ref, Kind: kind, Revision: last.Revision, Body: body}, true, nil
 }
 func mustUint(v model.Natural) uint64 { n, _ := v.Uint64(); return n }
-func (r *reader) Blob(ctx context.Context, hash driver.Hash) ([]byte, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if err := r.check(ctx); err != nil {
-		return nil, err
-	}
-	if r.owner != nil {
-		if data, ok := r.owner.blobs[hash]; ok {
-			return bytes.Clone(data), nil
-		}
-	}
-	var data []byte
-	err := r.tx.QueryRowContext(ctx, `SELECT data FROM blobs WHERE hash=? AND rev<=?`, string(hash), revKey(r.at)).Scan(&data)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, driver.ErrNotFound
-	}
-	return data, err
-}
 func (r *reader) Observe(ctx context.Context, keys []driver.LockKey) ([]driver.LockState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -634,6 +618,89 @@ func (r *reader) Query(ctx context.Context, q driver.Query) (driver.Page[driver.
 	driver.ReportReadWork(ctx, driver.ReadQueryReturned, int64(len(page.Items)))
 	return page, nil
 }
+
+// VisitNativeHeadRecords keeps a single admitted row in transit. SQLite can
+// obtain length(BLOB) from the record header with no overflow-page reads.
+func (r *reader) VisitNativeHeadRecords(ctx context.Context, maxBytes int, visit func(driver.Record) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.check(ctx); err != nil {
+		return err
+	}
+	if r.owner != nil || r.at != mustUint(r.meta.Head) {
+		return fmt.Errorf("%w: native head scan requires the pinned current image", driver.ErrUnsupported)
+	}
+	rows, err := r.tx.QueryContext(ctx, `SELECT CASE WHEN length(r.data)<=? THEN r.data END
+		FROM objects AS o JOIN records AS r ON o.key=r.key ORDER BY o.key`, maxBytes)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			return fmt.Errorf("sqlite: native head row exceeds buffer bound")
+		}
+		var record driver.Record
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return err
+		}
+		if err := visit(record); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func (r *reader) GetNativeHeadRecords(ctx context.Context, refs []driver.Ref) ([]driver.Record, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.check(ctx); err != nil {
+		return nil, err
+	}
+	if r.owner != nil || r.at != mustUint(r.meta.Head) {
+		return nil, fmt.Errorf("%w: native head lookup requires the pinned current image", driver.ErrUnsupported)
+	}
+	var records []driver.Record
+	total := 0
+	for _, ref := range refs {
+		key, err := recordKey(ref)
+		if err != nil {
+			return nil, err
+		}
+		var raw []byte
+		err = r.tx.QueryRowContext(ctx,
+			`SELECT CASE WHEN length(data)<=? THEN data END FROM records WHERE key=?`,
+			driver.NativeHeadStorageRowBytes, key).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			return nil, fmt.Errorf("sqlite: native head lookup row exceeds buffer bound")
+		}
+		var record driver.Record
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return nil, err
+		}
+		total += len(record.Body)
+		if len(record.Body) > driver.NativeHeadRecordBytes || total > driver.NativeHeadMaterialBytes/2 {
+			return nil, fmt.Errorf("sqlite: native head lookup material exceeds buffer bound")
+		}
+		if err := driver.CheckReverseRecordJSON(record.Ref, record.Kind, record.Body, 0); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+var _ driver.NativeHeadRecordReader = (*reader)(nil)
 
 // queryHead reads one current nil/kind page plus a lookahead row. After is the
 // opaque last returned key, and the SQL predicate/order uses the primary key

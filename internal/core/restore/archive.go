@@ -110,15 +110,16 @@ type nativeRecord struct {
 // which keeps ordinary native backups compact while preserving the exact
 // content-addressed source envelope needed by reverse conversion.
 type nativeReverseEvidence struct {
-	ArchiveSHA256           string                             `json:"archive_sha256"`
-	DerivedSHA256           string                             `json:"derived_sha256"`
-	Profile                 string                             `json:"profile"`
-	Members                 map[string]dumpformat.File         `json:"members"`
-	NativeCaptureFiles      map[string]dumpformat.File         `json:"native_capture_files,omitempty"`
-	NativeDecodedLimitBytes uint64                             `json:"native_decoded_limit_bytes,omitempty"`
-	SourceStore             string                             `json:"source_store"`
-	NativeIncarnation       string                             `json:"native_incarnation,omitempty"`
-	HistoryBinding          *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
+	ArchiveSHA256           string                              `json:"archive_sha256"`
+	DerivedSHA256           string                              `json:"derived_sha256"`
+	Profile                 string                              `json:"profile"`
+	Members                 map[string]dumpformat.File          `json:"members"`
+	NativeCaptureFiles      map[string]dumpformat.File          `json:"native_capture_files,omitempty"`
+	NativeDecodedLimitBytes uint64                              `json:"native_decoded_limit_bytes,omitempty"`
+	SourceStore             string                              `json:"source_store"`
+	NativeIncarnation       string                              `json:"native_incarnation,omitempty"`
+	HistoryBinding          *dumpformat.HistoryBindingEvidence  `json:"history_binding,omitempty"`
+	ReverseOriginLoss       *dumpformat.NativeReverseOriginLoss `json:"reverse_origin_loss,omitempty"`
 }
 
 func archiveDigest(paths []string, members map[string][]byte) string {
@@ -174,40 +175,12 @@ func dump(ctx context.Context, store driver.Store, history string, includeVersio
 	if history != "full" && history != "head" {
 		return nil, dumpformat.Manifest{}, fmt.Errorf("history must be full or head")
 	}
-	meta, err := store.Meta(ctx)
+	source, err := openNativeDumpSource(ctx, store)
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}
-	// Bind the record image and retained history to the same head advertised
-	// by the manifest. A writer may advance the store after Meta returns.
-	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
-	if err != nil {
-		return nil, dumpformat.Manifest{}, err
-	}
+	meta, reader, allocatorData := source.meta, source.reader, source.allocatorData
 	defer reader.Close()
-
-	snapshotReader, ok := reader.(driver.AllocatorSnapshotReader)
-	if !ok {
-		return nil, dumpformat.Manifest{}, fmt.Errorf("%w: native snapshot requires revision-bound allocator inventory", driver.ErrUnsupported)
-	}
-	bound := reader.Snapshot()
-	if bound.At == nil || bound.At.String() != meta.Head.String() || bound.Incarnation != meta.Incarnation {
-		return nil, dumpformat.Manifest{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("reader is not bound to the captured native view"))
-	}
-	allocatorSnapshot, err := snapshotReader.AllocatorSnapshot(ctx)
-	if err != nil {
-		return nil, dumpformat.Manifest{}, err
-	}
-	if err := allocatorSnapshot.Validate(); err != nil {
-		return nil, dumpformat.Manifest{}, err
-	}
-	if allocatorSnapshot.StoreID != meta.StoreID || allocatorSnapshot.Incarnation != meta.Incarnation || allocatorSnapshot.At.String() != meta.Head.String() {
-		return nil, dumpformat.Manifest{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("allocator snapshot is not bound to the pinned store view"))
-	}
-	allocatorData, err := driver.EncodeAllocatorSnapshot(allocatorSnapshot)
-	if err != nil {
-		return nil, dumpformat.Manifest{}, err
-	}
 
 	var records []nativeRecord
 	var cursor *driver.Cursor
@@ -234,44 +207,9 @@ func dump(ctx context.Context, store driver.Store, history string, includeVersio
 		cursor = page.NextCursor
 	}
 	sort.Slice(records, func(i, j int) bool { return nativeRecordKey(records[i]) < nativeRecordKey(records[j]) })
-	if historyBinding := nativeReverseHistoryBinding(ctx, reader, records); historyBinding != nil {
-		for i := range records {
-			if records[i].Ref.ID != "restore/archive" {
-				continue
-			}
-			var evidence nativeReverseEvidence
-			if json.Unmarshal(records[i].Body, &evidence) != nil {
-				continue
-			}
-			if !hasConverterReverseEvidence(evidence) {
-				continue
-			}
-			evidence.HistoryBinding = historyBinding
-			evidence.NativeIncarnation = meta.Incarnation
-			body, marshalErr := json.Marshal(evidence)
-			if marshalErr == nil {
-				records[i].Body = body
-			}
-		}
-	}
-	// A native restore creates a fresh store incarnation. Rebind the retained
-	// source-plane commit marker to that incarnation so reverse can continue
-	// through the authenticated source projection after native restore.
+	historyBinding := nativeReverseHistoryBinding(ctx, reader, records)
 	for i := range records {
-		if records[i].Ref.ID != driver.SourcePlaneCommitRecordID || records[i].Kind != "instance_config" {
-			continue
-		}
-		var binding driver.SourcePlaneCommitBindingV1
-		if json.Unmarshal(records[i].Body, &binding) != nil || binding.StoreID != meta.StoreID {
-			continue
-		}
-		binding.Incarnation = string(meta.Incarnation)
-		for j := range binding.Providers {
-			binding.Providers[j].Origin.Incarnation = string(meta.Incarnation)
-		}
-		if body, marshalErr := json.Marshal(binding); marshalErr == nil {
-			records[i].Body = body
-		}
+		bindNativeDumpRecord(&records[i], meta, historyBinding)
 	}
 
 	// A converter restore retains its source envelope and referenced members as
@@ -331,16 +269,7 @@ func dump(ctx context.Context, store driver.Store, history string, includeVersio
 	for path, data := range members {
 		files[path] = dumpformat.File{SHA256: memberDigest(data), Size: int64(len(data))}
 	}
-	manifest := dumpformat.Manifest{
-		Format: dumpformat.Format, Schema: 1, Reference: "plug-native", StoreID: string(meta.StoreID),
-		Machine: "plug", Scope: "plug-native-store", History: history,
-		Projects: []dumpformat.Project{}, Kinds: []dumpformat.Kind{}, Sources: []dumpformat.Disposition{},
-		Files: files, Warnings: []string{}, Verification: map[string]string{},
-		NativeStoreID: string(meta.StoreID), NativeIncarnation: meta.Incarnation,
-		NativeHead: meta.Head.String(), NativeDigest: archiveDigest(paths, members),
-		NativeAllocatorProfile: allocatorSnapshot.Version, NativeAllocatorDigest: memberDigest(allocatorData),
-		RecordCount: len(records), VersionCount: len(versions), ChangesetCount: len(changesets),
-	}
+	manifest := nativeDumpManifest(source, history, archiveDigest(paths, members), files, len(records), len(versions), len(changesets))
 	manifestData, err := json.Marshal(manifest)
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
@@ -352,6 +281,99 @@ func dump(ctx context.Context, store driver.Store, history string, includeVersio
 		return nil, dumpformat.Manifest{}, err
 	}
 	return data, manifest, nil
+}
+
+func bindNativeDumpRecord(record *nativeRecord, meta driver.Meta, historyBinding *dumpformat.HistoryBindingEvidence) {
+	if historyBinding != nil && record.Ref.ID == "restore/archive" {
+		var evidence nativeReverseEvidence
+		if json.Unmarshal(record.Body, &evidence) == nil && hasConverterReverseEvidence(evidence) {
+			evidence.HistoryBinding = historyBinding
+			evidence.NativeIncarnation = meta.Incarnation
+			if body, err := json.Marshal(evidence); err == nil {
+				record.Body = body
+			}
+		}
+	}
+	// Bind the carried source-plane commit marker to the pinned incarnation.
+	// Native publication rebinds it again to the newly restored incarnation.
+	if record.Ref.ID != driver.SourcePlaneCommitRecordID || record.Kind != "instance_config" {
+		return
+	}
+	var binding driver.SourcePlaneCommitBindingV1
+	if json.Unmarshal(record.Body, &binding) != nil || binding.StoreID != meta.StoreID {
+		return
+	}
+	binding.Incarnation = string(meta.Incarnation)
+	for i := range binding.Providers {
+		binding.Providers[i].Origin.Incarnation = string(meta.Incarnation)
+	}
+	if body, err := json.Marshal(binding); err == nil {
+		record.Body = body
+	}
+}
+
+func nativeDumpManifest(source nativeDumpSource, history, digest string, files map[string]dumpformat.File, records, versions, changesets int) dumpformat.Manifest {
+	meta := source.meta
+	return dumpformat.Manifest{
+		Format: dumpformat.Format, Schema: 1, Reference: "plug-native", StoreID: string(meta.StoreID),
+		Machine: "plug", Scope: "plug-native-store", History: history,
+		Projects: []dumpformat.Project{}, Kinds: []dumpformat.Kind{}, Sources: []dumpformat.Disposition{},
+		Files: files, Warnings: []string{}, Verification: map[string]string{},
+		NativeStoreID: string(meta.StoreID), NativeIncarnation: meta.Incarnation,
+		NativeHead: meta.Head.String(), NativeDigest: digest,
+		NativeAllocatorProfile: source.allocatorProfile, NativeAllocatorDigest: memberDigest(source.allocatorData),
+		RecordCount: records, VersionCount: versions, ChangesetCount: changesets,
+	}
+}
+
+type nativeDumpSource struct {
+	meta             driver.Meta
+	reader           driver.Reader
+	allocatorProfile string
+	allocatorData    []byte
+}
+
+func openNativeDumpSource(ctx context.Context, store driver.Store) (result nativeDumpSource, err error) {
+	meta, err := store.Meta(ctx)
+	if err != nil {
+		return nativeDumpSource{}, err
+	}
+	// Bind the record image and retained history to the same head advertised
+	// by the manifest. A writer may advance the store after Meta returns.
+	reader, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation, At: &meta.Head})
+	if err != nil {
+		return nativeDumpSource{}, err
+	}
+	defer func() {
+		if err != nil {
+			_ = reader.Close()
+		}
+	}()
+
+	snapshotReader, ok := reader.(driver.AllocatorSnapshotReader)
+	if !ok {
+		return nativeDumpSource{}, fmt.Errorf("%w: native snapshot requires revision-bound allocator inventory", driver.ErrUnsupported)
+	}
+	bound := reader.Snapshot()
+	if bound.At == nil || bound.At.String() != meta.Head.String() || bound.Incarnation != meta.Incarnation {
+		return nativeDumpSource{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("reader is not bound to the captured native view"))
+	}
+	allocatorSnapshot, err := snapshotReader.AllocatorSnapshot(ctx)
+	if err != nil {
+		return nativeDumpSource{}, err
+	}
+	if err := allocatorSnapshot.Validate(); err != nil {
+		return nativeDumpSource{}, err
+	}
+	if allocatorSnapshot.StoreID != meta.StoreID || allocatorSnapshot.Incarnation != meta.Incarnation || allocatorSnapshot.At.String() != meta.Head.String() {
+		return nativeDumpSource{}, driver.NewNativeAllocatorSnapshotError(driver.NativeAllocatorSourceMismatch, fmt.Errorf("allocator snapshot is not bound to the pinned store view"))
+	}
+	allocatorData, err := driver.EncodeAllocatorSnapshot(allocatorSnapshot)
+	if err != nil {
+		return nativeDumpSource{}, err
+	}
+
+	return nativeDumpSource{meta: meta, reader: reader, allocatorProfile: allocatorSnapshot.Version, allocatorData: allocatorData}, nil
 }
 
 func nativeDumpHistory(ctx context.Context, reader driver.Reader, meta driver.Meta, history string, records []nativeRecord) ([]driver.Version, []model.Changeset, error) {
@@ -439,6 +461,27 @@ func nativeDumpHistory(ctx context.Context, reader driver.Reader, meta driver.Me
 }
 
 func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, records []nativeRecord) (map[string][]byte, error) {
+	digests, joined := nativeReverseEvidenceDigests(records)
+	paths := make([]string, 0, len(digests))
+	for digest := range digests {
+		paths = append(paths, digest)
+	}
+	sort.Strings(paths)
+	result := make(map[string][]byte, len(paths))
+	for _, digest := range paths {
+		data, err := reader.Blob(ctx, driver.Hash(digest))
+		if err != nil || memberDigest(data) != digest {
+			if joined {
+				return nil, fmt.Errorf("joined reverse evidence blob %s is unavailable or changed", digest)
+			}
+			continue
+		}
+		result[digest] = data
+	}
+	return result, nil
+}
+
+func nativeReverseEvidenceDigests(records []nativeRecord) (map[string]bool, bool) {
 	digests := map[string]bool{}
 	joined := false
 	for _, record := range records {
@@ -469,23 +512,7 @@ func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, recor
 			}
 		}
 	}
-	paths := make([]string, 0, len(digests))
-	for digest := range digests {
-		paths = append(paths, digest)
-	}
-	sort.Strings(paths)
-	result := make(map[string][]byte, len(paths))
-	for _, digest := range paths {
-		data, err := reader.Blob(ctx, driver.Hash(digest))
-		if err != nil || memberDigest(data) != digest {
-			if joined {
-				return nil, fmt.Errorf("joined reverse evidence blob %s is unavailable or changed", digest)
-			}
-			continue
-		}
-		result[digest] = data
-	}
-	return result, nil
+	return digests, joined
 }
 
 func hasConverterReverseEvidence(evidence nativeReverseEvidence) bool {
@@ -526,7 +553,7 @@ func nativeReverseHistoryBinding(ctx context.Context, reader driver.Reader, reco
 			if err != nil {
 				return nil
 			}
-			receipt, err := reader.IdempotencyByKey(ctx, principal, binding.Profile.AgentLabel(), binding.Profile.Method, binding.Profile.IdempotencyKey)
+			receipt, err := driver.ReadNativeReverseReceipt(ctx, reader, principal, binding.Profile.AgentLabel(), binding.Profile.Method, binding.Profile.IdempotencyKey, nil)
 			if err != nil || receipt == nil || receipt.RequestHash != request || receipt.ResponsePending || receipt.Changeset.Kind != model.ChangesetRestore || receipt.Changeset.Revision != receipt.Commit.Revision {
 				return nil
 			}
@@ -1108,7 +1135,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	m.mu.Unlock()
 
-	committed, err := m.apply(ctx, archive, principal, meta, archiveBytes)
+	committed, err := m.apply(ctx, archive, principal, meta, nil)
 	if err != nil {
 		return m.fail(id, err)
 	}
@@ -1179,16 +1206,27 @@ func newID(prefix string) string {
 	return prefix + "-" + strconv.FormatInt(value, 10)
 }
 
-func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, principal model.PrincipalRef, meta model.WriteMeta, archiveBytes []byte) (model.Changeset, error) {
-	records, err := restoreRecords(archive)
+func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, principal model.PrincipalRef, meta model.WriteMeta, streamed *dumpformat.NativeHeadStream) (model.Changeset, error) {
+	var records []driver.Record
+	var err error
+	if streamed == nil {
+		records, err = restoreRecords(archive)
+	} else {
+		records, err = restoreStreamRecords(ctx, streamed)
+	}
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+	}
+	if projection := archive.Manifest().NativeReverseProjection; projection != nil {
+		if err := expandReverseProjection(records, projection); err != nil {
+			return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
+		}
 	}
 	allocatorSnapshot, err := decodeAllocatorSnapshot(archive)
 	if err != nil {
 		return model.Changeset{}, restoreAdmissionError(err)
 	}
-	ancestorPlan, err := nativeAncestorPlanForArchive(ctx, records, archive.Native())
+	ancestorPlan, err := nativeAncestorPlanForArchive(ctx, records, archive.Native(), streamed != nil)
 	if err != nil {
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
@@ -1249,9 +1287,9 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 		meta.Method = "admin.restore.finish"
 	}
 	if meta.IdempotencyKey == "" {
-		meta.IdempotencyKey = memberDigest(archiveBytes)
+		meta.IdempotencyKey = archive.SHA256()
 	}
-	requestHash := memberDigest(archiveBytes)
+	requestHash := archive.SHA256()
 	allocatorBinding, err := allocatorSnapshot.Binding()
 	if err != nil {
 		return model.Changeset{}, restoreAdmissionError(err)
@@ -1271,38 +1309,54 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 			return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 		}
 	}
-	for _, record := range records {
-		if err := pipeline.PutSourceRecord(ctx, tx, record); err != nil {
+	for i := range records {
+		if err := pipeline.PutSourceRecord(ctx, tx, records[i]); err != nil {
 			return model.Changeset{}, err
 		}
-	}
-	// Native dumps may carry converter reverse evidence as content-addressed
-	// blobs. Publish each authenticated blob in the same atomic restore as its
-	// records. Legacy native archives simply have no matching members here.
-	blobPaths := make([]string, 0)
-	for path := range archive.Manifest().Files {
-		if strings.HasPrefix(path, "blobs/") {
-			blobPaths = append(blobPaths, path)
+		if streamed != nil {
+			records[i].Body = nil
 		}
 	}
-	sort.Strings(blobPaths)
-	for _, path := range blobPaths {
-		name := strings.TrimPrefix(path, "blobs/")
-		if !isDigest(name) {
-			return model.Changeset{}, fmt.Errorf("native evidence blob path is not content-addressed")
+	if streamed != nil {
+		stream, ok := tx.(driver.NativeRestoreBlobTx)
+		if blobs := reverseHeadBlobSource(streamed); blobs != nil {
+			if !ok {
+				return model.Changeset{}, fmt.Errorf("%w: streamed native restore blobs", driver.ErrUnsupported)
+			}
+			if err := stream.StageNativeRestoreBlobs(ctx, blobs); err != nil {
+				return model.Changeset{}, err
+			}
 		}
-		data, ok := archive.NativeMember(path)
-		if !ok || memberDigest(data) != name {
-			return model.Changeset{}, fmt.Errorf("native evidence blob digest mismatch")
+	} else {
+		// Native dumps may carry converter reverse evidence as content-addressed
+		// blobs. Publish each authenticated blob in the same atomic restore as its
+		// records. Legacy native archives simply have no matching members here.
+		blobPaths := make([]string, 0)
+		for path := range archive.Manifest().Files {
+			if strings.HasPrefix(path, "blobs/") {
+				blobPaths = append(blobPaths, path)
+			}
 		}
-		actual, err := tx.PutBlob(ctx, data)
-		if err != nil {
-			return model.Changeset{}, err
-		}
-		if string(actual) != name {
-			return model.Changeset{}, fmt.Errorf("native evidence blob digest mismatch")
+		sort.Strings(blobPaths)
+		for _, path := range blobPaths {
+			name := strings.TrimPrefix(path, "blobs/")
+			if !isDigest(name) {
+				return model.Changeset{}, fmt.Errorf("native evidence blob path is not content-addressed")
+			}
+			data, ok := archive.NativeMember(path)
+			if !ok || memberDigest(data) != name {
+				return model.Changeset{}, fmt.Errorf("native evidence blob digest mismatch")
+			}
+			actual, err := tx.PutBlob(ctx, data)
+			if err != nil {
+				return model.Changeset{}, err
+			}
+			if string(actual) != name {
+				return model.Changeset{}, fmt.Errorf("native evidence blob digest mismatch")
+			}
 		}
 	}
+
 	if ancestorPlan != nil && len(ancestorPlan.rows) != 0 {
 		if err := tx.PutDerived(ctx, driver.DerivedAncestorClosure, nil, ancestorPlan.rows); err != nil {
 			return model.Changeset{}, err
@@ -1632,42 +1686,57 @@ func decodeNativeRecords(data []byte) ([]driver.Record, error) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		var value nativeRecord
-		if err := decodeNativeLine(line, &value); err != nil || value.Kind == "" || !json.Valid(value.Body) {
-			return nil, fmt.Errorf("invalid native record")
-		}
-		if err := value.Ref.Validate(); err != nil {
+		record, err := decodeNativeRecord(line)
+		if err != nil {
 			return nil, err
 		}
-		var body map[string]any
-		if err := json.Unmarshal(value.Body, &body); err != nil || body == nil {
-			return nil, fmt.Errorf("native record body must be an object")
-		}
-		// A native head image carries the stored protected source, not an
-		// asserted runtime snapshot. Validate both identity and source before
-		// apply can open a publication transaction, preserving its raw body.
-		ontologyID := value.Ref.IsID() && (value.Ref.ID == "ontology" || strings.HasPrefix(value.Ref.ID, "ontology/"))
-		if value.Kind == "ontology" || ontologyID {
-			if value.Kind != "ontology" || !ontologyID || !value.Ref.Branch.IsZero() {
-				return nil, fmt.Errorf("native ontology requires a protected branch-zero ontology ID and kind")
-			}
-			source, err := service.DecodeOntologySource(value.Body)
-			if err != nil {
-				return nil, fmt.Errorf("invalid native ontology source: %w", err)
-			}
-			if _, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins); len(problems) != 0 {
-				return nil, fmt.Errorf("native ontology source does not compile")
-			}
-		}
-		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &value.Ref})
+
+		key, err := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
 		if err != nil || seen[key] {
 			return nil, fmt.Errorf("duplicate or invalid native record")
 		}
 		seen[key] = true
-		result = append(result, driver.Record{Ref: value.Ref, Kind: value.Kind, Revision: value.Revision, Body: append([]byte(nil), value.Body...)})
+		result = append(result, record)
 	}
 	sort.Slice(result, func(i, j int) bool { return recordSortKey(result[i]) < recordSortKey(result[j]) })
 	return result, nil
+}
+
+func decodeNativeRecord(line []byte) (driver.Record, error) {
+	return decodeNativeRecordForArchive(line, false)
+}
+
+func decodeNativeRecordForArchive(line []byte, streamed bool) (driver.Record, error) {
+	var value nativeRecord
+	if err := decodeNativeLine(line, &value); err != nil || value.Kind == "" || !json.Valid(value.Body) {
+		return driver.Record{}, fmt.Errorf("invalid native record")
+	}
+	if err := value.Ref.Validate(); err != nil {
+		return driver.Record{}, err
+	}
+	if !(streamed && driver.IsNativeHeadHistoryMarker(value.Ref, value.Kind)) {
+		var body map[string]any
+		if err := json.Unmarshal(value.Body, &body); err != nil || body == nil {
+			return driver.Record{}, fmt.Errorf("native record body must be an object")
+		}
+	}
+	// A native head image carries the stored protected source, not an
+	// asserted runtime snapshot. Validate both identity and source before
+	// apply can open a publication transaction, preserving its raw body.
+	ontologyID := value.Ref.IsID() && (value.Ref.ID == "ontology" || strings.HasPrefix(value.Ref.ID, "ontology/"))
+	if value.Kind == "ontology" || ontologyID {
+		if value.Kind != "ontology" || !ontologyID || !value.Ref.Branch.IsZero() {
+			return driver.Record{}, fmt.Errorf("native ontology requires a protected branch-zero ontology ID and kind")
+		}
+		source, err := service.DecodeOntologySource(value.Body)
+		if err != nil {
+			return driver.Record{}, fmt.Errorf("invalid native ontology source: %w", err)
+		}
+		if _, problems := ontology.Compile(source.Base, source.Overlays, source.Plugins); len(problems) != 0 {
+			return driver.Record{}, fmt.Errorf("native ontology source does not compile")
+		}
+	}
+	return driver.Record{Ref: value.Ref, Kind: value.Kind, Revision: value.Revision, Body: value.Body}, nil
 }
 
 func recordSortKey(record driver.Record) string {

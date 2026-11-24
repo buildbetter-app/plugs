@@ -298,6 +298,8 @@ type ArchiveEvidence struct {
 	NativeDecodedLimitBytes uint64                             `json:"native_decoded_limit_bytes,omitempty"`
 	NativeIncarnation       string                             `json:"native_incarnation,omitempty"`
 	HistoryBinding          *dumpformat.HistoryBindingEvidence `json:"history_binding,omitempty"`
+	ReverseOriginLoss *dumpformat.NativeReverseOriginLoss `json:"reverse_origin_loss,omitempty"`
+
 }
 
 func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(model.Ref, string, any) error) error {

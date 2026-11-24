@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -294,6 +295,12 @@ func (c *NativeCollection) appendSource(ctx context.Context, source *dumpformat.
 				return err
 			}
 			return c.spoolOriginal(name, raw)
+		},
+		PreparedFile: func(file dumpformat.NativeCaptureFile, input io.Reader) error {
+			if err := b.captureFileCommitment(file.Name, dumpformat.File{Size: int64(file.Bytes), SHA256: file.SHA256}); err != nil {
+				return err
+			}
+			return c.spoolOriginalStream(file, input)
 		},
 	})
 	if err != nil {

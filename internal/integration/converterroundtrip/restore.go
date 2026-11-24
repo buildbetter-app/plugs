@@ -648,7 +648,7 @@ func Recover(ctx context.Context, target driver.Store, check Verification) (Repo
 		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt"}
 	}
 	// Bind recovery to the durable archive marker as well as the receipt.
-	rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil || len(rows) != 1 {
 		return Report{}, driver.ErrRestoreBindingMismatch{Field: "receipt.archiveMarker"}
 	}
@@ -691,7 +691,16 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	if err != nil {
 		return Report{}, err
 	}
-	receipt, err := r.IdempotencyByKey(ctx, principal, bound.AgentLabel(), bound.Method, bound.IdempotencyKey)
+	receipt, err := driver.ReadNativeReverseReceipt(ctx, r, principal, bound.AgentLabel(), bound.Method, bound.IdempotencyKey, func(ref model.Ref) bool {
+		switch ref.ID {
+		case "restore/archive", importBindingRecordID, driver.SourcePlaneCommitRecordID, NativeFamilyReportID:
+			return true
+		case driver.OfflineHistoryEvidenceID:
+			return bound.NativeDeltaHistory != nil && bound.HistoryMode == driver.RestoreHistoryModeSnapshot
+		default:
+			return strings.HasPrefix(ref.ID, "instance_config/restore-import/project/")
+		}
+	})
 	if err != nil {
 		return Report{}, err
 	}
@@ -703,7 +712,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		// read-only receipt view from the same restored rows so all subsequent
 		// binding checks remain exact and no write is replayed.
 		refs := []model.Ref{model.RefByID("restore/archive", model.Natural64(0)), model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))}
-		rows, rowErr := r.Get(ctx, refs)
+		rows, rowErr := driver.GetNativeHeadRecords(ctx, r, refs)
 		if rowErr != nil || len(rows) < 3 {
 			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
 		}
@@ -716,13 +725,13 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 				break
 			}
 		}
-		rows, rowErr = r.Get(ctx, refs)
+		rows, rowErr = driver.GetNativeHeadRecords(ctx, r, refs)
 		if rowErr != nil || len(rows) != len(refs) {
 			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
 		}
 		results := make([]model.OpResult, 0, len(rows))
 		for _, row := range rows {
-			results = append(results, model.OpResult{Ref: row.Ref, Revision: meta.Head, Record: append([]byte(nil), row.Body...)})
+			results = append(results, model.OpResult{Ref: row.Ref, Revision: meta.Head, Record: row.Body})
 		}
 		receipt = &driver.IdempotencyRecord{Commit: model.Commit{Revision: meta.Head, Results: results}, Changeset: model.Changeset{Kind: model.ChangesetRestore, Incarnation: meta.Incarnation, Revision: meta.Head, IdempotencyKey: bound.IdempotencyKey}}
 	}
@@ -770,7 +779,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		// The immutable receipt is the authority for the admitted ceiling and
 		// complete raw-file ledger. Compare the pinned current marker before
 		// allocating or reading any capture part, including on clean recovery.
-		rows, err := r.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+		rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 		if err != nil {
 			return Report{}, err
 		}
@@ -794,7 +803,7 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 	for _, project := range binding.Projects {
 		projectRefs = append(projectRefs, model.RefByID(importProjectRecordID(project.SourceAllocator.Prefix), model.Natural64(0)))
 	}
-	protectedRows, err := r.Get(ctx, projectRefs)
+	protectedRows, err := driver.GetNativeHeadRecords(ctx, r, projectRefs)
 	if err != nil {
 		return Report{}, err
 	}
@@ -824,7 +833,13 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		}
 	}
 	if (source == nil || source.archive == nil) && (bound.HistoryDigest != "" || bound.SourcePlanes != nil) {
-		raw, readErr := r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+		var raw []byte
+		var readErr error
+		if bound.SourcePlanes != nil && evidence.NativeCaptureFiles != nil {
+			raw, readErr = readReverseMetadataBlob(ctx, r, driver.Hash(evidence.ArchiveSHA256), dumpformat.NativeDeltaRootBytes)
+		} else {
+			raw, readErr = r.Blob(ctx, driver.Hash(evidence.ArchiveSHA256))
+		}
 		if readErr != nil {
 			return Report{}, readErr
 		}
@@ -910,7 +925,7 @@ func compareImportBinding(ctx context.Context, r driver.Reader, evidence archive
 	if !ok {
 		return driver.ErrRestoreBindingMismatch{Field: "receipt.manifest"}
 	}
-	manifestRaw, err := r.Blob(ctx, driver.Hash(manifestFile.SHA256))
+	manifestRaw, err := readReverseMetadataBlob(ctx, r, driver.Hash(manifestFile.SHA256), dumpformat.MaxNativeHeadManifestBytes)
 	if err != nil {
 		return err
 	}

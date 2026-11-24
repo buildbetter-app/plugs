@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 // The newline is included in this bound. It is a logical record bound, not a
 // part or total stream limit. One record may span any number of parts.
 const NativeDeltaRecordLimit = 128 << 20
+
+type spooledCaptureKey struct{}
 
 type NativeDeltaRecordLimitError struct {
 	MeasuredBytes uint64
@@ -24,6 +28,7 @@ func (e *NativeDeltaRecordLimitError) Error() string {
 type nativeDeltaRecordReader struct {
 	ctx          context.Context
 	input        *bufio.Reader
+	bounded      bool
 	limit        uint64
 	budget       *NativeDeltaBudget
 	buffer       *NativeDeltaBudget
@@ -33,6 +38,10 @@ type nativeDeltaRecordReader struct {
 
 func newNativeDeltaRecordReader(ctx context.Context, input io.Reader, budgets ...*NativeDeltaBudget) *nativeDeltaRecordReader {
 	r := &nativeDeltaRecordReader{ctx: ctx, limit: NativeDeltaRecordLimit}
+	if spooled, _ := ctx.Value(spooledCaptureKey{}).(bool); spooled {
+		r.limit = driver.NativeHeadRecordBytes
+		r.bounded = true
+	}
 	if len(budgets) != 0 && budgets[0] != nil {
 		r.budget = budgets[0]
 		r.buffer = r.budget.Scope()
@@ -103,6 +112,11 @@ func (r *nativeDeltaRecordReader) next() ([]byte, error) {
 		case err == nil:
 			if len(record) == 1 {
 				return nil, fmt.Errorf("empty native delta logical record")
+			}
+			if r.bounded {
+				if err := driver.CheckReverseJSONShape(record); err != nil {
+					return nil, err
+				}
 			}
 			return record, nil
 		case errors.Is(err, bufio.ErrBufferFull):

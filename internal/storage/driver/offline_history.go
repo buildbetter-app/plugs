@@ -34,6 +34,13 @@ const OfflineHistoryEvidenceID = "plug-restore-history"
 const NativeTableHistorySource = "beads-native-tables/1"
 const NativeTableHistoryRecordPrefix = "source/native-history/"
 
+// IsReverseDiscardedOrigin identifies archive-only current and history
+// records. Source mirrors and the original history binding are separate.
+func IsReverseDiscardedOrigin(ref model.Ref, kind string) bool {
+	return kind == "beads-archive" && ref.IsID() && ref.Branch.IsZero() &&
+		(strings.HasPrefix(ref.ID, "source/native-current/") || strings.HasPrefix(ref.ID, NativeTableHistoryRecordPrefix))
+}
+
 // SourceHistoryGap is an inclusive unavailable source sequence range. A partial
 // replay retains a contiguous suffix; every earlier sequence is accounted for
 // explicitly, including known history deliberately left outside that suffix.

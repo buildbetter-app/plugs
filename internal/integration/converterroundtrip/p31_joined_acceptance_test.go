@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -424,5 +425,76 @@ func TestP31JoinedCurrentReceiverReverseDirectAndNativeRestoredAllDrivers(t *tes
 			}
 			_ = reopen
 		})
+	}
+}
+
+func TestStreamedJoinedReversePreservesProfilesAndOriginLoss(t *testing.T) {
+	ctx := dumpformat.WithNativeDeltaBudget(context.Background(), dumpformat.NewNativeDeltaBudget(0))
+	ledger := newJoinedOriginalLedger(t)
+	source, initial, _ := openIdentityTarget(t, "sqlite")
+	if err := initial.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	op, lease, release, err := HoldRestoreLease(ctx, source, "reverse-stream-projection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	profile := joinedPhysicalProfile(t, ctx, ledger, source, lease)
+	report, err := RestoreNativeCaptureCollectionImportWithLease(op, ledger.binding, ledger.sources(), source, lease, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := report.Close(); err != nil {
+		t.Fatal(err)
+	}
+	options := reverseconverter.Options{All: true, BeadsDestination: true}
+	direct, err := ReverseRestoredWithOptions(ctx, source, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	manifest, err := restore.WriteReverseHead(ctx, source, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := manifest.NativeReverseProjection
+	if projected == nil || projected.ProfileCopies != 2 || projected.DiscardedOrigins == nil ||
+		projected.DiscardedOrigins.Records == 0 || projected.DiscardedOrigins.Fields < projected.DiscardedOrigins.Records {
+		t.Fatalf("missing profile and origin projection: %+v", projected)
+	}
+	if _, err := dumpformat.Read(bytes.NewReader(out.Bytes())); err == nil {
+		t.Fatal("ordinary restore admitted the projected trial archive")
+	}
+	target, targetLease, reopen := openIdentityTarget(t, "sqlite")
+	presence := restore.Presence{"mode": "presence_check", "challenge": "stream-projection-test", "proof": "stream-projection-test"}
+	manager := restore.NewManager(target, targetLease, restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }))
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RestoreReverseHead(ctx, bytes.NewReader(out.Bytes()), int64(out.Len()), hashBytes(manifestRaw), hashBytes(out.Bytes()),
+		model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}, model.WriteMeta{}, presence); err != nil {
+		t.Fatal(err)
+	}
+	target, _ = reopen()
+	restored, err := ReverseRestoredWithOptions(ctx, target, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored.Result.JSONL, direct.Result.JSONL) {
+		t.Fatal("streamed native restore changed reverse JSONL")
+	}
+	losses := func(report reverseconverter.Report) map[string]reverseconverter.StateLoss {
+		result := map[string]reverseconverter.StateLoss{}
+		for _, loss := range report.CoreKindLosses {
+			if loss.Kind == "beads-archive" || loss.Kind == "instance_config" {
+				result[loss.Kind] = loss
+			}
+		}
+		return result
+	}
+	if a, b := losses(direct.Result.Report), losses(restored.Result.Report); len(a) != 2 || !reflect.DeepEqual(a, b) {
+		t.Fatalf("streamed native restore changed core losses: direct=%+v restored=%+v", a, b)
 	}
 }

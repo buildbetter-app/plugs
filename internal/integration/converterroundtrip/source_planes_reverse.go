@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 
@@ -72,11 +73,33 @@ func reverseSourceRestored(ctx context.Context, r driver.CheckpointInventory, me
 	if len(options.Directives) == 0 && len(dump.Manifest.Ontology) != 0 {
 		options.Directives = append([]ontologymigration.Directive(nil), dump.Manifest.Ontology...)
 	}
-	live, err := reverseLiveCensus(ctx, r)
+	live, omitted, err := reverseLiveCensus(ctx, r, true)
 	if err != nil {
 		return LiveReverse{}, err
 	}
-	coreLosses, namespaceLosses, err := reverseLossCensus(r, live, &plan, options)
+	projected := false
+	if report.Receipt.RequestHash == "" {
+		var evidence archiveEvidence
+		if json.Unmarshal(live["restore/archive"].Body, &evidence) != nil {
+			return LiveReverse{}, ReverseRefusal{"invalid_source_evidence"}
+		}
+		if loss := evidence.ReverseOriginLoss; loss != nil {
+			if evidence.NativeIncarnation != meta.Incarnation || loss.Records <= 0 || loss.Fields < loss.Records ||
+				loss.Records > math.MaxInt/2 || loss.Fields > math.MaxInt/2 {
+				return LiveReverse{}, ReverseRefusal{"invalid_source_evidence"}
+			}
+			if omitted == nil {
+				omitted = &dumpformat.NativeReverseOriginLoss{}
+			}
+			if omitted.Records > math.MaxInt-loss.Records || omitted.Fields > math.MaxInt-loss.Fields {
+				return LiveReverse{}, ReverseRefusal{"invalid_source_evidence"}
+			}
+			omitted.Records += loss.Records
+			omitted.Fields += loss.Fields
+			projected = true
+		}
+	}
+	coreLosses, namespaceLosses, err := reverseLossCensus(r, live, &plan, options, omitted, projected)
 	if err != nil {
 		return LiveReverse{}, err
 	}
