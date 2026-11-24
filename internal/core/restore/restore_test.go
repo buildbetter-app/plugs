@@ -275,6 +275,67 @@ func TestRestoreImportConflictClassificationAcrossStores(t *testing.T) {
 	}
 }
 
+func TestReverseHeadDumpPreservesNativeRestoreImage(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	source, err := cli.OpenLocal(ctx, cli.LocalConfig{
+		Project: "fixture", Agent: "source", Storage: cli.StorageConfig{Driver: "provided"},
+		PresenceVerifier: trustedPresenceVerifier(),
+		Factory: func(context.Context, cli.StorageConfig) (driver.Store, func() error, error) {
+			return store, store.Close, nil
+		},
+	})
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if _, err := source.Client.Call(ctx, "bead.create", map[string]any{
+		"type": "issue", "fields": map[string]any{"title": "reverse snapshot"},
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+	_, ordinary := captureDump(t, ctx, source.Client)
+	data, manifest, err := restore.DumpReverseHead(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected, err := dumpformat.Read(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.History != "head" || ordinary.Manifest().VersionCount != 1 || manifest.VersionCount != 0 ||
+		ordinary.Manifest().NativeHead != manifest.NativeHead || ordinary.Manifest().NativeIncarnation != manifest.NativeIncarnation ||
+		ordinary.Manifest().RecordCount != manifest.RecordCount || ordinary.Manifest().Scope != manifest.Scope {
+		t.Fatalf("unexpected reverse head binding: %+v", manifest)
+	}
+	if len(manifest.Files) != len(ordinary.Manifest().Files) {
+		t.Fatal("reverse head changed the member inventory")
+	}
+	for path := range ordinary.Manifest().Files {
+		before, _ := ordinary.NativeMember(path)
+		after, ok := projected.NativeMember(path)
+		if !ok || path == "versions.ndjson" && len(after) != 0 ||
+			path != "versions.ndjson" && !bytes.Equal(before, after) {
+			t.Fatalf("unexpected reverse head member %s", path)
+		}
+	}
+
+	target, err := cli.OpenLocal(ctx, cli.LocalConfig{
+		Project: "fixture", Agent: "target", Storage: cli.StorageConfig{Driver: "memory"},
+		PresenceVerifier: trustedPresenceVerifier(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	restoreArchive(t, ctx, target.Client, data, projected)
+	result, err := target.Client.Call(ctx, "bead.ready", map[string]any{"limit": 10}, "")
+	if err != nil || !bytes.Contains(result.JSON, []byte("reverse snapshot")) {
+		t.Fatalf("reverse snapshot readback: %s %v", result.JSON, err)
+	}
+}
+
 func TestDumpCursorBindsHistoryAndPageSize(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
