@@ -66,9 +66,10 @@ func WithCompaction(config CompactionConfig) Option {
 // CompactionRequest selects the next eligible record in (closed time, ID)
 // order. AfterID is an optional exclusive cursor: selection resumes strictly
 // after the named record's position in that order. The named record must be in
-// the caller's project, currently closed, and have a recorded close time (an
-// imported closed_at or a close transition in permanent history); the latest
-// close counts, so a reopened and re-closed record moves later. Its own current
+// the caller's project, currently closed, and have a recorded close time: an
+// imported closed_at field, used as recorded, or else the latest close
+// transition in permanent history, so a reopened and re-closed record without
+// an imported closed_at moves later. Its own current
 // eligibility does not matter, so the ID that a refusal names can always be
 // passed back. AfterID joins only the idempotency request hash.
 type CompactionRequest struct {
@@ -126,7 +127,9 @@ func compactionSelected(candidate compactionCandidate) map[string]any {
 // namedCompactionError names the selected record on a failure after selection
 // (for example at the write step). errors.Is still reaches the cause; errors.As
 // for *model.Error yields the cause's typed data, or internal_error for an
-// untyped cause, with the selected record added to its details.
+// untyped cause, with the selected record added to its details. Authorization
+// outcomes and idempotency_key_reused are never named: they describe the
+// caller or the key, not the record. Existing detail keys are never replaced.
 type namedCompactionError struct {
 	cause error
 	named *model.Error
@@ -149,14 +152,17 @@ func nameCompactionFailure(err error, candidate compactionCandidate) error {
 	named := &model.Error{Message: err.Error(), Data: model.ErrorData{Code: "internal_error"}}
 	var typed *model.Error
 	if errors.As(err, &typed) {
+		if code := string(typed.Data.Code); code == "forbidden" || strings.HasPrefix(code, "authz_") || code == "idempotency_key_reused" {
+			return err
+		}
 		copied := *typed
 		named = &copied
 	}
 	details := make(map[string]any, len(named.Data.Details)+2)
-	for key, value := range named.Data.Details {
+	for key, value := range compactionSelected(candidate) {
 		details[key] = value
 	}
-	for key, value := range compactionSelected(candidate) {
+	for key, value := range named.Data.Details {
 		details[key] = value
 	}
 	named.Data.Details = details
@@ -198,7 +204,7 @@ func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef,
 	}
 	probe, err := s.authorizeCompaction(ctx, by, candidate.row.record.Ref, meta)
 	if err != nil {
-		return port.WriteOutcome{}, err
+		return port.WriteOutcome{}, nameCompactionFailure(err, candidate)
 	}
 	if meta.DryRun {
 		// This is a selection preview, not a generated or committed summary.

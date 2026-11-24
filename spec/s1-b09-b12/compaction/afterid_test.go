@@ -63,6 +63,15 @@ func p47Refusal(t *testing.T, f *fixture, key, code string, params map[string]an
 	return details
 }
 
+// p47CursorRefused pins the cause, not only the code, of a cursor refusal.
+func p47CursorRefused(t *testing.T, f *fixture, key, cursor string) {
+	t.Helper()
+	data := p47RefusalData(t, f, key, "invalid_params", map[string]any{"dryRun": false, "afterId": cursor})
+	if hint := fmt.Sprint(data["hint"]); !strings.Contains(hint, "afterId must name a closed record in this project") {
+		t.Fatalf("%s refused for another reason: %q", key, hint)
+	}
+}
+
 func p47RefusalData(t *testing.T, f *fixture, key, code string, params map[string]any) map[string]any {
 	t.Helper()
 	before := f.meta()
@@ -279,7 +288,7 @@ func TestP47AfterIDCursorScopeDeletedAndRevisionBoundary(t *testing.T) {
 			other := f.call("bead.create", "p47-other-create", map[string]any{"type": "issue", "fields": map[string]any{"title": "Other project", "description": strings.Repeat("Other project source. ", 30)}, "_meta": map[string]any{"project": "p47-other"}}, "")
 			otherRef := other["results"].([]any)[0].(map[string]any)["ref"].(map[string]any)
 			f.call("bead.close", "p47-other-close", map[string]any{"id": otherRef, "_meta": map[string]any{"project": "p47-other"}}, "")
-			p47Refusal(t, f, "p47-cursor-other-project", "invalid_params", map[string]any{"dryRun": false, "afterId": p47ID(otherRef)})
+			p47CursorRefused(t, f, "p47-cursor-other-project", p47ID(otherRef))
 
 			gone := f.create("p47-deleted-create", strings.Repeat("Deleted source. ", 30))
 			f.call("bead.close", "p47-deleted-close", map[string]any{"id": gone}, "")
@@ -287,7 +296,7 @@ func TestP47AfterIDCursorScopeDeletedAndRevisionBoundary(t *testing.T) {
 			if _, err := f.writer.ApplyWithOutcome(context.Background(), anonymous, model.ChangeSet{Ops: []model.Op{{Kind: model.OpDelete, Delete: &model.DeleteOp{Kind: model.OpDelete, Target: deleteRef}}}}, writeMeta("bead.delete", "p47-delete")); err != nil {
 				t.Fatalf("delete cursor record: %v", err)
 			}
-			p47Refusal(t, f, "p47-cursor-deleted", "invalid_params", map[string]any{"dryRun": false, "afterId": p47ID(gone)})
+			p47CursorRefused(t, f, "p47-cursor-deleted", p47ID(gone))
 
 			// The boundary is the head before d is edited: d stays first in the
 			// order (earliest close) but its current revision is excluded.
