@@ -111,8 +111,9 @@ func newFixtureWithClocks(t *testing.T, engine string, application, storage *tes
 	})
 	base := ontology.DefaultDocument()
 	base.Statuses["custom_active"] = ontology.Status{Name: "Custom active", Category: ontology.Unstarted}
+	base.Statuses["deferred"] = ontology.Status{Name: "Deferred", Category: ontology.Frozen}
 	workflow := base.Workflows["issue"]
-	workflow.Statuses = append(workflow.Statuses, "custom_active")
+	workflow.Statuses = append(workflow.Statuses, "custom_active", "deferred")
 	base.Workflows["issue"] = workflow
 	issue := base.Types["issue"]
 	issue.Name = "Other work"
@@ -126,7 +127,7 @@ func newFixtureWithClocks(t *testing.T, engine string, application, storage *tes
 	if len(problems) != 0 {
 		t.Fatalf("fixture ontology: %v", problems)
 	}
-	f.onto = service.NewOntology(snapshot.Effective)
+	f.onto = service.NewOntology(snapshot.Effective, service.WithOntologyClock(f.clock.Now))
 	f.acquire(t)
 	return f
 }

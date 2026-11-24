@@ -195,6 +195,107 @@ func TestP39ReadyUsesLiveGateLinksOnEpicAncestors(t *testing.T) {
 	})
 }
 
+func TestP43ImportedDeferredEpicReadiness(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		now := f.clock.Now()
+		for _, tc := range []struct {
+			name       string
+			metadata   map[string]any
+			native     bool
+			liveBlock  bool
+			explicit   bool
+			childReady bool
+			grandReady bool
+		}{
+			{name: "absent", childReady: true, grandReady: true},
+			{name: "null", metadata: map[string]any{"beads.source.defer_until": nil}, childReady: true, grandReady: true},
+			{name: "past", metadata: map[string]any{"beads.source.defer_until": now.Add(-time.Second)}, childReady: true, grandReady: true},
+			{name: "at-clock", metadata: map[string]any{"beads.source.defer_until": now}, childReady: true, grandReady: true},
+			{name: "future", metadata: map[string]any{"beads.source.defer_until": now.Add(time.Second)}, grandReady: true},
+			{name: "malformed-timestamp", metadata: map[string]any{"beads.source.defer_until": "invalid"}, grandReady: true},
+			{name: "native-deferred-status", native: true},
+			{name: "live-blocker", liveBlock: true},
+			{name: "explicitly-blocked", explicit: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				prefix := "pl-p43-" + tc.name
+				parentID, childID, grandID := prefix+"-epic", prefix+"-child", prefix+"-grandchild"
+				parent := document(parentID, now, 1)
+				parent["type"] = "epic"
+				fields := parent["fields"].(map[string]any)
+				fields["status"] = "deferred"
+				if tc.explicit {
+					fields["blocked"] = true
+				}
+				if !tc.native {
+					metadata := map[string]any{"beads.source.status": "deferred"}
+					for key, value := range tc.metadata {
+						metadata[key] = value
+					}
+					parent["metadata"] = metadata
+				}
+				child := document(childID, now, 1)
+				child["parent"] = model.Ref{ID: parentID}
+				grandchild := document(grandID, now, 1)
+				grandchild["parent"] = model.Ref{ID: childID}
+				docs := []map[string]any{parent, child, grandchild}
+				if tc.liveBlock {
+					blockerID := prefix + "-blocker"
+					parent["links"] = []map[string]any{{"kind": "blocks", "to": model.Ref{ID: blockerID}}}
+					docs = append(docs, document(blockerID, now, 1))
+				}
+				f.seed(t, docs...)
+				for _, task := range []struct {
+					name  string
+					id    string
+					ready bool
+				}{{"child", childID, tc.childReady}, {"grandchild", grandID, tc.grandReady}} {
+					t.Run(task.name, func(t *testing.T) {
+						filter := map[string]any{"resources": []string{task.id}}
+						if task.ready {
+							f.pages(t, filter, task.id)
+						} else {
+							f.pages(t, filter)
+						}
+					})
+				}
+			})
+		}
+	})
+}
+
+func TestP43AncestorScheduleMetadataIsProtected(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		const parentID = "pl-p43-protected-parent"
+		const childID = "pl-p43-protected-child"
+		now := f.clock.Now()
+		parent := document(parentID, now, 1)
+		parent["type"] = "epic"
+		parent["fields"].(map[string]any)["status"] = "deferred"
+		parent["metadata"] = map[string]any{
+			"beads.source.status":      "deferred",
+			"beads.source.defer_until": now.Add(time.Hour),
+		}
+		child := document(childID, now, 1)
+		child["parent"] = model.Ref{ID: parentID}
+		f.seed(t, parent, child)
+		f.unchanged(t, func() {
+			for _, key := range []string{"beads.source.status", "beads.source.defer_until"} {
+				t.Run(key, func(t *testing.T) {
+					got := f.call(t, "tx.apply", map[string]any{
+						"changeSet": map[string]any{"ops": []map[string]any{{"kind": "setMeta", "target": model.Ref{ID: parentID}, "key": key, "value": nil}}},
+						"_meta":     map[string]any{"project": project, "idempotencyKey": fixtureKey(key)},
+					})
+					if got.Error == nil || got.Error.Data.Code != "protected_record" {
+						t.Fatalf("remove %s: %+v", key, got)
+					}
+				})
+			}
+			f.pages(t, map[string]any{"resources": []string{childID}})
+		})
+	})
+}
+
 func TestB01StoredRankLagIsBoundedAtSixtySeconds(t *testing.T) {
 	eachStore(t, func(t *testing.T, f *fixture) {
 		now := f.clock.Now()

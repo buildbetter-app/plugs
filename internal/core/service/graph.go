@@ -291,6 +291,7 @@ func (o *Ontology) readyDependencies(doc pipeline.Document, graph map[string]sto
 // readyAncestors applies canonical parent scheduling to ready and fresh claims.
 // It deliberately leaves close and settlement's direct blocker guard unchanged.
 func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]storedBead) (bool, error) {
+	subjectID := doc.ID
 	seen := map[string]bool{doc.ID: true}
 	for {
 		parent, err := pipeline.HierarchyParent(doc)
@@ -304,13 +305,15 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		if !exists || !parent.IsID() || !parent.Branch.IsZero() || seen[parent.ID] {
 			return false, nil
 		}
-		// Deferred/backlog ancestors and explicit blocks suppress the subtree.
-		// A terminal ancestor's dependency links no longer gate its children.
-		// Continue walking to check the remaining ancestor chain.
-		category, known := o.effective(row.doc.Project).Category(state(row.doc).Status)
-		if !known || category.Backlog() || row.doc.Fields["blocked"] == true {
+		status := state(row.doc).Status
+		category, known := o.effective(row.doc.Project).Category(status)
+		if !known || row.doc.Fields["blocked"] == true {
 			return false, nil
 		}
+		if category.Backlog() && !o.importedDeferredParentAllows(row.doc, status, doc.ID == subjectID) {
+			return false, nil
+		}
+		// Terminal ancestors' dependency links have no scheduling effect.
 		if !category.Terminal() {
 			unblocked, err := o.noOpenBlockers(row.doc, graph)
 			if err != nil || !unblocked {
@@ -320,6 +323,20 @@ func (o *Ontology) readyAncestors(doc pipeline.Document, graph map[string]stored
 		seen[parent.ID] = true
 		doc = row.doc
 	}
+}
+
+// Beads' defer date excludes direct children only. Live blockers still
+// propagate through imported deferred ancestors, as for other live parents.
+func (o *Ontology) importedDeferredParentAllows(parent pipeline.Document, status string, direct bool) bool {
+	var sourceStatus string
+	if status != "deferred" || json.Unmarshal(parent.Metadata["beads.source.status"], &sourceStatus) != nil || sourceStatus != "deferred" {
+		return false
+	}
+	if raw := parent.Metadata["beads.source.defer_until"]; direct && len(raw) != 0 {
+		var until *time.Time
+		return json.Unmarshal(raw, &until) == nil && (until == nil || !until.After(o.now()))
+	}
+	return true
 }
 
 func beadValue(row storedBead) (Bead, error) {

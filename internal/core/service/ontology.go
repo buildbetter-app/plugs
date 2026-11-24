@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/ontology"
@@ -19,6 +20,7 @@ import (
 type Ontology struct {
 	mu                   sync.RWMutex
 	resolve              func(string) ontology.Effective
+	now                  func() time.Time
 	permissionObserver   TransitionPermissionObserver
 	permissionConfigured bool
 	// Configured resolvers are never advertised as immutable no-plugin sources.
@@ -54,6 +56,15 @@ type TransitionPermissionObserver func(context.Context, TransitionPermissionRequ
 
 type OntologyOption func(*Ontology)
 
+// WithOntologyClock supplies the host clock for ancestor scheduling checks.
+func WithOntologyClock(now func() time.Time) OntologyOption {
+	return func(o *Ontology) {
+		if now != nil {
+			o.now = now
+		}
+	}
+}
+
 // WithTransitionPermissionObserver binds only trusted composition state. The
 // source must record installation and authority reads on the supplied reader.
 // Explicit nil means authorization is installed but its transition adapter is
@@ -71,7 +82,7 @@ func NewOntology(resolve func(string) ontology.Effective, options ...OntologyOpt
 		base := ontology.Default()
 		resolve = func(string) ontology.Effective { return base }
 	}
-	o := &Ontology{resolve: resolve, defaultOnly: defaultOnly}
+	o := &Ontology{resolve: resolve, now: time.Now, defaultOnly: defaultOnly}
 	for _, option := range options {
 		if option != nil {
 			option(o)
