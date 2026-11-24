@@ -218,7 +218,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 				}
 				return nil
 			}
-			if header.Name == "config/sources.json" && nativeDeltaAttachment {
+			if header.Name == "config/sources.json" {
 				if err := streamJSONElements(member, func(element []byte) error {
 					return admit(element, 1)
 				}); err != nil {
