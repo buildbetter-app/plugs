@@ -138,9 +138,33 @@ func memberDigest(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ArchiveTooLargeError reports the encoded native tar size and its limit.
+type ArchiveTooLargeError struct {
+	ArchiveBytes int64
+	LimitBytes   int64
+}
+
+func (e *ArchiveTooLargeError) Code() string { return "archive_too_large" }
+
+func (e *ArchiveTooLargeError) Error() string {
+	return fmt.Sprintf("%s: native archive is %d bytes, limit %d", e.Code(), e.ArchiveBytes, e.LimitBytes)
+}
+
 // Dump captures one immutable reader snapshot and returns a deterministic
 // plug-dump/1 tar. A caller may page the returned bytes at the RPC boundary.
 func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dumpformat.Manifest, error) {
+	return dump(ctx, store, history, true)
+}
+
+// DumpReverseHead captures the current records, allocator state, and retained
+// source evidence for an offline reverse trial. Native head restore publishes
+// those records and discards source version history, so this export uses an
+// empty versions member.
+func DumpReverseHead(ctx context.Context, store driver.Store) ([]byte, dumpformat.Manifest, error) {
+	return dump(ctx, store, "head", false)
+}
+
+func dump(ctx context.Context, store driver.Store, history string, includeVersions bool) ([]byte, dumpformat.Manifest, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}
@@ -261,85 +285,14 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 		return nil, dumpformat.Manifest{}, err
 	}
 
-	refs := make(map[string]model.Ref, len(records))
-	for _, record := range records {
-		key, e := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
-		if e != nil {
-			return nil, dumpformat.Manifest{}, e
-		}
-		refs[key] = record.Ref
-	}
-	var changesets []model.Changeset
-	var changesCursor *driver.Cursor
-	if !meta.HistoryFloor.IsZero() {
-		// A restored lifetime starts at its floor. Do not ask the driver for
-		// history that the restore explicitly discarded. Full-history dumps
-		// cannot truthfully represent that discarded prefix.
-		if history == "full" {
-			return nil, dumpformat.Manifest{}, driver.ErrTruncated{Floor: meta.HistoryFloor}
-		}
-		changesCursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor, Method: "changesets"}
-	}
-	for {
-		entries, e := reader.Changesets(ctx, changesCursor, 10000)
-		if e != nil {
-			return nil, dumpformat.Manifest{}, e
-		}
-		if len(entries) == 0 {
-			break
-		}
-		changesets = append(changesets, entries...)
-		for _, entry := range entries {
-			for _, change := range entry.Changes {
-				key, ce := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &change.Ref})
-				if ce == nil {
-					refs[key] = change.Ref
-				}
-			}
-		}
-		last := entries[len(entries)-1].Revision
-		changesCursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: last, Method: "changesets"}
-		if len(entries) < 10000 {
-			break
-		}
-	}
-
 	var versions []driver.Version
-	refKeys := make([]string, 0, len(refs))
-	for key := range refs {
-		refKeys = append(refKeys, key)
-	}
-	sort.Strings(refKeys)
-	for _, key := range refKeys {
-		var versionCursor *driver.Cursor
-		for {
-			page, e := reader.Versions(ctx, refs[key], driver.PageReq{Limit: 10000, Cursor: versionCursor})
-			if e != nil {
-				return nil, dumpformat.Manifest{}, e
-			}
-			versions = append(versions, page.Items...)
-			if page.NextCursor == nil {
-				break
-			}
-			versionCursor = page.NextCursor
+	var changesets []model.Changeset
+	if includeVersions {
+		versions, changesets, err = nativeDumpHistory(ctx, reader, meta, history, records)
+		if err != nil {
+			return nil, dumpformat.Manifest{}, err
 		}
 	}
-	if history == "head" {
-		latest := map[string]driver.Version{}
-		for _, version := range versions {
-			key, e := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &version.Ref})
-			if e != nil {
-				return nil, dumpformat.Manifest{}, e
-			}
-			latest[key] = version
-		}
-		versions = versions[:0]
-		for _, version := range latest {
-			versions = append(versions, version)
-		}
-		changesets = nil
-	}
-	sort.Slice(versions, func(i, j int) bool { return nativeVersionKey(versions[i]) < nativeVersionKey(versions[j]) })
 
 	var recordData, versionData, changesetData bytes.Buffer
 	for _, record := range records {
@@ -398,10 +351,91 @@ func Dump(ctx context.Context, store driver.Store, history string) ([]byte, dump
 	if err != nil {
 		return nil, dumpformat.Manifest{}, err
 	}
-	if len(data) > maxDumpBytes {
-		return nil, dumpformat.Manifest{}, fmt.Errorf("dump exceeds %d bytes", maxDumpBytes)
-	}
 	return data, manifest, nil
+}
+
+func nativeDumpHistory(ctx context.Context, reader driver.Reader, meta driver.Meta, history string, records []nativeRecord) ([]driver.Version, []model.Changeset, error) {
+	refs := make(map[string]model.Ref, len(records))
+	for _, record := range records {
+		key, e := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &record.Ref})
+		if e != nil {
+			return nil, nil, e
+		}
+		refs[key] = record.Ref
+	}
+	var changesets []model.Changeset
+	var changesCursor *driver.Cursor
+	if !meta.HistoryFloor.IsZero() {
+		// A restored lifetime starts at its floor. Do not ask the driver for
+		// history that the restore explicitly discarded. Full-history dumps
+		// cannot truthfully represent that discarded prefix.
+		if history == "full" {
+			return nil, nil, driver.ErrTruncated{Floor: meta.HistoryFloor}
+		}
+		changesCursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: meta.HistoryFloor, Method: "changesets"}
+	}
+	for {
+		entries, e := reader.Changesets(ctx, changesCursor, 10000)
+		if e != nil {
+			return nil, nil, e
+		}
+		if len(entries) == 0 {
+			break
+		}
+		changesets = append(changesets, entries...)
+		for _, entry := range entries {
+			for _, change := range entry.Changes {
+				key, ce := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &change.Ref})
+				if ce == nil {
+					refs[key] = change.Ref
+				}
+			}
+		}
+		last := entries[len(entries)-1].Revision
+		changesCursor = &driver.Cursor{Incarnation: meta.Incarnation, Revision: last, Method: "changesets"}
+		if len(entries) < 10000 {
+			break
+		}
+	}
+
+	var versions []driver.Version
+	refKeys := make([]string, 0, len(refs))
+	for key := range refs {
+		refKeys = append(refKeys, key)
+	}
+	sort.Strings(refKeys)
+	for _, key := range refKeys {
+		var versionCursor *driver.Cursor
+		for {
+			page, e := reader.Versions(ctx, refs[key], driver.PageReq{Limit: 10000, Cursor: versionCursor})
+			if e != nil {
+				return nil, nil, e
+			}
+			versions = append(versions, page.Items...)
+			if page.NextCursor == nil {
+				break
+			}
+			versionCursor = page.NextCursor
+		}
+	}
+	if history == "head" {
+		latest := map[string]driver.Version{}
+		for _, version := range versions {
+			key, e := driver.EncodeLockKey(driver.LockKey{Kind: driver.LockRecord, Ref: &version.Ref})
+			if e != nil {
+				return nil, nil, e
+			}
+			latest[key] = version
+		}
+		versions = versions[:0]
+		for _, version := range latest {
+			versions = append(versions, version)
+		}
+		changesets = nil
+	}
+	sort.Slice(versions, func(i, j int) bool { return nativeVersionKey(versions[i]) < nativeVersionKey(versions[j]) })
+
+	return versions, changesets, nil
 }
 
 func nativeReverseEvidenceBlobs(ctx context.Context, reader driver.Reader, records []nativeRecord) (map[string][]byte, error) {
@@ -527,13 +561,25 @@ func encodeLine(w io.Writer, value any) error {
 }
 
 func writeTar(paths []string, members map[string][]byte) ([]byte, error) {
-	var out bytes.Buffer
-	tw := tar.NewWriter(&out)
+	// USTAR writes one 512-byte header per member, pads each body to a
+	// block boundary, and writes two zero blocks at the end.
+	const blockSize = 512
+	size := int64(2 * blockSize)
 	for _, path := range paths {
 		data, ok := members[path]
 		if !ok {
 			return nil, fmt.Errorf("missing member %q", path)
 		}
+		size += blockSize + (int64(len(data))+blockSize-1)/blockSize*blockSize
+	}
+	if size > maxDumpBytes {
+		return nil, &ArchiveTooLargeError{ArchiveBytes: size, LimitBytes: maxDumpBytes}
+	}
+	var out bytes.Buffer
+	out.Grow(int(size))
+	tw := tar.NewWriter(&out)
+	for _, path := range paths {
+		data := members[path]
 		h := &tar.Header{Name: path, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0), Format: tar.FormatUSTAR}
 		if err := tw.WriteHeader(h); err != nil {
 			return nil, err
