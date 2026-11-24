@@ -8,12 +8,47 @@ acceptance still require evidence. #19 sets the current local Bazel merge gate.
 
 ## Open
 
-None. All twenty decisions are answered. New product questions need options
-and a recommendation; routine implementation choices follow the recorded design.
+- **Compaction head-of-line block (raised 2026-11-23 by B12).** `admin.compact`
+  works on one record per call, oldest eligible first (closed time, then ID).
+  A record whose summary can never be smaller is refused on every call, so no
+  later record is ever compacted. Native Beads compacts the others and leaves
+  that one. Options: (a) an optional exclusive `afterId` cursor that changes
+  selection only, where the refusal names the refused record and the cursor
+  joins the request digest; (b) a skip marker written on refusal. Recommended:
+  **(a)**, because a refusal never writes. B12 records the current behavior as
+  a known gap.
 
-Also needed, as admin actions rather than decisions: add `plugs` to the RunsOn GitHub App's repositories, and grant the remote-dev GitHub App **Workflows: Read and write** so the swarm can publish CI changes under its own identity.
+New product questions need options and a recommendation; routine
+implementation choices follow the recorded design. Testing runs locally
+through Bazel with no hosted CI (2026-11-12), so no CI admin actions remain.
 
 ## Answered
+
+- **Switch trial (2026-11-20 to 11-24, Nikhil):** run a supervised trial on
+  disposable copies of the real ledgers, nightly or on root's go, and keep
+  diagnosing, fixing and re-running until a trial is fully green (2026-11-24).
+  Beads stays the system of record until Nikhil decides to switch.
+- **Agent assignment (Nikhil):** B05 and B22 go to a Claude agent, with GPT
+  agents excluded from those topics (2026-11-21). B12 goes to a Claude agent
+  (2026-11-23).
+- **Native backups (2026-11-21, Nikhil, "p25a"):** native backups carry the
+  authenticated converter evidence.
+- **P18, AUTHZ performance and the Dolt issue (2026-11-20, Nikhil):** P18
+  approved, the authorization performance work approved, and the upstream
+  go-mysql-server JSON `+Inf` issue filed.
+- **Ready semantics (2026-11-22, orchestrator call, reversible):** `bead.ready`
+  matches Beads. It excludes Beads' default-excluded types (merge-request,
+  gate, molecule, rig, agent, role, message) with the same opt-in, and follows
+  Beads' parent rules, including deferred parents (P32, P39, P43).
+- **B12 native capture (2026-11-23, orchestrator call, reversible):** native
+  compaction snapshots are recorded with the public `ai.base_url` pointed at a
+  deterministic loopback stub. Beads stays unmodified and the recording
+  asserts that no connection left the host.
+- **Reverse export size (2026-11-24, orchestrator call, reversible):** the
+  reverse head export and native restore stream with bounded memory. The
+  former 128 MiB archive cap is now a buffer bound, and total archive size has
+  a separate typed ceiling of 2 GiB (P44). Real ledgers need this, because the
+  retained original captures alone exceed 128 MiB.
 
 - **P13 HASH allocator population cache (2026-11-19, root deb51809):**
   use a reversible, process-local Writer cache keyed by store incarnation and
