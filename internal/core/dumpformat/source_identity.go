@@ -205,16 +205,15 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 	if len(owners) != len(m.Projects) {
 		return ErrSourceHistory{Reason: "missing source project records"}
 	}
-	var entries []externalEntry
-	if err := decodeJSON(config, &entries); err != nil {
-		return err
-	}
 	configs := map[SourceIdentity][]externalEntry{}
-	for _, entry := range entries {
+	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
 		if entry.Identity == nil || owners[entry.Identity.Project] != *entry.Identity || bySource[*entry.Identity] == nil {
 			return HistoryMergeRefusal{Kind: "configuration source identity", Reason: "configuration provenance has no declared source"}
 		}
 		configs[*entry.Identity] = append(configs[*entry.Identity], entry)
+		return nil
+	}); err != nil {
+		return err
 	}
 	counts := map[string]int{}
 	planes := m.SourcePlaneAddressContract == SourcePlaneAddressContract
@@ -324,25 +323,20 @@ func scopedHistoryManifest(manifest Manifest, project string) Manifest {
 }
 
 func sourceConfigForIdentity(data []byte, identity SourceIdentity) ([]byte, error) {
-	var entries []json.RawMessage
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
-	}
 	result := []byte{'['}
 	first := true
-	for _, raw := range entries {
-		var entry externalEntry
-		if err := decodeJSON(raw, &entry); err != nil {
-			return nil, err
-		}
+	if err := streamConfigEntries(data, func(entry externalEntry, raw []byte) error {
 		if entry.Identity == nil || *entry.Identity != identity {
-			continue
+			return nil
 		}
 		if !first {
 			result = append(result, ',')
 		}
 		result = append(result, raw...)
 		first = false
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return append(result, ']', '\n'), nil
 }

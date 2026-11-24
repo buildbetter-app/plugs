@@ -247,13 +247,12 @@ func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity Source
 	if err := c.archive.ChargeNativeDeltaBytes("collection_config_decode", uint64(len(source.members["config/sources.json"]))*4); err != nil {
 		return err
 	}
-	var entries []externalEntry
-	if err := decodeJSON(source.members["config/sources.json"], &entries); err != nil {
-		return err
-	}
-	for _, entry := range entries {
+	if err := streamConfigEntries(source.members["config/sources.json"], func(entry externalEntry, _ []byte) error {
 		entry.Identity = &identity
 		c.entries = append(c.entries, entry)
+		return nil
+	}); err != nil {
+		return err
 	}
 	return nil
 }

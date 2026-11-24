@@ -97,20 +97,19 @@ func collectConfigDeclarations(records map[string][]Record, config []byte) ([]Co
 			}
 		}
 	}
-	var entries []externalEntry
-	if err := decodeJSON(config, &entries); err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
+	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
 		if entry.Input.State == "absent" {
-			continue
+			return nil
 		}
 		origin := entry.Input.Family + ":" + entry.Input.Path
 		decls, err := declarationsFromSource(entry.Values, entry.Input.Family, origin)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		result = append(result, decls...)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	sort.Slice(result, func(i, j int) bool {
 		a, b := result[i], result[j]

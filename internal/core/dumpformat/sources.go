@@ -18,24 +18,19 @@ type externalEntry struct {
 }
 
 func validateConfigProvenance(data []byte) error {
-	var entries []externalEntry
-	if err := decodeJSON(data, &entries); err != nil {
-		return fmt.Errorf("invalid configuration provenance: %w", err)
-	}
 	allowed, seen, families := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, family := range externalFamilies {
 		allowed[family] = true
 	}
 	var previous *externalEntry
-	for i := range entries {
-		entry := &entries[i]
+	if err := streamConfigEntries(data, func(entry externalEntry, _ []byte) error {
 		input := entry.Input
-		key := externalEntryKey(*entry)
+		key := externalEntryKey(entry)
 		if !allowed[input.Family] || !path.IsAbs(input.Path) || strings.ContainsRune(input.Path, '\x00') || seen[key] || input.Precedence < 0 {
 			return fmt.Errorf("unknown, duplicate or inconsistent configuration input")
 		}
 		if previous != nil {
-			if compareExternalEntries(*previous, *entry) >= 0 {
+			if compareExternalEntries(*previous, entry) >= 0 {
 				return fmt.Errorf("unordered configuration inputs")
 			}
 		}
@@ -55,7 +50,11 @@ func validateConfigProvenance(data []byte) error {
 			return err
 		}
 		seen[key], families[input.Family] = true, true
-		previous = entry
+		copy := entry
+		previous = &copy
+		return nil
+	}); err != nil {
+		return fmt.Errorf("invalid configuration provenance: %w", err)
 	}
 	if len(families) != len(allowed) {
 		return fmt.Errorf("unaccounted configuration provenance family")
@@ -89,14 +88,10 @@ func validateBoundDispositionsForVersion(sources []Disposition, counts map[strin
 func validateCaptureDispositionsForVersion(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, mainVersion int, nativeDeltaAttachment bool, familyContracts ...string) error {
 	columns := sourceTableColumns(mainVersion)
 	native := len(familyContracts) != 0 && familyContracts[0] == SourceFamilyContract
-	var entries []externalEntry
-	if err := decodeJSON(config, &entries); err != nil {
-		return err
-	}
 	// Multiple paths in a source family are legal. Match the complete multiset,
 	// including zero-row and absent entries, rather than silently coalescing it.
 	expected := map[Disposition]int{}
-	for _, entry := range entries {
+	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
 		d := Disposition{Family: entry.Input.Family}
 		if entry.Input.State == "absent" {
 			d.Action, d.Reason = "manifest/rebuild", "requested source absent at declared path"
@@ -104,6 +99,9 @@ func validateCaptureDispositionsForVersion(sources []Disposition, counts map[str
 			d.Rows, d.Action, d.Reason = len(entry.Values), "archive", "explicit JSON config; secrets are references; precedence retained, effective config not inferred"
 		}
 		expected[d]++
+		return nil
+	}); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	lastFamily, lastReason := "", ""

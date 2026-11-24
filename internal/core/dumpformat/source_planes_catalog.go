@@ -68,29 +68,28 @@ func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, na
 		return nil, err
 	}
 	declarations = append(declarations, decls...)
-	var entries []externalEntry
-	if err := decodeJSON(config, &entries); err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
+	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
 		if entry.Input.State == "absent" {
-			continue
+			return nil
 		}
 		origin := entry.Input.Family + ":" + entry.Input.Path
 		// Match the producer's native YAML projection: direct external JSON
 		// and opaque engine census directories remain retained source bytes.
 		// Stored declarations are read from their actual SQL config records.
 		if !sourcePlaneFileFamily(entry.Input.Family) {
-			continue
+			return nil
 		}
 		if _, captured := entry.Values["observations"]; !captured {
-			continue
+			return nil
 		}
 		decls, err = declarationsFromSourceWith(entry.Values, entry.Input.Family, origin, sourcePlaneCatalogValues, true)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		declarations = append(declarations, decls...)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	statuses := map[string]bool{}
 	categories := map[string]string{}

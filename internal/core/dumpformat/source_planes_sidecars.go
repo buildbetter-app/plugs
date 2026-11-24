@@ -22,22 +22,11 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 	if !ok {
 		return nil, fmt.Errorf("missing captured configuration")
 	}
-	var raw []json.RawMessage
-	// Archive admission already validated this JSON and its typed shape.
-	// Decode raw tokens directly: the typed decoder treats RawMessage as a
-	// byte slice, which requires a JSON array instead of preserving a token.
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
 	var origins []driver.SourcePlaneOriginV1
-	for _, entry := range raw {
-		var value externalEntry
-		if err := decodeJSON(entry, &value); err != nil {
-			return nil, err
-		}
+	if err := streamConfigEntries(data, func(value externalEntry, entry []byte) error {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(entry, &fields); err != nil {
-			return nil, err
+			return err
 		}
 		origin := driver.SourcePlaneOriginV1{Table: "config/sources.json", ID: value.Input.Path, Action: "origin-only", Raw: sourcePlaneByteCommitment(entry), Path: value.Input.Path, Mode: value.Input.State, Layer: value.Input.Family, Precedence: []string{strconv.Itoa(value.Input.Precedence)}, Parsed: driver.SourcePlaneBytesV1{Presence: "absent"}}
 		if value.Identity != nil {
@@ -51,6 +40,9 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 			origin.Parsed = sourcePlaneByteCommitment(parsed)
 		}
 		origins = append(origins, origin)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	sort.Slice(origins, func(i, j int) bool {
 		a, b := origins[i], origins[j]

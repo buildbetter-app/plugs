@@ -246,26 +246,25 @@ func MergeArchives(archives ...*Archive) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("archive %q has no configuration provenance", input.manifest.StoreID)
 		}
-		var sourceEntries []externalEntry
-		if err := decodeJSON(config, &sourceEntries); err != nil {
-			return nil, fmt.Errorf("archive %q configuration provenance: %w", input.manifest.StoreID, err)
-		}
-		for _, entry := range sourceEntries {
+		if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
 			if namespaced && entry.Identity == nil {
 				identity, err := mergeInputIdentity(input, "")
 				if err != nil {
-					return nil, err
+					return err
 				}
 				entry.Identity = &identity
 			}
 			key := externalEntryKey(entry)
 			if previous, ok := entries[key]; ok {
 				if !equalJSON(previous, entry) {
-					return nil, fmt.Errorf("conflicting configuration provenance %s", key)
+					return fmt.Errorf("conflicting configuration provenance %s", key)
 				}
-				continue
+				return nil
 			}
 			entries[key] = entry
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("archive %q configuration provenance: %w", input.manifest.StoreID, err)
 		}
 	}
 
@@ -395,11 +394,7 @@ func recordIdentity(kind string, record Record) string {
 // rejectUnmerged checks the archived SQL observations, not disposition Rows:
 // external dispositions count configuration keys rather than SQL result rows.
 func rejectUnmerged(archive *Archive) error {
-	var entries []externalEntry
-	if err := decodeJSON(archive.members["config/sources.json"], &entries); err != nil {
-		return fmt.Errorf("invalid merge configuration provenance: %w", err)
-	}
-	for _, entry := range entries {
+	if err := streamConfigEntries(archive.members["config/sources.json"], func(entry externalEntry, _ []byte) error {
 		var query string
 		switch entry.Input.Family {
 		case "dolt-conflicts":
@@ -409,10 +404,10 @@ func rejectUnmerged(archive *Archive) error {
 		case "dolt-remotes":
 			query = "SELECT * FROM dolt_remotes"
 		default:
-			continue
+			return nil
 		}
 		if entry.Input.State == "absent" {
-			continue
+			return nil
 		}
 		table, ok := entry.Values["table"].(map[string]any)
 		if !ok || len(entry.Values) != 2 || entry.Values["query"] != query || len(table) != 2 {
@@ -439,6 +434,9 @@ func rejectUnmerged(archive *Archive) error {
 		if len(rows) != 0 {
 			return fmt.Errorf("unmerged or dirty source family %q", entry.Input.Family)
 		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("invalid merge configuration provenance: %w", err)
 	}
 	return nil
 }

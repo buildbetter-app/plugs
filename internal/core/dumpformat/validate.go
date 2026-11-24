@@ -199,31 +199,45 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 			// admitted from its compact escaped source preimage before any
 			// legacy validator parses or transforms it.
 			var count uint64
-			for rest := member; len(rest) != 0; {
-				line := rest
-				if strings.HasSuffix(header.Name, ".ndjson") {
-					line, rest, _ = bytes.Cut(rest, []byte{'\n'})
-				} else {
-					rest = nil
-				}
-				if len(bytes.TrimSpace(line)) == 0 {
-					continue
-				}
+			admit := func(line []byte, enclosingDepth int) error {
 				if bufferBound != nil {
-					footprint, err := driver.ReverseJSONFootprint(line, 0)
+					footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
 					if err != nil {
-						return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+						return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
 					}
 					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
-						return nil, err
+						return err
 					}
 				}
 				c := deltaSizeCounter{}
 				if err := c.raw(line); err != nil {
-					return nil, err
+					return err
 				}
 				if err := deltaAddCount(&count, c.n+1); err != nil {
-					return nil, err
+					return err
+				}
+				return nil
+			}
+			if header.Name == "config/sources.json" && nativeDeltaAttachment {
+				if err := streamJSONElements(member, func(element []byte) error {
+					return admit(element, 1)
+				}); err != nil {
+					return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+				}
+			} else {
+				for rest := member; len(rest) != 0; {
+					line := rest
+					if strings.HasSuffix(header.Name, ".ndjson") {
+						line, rest, _ = bytes.Cut(rest, []byte{'\n'})
+					} else {
+						rest = nil
+					}
+					if len(bytes.TrimSpace(line)) == 0 {
+						continue
+					}
+					if err := admit(line, 0); err != nil {
+						return nil, err
+					}
 				}
 			}
 			if err := charge(budget, "head_decoded_payloads", count); err != nil {
@@ -704,14 +718,13 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 			}
 		}
 	}
-	var sourceEntries []externalEntry
-	if err := decodeJSON(members["config/sources.json"], &sourceEntries); err != nil {
-		return nil, nil, err
-	}
-	for _, e := range sourceEntries {
+	if err := streamConfigEntries(members["config/sources.json"], func(e externalEntry, _ []byte) error {
 		if e.Identity != nil {
-			return nil, nil, fmt.Errorf("configuration source identity requires explicit contract")
+			return fmt.Errorf("configuration source identity requires explicit contract")
 		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
 	}
 	planes := manifest.SourcePlaneAddressContract == SourcePlaneAddressContract
 	var migration *ImportMigration
