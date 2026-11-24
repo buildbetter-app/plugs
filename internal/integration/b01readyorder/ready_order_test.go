@@ -283,8 +283,8 @@ func TestP43AncestorScheduleMetadataIsProtected(t *testing.T) {
 			for _, key := range []string{"beads.source.status", "beads.source.defer_until"} {
 				t.Run(key, func(t *testing.T) {
 					got := f.call(t, "tx.apply", map[string]any{
-						"ops":   []map[string]any{{"kind": "setMeta", "target": model.Ref{ID: parentID}, "key": key, "value": nil}},
-						"_meta": map[string]any{"project": project, "idempotencyKey": fixtureKey(key)},
+						"changeSet": map[string]any{"ops": []map[string]any{{"kind": "setMeta", "target": model.Ref{ID: parentID}, "key": key, "value": nil}}},
+						"_meta":     map[string]any{"project": project, "idempotencyKey": fixtureKey(key)},
 					})
 					if got.Error == nil || got.Error.Data.Code != "protected_record" {
 						t.Fatalf("remove %s: %+v", key, got)
