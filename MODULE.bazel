@@ -43,6 +43,23 @@ http_archive(
     build_file_content = 'exports_files(["dolt"], visibility = ["//visibility:public"])',
 )
 
+# Heartbeads browser fixtures run npm and Next.js in a test action. Keep that
+# runtime pinned in the Bazel graph instead of inheriting the worker's Node.
+http_archive(
+    name = "node_linux_amd64",
+    urls = ["https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.gz"],
+    sha256 = "061ec3e3062115705b56b51fa9cc330ab50d34b6969387d4e4b1a50c6809acc2",
+    strip_prefix = "node-v24.22.3-linux-x64",
+    build_file_content = """
+filegroup(
+    name = "node_runtime",
+    srcs = glob(["**"]),
+    visibility = ["//visibility:public"],
+)
+exports_files(["bin/node"], visibility = ["//visibility:public"])
+""",
+)
+
 # Capture-only private driver extension, pinned upstream v2.2.0 source.
 local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
 local_repository(name = "private_dolt_driver", path = "third_party/dolt-driver")

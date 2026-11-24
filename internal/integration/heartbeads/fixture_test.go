@@ -181,8 +181,17 @@ func TestI8HeartbeadsImportedSQLiteBrowser(t *testing.T) {
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 13*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "node", "--experimental-vm-modules", filepath.Join(fixtureRoot, "e2e.mjs"), bindingPath, fixtureRoot, outputs)
-	cmd.Env = append(os.Environ(), "PATH=/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
+	nodeBinary := os.Getenv("PLUG_HEARTBEADS_NODE")
+	if nodeBinary == "" || os.Getenv("TEST_SRCDIR") == "" {
+		t.Fatal("hermetic Node runtime unavailable")
+	}
+	nodeBinary, err = filepath.EvalSymlinks(filepath.Join(os.Getenv("TEST_SRCDIR"), filepath.FromSlash(nodeBinary)))
+	if err != nil {
+		t.Fatalf("resolve hermetic Node runtime: %v", err)
+	}
+	nodeDir := filepath.Dir(nodeBinary)
+	cmd := exec.CommandContext(runCtx, nodeBinary, "--experimental-vm-modules", filepath.Join(fixtureRoot, "e2e.mjs"), bindingPath, fixtureRoot, outputs)
+	cmd.Env = append(os.Environ(), "PATH="+nodeDir+string(os.PathListSeparator)+"/tmp/plug-swarm/bin/worker-safe:"+os.Getenv("PATH"))
 	output, err := cmd.CombinedOutput()
 	t.Logf("I8_ACTUAL_IMPORTED_BROWSER\n%s", output)
 	if err != nil {

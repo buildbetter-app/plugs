@@ -23,7 +23,7 @@ go_library(
 go_test(
     name = "rehearsal_test",
     size = "medium",
-    srcs = ["disposable_test.go", "files_test.go", "metrics_test.go", "rollback_fault_test.go", "rollback_snapshot_test.go", "transcript_consumer_test.go"],
+    srcs = ["disposable_test.go", "files_test.go", "image_validation_test.go", "metrics_test.go", "rollback_fault_test.go", "rollback_snapshot_test.go", "transcript_consumer_test.go"],
     args = ["-test.v"],
     data = [
         "//tools/rehearsal/cmd/rollback-runtime:old-runtime",

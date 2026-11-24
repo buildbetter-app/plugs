@@ -25,10 +25,7 @@ func TestSharedServerBrowserRendersRealRowsAndRefusals(t *testing.T) {
 	defer f.stop()
 	ref, _ := f.create("seed <unsafe> row", "writer")
 
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("browser evidence requires the installed Node runtime:", err)
-	}
+	node := hermeticNode(t)
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
 		t.Fatal("browser evidence requires google-chrome:", err)

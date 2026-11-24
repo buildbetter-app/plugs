@@ -1,10 +1,18 @@
 load("@rules_go//go:def.bzl", "go_test")
+load("//internal/server/pluginbuild:test_sdk.bzl", "test_go_sdk")
+
+test_go_sdk(
+    name = "test_go_sdk",
+    testonly = True,
+)
 
 go_test(
     name = "local_wasi_test",
     tags = ["exclusive"],
     srcs = ["local_fixture_test.go", "local_wasi_test.go", "postgres_failover_test.go", "public_contention_test.go"],
+    data = [":test_go_sdk"],
     embedsrcs = ["//internal/integration/e5acceptance/fixture-local-wasi:sources"],
+    env = {"PLUG_E5_GO_BINARY": "$(rlocationpath :test_go_sdk)"},
     deps = [
         "//internal/core/authz",
         "//internal/core/model",

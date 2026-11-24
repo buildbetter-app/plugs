@@ -2074,6 +2074,7 @@ internal/integration/webacceptance/e3_browser_test.go
 internal/integration/webacceptance/e3_corpus_test.go
 internal/integration/webacceptance/e3_host_test.go
 internal/integration/webacceptance/fixture_test.go
+internal/integration/webacceptance/node_runtime_test.go
 internal/integration/webacceptance/presence_adapter_check.mjs
 internal/integration/webacceptance/presence_adapter_test.go
 internal/integration/webacceptance/presence_dom_adapter.mjs
@@ -3514,6 +3515,7 @@ tools/rehearsal/disposable_test.go
 tools/rehearsal/files.go
 tools/rehearsal/files_test.go
 tools/rehearsal/gate.go
+tools/rehearsal/image_validation_test.go
 tools/rehearsal/mcp_precision_test.go
 tools/rehearsal/metrics.go
 tools/rehearsal/metrics_completeness_test.go

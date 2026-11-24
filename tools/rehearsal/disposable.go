@@ -3,6 +3,7 @@ package rehearsal
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -1846,12 +1847,25 @@ func validateSavedImage(b RuntimeBundle) error {
 			DiffIDs []string `json:"diff_ids"`
 		} `json:"rootfs"`
 	}
-	var manifests []struct {
+	type descriptor struct {
+		MediaType string `json:"mediaType"`
+		Digest    string `json:"digest"`
+		Platform  *struct {
+			Architecture string `json:"architecture"`
+			OS           string `json:"os"`
+		} `json:"platform,omitempty"`
+	}
+	type imageManifest struct {
+		Config    descriptor   `json:"config"`
+		Layers    []descriptor `json:"layers"`
+		Manifests []descriptor `json:"manifests"`
+	}
+	var legacyManifests []struct {
 		Config string
 		Layers []string
 	}
-	configName := ""
 	members := map[string]string{}
+	memberBytes := map[string][]byte{}
 	reader := tar.NewReader(file)
 	for {
 		header, e := reader.Next()
@@ -1870,27 +1884,17 @@ func validateSavedImage(b RuntimeBundle) error {
 		if _, duplicate := members[header.Name]; duplicate {
 			return fmt.Errorf("saved image member repeated")
 		}
-		isConfig := header.Name == b.ImageDigest+".json" || header.Name == "blobs/sha256/"+b.ImageDigest
-		if isConfig || header.Name == "manifest.json" {
-			if header.Size > 1<<20 {
-				return fmt.Errorf("saved image metadata exceeds bound")
+		var raw []byte
+		if header.Size <= 64<<20 {
+			raw, err = io.ReadAll(io.LimitReader(reader, header.Size))
+			if err != nil || int64(len(raw)) != header.Size {
+				return fmt.Errorf("saved image member incomplete")
 			}
-			raw, e := io.ReadAll(reader)
-			if e != nil {
-				return fmt.Errorf("saved image metadata incomplete")
-			}
+			memberBytes[header.Name] = raw
 			members[header.Name] = digestBytes(raw)
-			if isConfig {
-				if configName != "" || members[header.Name] != b.ImageDigest || json.Unmarshal(raw, &config) != nil {
-					return fmt.Errorf("saved image config digest or content mismatch")
-				}
-				configName = header.Name
-			} else if json.Unmarshal(raw, &manifests) != nil {
-				return fmt.Errorf("saved image manifest invalid")
-			}
 		} else {
 			hash := sha256.New()
-			if _, e := io.Copy(hash, reader); e != nil {
+			if _, err = io.CopyN(hash, reader, header.Size); err != nil {
 				return fmt.Errorf("saved image member incomplete")
 			}
 			members[header.Name] = hex.EncodeToString(hash.Sum(nil))
@@ -1899,8 +1903,88 @@ func validateSavedImage(b RuntimeBundle) error {
 			return fmt.Errorf("saved image blob digest mismatch")
 		}
 	}
-	if configName == "" || len(manifests) != 1 || manifests[0].Config != configName {
+	// Docker 29 saves OCI indexes whose top-level digest is the inspected image
+	// ID. Legacy archives carry the same pin in <image-id>.json. Require that
+	// exact member before accepting the archive so a caller cannot replace only
+	// the in-memory image digest.
+	if memberBytes["blobs/sha256/"+b.ImageDigest] == nil {
+		legacyName := b.ImageDigest + ".json"
+		if memberBytes[legacyName] == nil || members[legacyName] != b.ImageDigest {
+			return fmt.Errorf("saved runnable image does not match image pin")
+		}
+	}
+
+	configName := ""
+	selectedManifestDigest := ""
+	layers := []string{}
+	if raw := memberBytes["manifest.json"]; raw != nil {
+		if json.Unmarshal(raw, &legacyManifests) != nil || len(legacyManifests) != 1 {
+			return fmt.Errorf("saved image manifest invalid")
+		}
+		configName, layers = legacyManifests[0].Config, legacyManifests[0].Layers
+	}
+	if raw := memberBytes["index.json"]; raw != nil {
+		var index imageManifest
+		if json.Unmarshal(raw, &index) != nil || len(index.Manifests) == 0 {
+			return fmt.Errorf("saved image index invalid")
+		}
+		selectDescriptor := func(items []descriptor) descriptor {
+			for _, item := range items {
+				if item.Platform != nil && item.Platform.OS == "linux" && item.Platform.Architecture == "amd64" {
+					return item
+				}
+			}
+			return items[0]
+		}
+		current := selectDescriptor(index.Manifests)
+		selectedManifestDigest = strings.TrimPrefix(current.Digest, "sha256:")
+		layers = nil
+		for depth := 0; depth < 3; depth++ {
+			name := "blobs/sha256/" + strings.TrimPrefix(current.Digest, "sha256:")
+			raw := memberBytes[name]
+			if raw == nil {
+				return fmt.Errorf("saved image manifest blob missing")
+			}
+			var candidate imageManifest
+			if json.Unmarshal(raw, &candidate) != nil {
+				return fmt.Errorf("saved image manifest invalid")
+			}
+			if candidate.Config.Digest != "" {
+				configName = "blobs/sha256/" + strings.TrimPrefix(candidate.Config.Digest, "sha256:")
+				for _, layer := range candidate.Layers {
+					layers = append(layers, "blobs/sha256/"+strings.TrimPrefix(layer.Digest, "sha256:"))
+				}
+				break
+			}
+			if len(candidate.Manifests) == 0 {
+				return fmt.Errorf("saved image manifest invalid")
+			}
+			current = selectDescriptor(candidate.Manifests)
+		}
+	}
+	if configName == "" || len(layers) == 0 && memberBytes["manifest.json"] == nil {
 		return fmt.Errorf("saved runnable image does not match image pin")
+	}
+	// Docker 29's OCI image ID is the selected top-level manifest descriptor
+	// digest. Legacy archives retain the image ID in the config member name.
+	// In both formats the pin must identify the selected image metadata, never
+	// an unrelated config or layer blob.
+	if selectedManifestDigest != "" {
+		if selectedManifestDigest != b.ImageDigest {
+			return fmt.Errorf("saved image manifest digest does not match image pin")
+		}
+	} else {
+		selectedConfigDigest := strings.TrimSuffix(filepath.Base(configName), ".json")
+		if selectedConfigDigest != b.ImageDigest {
+			return fmt.Errorf("saved image config digest does not match image pin")
+		}
+	}
+	rawConfig := memberBytes[configName]
+	if rawConfig == nil || members[configName] != strings.TrimPrefix(filepath.Base(configName), "sha256:") && strings.HasPrefix(configName, "blobs/sha256/") {
+		return fmt.Errorf("saved image config digest or content mismatch")
+	}
+	if json.Unmarshal(rawConfig, &config) != nil {
+		return fmt.Errorf("saved image config digest or content mismatch")
 	}
 	for key, want := range map[string]string{"plug.source.sha": b.SourceSHA, "plug.source.tree": b.SourceTree, "plug.edition": b.Role, "plug.executable.sha256": b.ExecutableDigest} {
 		if config.Config.Labels[key] != want {
@@ -1910,11 +1994,27 @@ func validateSavedImage(b RuntimeBundle) error {
 	// Docker image-save emits uncompressed layer tars. Bind every required
 	// member, in order, to the rootfs digests inside the pinned image config.
 	// A config-only or rehashed corrupt archive must fail before activation.
-	if config.RootFS.Type != "layers" || len(manifests[0].Layers) == 0 || len(manifests[0].Layers) != len(config.RootFS.DiffIDs) {
+	if config.RootFS.Type != "layers" || len(layers) == 0 || len(layers) != len(config.RootFS.DiffIDs) {
 		return fmt.Errorf("saved image layer set incomplete")
 	}
-	for i, name := range manifests[0].Layers {
-		if members[name] == "" || "sha256:"+members[name] != config.RootFS.DiffIDs[i] {
+	for i, name := range layers {
+		layer := memberBytes[name]
+		if layer == nil || members[name] == "" {
+			return fmt.Errorf("saved image layer missing or digest mismatch")
+		}
+		content := layer
+		if len(layer) >= 2 && layer[0] == 0x1f && layer[1] == 0x8b {
+			gzipReader, err := gzip.NewReader(bytes.NewReader(layer))
+			if err != nil {
+				return fmt.Errorf("saved image layer invalid")
+			}
+			content, err = io.ReadAll(io.LimitReader(gzipReader, 256<<20))
+			closeErr := gzipReader.Close()
+			if err != nil || closeErr != nil {
+				return fmt.Errorf("saved image layer invalid")
+			}
+		}
+		if "sha256:"+digestBytes(content) != config.RootFS.DiffIDs[i] {
 			return fmt.Errorf("saved image layer missing or digest mismatch")
 		}
 	}

@@ -23,10 +23,7 @@ import (
 var e3BrowserCheck []byte
 
 func TestE3BrowserRPCSurface(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal(err)
-	}
+	node := hermeticNode(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "e3-browser.mjs"), e3BrowserCheck, 0o600); err != nil {
 		t.Fatal(err)
@@ -71,10 +68,7 @@ console.log(checks+" browser RPC surface checks passed; artificial inputs only")
 // Pure recorder checks execute the same exported predicate as the browser
 // script. Artificial evidence here cannot qualify a transport or E3 workload.
 func TestE3WhyBlockedRecorderEvidence(t *testing.T) {
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("recorder evidence checks require Node:", err)
-	}
+	node := hermeticNode(t)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "e3-browser.mjs"), e3BrowserCheck, 0o600); err != nil {
 		t.Fatal(err)
@@ -177,10 +171,7 @@ func TestE3ScriptedBrowserTaskReceipts(t *testing.T) {
 		"updateKey": e3Key("browser-live-update"), "revokeKey": e3Key("browser-revoke"),
 		"sourceHead": f.receipt.SourceHead, "sourceTree": f.receipt.SourceTree,
 	})
-	node, err := exec.LookPath("node")
-	if err != nil {
-		t.Fatal("E3 recorder requires actual Node:", err)
-	}
+	node := hermeticNode(t)
 	chrome, err := exec.LookPath("google-chrome")
 	if err != nil {
 		t.Fatal("E3 recorder requires actual Chrome:", err)

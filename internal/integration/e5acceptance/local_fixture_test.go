@@ -229,11 +229,12 @@ func newLocalFixture(t *testing.T) *localFixture {
 	_, err = pluginmanifest.Load(context.Background(), wrong)
 	demand(t, err != nil, "wrong guest source digest was accepted")
 	goBinary := os.Getenv("PLUG_E5_GO_BINARY")
-	if goBinary == "" {
-		goBinary, err = exec.LookPath("go")
-		demand(t, err == nil, "source compiler unavailable")
-	}
-	demand(t, goBinary != "", "source compiler unavailable")
+	demand(t, goBinary != "" && os.Getenv("TEST_SRCDIR") != "", "source compiler unavailable")
+	goBinary, err = filepath.EvalSymlinks(filepath.Join(os.Getenv("TEST_SRCDIR"), filepath.FromSlash(goBinary)))
+	demand(t, err == nil, "source compiler unavailable")
+	goRoot := filepath.Dir(filepath.Dir(goBinary))
+	t.Setenv("GOROOT", goRoot)
+	t.Setenv("PATH", filepath.Join(goRoot, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
 	started := time.Now()
 	f.artifact, err = pluginbuild.Build(context.Background(), pluginbuild.Request{
 		Runtime: pluginapi.RuntimeWASI, Source: checkout, ModuleRoot: f.sourceRoot, GoBinary: goBinary,

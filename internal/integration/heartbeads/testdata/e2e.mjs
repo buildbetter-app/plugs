@@ -376,7 +376,7 @@ try {
   async function graphMenu(publicId='SHARED'){await evaluate(`(()=>{const all=[...document.querySelectorAll('*')];for(const el of all){const key=Object.keys(el).find(k=>k.startsWith('__reactFiber$'));let f=key&&el[key];while(f){const p=f.memoizedProps;if(p?.onNodeRightClick&&p?.nodes){const n=p.nodes.find(n=>n.project==='cody-ops'&&n.legacyId===${JSON.stringify(publicId)});p.onNodeRightClick(n,new MouseEvent('contextmenu',{clientX:250,clientY:250}));return;}f=f.return}}throw Error('graph callback missing')})()`);}
   await graphMenu();await clickText('Claim task');await until(()=>receipts.externalRecords.some(x=>x.entry?.value.text==='@fixture.test'),'claim caller');
   await until(async()=> (await evaluate('document.body.innerText')).includes('@fixture.test'),'claim refresh');
-  await graphMenu();await clickText('Unclaim task');await until(()=>!([...externalRecords.values()].some(x=>x.value.text==='@fixture.test')),'unclaim DELETE caller');
+  await graphMenu();await until(async()=>await evaluate(`Boolean([...document.querySelectorAll('button')].find(b=>b.textContent.trim()==='Unclaim task'&&!b.disabled))`),'unclaim menu render');await clickText('Unclaim task');await until(()=>!([...externalRecords.values()].some(x=>x.value.text==='@fixture.test')),'unclaim DELETE caller');
   const browserWrites=receipts.browserRequests.filter(r=>r.url.startsWith(nextUrl+'/api/records'));
   assert.ok(browserWrites.length>=7);assert.ok(browserWrites.filter(r=>r.method==='POST').every(r=>{const v=JSON.parse(r.body);return v.project==='cody-ops'&&v.nodeId==='SHARED'}));
   check('browser comment/reply/like/unlike/delete/claim/unclaim callers preserve original ID and project',{requests:browserWrites.length,externalAuth:'synthetic only'});
