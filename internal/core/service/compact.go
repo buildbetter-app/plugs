@@ -67,9 +67,10 @@ func WithCompaction(config CompactionConfig) Option {
 // order. AfterID is an optional exclusive cursor: selection resumes strictly
 // after the named record's position in that order. The named record must be in
 // the caller's project, currently closed, and have a recorded close time: an
-// imported closed_at field, used as recorded, or else the latest close
-// transition in permanent history, so a reopened and re-closed record without
-// an imported closed_at moves later. Its own current
+// imported closed_at field when present, used as recorded (an unparseable one
+// means no recorded close time), otherwise the latest close transition in
+// permanent history, so a reopened and re-closed record without an imported
+// closed_at moves later. Its own current
 // eligibility does not matter, so the ID that a refusal names can always be
 // passed back. AfterID joins only the idempotency request hash.
 type CompactionRequest struct {

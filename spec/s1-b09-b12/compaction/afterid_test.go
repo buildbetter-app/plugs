@@ -14,6 +14,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -413,4 +414,57 @@ func p47CurrentDocument(t *testing.T, f *fixture, ref map[string]any) pipeline.D
 		t.Fatal(err)
 	}
 	return doc
+}
+
+// The naming rule: authorization outcomes and idempotency_key_reused name no
+// record; any other failure after selection, including a non-authorization
+// failure of the post-selection permission check, names it; detail keys the
+// cause already set are kept.
+func TestP47NamingRuleAuthorizationKeyReuseAndKeptDetails(t *testing.T) {
+	for _, engine := range p47Engines() {
+		t.Run(engine, func(t *testing.T) {
+			var mode atomic.Value
+			mode.Store("allow")
+			f, calls, refs := p47Fixture(t, engine, p47Small)
+			f.pipelineOptions = []pipeline.Option{pipeline.WithAuthorizer(authorizeFunc(func(_ context.Context, _ port.AuthorizationStage, p port.ProposedChange, _ port.SnapshotReader) error {
+				if p.Meta.Method != "admin.compact" {
+					return nil
+				}
+				switch mode.Load() {
+				case "forbidden":
+					return &model.Error{Data: model.ErrorData{Code: "forbidden"}}
+				case "authz-unavailable":
+					return &model.Error{Data: model.ErrorData{Code: "authz_unavailable", Retryable: true}}
+				case "busy-with-details":
+					return &model.Error{Data: model.ErrorData{Code: "busy", Retryable: true, Details: map[string]any{"id": "kept-cause-id", "cause": "kept"}}}
+				}
+				return nil
+			}))}
+			f.bind()
+			for _, code := range []string{"forbidden", "authz-unavailable"} {
+				mode.Store(code)
+				want := map[string]string{"forbidden": "forbidden", "authz-unavailable": "authz_unavailable"}[code]
+				if details := p47Refusal(t, f, "p47-rule-"+code, want, map[string]any{"dryRun": false}); details["id"] != nil || details["tier"] != nil {
+					t.Fatalf("%s named a record: %v", code, details)
+				}
+			}
+			mode.Store("busy-with-details")
+			details := p47Refusal(t, f, "p47-rule-busy", "busy", map[string]any{"dryRun": false})
+			if details["id"] != "kept-cause-id" || details["cause"] != "kept" || fmt.Sprint(details["tier"]) != "1" {
+				t.Fatalf("post-selection permission failure lost cause details or the tier: %v", details)
+			}
+			mode.Store("allow")
+			f.call("admin.compact", "p47-rule-key", map[string]any{"dryRun": false, "afterId": p47ID(refs["a"])}, "")
+			// The key committed above, so only the head is checked here.
+			stable := f.meta()
+			reused := f.call("admin.compact", "p47-rule-key", map[string]any{"dryRun": false}, "idempotency_key_reused")
+			f.assertSameHead(stable)
+			if details, _ := reused["error"].(map[string]any)["data"].(map[string]any)["details"].(map[string]any); details["id"] != nil {
+				t.Fatalf("idempotency_key_reused named a record: %v", details)
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("provider calls=%d want 1", calls.Load())
+			}
+		})
+	}
 }
