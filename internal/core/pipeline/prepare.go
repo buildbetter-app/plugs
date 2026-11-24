@@ -612,7 +612,10 @@ func (w *Writer) prepare(ctx context.Context, reader driver.Reader, by model.Pri
 				current.deleted = true
 				p.hierarchyEdits = append(p.hierarchyEdits, hierarchyEdit{id: target.ID, deleted: true})
 			case model.OpSetMeta:
-				if op.SetMeta.Key == "" || strings.HasPrefix(op.SetMeta.Key, "_plug") || strings.HasPrefix(op.SetMeta.Key, "core.") {
+				key := op.SetMeta.Key
+				// Imported ancestor scheduling reads these two source facts.
+				if key == "beads.source.status" || key == "beads.source.defer_until" ||
+					key == "" || strings.HasPrefix(key, "_plug") || strings.HasPrefix(key, "core.") {
 					return nil, failure("protected_record", "reserved core metadata cannot be changed")
 				}
 				if current.doc.Metadata == nil {

@@ -201,6 +201,7 @@ func TestP43ImportedDeferredEpicReadiness(t *testing.T) {
 		for _, tc := range []struct {
 			name       string
 			metadata   map[string]any
+			native     bool
 			liveBlock  bool
 			explicit   bool
 			childReady bool
@@ -211,6 +212,8 @@ func TestP43ImportedDeferredEpicReadiness(t *testing.T) {
 			{name: "past", metadata: map[string]any{"beads.source.defer_until": now.Add(-time.Second)}, childReady: true, grandReady: true},
 			{name: "at-clock", metadata: map[string]any{"beads.source.defer_until": now}, childReady: true, grandReady: true},
 			{name: "future", metadata: map[string]any{"beads.source.defer_until": now.Add(time.Second)}, grandReady: true},
+			{name: "malformed-timestamp", metadata: map[string]any{"beads.source.defer_until": "invalid"}, grandReady: true},
+			{name: "native-deferred-status", native: true},
 			{name: "live-blocker", liveBlock: true},
 			{name: "explicitly-blocked", explicit: true},
 		} {
@@ -224,11 +227,13 @@ func TestP43ImportedDeferredEpicReadiness(t *testing.T) {
 				if tc.explicit {
 					fields["blocked"] = true
 				}
-				metadata := map[string]any{"beads.source.status": "deferred"}
-				for key, value := range tc.metadata {
-					metadata[key] = value
+				if !tc.native {
+					metadata := map[string]any{"beads.source.status": "deferred"}
+					for key, value := range tc.metadata {
+						metadata[key] = value
+					}
+					parent["metadata"] = metadata
 				}
-				parent["metadata"] = metadata
 				child := document(childID, now, 1)
 				child["parent"] = model.Ref{ID: parentID}
 				grandchild := document(grandID, now, 1)
@@ -256,6 +261,38 @@ func TestP43ImportedDeferredEpicReadiness(t *testing.T) {
 				}
 			})
 		}
+	})
+}
+
+func TestP43AncestorScheduleMetadataIsProtected(t *testing.T) {
+	eachStore(t, func(t *testing.T, f *fixture) {
+		const parentID = "pl-p43-protected-parent"
+		const childID = "pl-p43-protected-child"
+		now := f.clock.Now()
+		parent := document(parentID, now, 1)
+		parent["type"] = "epic"
+		parent["fields"].(map[string]any)["status"] = "deferred"
+		parent["metadata"] = map[string]any{
+			"beads.source.status":      "deferred",
+			"beads.source.defer_until": now.Add(time.Hour),
+		}
+		child := document(childID, now, 1)
+		child["parent"] = model.Ref{ID: parentID}
+		f.seed(t, parent, child)
+		f.unchanged(t, func() {
+			for _, key := range []string{"beads.source.status", "beads.source.defer_until"} {
+				t.Run(key, func(t *testing.T) {
+					got := f.call(t, "tx.apply", map[string]any{
+						"ops":   []map[string]any{{"kind": "setMeta", "target": model.Ref{ID: parentID}, "key": key, "value": nil}},
+						"_meta": map[string]any{"project": project, "idempotencyKey": fixtureKey(key)},
+					})
+					if got.Error == nil || got.Error.Data.Code != "protected_record" {
+						t.Fatalf("remove %s: %+v", key, got)
+					}
+				})
+			}
+			f.pages(t, map[string]any{"resources": []string{childID}})
+		})
 	})
 }
 
