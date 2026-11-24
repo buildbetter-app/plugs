@@ -84,6 +84,10 @@ type WriteMeta struct {
 	// only by the claimNext domain seam and participates in the request hash so
 	// a reused key cannot silently change view or filter parameters.
 	ClaimNextIdentity string
+	// CompactionAfterID is admin.compact's exclusive selection cursor. It
+	// participates in the request hash only, so a reused key cannot silently
+	// change the cursor, and it is never stored in the compacted record.
+	CompactionAfterID string
 	DryRun            bool
 	Return            string // full or minimal
 	Traceparent       string

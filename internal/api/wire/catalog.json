@@ -5346,7 +5346,7 @@
           "schema": {
             "type": "string",
             "minLength": 1,
-            "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be a closed record in the caller's project; its own eligibility does not matter, so a refused record's ID can be passed back. Otherwise the call is refused with invalid_params and writes nothing. Refusals name the selected record in error data details.id and dry runs name it in the result ref. afterId is part of the operation: reusing an idempotency key with a different afterId is refused with idempotency_key_reused."
+            "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be in the caller's project, currently closed, and have a recorded close time (an imported closed_at or a close transition in history); the latest close counts, so a reopened and re-closed record moves later. Its own eligibility does not matter, so a refused record's ID can be passed back. Any other value is refused with invalid_params and writes nothing. Once a record is selected, every refusal or failure names it in error data details.id and details.tier and writes nothing; dry runs name it in the result ref. Authorization denials and failures before selection name no record. A summary that is not smaller is refused with retryable false: pass its details.id as afterId to continue. afterId is part of the operation: once an idempotency key has committed, reusing it with a different afterId is refused with idempotency_key_reused."
           }
         },
         {
@@ -5373,6 +5373,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
         },
         {
           "$ref": "#/components/errors/CompactionUnavailable"
@@ -14459,7 +14462,7 @@
     "methodCount": 87,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "50abe444c30fbc487fbcb43271eceebfc686c4c2b8b563d45d0b7e859f52d6e6",
-    "descriptorSha256": "f16ecb15a758b1a7ded84dccecbb426dbe93ce518ebcbf23c78905a7b4be6a62",
+    "descriptorSha256": "033092566a6c332eaf88259249bdb1e1ba08c4229f0c0e749f7a668bb7649ed2",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14570,7 +14573,7 @@
             "schema": {
               "type": "string",
               "minLength": 1,
-              "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be a closed record in the caller's project; its own eligibility does not matter, so a refused record's ID can be passed back. Otherwise the call is refused with invalid_params and writes nothing. Refusals name the selected record in error data details.id and dry runs name it in the result ref. afterId is part of the operation: reusing an idempotency key with a different afterId is refused with idempotency_key_reused."
+              "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be in the caller's project, currently closed, and have a recorded close time (an imported closed_at or a close transition in history); the latest close counts, so a reopened and re-closed record moves later. Its own eligibility does not matter, so a refused record's ID can be passed back. Any other value is refused with invalid_params and writes nothing. Once a record is selected, every refusal or failure names it in error data details.id and details.tier and writes nothing; dry runs name it in the result ref. Authorization denials and failures before selection name no record. A summary that is not smaller is refused with retryable false: pass its details.id as afterId to continue. afterId is part of the operation: once an idempotency key has committed, reusing it with a different afterId is refused with idempotency_key_reused."
             }
           },
           {
@@ -14592,6 +14595,7 @@
         },
         "errors": [
           "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
           "#/components/errors/CompactionUnavailable",
           "#/components/errors/Busy",
           "#/components/errors/RateLimited",
