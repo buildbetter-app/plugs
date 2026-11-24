@@ -210,11 +210,11 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 					continue
 				}
 				if bufferBound != nil {
-					structure, err := driver.ReverseJSONStructure(line, 0)
+					footprint, err := driver.ReverseJSONFootprint(line, 0)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
 					}
-					if err := bufferBound.ChargeBytes("head_decoded_shapes", uint64(structure)*96); err != nil {
+					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
 						return nil, err
 					}
 				}

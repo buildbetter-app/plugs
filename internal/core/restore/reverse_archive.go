@@ -246,11 +246,11 @@ func stageReverseRecords(ctx context.Context, s nativeDumpSource, records *os.Fi
 	var evidence []nativeRecord
 	var materialBytes int
 	visit := func(row driver.Record) error {
-		if len(row.Body) > reverseRecordBytes || !json.Valid(row.Body) {
-			return fmt.Errorf("reverse archive record has invalid or oversized JSON")
-		}
-		if err := driver.CheckReverseRecordJSON(row.Ref, row.Kind, row.Body, 64); err != nil {
+		if err := driver.CheckReverseRecordJSON(row.Ref, row.Kind, row.Body, 1); err != nil {
 			return err
+		}
+		if !json.Valid(row.Body) {
+			return fmt.Errorf("reverse archive record has invalid JSON")
 		}
 		record := nativeRecord{Ref: row.Ref, Kind: row.Kind, Revision: row.Revision, Body: row.Body}
 		if record.Ref.IsID() && record.Ref.Branch.IsZero() {
@@ -355,7 +355,7 @@ func writeReverseRecord(out io.Writer, record nativeRecord) (int64, error) {
 		}
 		body = compact.Bytes()
 	}
-	if err := driver.CheckReverseRecordJSON(record.Ref, record.Kind, body, 64); err != nil {
+	if err := driver.CheckReverseRecordJSON(record.Ref, record.Kind, body, 1); err != nil {
 		return 0, err
 	}
 	record.Body = nil
@@ -364,15 +364,16 @@ func writeReverseRecord(out io.Writer, record nativeRecord) (int64, error) {
 		return 0, err
 	}
 	prefix := envelope[:len(envelope)-len("null}")]
-	if len(prefix)+len(body)+2 >= reverseRecordBytes {
-		return 0, fmt.Errorf("reverse archive record exceeds buffer bound")
+	size := len(prefix) + len(body) + 1
+	if size > reverseRecordBytes {
+		return 0, &driver.ReverseJSONLimitError{Resource: "value_bytes", Measured: uint64(size), Limit: reverseRecordBytes}
 	}
 	for _, chunk := range [][]byte{prefix, body, []byte("}\n")} {
 		if _, err := out.Write(chunk); err != nil {
 			return 0, err
 		}
 	}
-	return int64(len(prefix) + len(body) + 2), nil
+	return int64(size + 1), nil
 }
 
 type reverseRecordReader struct {
@@ -516,7 +517,9 @@ func restoreStreamRecords(ctx context.Context, stream *dumpformat.NativeHeadStre
 	}
 	hash := sha256.New()
 	scan := bufio.NewScanner(io.TeeReader(reverseArchiveInput{ctx, raw}, hash))
-	scan.Buffer(make([]byte, 32<<10), reverseRecordBytes)
+	// Leave one byte for the delimiter or the first byte over the limit.
+	scan.Buffer(make([]byte, 32<<10), reverseRecordBytes+1)
+	scan.Split(scanReverseRecord)
 	seen := map[string]bool{}
 	var records []driver.Record
 	var indexBytes, materialBytes int
@@ -556,6 +559,13 @@ func restoreStreamRecords(ctx context.Context, stream *dumpformat.NativeHeadStre
 		return nil, err
 	}
 	return records, nil
+}
+
+func scanReverseRecord(data []byte, atEOF bool) (int, []byte, error) {
+	if len(data) > reverseRecordBytes && bytes.IndexByte(data[:reverseRecordBytes+1], '\n') < 0 {
+		return 0, nil, &driver.ReverseJSONLimitError{Resource: "value_bytes", Measured: reverseRecordBytes + 1, Limit: reverseRecordBytes}
+	}
+	return bufio.ScanLines(data, atEOF)
 }
 
 const reverseImportBindingID = "instance_config/restore-import/binding"

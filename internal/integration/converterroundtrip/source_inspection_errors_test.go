@@ -177,3 +177,32 @@ func TestSourceReverseSuccessfulInspectionReleasesScratch(t *testing.T) {
 		t.Fatal("caller baseline cleanup leak")
 	}
 }
+
+// Resource refusals from the retained read must not imply a receipt conflict.
+func TestNativeDeltaRecoveryPreservesResourceRefusals(t *testing.T) {
+	for _, limit := range []interface {
+		error
+		Code() string
+	}{
+		&driver.ReverseJSONLimitError{Resource: "value_bytes", Measured: 2, Limit: 1},
+		&dumpformat.NativeDeltaDecodedLimitError{Phase: "head_decoded_shapes", MeasuredBytes: 2, LimitBytes: 1},
+		&dumpformat.NativeDeltaRecordLimitError{MeasuredBytes: 2, LimitBytes: 1},
+	} {
+		t.Run(limit.Code(), func(t *testing.T) {
+			cause := errors.Join(fmt.Errorf("read retained capture: %w", limit), nil)
+			recovered := nativeDeltaRecoveryError(cause)
+			converted := sourceInspectionFailure(recovered, ReverseRefusal{"source_receipt_archive_or_origin_mismatch"})
+			for _, got := range []error{recovered, converted, retainedReverseReadFailure(cause)} {
+				var mismatch driver.ErrRestoreBindingMismatch
+				if got != cause || !errors.Is(got, limit) || errors.Is(got, driver.ErrConflict) || errors.As(got, &mismatch) {
+					t.Fatalf("resource refusal became a binding conflict: %v", got)
+				}
+			}
+		})
+	}
+	var mismatch driver.ErrRestoreBindingMismatch
+	err := nativeDeltaRecoveryError(errors.New("malformed retained capture"))
+	if !errors.As(err, &mismatch) || mismatch.Field != "nativeDelta" || !errors.Is(err, driver.ErrConflict) {
+		t.Fatalf("malformed evidence lost its binding failure: %v", err)
+	}
+}

@@ -5,10 +5,38 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 )
+
+func TestReverseJSONByteAndNestingLimits(t *testing.T) {
+	const depth = NativeHeadJSONDepth
+	nested := func(n int) []byte {
+		return []byte(strings.Repeat("[", n) + `"\\\" [] {} : ,"` + strings.Repeat("]", n))
+	}
+	if !json.Valid(nested(depth)) {
+		t.Fatal("malformed nesting fixture")
+	}
+	if err := CheckReverseJSONShape(nested(depth)); err != nil {
+		t.Fatalf("legal nesting refused: %v", err)
+	}
+	var limit *ReverseJSONLimitError
+	if err := CheckReverseJSONShape(nested(depth + 1)); !errors.As(err, &limit) ||
+		limit.Code() != "reverse_json_limit" || limit.Resource != "nesting_depth" || limit.Measured != depth+1 || limit.Limit != depth {
+		t.Fatalf("nesting limit lost typed details: %v", err)
+	}
+	wire := []byte(`"` + strings.Repeat("x", NativeHeadRecordBytes-1) + `"`)
+	if err := CheckReverseJSONShape(wire); !errors.As(err, &limit) ||
+		limit.Resource != "value_bytes" || limit.Measured != NativeHeadRecordBytes+1 || limit.Limit != NativeHeadRecordBytes {
+		t.Fatalf("byte limit lost typed details: %v", err)
+	}
+	wire[len(wire)-2] = '"'
+	if err := CheckReverseJSONShape(wire[:len(wire)-1]); err != nil {
+		t.Fatalf("exact wire boundary failed resource admission: %v", err)
+	}
+}
 
 func TestDriverErrorMapping(t *testing.T) {
 	tests := []struct {

@@ -21,6 +21,8 @@ type NativeDeltaRecordLimitError struct {
 	LimitBytes    uint64
 }
 
+func (e *NativeDeltaRecordLimitError) Code() string { return "native_record_limit" }
+
 func (e *NativeDeltaRecordLimitError) Error() string {
 	return fmt.Sprintf("native delta logical record exceeds limit: measured_bytes=%d limit_bytes=%d", e.MeasuredBytes, e.LimitBytes)
 }

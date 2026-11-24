@@ -5,8 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func TestNativePreparedCaptureFileLedgerBindsOrderedRootsAndParts(t *testing.T) {
@@ -130,15 +134,24 @@ func TestNativeBlankPeerCredentialStillPasses(t *testing.T) {
 	}
 }
 
-func TestReverseHeadRejectsWideJSONBeforeDecoding(t *testing.T) {
+func TestReverseHeadAdmitsWideJSONWithinMemoryBudget(t *testing.T) {
 	wrapping := `{"items":[`
 	wide := []byte(wrapping + strings.Repeat("0,", 100_000) + "0]}")
-	if _, err := DecodeReverseOriginFields(wide); err == nil || !strings.Contains(err.Error(), "structure exceeds buffer bound") {
-		t.Fatalf("wide retained origin was not refused before decoding: %v", err)
+	if got, err := DecodeReverseOriginFields(wide); err != nil || got != 100_001 {
+		t.Fatalf("wide retained origin fields=%d err=%v", got, err)
 	}
 	record := []byte(`{"kind":"bead","ref":{"id":"wide","branch":0},"revision":1,"body":` + string(wide) + "}")
-	if err := ValidateNativeHeadRecord(record); err == nil || !strings.Contains(err.Error(), "structure exceeds buffer bound") {
-		t.Fatalf("wide material record was not refused before decoding: %v", err)
+	if err := ValidateNativeHeadRecord(record); err != nil {
+		t.Fatalf("wide material record was refused: %v", err)
+	}
+	var object strings.Builder
+	object.WriteByte('{')
+	for i := range 80_000 {
+		fmt.Fprintf(&object, "%q:1,", strconv.Itoa(i))
+	}
+	object.WriteString(`"end":1}`)
+	if got, err := DecodeReverseOriginFields([]byte(object.String())); err != nil || got != 80_001 {
+		t.Fatalf("wide object fields=%d err=%v", got, err)
 	}
 	body := []byte(`{"escaped":"` + strings.Repeat(`\"{:,[`, 100_000) + `","nested":[{}, [], null, 1]}`)
 	if fields, err := DecodeReverseOriginFields(body); err != nil || fields != 5 {
@@ -160,8 +173,14 @@ func TestReverseHeadHistoryMarkerChecksEachFrame(t *testing.T) {
 		t.Fatalf("wide marker field count=%d, err=%v", count, err)
 	}
 	wideFrame := `{"sourceFrames":[{"value":[` + strings.Repeat("0,", 100_000) + `0]}],"mapping":[]}`
-	if err := ValidateNativeHeadRecord([]byte(prefix + wideFrame + "}")); err == nil || !strings.Contains(err.Error(), "structure exceeds buffer bound") {
-		t.Fatalf("unbounded individual frame was admitted: %v", err)
+	if err := ValidateNativeHeadRecord([]byte(prefix + wideFrame + "}")); err != nil {
+		t.Fatalf("wide individual frame was refused: %v", err)
+	}
+	overBudget := `{"sourceFrames":[{"value":[` + strings.Repeat("0,", 700_000) + `0]}],"mapping":[]}`
+	var limit *driver.ReverseJSONLimitError
+	if err := ValidateNativeHeadRecord([]byte(prefix + overBudget + "}")); !errors.As(err, &limit) ||
+		limit.Resource != "decoded_bytes" || limit.Measured <= limit.Limit || limit.Limit != driver.NativeHeadMaterialBytes {
+		t.Fatalf("individual frame escaped its decoded byte budget: %v", err)
 	}
 }
 

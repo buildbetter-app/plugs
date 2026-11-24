@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -272,10 +271,9 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 // Recovery and live reverse also return this mapping directly to callers.
 // Keep semantic inspection diagnostics out of the returned refusal.
 func sourceInspectionFailure(cause, malformed error) error {
-	var limit *dumpformat.NativeDeltaDecodedLimitError
 	var commitConflict driver.ErrRestoreCommitConflict
 	var fenced driver.ErrFenced
-	if errors.As(cause, &limit) || errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+	if isNativeDeltaResourceLimit(cause) || errors.As(cause, &commitConflict) || errors.As(cause, &fenced) || errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
 	return malformed

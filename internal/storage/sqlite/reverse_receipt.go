@@ -173,7 +173,7 @@ func readReverseReceiptResults(input *reverseReceiptInput, decoder *json.Decoder
 			return nil, err
 		}
 		if len(identity.Record) != 0 {
-			if err := driver.CheckReverseRecordJSON(identity.Ref, "beads-archive", identity.Record, 64); err != nil {
+			if err := driver.CheckReverseRecordJSON(identity.Ref, "beads-archive", identity.Record, 1); err != nil {
 				return nil, err
 			}
 		}

@@ -22,6 +22,8 @@ type NativeDeltaDecodedLimitError struct {
 	Usage               NativeDeltaDecodedUsage `json:"admitted_usage"`
 }
 
+func (e *NativeDeltaDecodedLimitError) Code() string { return "native_decoded_limit" }
+
 func (e *NativeDeltaDecodedLimitError) Error() string {
 	return fmt.Sprintf("native delta decoded-size limit: accounting=%s phase=%s measured_bytes=%d limit_bytes=%d overflow=%t", e.Accounting, e.Phase, e.MeasuredBytes, e.LimitBytes, e.Overflow)
 }

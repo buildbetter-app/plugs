@@ -194,6 +194,13 @@ func reverseLiveCensus(ctx context.Context, r driver.Reader, joint bool) (map[st
 	return live, omitted, nil
 }
 
+func retainedReverseReadFailure(err error) error {
+	if isNativeDeltaResourceLimit(err) {
+		return err
+	}
+	return ReverseRefusal{"invalid_source_evidence"}
+}
+
 func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...driver.RestoreImportProfile) (reverseconverter.Dump, error) {
 	rows, err := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil {
@@ -229,7 +236,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...drive
 			if json.Unmarshal(root, &format) == nil && format.Format == dumpformat.NativeJoinedInputsFormatV2 {
 				archive, collection, err := readRetainedReceivingArchive(ctx, r, root, evidence, profiles[0])
 				if err != nil {
-					return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+					return reverseconverter.Dump{}, retainedReverseReadFailure(err)
 				}
 				dump, err := reverseconverter.AdaptValidatedArchive(archive)
 				if collection != nil {
@@ -281,7 +288,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...drive
 			return io.NopCloser(bytes.NewReader(data)), nil
 		}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained reverse native capture"})
 		if err != nil {
-			return reverseconverter.Dump{}, ReverseRefusal{"invalid_source_evidence"}
+			return reverseconverter.Dump{}, retainedReverseReadFailure(err)
 		}
 		dump, err := reverseconverter.AdaptValidatedArchive(native)
 		native.ReleaseNativeDecoded()
