@@ -470,7 +470,15 @@ type commitError struct{ error }
 
 func (e commitError) Unwrap() error { return e.error }
 
+func (e commitError) interrupted() bool {
+	return errors.Is(e.error, context.Canceled) || errors.Is(e.error, context.DeadlineExceeded)
+}
+
 func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) error {
+	return s.immediatePublication(ctx, l, false, fn)
+}
+
+func (s *Store) immediatePublication(ctx context.Context, l *activeLease, restore bool, fn func(*sql.Conn) error) error {
 	var lost <-chan struct{}
 	if l != nil {
 		lost = l.Lost()
@@ -480,13 +488,13 @@ func (s *Store) immediate(ctx context.Context, l *activeLease, fn func(*sql.Conn
 		return err
 	}
 	defer unlockFile(gate)
-	return s.immediateLocked(ctx, l, fn)
+	return s.immediateLocked(ctx, l, restore, fn)
 }
 
 // immediateLocked requires the cross-process publication gate through cleanup.
 // Renew persists its own journal before acceptance, so COMMIT is the only native
 // publication and its confirmed success cannot turn into a handoff error.
-func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sql.Conn) error) (err error) {
+func (s *Store) immediateLocked(ctx context.Context, l *activeLease, restore bool, fn func(*sql.Conn) error) (err error) {
 	c, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
@@ -498,11 +506,16 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, fn func(*sq
 	// Every unconfirmed path rolls back before returning the connection. After
 	// a confirmed COMMIT there must be no further native transaction work.
 	defer func() {
+		var uncertain commitError
 		if !committed {
-			_, _ = c.ExecContext(context.Background(), `ROLLBACK`)
+			_, rollbackErr := c.ExecContext(context.Background(), `ROLLBACK`)
+			// A successful rollback on this reserved connection proves the
+			// original transaction remained open after the failed COMMIT.
+			if restore && rollbackErr == nil && errors.As(err, &uncertain) && uncertain.interrupted() {
+				err = uncertain.error
+			}
 		}
 		if registered {
-			var uncertain commitError
 			if errors.As(err, &uncertain) {
 				l.signalLost()
 			}

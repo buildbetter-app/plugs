@@ -482,7 +482,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return model.Changeset{}, err
 	}
 	var result model.Changeset
-	err := t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+	err := t.store.immediatePublication(ctx, t.lease, t.restore != nil, func(c *sql.Conn) error {
 		if t.restore != nil {
 			if err := restoreEmpty(ctx, c); err != nil {
 				return err
@@ -679,7 +679,9 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 	var uncertain commitError
 	if errors.As(err, &uncertain) {
 		t.finish()
-		return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: h.IdempotencyKey}
+		return model.Changeset{}, driver.ErrIndeterminate{
+			IdempotencyKey: h.IdempotencyKey, RestoreInterrupted: t.restore != nil && uncertain.interrupted(),
+		}
 	}
 	var fenced driver.ErrFenced
 	if errors.As(err, &fenced) {

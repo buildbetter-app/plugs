@@ -1096,8 +1096,14 @@ func TestNativeAllocatorStagedFailuresRollbackAllStateAcrossStores(t *testing.T)
 				manager := nativeManager(t, target, wrapped)
 				status, hash := nativeUpload(t, target, manager, data)
 				status, err := manager.Finish(target.ctx, status.RestoreID, hash, batchPrincipal, nativeFinishMeta(), nativeTestPresence)
-				if err == nil || status.State != "failed" || wrapped.writes != 1 {
-					t.Fatalf("fault did not refuse: %+v %v %+v", status, err, wrapped)
+				wantState := "failed"
+				if mode == "cancel" {
+					// An interrupted restore remains eligible for the same-session
+					// retry. It must still leave every durable target unchanged.
+					wantState = "receiving"
+				}
+				if err == nil || status.State != wantState || wrapped.writes != 1 {
+					t.Fatalf("fault did not refuse or retain retry state: %+v %v %+v", status, err, wrapped)
 				}
 				switch mode {
 				case "unsupported":

@@ -9,7 +9,51 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		published bool
+	}{
+		{name: "rolled-back"},
+		{name: "publication-uncertain", published: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "restore-interrupted-commit.db")
+			s := openStore(t, ctx, path)
+			observer := openStore(t, ctx, path)
+			lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
+			call, connector := cancelMetadataCommit(t, ctx, s, path, tc.published)
+			const key = "restore-interrupted-commit"
+			err := s.immediatePublication(call, lease, true, func(c *sql.Conn) error {
+				_, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("restore"))
+				return err
+			})
+			durable, readErr := observer.LoadCheckpoint(ctx, key)
+			if readErr != nil || connector.rollbacks.Load() != 1 {
+				t.Fatalf("readback=%+v err=%v rollbacks=%d", durable, readErr, connector.rollbacks.Load())
+			}
+			if tc.published {
+				var unknown commitError
+				if !errors.As(err, &unknown) || durable.Generation != 1 || connector.steps.Load() != 1 {
+					t.Fatalf("unacknowledged publication: err=%v readback=%+v commits=%d", err, durable, connector.steps.Load())
+				}
+				requireUncertainLeaseLost(t, ctx, lease)
+			} else {
+				if err != context.Canceled || durable.Generation != 0 || connector.steps.Load() != 0 {
+					t.Fatalf("confirmed rollback: err=%v readback=%+v commits=%d", err, durable, connector.steps.Load())
+				}
+				if err := lease.Renew(ctx); err != nil {
+					t.Fatalf("rolled-back restore lost the active lease: %v", err)
+				}
+			}
+		})
+	}
+}
 
 // modernc's statement exec replaces its result with ctx.Err when the
 // cancellation watcher wins, including after sqlite3_step has finished. This

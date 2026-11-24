@@ -70,7 +70,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 		return zero, err
 	}
 	entry := plan.Entries[len(plan.Entries)-1]
-	err = t.store.immediate(ctx, t.lease, func(c *sql.Conn) error {
+	err = t.store.immediatePublication(ctx, t.lease, true, func(c *sql.Conn) error {
 		if err := t.checkCheckpointGuards(ctx, c); err != nil {
 			return err
 		}
@@ -182,7 +182,9 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	var uncertain commitError
 	if errors.As(err, &uncertain) {
 		t.finish()
-		return zero, driver.ErrIndeterminate{IdempotencyKey: h.IdempotencyKey}
+		return zero, driver.ErrIndeterminate{
+			IdempotencyKey: h.IdempotencyKey, RestoreInterrupted: uncertain.interrupted(),
+		}
 	}
 	return zero, err
 }

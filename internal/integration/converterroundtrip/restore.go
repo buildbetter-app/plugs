@@ -140,6 +140,19 @@ func RestoreImportWithLease(ctx context.Context, input io.Reader, target driver.
 	return restoreArchiveWithProfile(ctx, archive, target, lease, &bound, verification)
 }
 
+// RestoreValidatedImportWithLease shares a caller-owned validated archive
+// while rebuilding and verifying the complete image before publication.
+func RestoreValidatedImportWithLease(ctx context.Context, archive *dumpformat.Archive, target driver.Store, lease driver.ActiveLease, profile driver.RestoreImportProfile) (Report, error) {
+	if err := ctx.Err(); err != nil {
+		return Report{}, err
+	}
+	bound, err := profile.Detached()
+	if err != nil {
+		return Report{}, err
+	}
+	return restoreArchiveWithProfile(ctx, archive, target, lease, &bound, nil)
+}
+
 // ImportInspection is the read-only source binding needed by a trusted host
 // before it admits an import. It contains no actor, authority, or credential
 // and never opens or writes a target store.
@@ -216,7 +229,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, modeErr
 		}
 		profile.HistoryMode = mode
-		if policyErr := validateArchiveHistoryPolicy(mode, archive); policyErr != nil {
+		if policyErr := validateArchiveHistoryPolicy(ctx, mode, archive); policyErr != nil {
 			return report, policyErr
 		}
 	}
@@ -569,7 +582,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		if recoverErr != nil {
 			return report, recoverErr
 		}
-		report.Receipt = recovered.Receipt
+		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
 	}
 	return report, nil
 }
@@ -713,6 +726,9 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		// binding checks remain exact and no write is replayed.
 		refs := []model.Ref{model.RefByID("restore/archive", model.Natural64(0)), model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))}
 		rows, rowErr := driver.GetNativeHeadRecords(ctx, r, refs)
+		if errors.Is(rowErr, context.Canceled) || errors.Is(rowErr, context.DeadlineExceeded) {
+			return Report{}, rowErr
+		}
 		if rowErr != nil || len(rows) < 3 {
 			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
 		}
@@ -726,6 +742,9 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			}
 		}
 		rows, rowErr = driver.GetNativeHeadRecords(ctx, r, refs)
+		if errors.Is(rowErr, context.Canceled) || errors.Is(rowErr, context.DeadlineExceeded) {
+			return Report{}, rowErr
+		}
 		if rowErr != nil || len(rows) != len(refs) {
 			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
 		}

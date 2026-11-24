@@ -214,3 +214,37 @@ func TestPreparedWriterRetainsCancellationAfterStaging(t *testing.T) {
 	assertNoPreparedPublication(t, s, h, first)
 	t.Log("caller cancellation still wins after a prepared transaction has staged work")
 }
+
+func TestRestoreCommitTracksPostgresDriverEntry(t *testing.T) {
+	s := openTest(t, freshDSN(t))
+	lease := testLease(t, s)
+	for _, tc := range []struct {
+		name string
+		stop bool
+	}{
+		{name: "commit"},
+		{name: "cancel-before-driver", stop: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			write, err := s.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx := write.(*transaction)
+			defer tx.Close()
+			tx.restore = &driver.Meta{}
+			if tc.stop {
+				cancel()
+			}
+			err = tx.commitSQL(ctx, "restore-commit-entry")
+			if err != ctx.Err() {
+				t.Fatalf("commit error=%v, want %v", err, ctx.Err())
+			}
+			if tx.commitEntered == nil || *tx.commitEntered != !tc.stop {
+				t.Fatalf("driver entry must be %t for %s", !tc.stop, tc.name)
+			}
+		})
+	}
+}

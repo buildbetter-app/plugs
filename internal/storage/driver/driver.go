@@ -378,6 +378,10 @@ func (e ErrFutureRevision) Error() string { return "requested revision is beyond
 // key and expected generation and resolves them through LoadCheckpoint.
 type ErrIndeterminate struct {
 	IdempotencyKey string
+
+	// RestoreInterrupted records a request interruption during restore COMMIT.
+	// Publication remains unknown and this error does not unwrap to context.
+	RestoreInterrupted bool
 }
 
 func (e ErrIndeterminate) Error() string { return "commit outcome indeterminate" }

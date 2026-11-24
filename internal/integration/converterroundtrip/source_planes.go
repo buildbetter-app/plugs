@@ -32,6 +32,15 @@ func BindSourceImport(ctx context.Context, input io.Reader, profile driver.Resto
 		return driver.RestoreImportProfile{}, err
 	}
 	defer archive.ReleaseNativeDecoded()
+	return BindValidatedSourceImport(ctx, archive, profile, plan)
+}
+
+// BindValidatedSourceImport binds a previously validated archive. The caller
+// owns the archive through binding and publication.
+func BindValidatedSourceImport(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
+	if err := ctx.Err(); err != nil {
+		return driver.RestoreImportProfile{}, err
+	}
 	return bindSourceArchive(ctx, archive, profile, plan)
 }
 
@@ -179,7 +188,7 @@ func prepareSourceArchive(ctx context.Context, archive *dumpformat.Archive, prof
 				return empty, err
 			}
 		}
-		if err := validateArchiveHistoryPolicy(profile.HistoryMode, archive); err != nil {
+		if err := validateArchiveHistoryPolicy(ctx, profile.HistoryMode, archive); err != nil {
 			return empty, err
 		}
 		if final && (profile.HistoryDigest == "" || profile.HistoryTime == "") {

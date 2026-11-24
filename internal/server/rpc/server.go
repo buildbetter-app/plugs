@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 const MaxBatchCalls = 100
@@ -231,6 +233,14 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		return nil
 	}
 	if callErr != nil {
+		var uncertain driver.ErrIndeterminate
+		if method == "admin.restore.finish" && errors.As(callErr, &uncertain) && uncertain.RestoreInterrupted {
+			return respond("busy", "request interrupted during publication; commit outcome is unknown",
+				map[string]any{"outcome": "unknown", "idempotencyKey": uncertain.IdempotencyKey})
+		}
+		if strings.HasPrefix(method, "admin.restore.") && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
+			return respond("busy", "request deadline or cancellation reached", nil)
+		}
 		mapped := s.registry.catalog.MapError(callErr)
 		if strings.HasPrefix(method, "admin.restore.") && mapped.Data.Code == "internal_error" {
 			if mapped.Data.TraceID == "" {

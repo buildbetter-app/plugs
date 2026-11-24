@@ -356,13 +356,13 @@ func TestStrictSourceHistoryRefusalRetainsOriginalNamedGap(t *testing.T) {
 	if err != nil {
 		t.Fatal("declared unverified source", err)
 	}
-	err = validateArchiveHistoryPolicy(driver.RestoreHistoryModeFull, a)
+	err = validateArchiveHistoryPolicy(context.Background(), driver.RestoreHistoryModeFull, a)
 	var policy driver.ErrRestoreHistoryRefused
 	var gap dumpformat.IncompleteHistoryError
 	if !errors.As(err, &policy) || policy.Reason != driver.RestoreHistoryReasonAvailableUnverified || !errors.As(err, &gap) || gap.StoreID != manifest.StoreID || gap.Project != "pl" || gap.Reason != history.Range.Reason {
 		t.Fatal("strict policy lost its original named source gap", err)
 	}
-	if err := validateArchiveHistoryPolicy(driver.RestoreHistoryModeSnapshot, a); err != nil {
+	if err := validateArchiveHistoryPolicy(context.Background(), driver.RestoreHistoryModeSnapshot, a); err != nil {
 		t.Fatal("explicit snapshot policy changed", err)
 	}
 }

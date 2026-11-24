@@ -2,15 +2,58 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	sqldriver "database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
+
+type commitEntryKey struct{}
+
+type commitEntryConnector struct{ sqldriver.Connector }
+
+func (c commitEntryConnector) Connect(ctx context.Context) (sqldriver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &commitEntryConn{Conn: conn.(*stdlib.Conn)}, nil
+}
+
+// Embedding stdlib.Conn preserves its optional database/sql interfaces and
+// the connector still resolves pgx's registered connection configurations.
+type commitEntryConn struct{ *stdlib.Conn }
+
+func (c *commitEntryConn) BeginTx(ctx context.Context, opts sqldriver.TxOptions) (sqldriver.Tx, error) {
+	tx, err := c.Conn.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if entered, ok := ctx.Value(commitEntryKey{}).(*bool); ok {
+		return commitEntryTx{Tx: tx, entered: entered}, nil
+	}
+	return tx, nil
+}
+
+type commitEntryTx struct {
+	sqldriver.Tx
+	entered *bool
+}
+
+func (tx commitEntryTx) Commit() error {
+	*tx.entered = true
+	return tx.Tx.Commit()
+}
 
 func (t *transaction) header(h driver.ChangesetHeader) ([]byte, error) {
 	if !t.hasHead {
@@ -214,10 +257,32 @@ func (t *transaction) publish(ctx context.Context, key string) error {
 	if err := t.fence(ctx); err != nil {
 		return err
 	}
+	return t.commitSQL(ctx, key)
+}
+
+func (t *transaction) commitSQL(ctx context.Context, key string) error {
+	restore := t.restore != nil && t.stream == nil
 	err := t.sql.Commit()
 	_ = t.finish()
+	if restore && err != nil {
+		if stopped := ctx.Err(); stopped != nil {
+			// Go can return the same bare cancellation as pgx after a send.
+			// The driver entry marker identifies the Go short circuit.
+			stoppedBeforeEntry := err == stopped && t.commitEntered != nil && !*t.commitEntered
+			if stoppedBeforeEntry || err == sql.ErrTxDone || pgconn.SafeToRetry(err) {
+				return stopped
+			}
+		}
+	}
 	if err != nil && sqlState(err) == "" {
-		return driver.ErrIndeterminate{IdempotencyKey: key}
+		unknown := driver.ErrIndeterminate{IdempotencyKey: key}
+		if restore {
+			unknown.RestoreInterrupted = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			if deadline, ok := ctx.Deadline(); !unknown.RestoreInterrupted && ok && pgconn.Timeout(err) {
+				unknown.RestoreInterrupted = !time.Now().Before(deadline)
+			}
+		}
+		return unknown
 	}
 	return err
 }

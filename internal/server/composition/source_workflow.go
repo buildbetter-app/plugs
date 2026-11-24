@@ -107,7 +107,10 @@ func (a *restoreImportAdapter) importSourceArchive(ctx context.Context, principa
 		if request.SourcePlanes != nil {
 			candidate := profile
 			candidate.SourcePlanes = nil
-			candidate, err = converterroundtrip.BindSourceImport(ctx, bytes.NewReader(data), candidate, *request.SourcePlanes)
+			candidate, err = converterroundtrip.BindValidatedSourceImport(ctx, archive, candidate, *request.SourcePlanes)
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return converterroundtrip.Report{}, err
+			}
 			if err != nil || candidate.SourcePlanes.JointPlanDigest != profile.SourcePlanes.JointPlanDigest {
 				return converterroundtrip.Report{}, driver.ErrConflict
 			}
@@ -144,7 +147,7 @@ func (a *restoreImportAdapter) importSourceArchive(ctx context.Context, principa
 		return converterroundtrip.Report{}, driver.ErrConflict
 	}
 	profile = driver.RestoreImportProfile{Admission: driver.RestoreImportAdmission{Mode: mode, Actor: actor, Scope: scope, Authority: authority, AdmissionDigest: strings.Repeat("0", 64)}, SourceStoreID: driver.StoreID(archive.Manifest().StoreID), Method: "offline.restore.import", IdempotencyKey: request.IdempotencyKey, ArchiveDigest: archive.SHA256(), HistoryMode: request.HistoryMode, HistoryDigest: request.HistoryDigest, HistoryTime: request.HistoryTime}
-	profile, err = converterroundtrip.BindSourceImport(ctx, bytes.NewReader(data), profile, plan)
+	profile, err = converterroundtrip.BindValidatedSourceImport(ctx, archive, profile, plan)
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
@@ -168,27 +171,34 @@ func (a *restoreImportAdapter) importSourceArchive(ctx context.Context, principa
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), a.store, a.lease, profile)
-	if err != nil {
-		var uncertain driver.ErrIndeterminate
-		if !errors.As(err, &uncertain) && !errors.Is(err, driver.ErrRestoreTargetNotEmpty) {
+	report, err := converterroundtrip.RestoreValidatedImportWithLease(ctx, archive, a.store, a.lease, profile)
+	if err == nil {
+		// The converter has already read the durable receipt and verified the
+		// source plane. Install from that observation.
+		return report, a.installSource(ctx, profile, report)
+	}
+	var uncertain driver.ErrIndeterminate
+	indeterminate := errors.As(err, &uncertain)
+	if !indeterminate && !errors.Is(err, driver.ErrRestoreTargetNotEmpty) {
+		return report, err
+	}
+	// A failed lookup cannot replace the original unknown commit outcome.
+	recoveredProfile, recovered, found, recoveryErr := converterroundtrip.RecoverBoundSourceImport(ctx, a.store)
+	if recoveryErr != nil || !found {
+		if indeterminate {
 			return report, err
 		}
-	}
-	// Recovery proves the committed receipt and origin before live adoption.
-	profile, report, found, err = converterroundtrip.RecoverBoundSourceImport(ctx, a.store)
-	if err != nil || !found {
-		if err == nil {
-			err = driver.ErrConflict
+		if recoveryErr == nil {
+			recoveryErr = driver.ErrConflict
 		}
-		return report, err
+		return recovered, recoveryErr
 	}
-	actualHash, err := profile.RequestHash()
-	if err != nil || actualHash != wantedHash {
-		return report, driver.ErrConflict
+	actualHash, hashErr := recoveredProfile.RequestHash()
+	if hashErr != nil || actualHash != wantedHash {
+		if indeterminate {
+			return report, err
+		}
+		return recovered, driver.ErrConflict
 	}
-	if err := a.installSource(ctx, profile, report); err != nil {
-		return report, err
-	}
-	return report, nil
+	return recovered, a.installSource(ctx, recoveredProfile, recovered)
 }

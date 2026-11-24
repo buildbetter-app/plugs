@@ -174,9 +174,16 @@ func (s *Store) checkLeaseAtPublicationLocked(value driver.ActiveLease) error {
 // withLeasePublication keeps the epoch/expiry check adjacent to the atomic
 // in-memory publication. Store.mu must be held by the caller.
 func (s *Store) withLeasePublication(value driver.ActiveLease, publish func()) error {
+	return s.withLeasePublicationContext(context.Background(), value, publish)
+}
+
+func (s *Store) withLeasePublicationContext(ctx context.Context, value driver.ActiveLease, publish func()) error {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
 	if err := s.checkLeaseAtPublicationLocked(value); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	publish()

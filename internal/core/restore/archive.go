@@ -96,7 +96,7 @@ func presenceError(err error) error {
 // checks have succeeded. Native archives never use this hook. The explicit
 // history policy is passed separately from write metadata so it cannot be
 // confused with an ordinary graph write field.
-type ImportHook func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, string, string, model.WriteMeta, Presence) (RestoreStatus, error)
+type ImportHook func(context.Context, string, model.PrincipalRef, []byte, *dumpformat.Archive, driver.RestoreHistoryMode, string, string, model.WriteMeta, Presence) (RestoreStatus, error)
 
 type nativeRecord struct {
 	Ref      model.Ref       `json:"ref"`
@@ -622,20 +622,20 @@ func writeTar(paths []string, members map[string][]byte) ([]byte, error) {
 }
 
 type restoreSession struct {
-	id            string
-	manifest      map[string]any
-	history       string
-	historyMode   driver.RestoreHistoryMode
-	historyDigest string
-	historyTime   string
-	hash          string
-	principal     model.PrincipalRef
-	agentLabel    string
-	idempotency   string
-	pages         map[uint64][]byte
-	state         string
-	warnings      []model.Warning
-	incarnation   string
+	id                string
+	historyMode       driver.RestoreHistoryMode
+	historyDigest     string
+	historyTime       string
+	hash              string
+	principal         model.PrincipalRef
+	agentLabel        string
+	idempotency       string
+	pages             map[uint64][]byte
+	bytesReceived     int
+	state             string
+	warnings          []model.Warning
+	incarnation       string
+	interruptedCommit error
 }
 
 // Manager is safe for concurrent RPC calls. A restore session is in-memory
@@ -644,6 +644,7 @@ type Manager struct {
 	store      driver.Store
 	lease      driver.ActiveLease
 	verifier   PresenceVerifier
+	dumpMu     sync.Mutex
 	mu         sync.Mutex
 	dumps      map[string]dumpSnapshot
 	restores   map[string]*restoreSession
@@ -694,7 +695,16 @@ func (m *Manager) verifyPresence(ctx context.Context, method, digest string, p P
 	if strings.TrimSpace(digest) == "" {
 		return presenceError(fmt.Errorf("sensitive digest is required for human presence admission"))
 	}
-	if err := m.verifier.Verify(ctx, method, digest, p); err != nil {
+	err := m.verifier.Verify(ctx, method, digest, p)
+	if strings.HasPrefix(method, "admin.restore.") {
+		if interrupted := ctx.Err(); interrupted != nil {
+			return interrupted
+		}
+		if restoreInterrupted(err) {
+			return err
+		}
+	}
+	if err != nil {
 		return presenceError(err)
 	}
 	return nil
@@ -731,8 +741,8 @@ func (m *Manager) DumpPage(ctx context.Context, history, cursor string, pageSize
 	if err := m.requireLease(); err != nil {
 		return DumpPage{}, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.dumpMu.Lock()
+	defer m.dumpMu.Unlock()
 	dumpID, page, err := parseDumpCursor(cursor)
 	if err != nil {
 		return DumpPage{}, &model.Error{Data: model.ErrorData{Code: "invalid_params", Hint: err.Error()}}
@@ -881,10 +891,6 @@ func (m *Manager) BeginAsWithMetaAndHistory(ctx context.Context, principal model
 	if modeErr != nil {
 		return RestoreStatus{}, restoreHistoryModelError(modeErr)
 	}
-	archiveHistory := "full"
-	if historyMode == driver.RestoreHistoryModeSnapshot {
-		archiveHistory = "head"
-	}
 	manifestData, err := json.Marshal(manifest)
 	if err != nil {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: err.Error()}}
@@ -910,7 +916,7 @@ func (m *Manager) BeginAsWithMetaAndHistory(ctx context.Context, principal model
 	// Native restore keeps the existing early empty-target refusal.
 	if parsed.Scope != dumpformat.Scope {
 		if _, err := m.emptyTarget(ctx); err != nil {
-			return RestoreStatus{}, err
+			return RestoreStatus{}, restoreRequestError(ctx, err)
 		}
 	}
 	canonical, err := json.Marshal(parsed)
@@ -923,7 +929,11 @@ func (m *Manager) BeginAsWithMetaAndHistory(ctx context.Context, principal model
 	}
 	id := newID("restore")
 	m.mu.Lock()
-	m.restores[id] = &restoreSession{id: id, manifest: cloneMap(manifest), history: archiveHistory, historyMode: historyMode, historyDigest: historyDigest, historyTime: historyTime, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return RestoreStatus{}, err
+	}
+	m.restores[id] = &restoreSession{id: id, historyMode: historyMode, historyDigest: historyDigest, historyTime: historyTime, hash: hash, principal: principal, agentLabel: meta.AgentLabel, idempotency: meta.IdempotencyKey, pages: map[uint64][]byte{}, state: "receiving"}
 	m.mu.Unlock()
 	return RestoreStatus{RestoreID: id, State: "receiving", ReceivedPages: 0, Warnings: []model.Warning{}}, nil
 }
@@ -952,19 +962,29 @@ func (m *Manager) ChunkAs(ctx context.Context, principal model.PrincipalRef, id 
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "restore page checksum mismatch"}}
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	session := m.restores[id]
+	receiving := session != nil && session.state == "receiving"
+	m.mu.Unlock()
 	if session == nil {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
 	}
 	if !samePrincipal(session.principal, principal) {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
-	if session.state != "receiving" {
+	if !receiving {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
 	}
 	if err := m.verifyPresence(ctx, "admin.restore.chunk", session.hash, presence); err != nil {
 		return RestoreStatus{}, err
+	}
+	chunk := append([]byte(nil), data...)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return RestoreStatus{}, err
+	}
+	if session.state != "receiving" {
+		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore session is no longer receiving"}}
 	}
 	if page != uint64(len(session.pages)) {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore pages must be contiguous and unique"}}
@@ -972,14 +992,11 @@ func (m *Manager) ChunkAs(ctx context.Context, principal model.PrincipalRef, id 
 	if len(session.pages) >= maxRestorePages {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore has too many pages"}}
 	}
-	var total int
-	for _, prior := range session.pages {
-		total += len(prior)
-	}
-	if total+len(data) > maxDumpBytes {
+	if session.bytesReceived+len(chunk) > maxDumpBytes {
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: "restore archive is too large"}}
 	}
-	session.pages[page] = append([]byte(nil), data...)
+	session.pages[page] = chunk
+	session.bytesReceived += len(chunk)
 	return restoreStatus(session), nil
 }
 
@@ -990,20 +1007,29 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	if err := ctx.Err(); err != nil {
 		return RestoreStatus{}, err
 	}
-	if err := m.requireLease(); err != nil {
-		return RestoreStatus{}, err
-	}
+	leaseErr := m.requireLease()
 	m.mu.Lock()
 	session := m.restores[id]
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return RestoreStatus{}, err
+	}
+	ownsSession := session != nil && samePrincipal(session.principal, principal)
+	// The initiating caller can inspect a prior unknown outcome after lease
+	// loss. A new finish still needs a live writer lease.
+	if leaseErr != nil && (!ownsSession || session.interruptedCommit == nil) {
+		m.mu.Unlock()
+		return RestoreStatus{}, leaseErr
+	}
 	if session == nil {
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
 	}
-	if !samePrincipal(session.principal, principal) {
+	if !ownsSession {
 		m.mu.Unlock()
 		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
 	}
-	if session.state != "receiving" {
+	if session.state != "receiving" && session.interruptedCommit == nil {
 		status := restoreStatus(session)
 		m.mu.Unlock()
 		return status, nil
@@ -1018,53 +1044,52 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 		return RestoreStatus{}, err
 	}
 	m.mu.Lock()
-	session = m.restores[id]
-	if session == nil {
+	if err := ctx.Err(); err != nil {
 		m.mu.Unlock()
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "not_found", Hint: "restore session not found"}}
-	}
-	if !samePrincipal(session.principal, principal) {
-		m.mu.Unlock()
-		return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "forbidden", Hint: "restore session caller changed"}}
+		return RestoreStatus{}, err
 	}
 	if session.state != "receiving" {
-		status := restoreStatus(session)
+		status, err := restoreStatus(session), session.interruptedCommit
 		m.mu.Unlock()
-		return status, nil
+		if err != nil && !strings.EqualFold(manifestHash, admittedManifestHash) {
+			return RestoreStatus{}, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "manifest checksum mismatch"}}
+		}
+		return status, err
 	}
-	archiveBytes := make([]byte, 0)
-	for i := uint64(0); i < uint64(len(session.pages)); i++ {
-		archiveBytes = append(archiveBytes, session.pages[i]...)
+	if err := m.requireLease(); err != nil {
+		m.mu.Unlock()
+		return RestoreStatus{}, err
 	}
+	// No chunk can mutate the page map while this finish owns validation.
 	session.state = "validating"
+	importHook := m.importHook
+	// The converter uses the admission key and scope from begin. Native
+	// publication still uses the original finish metadata.
+	importMeta := meta
+	if session.idempotency != "" {
+		importMeta.IdempotencyKey = session.idempotency
+	}
+	importMeta.AgentLabel, importMeta.Agent = session.agentLabel, session.agentLabel
+	historyMode, historyDigest, historyTime := session.historyMode, session.historyDigest, session.historyTime
 	m.mu.Unlock()
 
-	archive, err := dumpformat.Read(bytes.NewReader(archiveBytes))
-	if err != nil {
-		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: err.Error()}})
+	archiveBytes := make([]byte, 0, session.bytesReceived)
+	for i := uint64(0); i < uint64(len(session.pages)); i++ {
+		if err := ctx.Err(); err != nil {
+			return m.fail(id, err)
+		}
+		archiveBytes = append(archiveBytes, session.pages[i]...)
+	}
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, bytes.NewReader(archiveBytes))
+	if archive != nil {
+		defer archive.ReleaseNativeDecoded()
 	}
 	if err := ctx.Err(); err != nil {
 		return m.fail(id, err)
 	}
-	m.mu.Lock()
-	var importHook ImportHook
-	importMeta := meta
-	var historyMode driver.RestoreHistoryMode
-	var historyDigest, historyTime string
-	if current := m.restores[id]; current != nil {
-		historyMode = current.historyMode
-		historyDigest, historyTime = current.historyDigest, current.historyTime
-		importHook = m.importHook
-		// The converter profile is bound to the begin operation, not to a
-		// caller-chosen finish key or agent label. Native restore continues to
-		// use the finish metadata below.
-		if current.idempotency != "" {
-			importMeta.IdempotencyKey = current.idempotency
-		}
-		importMeta.AgentLabel = current.agentLabel
-		importMeta.Agent = current.agentLabel
+	if err != nil {
+		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: err.Error()}})
 	}
-	m.mu.Unlock()
 	manifest := archive.Manifest()
 	if historyMode == driver.RestoreHistoryModeFull && manifest.Scope == "plug-native-store" && manifest.History != "full" {
 		return m.fail(id, &model.Error{Data: model.ErrorData{Code: "restore_checksum_failed", Hint: "archive history does not match restore request"}})
@@ -1090,8 +1115,12 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 			current.state = "applying"
 		}
 		m.mu.Unlock()
-		status, importErr := importHook(ctx, id, principal, archiveBytes, canonicalHash, historyMode, historyDigest, historyTime, importMeta, presence)
+		status, importErr := importHook(ctx, id, principal, archiveBytes, archive, historyMode, historyDigest, historyTime, importMeta, presence)
 		if importErr != nil {
+			importErr = restoreRequestError(ctx, importErr)
+			if restoreInterrupted(importErr) {
+				return m.fail(id, importErr)
+			}
 			if errors.Is(importErr, driver.ErrRestoreTargetNotEmpty) {
 				importErr = &model.Error{Data: model.ErrorData{Code: "restore_requires_empty", Hint: "restore target is initialized; restore requires a fully empty store"}}
 			} else {
@@ -1127,7 +1156,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 	}
 	_, err = m.emptyTarget(ctx)
 	if err != nil {
-		return m.fail(id, err)
+		return m.fail(id, restoreRequestError(ctx, err))
 	}
 	m.mu.Lock()
 	if current := m.restores[id]; current != nil {
@@ -1137,7 +1166,7 @@ func (m *Manager) Finish(ctx context.Context, id, manifestHash string, principal
 
 	committed, err := m.apply(ctx, archive, principal, meta, nil)
 	if err != nil {
-		return m.fail(id, err)
+		return m.fail(id, restoreRequestError(ctx, err))
 	}
 	// The commit is already durable at this point. Use a detached read for the
 	// observation so caller cancellation cannot turn a successful restore
@@ -1182,9 +1211,47 @@ func (m *Manager) fail(id string, err error) (RestoreStatus, error) {
 	defer m.mu.Unlock()
 	if session := m.restores[id]; session != nil {
 		session.state = "failed"
+		var uncertain driver.ErrIndeterminate
+		if errors.As(err, &uncertain) && uncertain.RestoreInterrupted {
+			// Keep the pages closed to further writes. Repeat Finish can only
+			// report the unsettled prior attempt.
+			session.interruptedCommit = err
+		} else if restoreInterrupted(err) {
+			session.state = "receiving"
+		}
 		return restoreStatus(session), err
 	}
 	return RestoreStatus{}, err
+}
+
+// A driver can replace a request interruption with an untyped connection or
+// transaction error. Check the request before reporting an internal failure,
+// while preserving explicit refusals and any indeterminate commit outcome.
+func restoreRequestError(ctx context.Context, err error) error {
+	if restoreInterrupted(err) {
+		return err
+	}
+	stopped := ctx.Err()
+	if stopped == nil {
+		deadline, hasDeadline := ctx.Deadline()
+		var timeout interface{ Timeout() bool }
+		if !hasDeadline || time.Now().Before(deadline) || !errors.As(err, &timeout) || !timeout.Timeout() {
+			return err
+		}
+		stopped = context.DeadlineExceeded
+	}
+	var domain *model.Error
+	if errors.As(err, &domain) {
+		return err
+	}
+	if _, _, mapped := driver.ErrorMapping(err); mapped {
+		return err
+	}
+	return stopped
+}
+
+func restoreInterrupted(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func restoreStatus(s *restoreSession) RestoreStatus {
@@ -1192,13 +1259,6 @@ func restoreStatus(s *restoreSession) RestoreStatus {
 		return RestoreStatus{}
 	}
 	return RestoreStatus{RestoreID: s.id, State: s.state, ReceivedPages: uint64(len(s.pages)), Warnings: append([]model.Warning(nil), s.warnings...), Incarnation: s.incarnation}
-}
-
-func cloneMap(input map[string]any) map[string]any {
-	data, _ := json.Marshal(input)
-	var output map[string]any
-	_ = json.Unmarshal(data, &output)
-	return output
 }
 
 func newID(prefix string) string {
@@ -1216,7 +1276,7 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	if err != nil {
 		var limit *driver.ReverseJSONLimitError
-		if streamed != nil && errors.As(err, &limit) {
+		if restoreInterrupted(err) || streamed != nil && errors.As(err, &limit) {
 			return model.Changeset{}, err
 		}
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
@@ -1232,6 +1292,9 @@ func (m *Manager) apply(ctx context.Context, archive *dumpformat.Archive, princi
 	}
 	ancestorPlan, err := nativeAncestorPlanForArchive(ctx, records, archive.Native(), streamed != nil)
 	if err != nil {
+		if restoreInterrupted(err) {
+			return model.Changeset{}, err
+		}
 		return model.Changeset{}, &model.Error{Data: model.ErrorData{Code: "restore_violation", Hint: err.Error()}}
 	}
 	if m.lease == nil {
@@ -1440,8 +1503,8 @@ func rebindNativeReverseEvidence(records []driver.Record, incarnation string) er
 }
 
 func restoreAdmissionError(err error) error {
-	if err == nil {
-		return nil
+	if err == nil || restoreInterrupted(err) {
+		return err
 	}
 	var allocatorErr *driver.NativeAllocatorSnapshotError
 	if errors.As(err, &allocatorErr) {
