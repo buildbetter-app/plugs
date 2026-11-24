@@ -19,7 +19,12 @@ type callbackBusy interface {
 	CallbackBusy() bool
 }
 
-func callbackFailure(kind, id string, err error) error {
+func callbackFailure(method, kind, id string, err error) error {
+	// A claim-next deadline is transient admission pressure. Preserve other
+	// callback failures as subscriber_unavailable so callers can distinguish them.
+	if method == "bead.claimNext" && errors.Is(err, context.DeadlineExceeded) {
+		return failure("busy", "write pre phases exceeded their deadline")
+	}
 	var busy callbackBusy
 	if errors.As(err, &busy) && busy.CallbackBusy() {
 		return failure("busy", "write pre phases exceeded their deadline")
@@ -135,7 +140,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return callbackFailure("mutator", binding.ID, err)
+			return callbackFailure(p.proposal.Meta.Method, "mutator", binding.ID, err)
 		}
 		patches, err = clone(patches)
 		if err != nil {
@@ -228,7 +233,7 @@ func (w *Writer) pre(ctx context.Context, p *prepared) error {
 				p.warnings = append(p.warnings, skipped(binding.ID))
 				continue
 			}
-			return callbackFailure("validator", binding.ID, result.err)
+			return callbackFailure(p.proposal.Meta.Method, "validator", binding.ID, result.err)
 		}
 		if !result.verdict.Allow {
 			return &model.Error{Message: "pre validator rejected the write", Data: model.ErrorData{Code: "ontology_guard_failed", Details: map[string]any{"binding": binding.ID, "violations": result.verdict.Violations}}}

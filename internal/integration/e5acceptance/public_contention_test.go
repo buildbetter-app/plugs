@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/core/service"
+	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/transport/httpjson"
 	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -53,12 +55,13 @@ type publicClaimReply struct {
 type publicOutcome string
 
 const (
-	publicSuccess       publicOutcome = "success"
-	publicNull          publicOutcome = "null"
-	publicWriteConflict publicOutcome = "write_conflict"
-	publicBusy          publicOutcome = "busy"
-	publicRateLimited   publicOutcome = "rate_limited"
-	publicOther         publicOutcome = "other"
+	publicSuccess               publicOutcome = "success"
+	publicNull                  publicOutcome = "null"
+	publicWriteConflict         publicOutcome = "write_conflict"
+	publicBusy                  publicOutcome = "busy"
+	publicRateLimited           publicOutcome = "rate_limited"
+	publicSubscriberUnavailable publicOutcome = "subscriber_unavailable"
+	publicOther                 publicOutcome = "other"
 )
 
 // TestPublicHTTPClaimNextContention sends concurrent authenticated requests
@@ -124,6 +127,71 @@ func TestPublicHTTPClaimNextContention(t *testing.T) {
 	t.Logf("public authenticated claimNext contention: attempts=%d successes=%d terminal_nulls=%d write_conflicts=%d busy=%d rate_limited=%d other_errors=%d; repeated same-principal observation, fixture only", metrics.Attempts, metrics.Successes, metrics.Nulls, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Errors)
 }
 
+func TestPublicHTTPClaimNextRetriesPreSubscriber(t *testing.T) {
+	for _, wantCode := range []string{"busy", "subscriber_unavailable"} {
+		t.Run(wantCode, func(t *testing.T) {
+			f := newLocalFixture(t)
+			const key = "00000000000000000000000000004001"
+			by := bulkAgent(0)
+			issued, err := f.provider.Issue(by, time.Now().Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal, err := driver.PrincipalKey(by)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstCtx := context.Background()
+			var deadlineObserved atomic.Bool
+			if wantCode == "busy" {
+				seedBulkReady(t, f, 2)
+				firstCtx = pluginhost.WithWASMCallbackTimerBeginObserver(firstCtx, func(ctx context.Context, _ <-chan struct{}) {
+					deadlineObserved.Store(true)
+					<-ctx.Done()
+				})
+			}
+			before := f.head(t)
+			attempts := 0
+			result := runPublicClaimAttempts(0, func() publicClaimReply {
+				attempts++
+				if attempts != 1 {
+					return publicClaimNextRequest(context.Background(), f, key, issued.Token)
+				}
+				reply := publicClaimNextRequest(firstCtx, f, key, issued.Token)
+				if got := reply.localRetryOutcome(); got != publicOutcome(wantCode) {
+					t.Fatalf("first claim outcome=%s code=%q retryable=%t, want retryable %s", got, reply.errorCode, reply.errorRetryable, wantCode)
+				}
+				if wantCode == "busy" && !deadlineObserved.Load() {
+					t.Fatal("busy response did not reach the WASI callback deadline barrier")
+				}
+				reader := f.reader(t)
+				receipt, err := reader.IdempotencyByKey(context.Background(), principal, "", publicClaimMethod, key)
+				if err != nil || receipt != nil || reader.Snapshot().At.String() != before {
+					t.Fatalf("refused claim published state: before=%s after=%s receipt=%t err=%v", before, reader.Snapshot().At, receipt != nil, err)
+				}
+				if wantCode == "subscriber_unavailable" {
+					// The source-built guest needs its separate observer at revision 2.
+					// Restore it after observing the refusal on the first HTTP request.
+					seedBulkReady(t, f, 2)
+				}
+				return reply
+			})
+			retries := result.conflicts + result.busy + result.rateLimited + result.subscriberUnavailable
+			if retries < 1 || result.attempts != 1+retries || result.finalRetryable {
+				t.Fatalf("expected a same-key retry and completion: attempts=%d retries=%d exhausted=%t", result.attempts, retries, result.finalRetryable)
+			}
+			reader := f.reader(t)
+			if err := validatePublicClaimSuccess(result.final, by, key, seededWinnerIDs(2), reader, model.Natural64(2)); err != nil {
+				t.Fatal(err)
+			}
+			if err := validatePersistedClaim(reader, result.final.winnerID, by, &result.final.commit.Results[0], true, model.Natural64(2)); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("claimNext: first_code=%s retries=%d refused_head=%s final_revision=%s durable_receipt=true", wantCode, retries, before, result.final.commit.Revision)
+		})
+	}
+}
+
 // TestPublicHTTPClaimNextTwoHundredAgents exercises the plan-sized boundary
 // through the authenticated public composition. Every worker has a distinct
 // sponsored-agent identity and idempotency key. The client retains the old
@@ -167,15 +235,10 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	close(ready)
 	httpSem := make(chan struct{}, 8)
 	type workerResult struct {
-		final          publicClaimReply
-		attempts       int
-		conflicts      int
-		busy           int
-		rateLimited    int
-		finalRetryable bool
-		index          int
-		key            string
-		agent          model.PrincipalRef
+		publicClaimAttempts
+		index int
+		key   string
+		agent model.PrincipalRef
 	}
 	results := make(chan workerResult, sessions)
 	var wg sync.WaitGroup
@@ -200,36 +263,13 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 		go func(i int, key string) {
 			defer wg.Done()
 			<-start
-			var last publicClaimReply
-			outcome := workerResult{index: i, key: key, agent: agents[i]}
-			for attempt := 1; attempt <= publicRetryBudget; attempt++ {
-				outcome.attempts++ // one unit is one HTTP operation actually started
+			attempts := runPublicClaimAttempts(i, func() publicClaimReply {
 				httpSem <- struct{}{}
-				last = publicClaimNextToken(f, key, tokens[i], ready)
+				reply := publicClaimNextToken(f, key, tokens[i], ready)
 				<-httpSem
-				switch last.outcome() {
-				case publicWriteConflict:
-					outcome.conflicts++
-				case publicBusy:
-					outcome.busy++
-				case publicRateLimited:
-					outcome.rateLimited++
-				default:
-					results <- workerResult{final: last, attempts: outcome.attempts, conflicts: outcome.conflicts, busy: outcome.busy, rateLimited: outcome.rateLimited, index: i, key: key, agent: agents[i]}
-					return
-				}
-				if attempt == publicRetryBudget {
-					outcome.finalRetryable = true // X is already included in C/B/L.
-					break
-				}
-				switch last.outcome() {
-				case publicRateLimited:
-					time.Sleep(time.Duration(3+i%7) * time.Millisecond)
-				default:
-					time.Sleep(time.Duration(1+i%4) * time.Millisecond)
-				}
-			}
-			results <- workerResult{final: last, attempts: outcome.attempts, conflicts: outcome.conflicts, busy: outcome.busy, rateLimited: outcome.rateLimited, finalRetryable: outcome.finalRetryable, index: i, key: key, agent: agents[i]}
+				return reply
+			})
+			results <- workerResult{publicClaimAttempts: attempts, index: i, key: key, agent: agents[i]}
 		}(i, key)
 	}
 	close(start)
@@ -246,17 +286,19 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	winnerEvidence := map[string]publicWinnerEvidence{}
 	errorCodes := map[string]int{}
 	errorHints := map[string]int{}
-	receipts := 0
+	receiptRevisions := make(map[uint64]struct{}, sessions)
+	var firstReceiptRevision, lastReceiptRevision uint64
 	for outcome := range results {
 		metrics.Received++
 		metrics.Attempts += outcome.attempts
 		metrics.Conflicts += outcome.conflicts
 		metrics.Busy += outcome.busy
 		metrics.RateLimited += outcome.rateLimited
+		metrics.SubscriberUnavailable += outcome.subscriberUnavailable
 		expectedKey := fmt.Sprintf("%032x", 2000+outcome.index)
 		demand(t, outcome.key == expectedKey && outcome.final.key == expectedKey, fmt.Sprintf("worker %d response was correlated to the wrong key", outcome.index))
 		demand(t, equalJSONValues(outcome.agent, agents[outcome.index]), fmt.Sprintf("worker %d principal correlation changed", outcome.index))
-		switch outcome.final.outcome() {
+		switch outcome.final.localRetryOutcome() {
 		case publicSuccess:
 			demand(t, !outcome.finalRetryable, "successful response marked as retry exhaustion")
 			if err := validatePublicClaimSuccess(outcome.final, outcome.agent, expectedKey, expectedWinners, reader, model.Natural64(2)); err != nil {
@@ -265,13 +307,22 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 			if metrics.Winners[outcome.final.winnerID] != 0 {
 				t.Fatalf("bulk worker %d returned duplicate winner %s", outcome.index, outcome.final.winnerID)
 			}
+			revision, err := outcome.final.commit.Revision.Uint64()
+			demand(t, err == nil && revision > 0, fmt.Sprintf("bulk worker %d omitted a valid receipt revision", outcome.index))
+			if _, exists := receiptRevisions[revision]; exists {
+				t.Fatalf("bulk worker %d returned duplicate receipt revision %d", outcome.index, revision)
+			}
+			if len(receiptRevisions) == 0 || revision < firstReceiptRevision {
+				firstReceiptRevision = revision
+			}
+			lastReceiptRevision = max(lastReceiptRevision, revision)
+			receiptRevisions[revision] = struct{}{}
 			metrics.Successes++
-			receipts++
 			metrics.Winners[outcome.final.winnerID]++
 			winnerEvidence[outcome.final.winnerID] = publicWinnerEvidence{principal: outcome.agent, result: outcome.final.commit.Results[0]}
 		case publicNull:
 			metrics.Nulls++
-		case publicWriteConflict, publicBusy, publicRateLimited:
+		case publicWriteConflict, publicBusy, publicRateLimited, publicSubscriberUnavailable:
 			demand(t, outcome.finalRetryable, fmt.Sprintf("worker %d returned a retryable class without exhausting the budget", outcome.index))
 			metrics.TerminalRetryable++
 			errorCodes[outcome.final.errorCode]++
@@ -302,7 +353,7 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 	if observerRows, err := reader.Get(context.Background(), []model.Ref{model.RefByID(bulkObserverID, model.Natural64(0))}); err == nil && len(observerRows) == 1 {
 		observerRevision = observerRows[0].Revision.String()
 	}
-	t.Logf("public authenticated 200-agent claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d persisted_checks=%d persisted_errors=%d observer_revision=%s error_codes=%s error_hints=%s cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), receipts, persistedChecks, persistedErrors, observerRevision, formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
+	t.Logf("public authenticated 200-agent claimNext partial/final: launched=%d received=%d A=%d C=%d B=%d L=%d subscriber_unavailable=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d receipt_revision_min=%d receipt_revision_max=%d persisted_checks=%d persisted_errors=%d observer_revision=%s error_codes=%s error_hints=%s cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.SubscriberUnavailable, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), len(receiptRevisions), firstReceiptRevision, lastReceiptRevision, persistedChecks, persistedErrors, observerRevision, formatPublicCounters(errorCodes), formatPublicCounters(errorHints))
 	if err := metrics.validateAccounting(true); err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +373,7 @@ func TestPublicHTTPClaimNextTwoHundredAgents(t *testing.T) {
 			t.Fatalf("bulk winner %s does not retain the actual observer revision: %v", winnerID, err)
 		}
 	}
-	t.Logf("public authenticated 200-agent claimNext: launched=%d received=%d A=%d C=%d B=%d L=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), metrics.Successes)
+	t.Logf("public authenticated 200-agent claimNext: launched=%d received=%d A=%d C=%d B=%d L=%d subscriber_unavailable=%d S=%d N=%d E=%d X=%d retry_starts=%d distinct_principals=%d distinct_tokens=%d distinct_keys=%d distinct_winners=%d receipts=%d cap=8 retry_budget=64; source-built WASI/public fixture only", metrics.Launched, metrics.Received, metrics.Attempts, metrics.Conflicts, metrics.Busy, metrics.RateLimited, metrics.SubscriberUnavailable, metrics.Successes, metrics.Nulls, metrics.Errors, metrics.TerminalRetryable, metrics.Attempts-sessions, len(principalKeys), len(tokenSet), len(workerKeys), len(metrics.Winners), metrics.Successes)
 
 	// Lifecycle mutators run against a second 200-record set concurrently with
 	// the claimers above. Each phase fans out all agents concurrently, uses a
@@ -590,18 +641,60 @@ func TestE5StaleLeaseFencingAfterLifecycle(t *testing.T) {
 }
 
 type publicWorkloadSummary struct {
-	Workers           int
-	Launched          int
-	Received          int
-	Attempts          int
-	Conflicts         int
-	Busy              int
-	RateLimited       int
-	Successes         int
-	Nulls             int
-	Errors            int
-	TerminalRetryable int
-	Winners           map[string]int
+	Workers               int
+	Launched              int
+	Received              int
+	Attempts              int
+	Conflicts             int
+	Busy                  int
+	RateLimited           int
+	SubscriberUnavailable int
+	Successes             int
+	Nulls                 int
+	Errors                int
+	TerminalRetryable     int
+	Winners               map[string]int
+}
+
+type publicClaimAttempts struct {
+	final                 publicClaimReply
+	attempts              int
+	conflicts             int
+	busy                  int
+	rateLimited           int
+	subscriberUnavailable int
+	finalRetryable        bool
+}
+
+func runPublicClaimAttempts(worker int, call func() publicClaimReply) publicClaimAttempts {
+	var result publicClaimAttempts
+	for result.attempts < publicRetryBudget {
+		result.attempts++
+		result.final = call()
+		outcome := result.final.localRetryOutcome()
+		switch outcome {
+		case publicWriteConflict:
+			result.conflicts++
+		case publicBusy:
+			result.busy++
+		case publicRateLimited:
+			result.rateLimited++
+		case publicSubscriberUnavailable:
+			result.subscriberUnavailable++
+		default:
+			return result
+		}
+		if result.attempts == publicRetryBudget {
+			result.finalRetryable = true
+			return result
+		}
+		if outcome == publicRateLimited {
+			time.Sleep(time.Duration(3+worker%7) * time.Millisecond)
+		} else {
+			time.Sleep(time.Duration(1+worker%4) * time.Millisecond)
+		}
+	}
+	return result
 }
 
 type publicWinnerEvidence struct {
@@ -636,14 +729,15 @@ func (s publicWorkloadSummary) validateAccounting(requireSuccess bool) error {
 	if s.Received != s.Workers {
 		return fmt.Errorf("received=%d want workers=%d", s.Received, s.Workers)
 	}
-	if s.Attempts != s.Conflicts+s.Busy+s.RateLimited+s.Successes+s.Nulls+s.Errors {
-		return fmt.Errorf("attempt accounting mismatch: A=%d C=%d B=%d L=%d S=%d N=%d E=%d", s.Attempts, s.Conflicts, s.Busy, s.RateLimited, s.Successes, s.Nulls, s.Errors)
+	retryable := s.Conflicts + s.Busy + s.RateLimited + s.SubscriberUnavailable
+	if s.Attempts != retryable+s.Successes+s.Nulls+s.Errors {
+		return fmt.Errorf("attempt accounting mismatch: A=%d retryable=%d S=%d N=%d E=%d", s.Attempts, retryable, s.Successes, s.Nulls, s.Errors)
 	}
 	if s.Successes+s.Nulls+s.Errors+s.TerminalRetryable != s.Workers {
 		return fmt.Errorf("final outcome accounting mismatch: S=%d N=%d E=%d X=%d workers=%d", s.Successes, s.Nulls, s.Errors, s.TerminalRetryable, s.Workers)
 	}
-	if s.Attempts-s.Workers != s.Conflicts+s.Busy+s.RateLimited-s.TerminalRetryable {
-		return fmt.Errorf("retry-start accounting mismatch: A-workers=%d C+B+L-X=%d", s.Attempts-s.Workers, s.Conflicts+s.Busy+s.RateLimited-s.TerminalRetryable)
+	if s.Attempts-s.Workers != retryable-s.TerminalRetryable {
+		return fmt.Errorf("retry-start accounting mismatch: A-workers=%d retryable-X=%d", s.Attempts-s.Workers, retryable-s.TerminalRetryable)
 	}
 	if requireSuccess && s.Successes != s.Workers {
 		return fmt.Errorf("successful completion required: successes=%d want=%d (nulls=%d errors=%d exhausted=%d)", s.Successes, s.Workers, s.Nulls, s.Errors, s.TerminalRetryable)
@@ -677,6 +771,13 @@ func (r publicClaimReply) outcome() publicOutcome {
 		return publicNull
 	}
 	return publicSuccess
+}
+
+func (r publicClaimReply) localRetryOutcome() publicOutcome {
+	if r.protocolError == "" && r.errorRetryable && r.errorCode == "subscriber_unavailable" {
+		return publicSubscriberUnavailable
+	}
+	return r.outcome()
 }
 
 func (r publicClaimReply) retryable() bool {
@@ -1277,12 +1378,16 @@ func publicClaimNext(f *localFixture, key string, start <-chan struct{}) publicC
 
 func publicClaimNextToken(f *localFixture, key, token string, start <-chan struct{}) publicClaimReply {
 	<-start
+	return publicClaimNextRequest(context.Background(), f, key, token)
+}
+
+func publicClaimNextRequest(ctx context.Context, f *localFixture, key, token string) publicClaimReply {
 	params := map[string]any{"_meta": map[string]string{"idempotencyKey": key}}
 	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": key, "method": publicClaimMethod, "params": params})
 	if err != nil {
 		return protocolReply(key, http.StatusInternalServerError, nil, fmt.Errorf("request encode: %w", err))
 	}
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+httpjson.Path, bytes.NewReader(body))
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1"+httpjson.Path, bytes.NewReader(body))
 	request.RemoteAddr = "127.0.0.1:12345"
 	request.Header.Set("Plug-RPC", "1")
 	request.Header.Set("Content-Type", "application/json")
