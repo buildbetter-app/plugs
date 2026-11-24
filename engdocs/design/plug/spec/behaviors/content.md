@@ -143,7 +143,11 @@ text; batch compaction returns per-item outcomes and is not atomic.
 restore stay; the old text is an ordinary permanent diff version (`history.get`,
 P45/P73) rather than only a separate snapshot. Core accepts a supplied summary;
 a plugin may call an LLM, but no outbound API key path is enabled by default
-(CP6). Controlled Go/SQL clocks pin 30/90-day boundaries.
+(CP6). Controlled Go/SQL clocks pin 30/90-day boundaries. Each `admin.compact`
+call compacts one record, the next eligible one in (closed time, ID) order;
+repeating calls is the non-atomic batch. A refusal writes nothing and names the
+selected record, and the optional exclusive `afterId` cursor resumes after it,
+so one record whose summary is never smaller does not block the rest (P47).
 
 ## B13 — memories: key derivation and plane isolation
 

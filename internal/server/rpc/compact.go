@@ -24,13 +24,14 @@ func dispatchCompaction(ctx context.Context, svc CompactionService, c Call) (any
 	case "admin.compact":
 		var p struct {
 			BeforeRevision *model.Revision `json:"beforeRevision"`
+			AfterID        *string         `json:"afterId"`
 			DryRun         bool            `json:"dryRun"`
 			Meta           wire.Meta       `json:"_meta"`
 		}
 		if err := wire.DecodeInto(c.Params, &p); err != nil {
 			return nil, invalidCompactionParams(err)
 		}
-		out, err := svc.CompactWithOutcome(ctx, c.Principal, service.CompactionRequest{BeforeRevision: p.BeforeRevision, DryRun: p.DryRun}, writeMeta(c))
+		out, err := svc.CompactWithOutcome(ctx, c.Principal, service.CompactionRequest{BeforeRevision: p.BeforeRevision, AfterID: p.AfterID, DryRun: p.DryRun}, writeMeta(c))
 		return writeOutcome(out), err
 	case "history.revert":
 		var p struct {

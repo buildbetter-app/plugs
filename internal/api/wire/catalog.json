@@ -5342,6 +5342,14 @@
           }
         },
         {
+          "name": "afterId",
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be a closed record in the caller's project; its own eligibility does not matter, so a refused record's ID can be passed back. Otherwise the call is refused with invalid_params and writes nothing. Refusals name the selected record in error data details.id and dry runs name it in the result ref. afterId is part of the operation: reusing an idempotency key with a different afterId is refused with idempotency_key_reused."
+          }
+        },
+        {
           "name": "dryRun",
           "schema": {
             "type": "boolean"
@@ -14451,7 +14459,7 @@
     "methodCount": 87,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "50abe444c30fbc487fbcb43271eceebfc686c4c2b8b563d45d0b7e859f52d6e6",
-    "descriptorSha256": "6e689edd7e452e1341be562b8e6f592326e3c97dc4e0b81656b0902d7bfa03fb",
+    "descriptorSha256": "f16ecb15a758b1a7ded84dccecbb426dbe93ce518ebcbf23c78905a7b4be6a62",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14555,6 +14563,14 @@
               "type": "integer",
               "minimum": 0,
               "description": "Only select records whose current revision is strictly less than beforeRevision; equality is excluded."
+            }
+          },
+          {
+            "name": "afterId",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be a closed record in the caller's project; its own eligibility does not matter, so a refused record's ID can be passed back. Otherwise the call is refused with invalid_params and writes nothing. Refusals name the selected record in error data details.id and dry runs name it in the result ref. afterId is part of the operation: reusing an idempotency key with a different afterId is refused with idempotency_key_reused."
             }
           },
           {

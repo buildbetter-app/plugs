@@ -18,8 +18,8 @@ import (
 
 // B12 card pairing. Every vector recorded from the pinned native Beads build
 // (//spec/cardb12:native_compaction_record_test) is paired here with Plug's
-// public behavior on memory, SQLite and PostgreSQL. Each pair is labeled SAME,
-// ADOPTED DEVIATION (naming its binding ruling) or KNOWN GAP (pending decision).
+// public behavior on memory, SQLite and PostgreSQL. Each pair is labeled SAME
+// or ADOPTED DEVIATION, naming its binding ruling.
 //
 // Native AI provider stubbed via public ai.base_url; summary content not under
 // test; Beads source unmodified (pinned 9d6fff76 source build).
@@ -155,6 +155,19 @@ func (p *b12Pair) refuse(key string) {
 	p.assertNoReceipt("admin.compact", key)
 }
 
+// refuseNamed asserts a compaction_unavailable refusal that writes nothing and
+// returns the record ID it names in error data details.id (nil when none).
+func (p *b12Pair) refuseNamed(key string, params map[string]any) any {
+	p.t.Helper()
+	before := p.meta()
+	response := p.call("admin.compact", key, params, "compaction_unavailable")
+	p.assertSameHead(before)
+	p.assertNoReceipt("admin.compact", key)
+	data := response["error"].(map[string]any)["data"].(map[string]any)
+	details, _ := data["details"].(map[string]any)
+	return details["id"]
+}
+
 func (p *b12Pair) assertSummaries(want int32) {
 	p.t.Helper()
 	if got := p.summaries.Load(); got != want {
@@ -197,7 +210,6 @@ func nativeSucceeded(t *testing.T, v b12NativeVector, level string) b12NativeIss
 const (
 	b12Same      = "SAME"
 	b12Deviation = "ADOPTED DEVIATION"
-	b12KnownGap  = "KNOWN GAP (head-of-line), pending decision"
 )
 
 type b12PairCase struct {
@@ -415,7 +427,7 @@ func b12PairCases() []b12PairCase {
 				t.Fatal("Plug restore removed audit history")
 			}
 		}},
-		{"auto-batch-mixed", b12KnownGap, "Option A (binding 2026-11-02) compacts one deterministic record per admin.compact call and a refusal publishes nothing; a record whose summary is never smaller stays first in line, so later records are not reached, while the native sweep continues past it. Root took the public API shape to Nikhil on 2026-11-23", func(t *testing.T, engine string, v b12NativeVector, _ map[string]b12NativeVector) {
+		{"auto-batch-mixed", b12Deviation, "Option A (binding 2026-11-02) compacts one deterministic record per admin.compact call and a refusal publishes nothing. Native's single sweep skips the not-smaller record; Plug's refusal names it and the caller passes that ID as the exclusive afterId cursor to reach the rest (P47, Nikhil chose (a) 2026-11-24)", func(t *testing.T, engine string, v b12NativeVector, _ map[string]b12NativeVector) {
 			b12AssertNativeBatch(t, v)
 			b12PlugRepeatedCalls(t, engine, v)
 		}},
@@ -489,10 +501,10 @@ func b12AssertNativeBatch(t *testing.T, v b12NativeVector) {
 	}
 }
 
-// b12PlugRepeatedCalls runs the same candidate set (native level-zero records)
-// through repeated Plug calls. Selection is closed time, then ID; a record
-// whose summary is never smaller stays first in line, so later records are
-// not reached by further calls. Each refusal publishes nothing.
+// b12PlugRepeatedCalls runs the native batch candidate set (level-zero
+// records) through repeated Plug calls. Selection is closed time, then ID. The
+// not-smaller record's refusal names it and writes nothing; passing that ID as
+// afterId resumes after it, so Plug compacts the same records native does.
 func b12PlugRepeatedCalls(t *testing.T, engine string, v b12NativeVector) {
 	t.Helper()
 	p := newB12Pair(t, engine, func(in service.CompactionInput) string {
@@ -518,23 +530,39 @@ func b12PlugRepeatedCalls(t *testing.T, engine string, v b12NativeVector) {
 		t.Fatalf("native batch provider calls=%d candidates=%d", len(v.StubRequests), len(order))
 	}
 	p.compact("batch-call-1", refs[order[0]])
-	for i := 2; i <= len(order); i++ {
-		p.refuse(fmt.Sprintf("batch-call-%d", i))
+	refused := p.refuseNamed("batch-call-2", map[string]any{"dryRun": false})
+	if refused != refs[order[1]]["id"] {
+		t.Fatalf("refusal named %v, want the not-smaller record %v", refused, refs[order[1]]["id"])
 	}
-	// Every refusal ran the provider on the same head-of-line record.
+	cursor := refused
+	for i, id := range order[2:] {
+		commit := p.call("admin.compact", fmt.Sprintf("batch-call-%d", i+3), map[string]any{"dryRun": false, "afterId": cursor}, "")
+		assertCommitTarget(t, commit, refs[id])
+		cursor = refs[id]["id"].(string)
+	}
+	if past := p.refuseNamed("batch-past-end", map[string]any{"dryRun": false, "afterId": cursor}); past != nil {
+		t.Fatalf("past-end refusal named a record: %v", past)
+	}
+	// One provider call per candidate, as native; the past-end call ran none.
 	p.assertSummaries(int32(len(order)))
-	for _, id := range order[1:] {
-		for _, issue := range v.Before {
-			if issue.ID == id {
-				p.assertText(refs[id], issue)
-			}
-		}
-	}
-	nativeCompacted := 0
+	nativeCompacted, plugCompacted := 0, 0
 	for i, issue := range v.After {
-		if v.Before[i].CompactionLevel == "0" && issue.CompactionLevel == "1" {
+		if v.Before[i].CompactionLevel != "0" {
+			continue
+		}
+		if issue.CompactionLevel == "1" {
 			nativeCompacted++
 		}
+		want := issue
+		if strings.Contains(v.Before[i].Description, b12PairLongMarker) {
+			want = v.Before[i]
+		} else {
+			plugCompacted++
+		}
+		p.assertText(refs[issue.ID], want)
 	}
-	t.Logf("B12_PAIR_BATCH engine=%s candidates=%d native_compacted=%d plug_compacted=1 plug_refused=%d head_of_line=%s", engine, len(order), nativeCompacted, len(order)-1, order[1])
+	if nativeCompacted != plugCompacted {
+		t.Fatalf("native compacted %d, Plug %d", nativeCompacted, plugCompacted)
+	}
+	t.Logf("B12_PAIR_BATCH engine=%s candidates=%d native_compacted=%d plug_compacted=%d refused=%s resumed_with_afterId=true", engine, len(order), nativeCompacted, plugCompacted, order[1])
 }
