@@ -40,6 +40,7 @@ type Store struct {
 	clock    func() time.Time
 	db       *sql.DB
 	lockDir  string
+	path     string
 	mu       sync.Mutex
 	closed   bool
 	children map[io.Closer]struct{}
@@ -104,7 +105,7 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{clock: d.Clock, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{clock: d.Clock, path: path, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
 	if err = os.MkdirAll(s.lockDir, 0700); err != nil {
 		return nil, err
 	}
@@ -214,7 +215,7 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 					}
 				}
 			}
-			if version != schemaVersion {
+			if version != schemaVersion && version != streamSchemaVersion {
 				return fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 			}
 		} else {
@@ -408,10 +409,10 @@ func readMeta(ctx context.Context, q queryer) (driver.Meta, error) {
 	if err != nil {
 		return m, err
 	}
-	if version != schemaVersion {
+	if version != schemaVersion && version != streamSchemaVersion {
 		return m, fmt.Errorf("%w: sqlite schema version %d", driver.ErrUnsupported, version)
 	}
-	m.SchemaVersion = schemaVersion
+	m.SchemaVersion = driver.SchemaVersion(version)
 	m.State = "ready"
 	m.Head, err = parseRev(head)
 	if err == nil {

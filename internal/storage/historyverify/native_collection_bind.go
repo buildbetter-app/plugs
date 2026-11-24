@@ -227,6 +227,53 @@ func (c *NativeCollection) spoolOriginal(name string, raw []byte) error {
 	return nil
 }
 
+func (c *NativeCollection) spoolOriginalStream(file dumpformat.NativeCaptureFile, input io.Reader) error {
+	name := file.Name
+	want := c.binding.Sources[c.next]
+	var expected *dumpformat.NativeCaptureFile
+	for i := range want.Files {
+		if want.Files[i].Name == name {
+			expected = &want.Files[i]
+			break
+		}
+	}
+	if expected == nil || file != *expected {
+		return ErrCheckpoint{"collection original differs from ordered input ledger"}
+	}
+	if err := c.Owner().ChargeNativeDeltaBytes("collection_spooled_original_ledger", uint64(len(name))*4+512); err != nil {
+		return err
+	}
+	qualified := dumpformat.NativeCollectionFileName(c.next, name)
+	if _, duplicate := c.stream.files[qualified]; duplicate {
+		return ErrCheckpoint{"collection original is repeated"}
+	}
+	path := filepath.Join(c.dir, qualified)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	const copyBytes = 1 << 20
+	work, release := c.Owner().NativeDeltaAccountingScope()
+	defer release()
+	if err := work.ChargeNativeDeltaBytes("collection_original_spool_buffer", copyBytes); err != nil {
+		_ = f.Close()
+		return err
+	}
+	hash := sha256.New()
+	n, writeErr := io.CopyBuffer(io.MultiWriter(f, hash), io.LimitReader(input, int64(expected.Bytes)+1), make([]byte, copyBytes))
+	if err = errors.Join(writeErr, f.Close()); err != nil {
+		return err
+	}
+	if n != int64(expected.Bytes) || hex.EncodeToString(hash.Sum(nil)) != expected.SHA256 {
+		return ErrCheckpoint{"collection original spool differs from ordered input ledger"}
+	}
+	c.stream.files[qualified] = dumpformat.File{SHA256: expected.SHA256, Size: int64(expected.Bytes)}
+	return nil
+}
+
 // VisitOriginalFiles exposes one bounded verified private spool buffer at a
 // time. It never reopens an original source. The callback borrows the bytes;
 // receiving must charge any retained transaction clone to the session owner.

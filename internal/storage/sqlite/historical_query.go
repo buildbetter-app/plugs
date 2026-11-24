@@ -20,7 +20,7 @@ import (
 // predicates. Keep only their small projections on the existing version row;
 // neither a query nor a cursor validation reconstructs discarded bodies. These
 // fields are derived during publication/backfill, never during a read.
-func historicalQueryFields(raw []byte) ([]byte, error) {
+func historicalQueryFields(raw []byte, streamed bool) ([]byte, error) {
 	var v driver.Version
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil, err
@@ -30,6 +30,22 @@ func historicalQueryFields(raw []byte) ([]byte, error) {
 		body, err := historicalQueryBody(v)
 		if err != nil {
 			return nil, err
+		}
+		if streamed && driver.IsNativeHeadHistoryMarker(v.Ref, "beads-archive") {
+			// The admitted marker may contain many authenticated frames.
+			// Historical predicates only need three top-level scalars.
+			object, err := driver.ReadNativeHistoryMarkerFields(body)
+			if err != nil {
+				return nil, err
+			}
+			for _, name := range []string{"type", "project", "status"} {
+				value := bytes.TrimSpace(object[name])
+				var selected string
+				if len(value) != 0 && value[0] == '"' && json.Unmarshal(value, &selected) == nil {
+					fields[name] = selected
+				}
+			}
+			return json.Marshal(fields)
 		}
 		var object map[string]any
 		if err := json.Unmarshal(body, &object); err != nil {
@@ -70,7 +86,7 @@ func historicalQueryBody(v driver.Version) ([]byte, error) {
 }
 
 func populateHistoricalQueryFields(ctx context.Context, c *sql.Conn, key, rev string, raw []byte) error {
-	fields, err := historicalQueryFields(raw)
+	fields, err := historicalQueryFields(raw, driver.NativeReverseRead(ctx))
 	if err != nil {
 		return err
 	}

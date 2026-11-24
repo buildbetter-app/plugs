@@ -2,6 +2,17 @@ package sqlite
 
 const schemaVersion = 3
 
+// Only a streamed scratch restore needs this storage format. Ordinary opens
+// and writes keep source stores compatible with the pre-streaming driver.
+const streamSchemaVersion = 4
+
+const blobChunkSchema = `
+CREATE TABLE blob_chunks (
+ hash TEXT NOT NULL REFERENCES blobs(hash), ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+ data BLOB NOT NULL CHECK(length(data) BETWEEN 1 AND 1048576),
+ PRIMARY KEY(hash, ordinal)
+) WITHOUT ROWID;`
+
 // All revisions sort as fixed-width unsigned decimal TEXT. SQLite INTEGER is
 // signed; binding a uint64 or casting a revision to INTEGER would lose data.
 const schema = `

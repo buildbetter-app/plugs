@@ -3,8 +3,12 @@ package dumpformat
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +28,10 @@ type NativeDeltaVisitor struct {
 	Checkpoint func(string, NativeDeltaTableSchema, []NativeDeltaRow, map[string]string) error
 	TableState func(NativeDeltaTableState) error
 	File       func(string, []byte) error
+	// PreparedFile borrows an exact original during Visit on a prepared
+	// capture. The consumer must finish reading before it returns. File is the
+	// equivalent callback for legacy in-memory staging.
+	PreparedFile func(NativeCaptureFile, io.Reader) error
 	// CheckpointsOnly omits historical table-state materializations. It never
 	// omits a commit delta or any source authentication.
 	CheckpointsOnly bool
@@ -42,6 +50,8 @@ type NativeDeltaPrepared struct {
 	commits     []NativeDeltaRowCommit
 	checkpoints []NativeDeltaTableState
 	files       map[string][]byte
+	spoolDir    string
+	spooled     map[string]NativeCaptureFile
 	ready       bool
 }
 
@@ -64,46 +74,71 @@ func (p *NativeDeltaPrepared) NativeCaptureFileLedger(owner *NativeDeltaBudget) 
 			return nil, fmt.Errorf("native capture ledger requires external owner")
 		}
 	}
-	if len(p.files) < 3 {
+	fileSizes := func(yield func(name string, bytes uint64)) {
+		for name, raw := range p.files {
+			yield(name, uint64(len(raw)))
+		}
+		for name, file := range p.spooled {
+			yield(name, file.Bytes)
+		}
+	}
+	fileCount := len(p.files) + len(p.spooled)
+	has := func(name string) bool {
+		_, memory := p.files[name]
+		_, disk := p.spooled[name]
+		return memory || disk
+	}
+	if fileCount < 3 {
 		return nil, fmt.Errorf("native capture file ledger is incomplete")
 	}
-	if _, ok := p.files["capture-set.json"]; !ok {
+	if !has("capture-set.json") {
 		return nil, fmt.Errorf("native capture file ledger is incomplete")
 	}
-	if _, ok := p.files["head.tar"]; !ok {
+	if !has("head.tar") {
 		return nil, fmt.Errorf("native capture file ledger is incomplete")
 	}
-	partCount := len(p.files) - 2
-	for name := range p.files {
+	partCount := fileCount - 2
+	var invalidOrder bool
+	fileSizes(func(name string, _ uint64) {
 		if name == "capture-set.json" || name == "head.tar" {
-			continue
+			return
 		}
 		if len(name) != len("parts/")+20+len(".part") || !strings.HasPrefix(name, "parts/") || !strings.HasSuffix(name, ".part") {
-			return nil, fmt.Errorf("native capture file ledger order differs")
+			invalidOrder = true
+			return
 		}
 		for _, digit := range name[len("parts/") : len("parts/")+20] {
 			if digit < '0' || digit > '9' {
-				return nil, fmt.Errorf("native capture file ledger order differs")
+				invalidOrder = true
+				return
 			}
 		}
 		ordinal, err := strconv.ParseUint(name[len("parts/"):len("parts/")+20], 10, 64)
 		if err != nil || ordinal == 0 || ordinal > uint64(partCount) {
-			return nil, fmt.Errorf("native capture file ledger order differs")
+			invalidOrder = true
+			return
 		}
+	})
+	if invalidOrder {
+		return nil, fmt.Errorf("native capture file ledger order differs")
 	}
 
 	// Admit the complete metadata payload before allocating the result slice
 	// or any hashes. The size helper walks one entry at a time and retains no
 	// aggregate representation, so a limit refusal cannot leave a ledger live.
-	ledgerBytes, err := nativeCaptureFileLedgerJSONSize(p.files)
+	ledgerBytes, err := nativeCaptureFileSizesJSONSize(fileSizes)
 	if err != nil {
 		return nil, err
 	}
 	if err := owner.ChargeBytes("native_capture_file_ledger", ledgerBytes); err != nil {
 		return nil, err
 	}
-	ledger := make([]NativeCaptureFile, 0, len(p.files))
+	ledger := make([]NativeCaptureFile, 0, fileCount)
 	appendFile := func(name string) {
+		if file, ok := p.spooled[name]; ok {
+			ledger = append(ledger, file)
+			return
+		}
 		raw := p.files[name]
 		ledger = append(ledger, NativeCaptureFile{Name: name, Bytes: uint64(len(raw)), SHA256: digest(raw)})
 	}
@@ -119,19 +154,29 @@ func (p *NativeDeltaPrepared) NativeCaptureFileLedger(owner *NativeDeltaBudget) 
 // ledger without allocating the ledger itself. Each entry is counted and
 // discarded before the aggregate result is admitted by the shared budget.
 func nativeCaptureFileLedgerJSONSize(files map[string][]byte) (uint64, error) {
+	return nativeCaptureFileSizesJSONSize(func(yield func(string, uint64)) {
+		for name, raw := range files {
+			yield(name, uint64(len(raw)))
+		}
+	})
+}
+
+func nativeCaptureFileSizesJSONSize(files func(func(string, uint64))) (uint64, error) {
 	var total uint64
-	// SHA-256 is always the fixed 64-byte lowercase hexadecimal form. Count
-	// with a placeholder of the same length so no source digest or ledger
-	// metadata is materialized before admission.
+	var err error
 	const placeholderSHA = "0000000000000000000000000000000000000000000000000000000000000000"
-	for name, raw := range files {
-		n, err := NativeDeltaJSONSize(NativeCaptureFile{Name: name, Bytes: uint64(len(raw)), SHA256: placeholderSHA})
+	files(func(name string, bytes uint64) {
 		if err != nil {
-			return 0, err
+			return
 		}
-		if err := deltaAddCount(&total, n); err != nil {
-			return 0, err
+		var n uint64
+		n, err = NativeDeltaJSONSize(NativeCaptureFile{Name: name, Bytes: bytes, SHA256: placeholderSHA})
+		if err == nil {
+			err = deltaAddCount(&total, n)
 		}
+	})
+	if err != nil {
+		return 0, err
 	}
 	// Each entry count includes its own terminal newline. The array has one
 	// final newline and one comma between adjacent entries, so the net framing
@@ -224,6 +269,9 @@ func (p *NativeDeltaPrepared) callbacks() *nativeDeltaRowCallbacks {
 }
 
 func (p *NativeDeltaPrepared) retainFile(name string, raw []byte) error {
+	if p.spooled != nil {
+		return p.spoolFile(name, bytes.NewReader(raw), uint64(len(raw)))
+	}
 	if _, exists := p.files[name]; exists {
 		return fmt.Errorf("native staging repeats original")
 	}
@@ -236,6 +284,63 @@ func (p *NativeDeltaPrepared) retainFile(name string, raw []byte) error {
 	return nil
 }
 
+func (p *NativeDeltaPrepared) spoolFile(name string, input io.Reader, limit uint64) error {
+	if _, exists := p.spooled[name]; exists {
+		return fmt.Errorf("native staging repeats original")
+	}
+	path := filepath.Join(p.spoolDir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	work := p.budget.Scope()
+	defer work.Release()
+	const chunk = 1 << 20
+	if err := work.ChargeBytes("retained_capture_spool_buffer", chunk); err != nil {
+		_ = f.Close()
+		return err
+	}
+	h := sha256.New()
+	n, copyErr := io.CopyBuffer(io.MultiWriter(f, h), io.LimitReader(input, int64(limit)+1), make([]byte, chunk))
+	closeErr := f.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if uint64(n) > limit {
+		return fmt.Errorf("native original exceeds spool size limit")
+	}
+	if err := p.budget.ChargeBytes("retained_capture_spool_ledger", uint64(len(name))+192); err != nil {
+		return err
+	}
+	p.spooled[name] = NativeCaptureFile{Name: name, Bytes: uint64(n), SHA256: hex.EncodeToString(h.Sum(nil))}
+	return nil
+}
+
+func (p *NativeDeltaPrepared) spoolPart(open NativeDeltaPartOpener) NativeDeltaPartOpener {
+	return func(ctx context.Context, ordinal uint64) (io.ReadCloser, error) {
+		name := fmt.Sprintf("parts/%020d.part", ordinal)
+		source, err := open(ctx, ordinal)
+		if err != nil {
+			return nil, err
+		}
+		spoolErr := p.spoolFile(name, source, NativeDeltaPartBytes+NativeDeltaPartHeaderBytes)
+		closeErr := source.Close()
+		if spoolErr != nil {
+			return nil, spoolErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		return os.Open(filepath.Join(p.spoolDir, name))
+	}
+}
+
 // openPart borrows an original part owned by this authenticated preparation.
 // Callers must finish replay before Close releases that ownership.
 func (p *NativeDeltaPrepared) openPart(ctx context.Context, ordinal uint64) (io.ReadCloser, error) {
@@ -245,7 +350,11 @@ func (p *NativeDeltaPrepared) openPart(ctx context.Context, ordinal uint64) (io.
 	if p == nil || !p.ready {
 		return nil, fmt.Errorf("unqualified native staging view")
 	}
-	raw, ok := p.files[fmt.Sprintf("parts/%020d.part", ordinal)]
+	name := fmt.Sprintf("parts/%020d.part", ordinal)
+	if p.spooled != nil {
+		return os.Open(filepath.Join(p.spoolDir, name))
+	}
+	raw, ok := p.files[name]
 	if !ok {
 		return nil, fmt.Errorf("retained native delta part %d missing", ordinal)
 	}
@@ -258,6 +367,10 @@ func (p *NativeDeltaPrepared) Close() {
 	}
 	p.ready = false
 	p.commits, p.checkpoints, p.files = nil, nil, nil
+	if p.spoolDir != "" {
+		_ = os.RemoveAll(p.spoolDir)
+		p.spoolDir, p.spooled = "", nil
+	}
 	if p.budget != nil {
 		p.budget.Release()
 	}
@@ -357,6 +470,34 @@ func (p *NativeDeltaPrepared) Visit(ctx context.Context, visitor NativeDeltaVisi
 		if err != nil {
 			return err
 		}
+	}
+	if visitor.PreparedFile != nil && p.spooled != nil {
+		names := make([]string, 0, len(p.spooled))
+		for name := range p.spooled {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			f, err := os.Open(filepath.Join(p.spoolDir, name))
+			if err != nil {
+				return err
+			}
+			visitErr := visitor.PreparedFile(p.spooled[name], f)
+			closeErr := f.Close()
+			if visitErr != nil {
+				return visitErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		}
+		return ctx.Err()
+	}
+	if visitor.File != nil && p.spooled != nil {
+		return fmt.Errorf("spooled originals require a streamed visitor")
 	}
 	if visitor.File != nil {
 		names := make([]string, 0, len(p.files))

@@ -147,15 +147,16 @@ type Manifest struct {
 	// Native store fields are present only for archives produced by Plug's
 	// engine-neutral admin.dump path. The offline Beads exporter leaves these
 	// fields absent and continues to use the source census above.
-	NativeStoreID          string `json:"native_store_id,omitempty"`
-	NativeIncarnation      string `json:"native_incarnation,omitempty"`
-	NativeHead             string `json:"native_head,omitempty"`
-	NativeDigest           string `json:"native_digest,omitempty"`
-	NativeAllocatorProfile string `json:"native_allocator_profile,omitempty"`
-	NativeAllocatorDigest  string `json:"native_allocator_digest,omitempty"`
-	RecordCount            int    `json:"record_count,omitempty"`
-	VersionCount           int    `json:"version_count,omitempty"`
-	ChangesetCount         int    `json:"changeset_count,omitempty"`
+	NativeStoreID           string                   `json:"native_store_id,omitempty"`
+	NativeIncarnation       string                   `json:"native_incarnation,omitempty"`
+	NativeHead              string                   `json:"native_head,omitempty"`
+	NativeDigest            string                   `json:"native_digest,omitempty"`
+	NativeAllocatorProfile  string                   `json:"native_allocator_profile,omitempty"`
+	NativeAllocatorDigest   string                   `json:"native_allocator_digest,omitempty"`
+	RecordCount             int                      `json:"record_count,omitempty"`
+	VersionCount            int                      `json:"version_count,omitempty"`
+	ChangesetCount          int                      `json:"changeset_count,omitempty"`
+	NativeReverseProjection *NativeReverseProjection `json:"native_reverse_projection,omitempty"`
 }
 
 // EdgeVersion returns the declared edge contract. An absent registry entry
@@ -187,6 +188,18 @@ type Record struct {
 
 // Archive owns validated data. Accessors return detached copies; a caller
 // cannot turn a validated record into an unchecked restore request.
+// NativeReverseProjection declares archive-only compaction understood by the
+// offline reverse restore seam. Ordinary restore refuses projected images.
+type NativeReverseProjection struct {
+	ProfileCopies    int                      `json:"profile_copies"`
+	DiscardedOrigins *NativeReverseOriginLoss `json:"discarded_origins,omitempty"`
+}
+
+type NativeReverseOriginLoss struct {
+	Records int `json:"records"`
+	Fields  int `json:"fields"`
+}
+
 type Archive struct {
 	sha256          string
 	tarBytes        []byte
@@ -275,6 +288,15 @@ func (a *Archive) Manifest() Manifest {
 	for key, value := range a.manifest.Verification {
 		m.Verification[key] = value
 	}
+	if projection := m.NativeReverseProjection; projection != nil {
+		detached := *projection
+		if loss := projection.DiscardedOrigins; loss != nil {
+			copyLoss := *loss
+			detached.DiscardedOrigins = &copyLoss
+		}
+		m.NativeReverseProjection = &detached
+	}
+
 	return m
 }
 

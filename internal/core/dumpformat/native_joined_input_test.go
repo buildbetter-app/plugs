@@ -129,3 +129,53 @@ func TestNativeBlankPeerCredentialStillPasses(t *testing.T) {
 		}
 	}
 }
+
+func TestReverseHeadRejectsWideJSONBeforeDecoding(t *testing.T) {
+	wrapping := `{"items":[`
+	wide := []byte(wrapping + strings.Repeat("0,", 100_000) + "0]}")
+	if _, err := DecodeReverseOriginFields(wide); err == nil || !strings.Contains(err.Error(), "structure exceeds buffer bound") {
+		t.Fatalf("wide retained origin was not refused before decoding: %v", err)
+	}
+	record := []byte(`{"kind":"bead","ref":{"id":"wide","branch":0},"revision":1,"body":` + string(wide) + "}")
+	if err := ValidateNativeHeadRecord(record); err == nil || !strings.Contains(err.Error(), "structure exceeds buffer bound") {
+		t.Fatalf("wide material record was not refused before decoding: %v", err)
+	}
+	body := []byte(`{"escaped":"` + strings.Repeat(`\"{:,[`, 100_000) + `","nested":[{}, [], null, 1]}`)
+	if fields, err := DecodeReverseOriginFields(body); err != nil || fields != 5 {
+		t.Fatalf("quoted delimiters or empty containers changed the count: fields=%d, err=%v", fields, err)
+	}
+	if _, err := DecodeReverseOriginFields([]byte(`{"same":1,"same":2}`)); err == nil {
+		t.Fatal("duplicate origin keys were admitted")
+	}
+}
+
+func TestReverseHeadHistoryMarkerChecksEachFrame(t *testing.T) {
+	const prefix = `{"kind":"beads-archive","ref":{"id":"plug-restore-history","branch":0},"revision":1,"body":`
+	letters := strings.Repeat(`{"frame":{"sequence":1}},`, 17000)
+	marker := `{"sourceFrames":[` + letters + `{"frame":{"sequence":1}}],"mapping":[]}`
+	if err := ValidateNativeHeadRecord([]byte(prefix + marker + "}")); err != nil {
+		t.Fatalf("wide marker with bounded frames was refused: %v", err)
+	}
+	if count, err := CountReverseHistoryMarkerFields([]byte(marker)); err != nil || count != 17002 {
+		t.Fatalf("wide marker field count=%d, err=%v", count, err)
+	}
+	wideFrame := `{"sourceFrames":[{"value":[` + strings.Repeat("0,", 100_000) + `0]}],"mapping":[]}`
+	if err := ValidateNativeHeadRecord([]byte(prefix + wideFrame + "}")); err == nil || !strings.Contains(err.Error(), "structure exceeds buffer bound") {
+		t.Fatalf("unbounded individual frame was admitted: %v", err)
+	}
+}
+
+func TestReverseHeadRequiresExactEnvelopeKeys(t *testing.T) {
+	const canonical = `{"kind":"bead","ref":{"id":"public","branch":0},"revision":1,"body":{}}`
+	if err := ValidateNativeHeadRecord([]byte(canonical)); err != nil {
+		t.Fatalf("canonical native envelope was refused: %v", err)
+	}
+	for _, raw := range []string{
+		strings.Replace(canonical, `"kind"`, `"Kind"`, 1),
+		strings.Replace(canonical, `"kind":"bead"`, `"kind":"unknown","Kind":"bead"`, 1),
+	} {
+		if err := ValidateNativeHeadRecord([]byte(raw)); err == nil {
+			t.Fatal("case-aliased native envelope was admitted")
+		}
+	}
+}

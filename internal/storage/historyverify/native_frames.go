@@ -207,10 +207,19 @@ func (b *nativeFrames) checkpoint(state dumpformat.NativeDeltaTableState) error 
  }
  return nil
 }
-func (b *nativeFrames) captureFile(name string,raw []byte) error {
- if _,duplicate:=b.stream.files[name];duplicate {return ErrCheckpoint{"duplicate original capture file"}}
- if err:=b.stream.archive.ChargeNativeDeltaBytes("verifier_capture_ledger",uint64(len(name))+192);err!=nil {return err}
- b.stream.files[name]=dumpformat.File{Size:int64(len(raw)),SHA256:nativeSHA(raw)};return nil
+func (b *nativeFrames) captureFile(name string, raw []byte) error {
+	return b.captureFileCommitment(name, dumpformat.File{Size: int64(len(raw)), SHA256: nativeSHA(raw)})
+}
+
+func (b *nativeFrames) captureFileCommitment(name string, file dumpformat.File) error {
+	if _, duplicate := b.stream.files[name]; duplicate {
+		return ErrCheckpoint{"duplicate original capture file"}
+	}
+	if err := b.stream.archive.ChargeNativeDeltaBytes("verifier_capture_ledger", uint64(len(name))+192); err != nil {
+		return err
+	}
+	b.stream.files[name] = file
+	return nil
 }
 func (b *nativeFrames) finish() error {
  if b.commits!=b.stream.header.Head || !b.headDone || !b.currentDone || len(b.seen)!=len(b.classes) || len(b.stream.files)<3 {return ErrCheckpoint{"native independent verification is incomplete"}}

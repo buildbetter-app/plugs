@@ -2,7 +2,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "restore",
-    srcs = ["archive.go", "native_hierarchy.go"],
+    srcs = ["archive.go", "native_hierarchy.go", "reverse_archive.go"],
     importpath = "github.com/buildbetter-app/plugs/internal/core/restore",
     visibility = ["//:__subpackages__"],
     deps = [

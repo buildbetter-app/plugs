@@ -143,7 +143,7 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 	reports, schemas, histories := prepared.nativeFamilies, prepared.nativeSchemas, prepared.nativeHistories
 	policy := prepared.nativeDeltaHistory
 	if profile.NativeDeltaHistory != nil && profile.HistoryMode == driver.RestoreHistoryModeSnapshot {
-		markers, markerErr := reader.Get(ctx, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
+		markers, markerErr := driver.GetNativeHeadRecords(ctx, reader, []model.Ref{model.RefByID(driver.OfflineHistoryEvidenceID, model.Natural64(0))})
 		if markerErr != nil {
 			return nil, nil, nil, nil, markerErr
 		}
@@ -174,7 +174,7 @@ func recoverNativeFamiliesArchive(ctx context.Context, reader driver.Reader, pro
 			committed = result.Record
 		}
 	}
-	rows, err := reader.Get(ctx, []model.Ref{model.RefByID(NativeFamilyReportID, model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, reader, []model.Ref{model.RefByID(NativeFamilyReportID, model.Natural64(0))})
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

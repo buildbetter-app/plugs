@@ -2,7 +2,11 @@ package sqlite
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"io"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -88,3 +92,66 @@ func (t *transaction) PrepareRestoreImport(ctx context.Context, profile driver.R
 }
 
 var _ driver.RestoreImportTx = (*transaction)(nil)
+
+// StageNativeRestoreBlobs registers a source for the atomic SQLite commit.
+// The input ranges are borrowed. No blob payload is retained by the staged tx.
+func (t *transaction) StageNativeRestoreBlobs(ctx context.Context, source driver.NativeRestoreBlobSource) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.check(ctx); err != nil {
+		return err
+	}
+	if t.nativeRestore == nil || t.nativeRestoreBlobs != nil || source == nil {
+		return fmt.Errorf("sqlite: native restore blob source is not admissible")
+	}
+	t.nativeRestoreBlobs = source
+	return nil
+}
+
+func publishNativeRestoreBlobs(ctx context.Context, c *sql.Conn, revision string, source driver.NativeRestoreBlobSource) error {
+	meta, err := readMeta(ctx, c)
+	if err != nil {
+		return err
+	}
+	if meta.SchemaVersion == schemaVersion {
+		if _, err := c.ExecContext(ctx, `ALTER TABLE blobs ADD COLUMN stream_size INTEGER CHECK(stream_size >= 0)`); err != nil {
+			return err
+		}
+		if _, err := c.ExecContext(ctx, blobChunkSchema); err != nil {
+			return err
+		}
+		if _, err := c.ExecContext(ctx, `UPDATE meta SET schema_version=? WHERE singleton=1`, streamSchemaVersion); err != nil {
+			return err
+		}
+	}
+	buffer := make([]byte, blobChunkBytes)
+	return source(func(hash driver.Hash, size int64, r io.Reader) error {
+		if size < 0 {
+			return fmt.Errorf("invalid native restore blob size")
+		}
+		if _, err := c.ExecContext(ctx, `INSERT INTO blobs(hash,rev,data,stream_size) VALUES(?,?,X'',?)`, string(hash), revision, size); err != nil {
+			return err
+		}
+		digest := sha256.New()
+		for remaining, ordinal := size, 0; remaining > 0; ordinal++ {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			chunk := buffer[:min(int64(len(buffer)), remaining)]
+			if _, err := io.ReadFull(r, chunk); err != nil {
+				return err
+			}
+			_, _ = digest.Write(chunk)
+			if _, err := c.ExecContext(ctx, `INSERT INTO blob_chunks(hash,ordinal,data) VALUES(?,?,?)`, string(hash), ordinal, chunk); err != nil {
+				return err
+			}
+			remaining -= int64(len(chunk))
+		}
+		if n, err := r.Read(buffer[:1]); n != 0 || err != io.EOF || hex.EncodeToString(digest.Sum(nil)) != string(hash) {
+			return fmt.Errorf("native restore blob does not match validated input")
+		}
+		return nil
+	})
+}
+
+var _ driver.NativeRestoreBlobTx = (*transaction)(nil)

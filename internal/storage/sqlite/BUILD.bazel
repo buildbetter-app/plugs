@@ -11,7 +11,9 @@ go_library(
         "//internal/storage/historystream",
         "//internal/storage/historyverify",
         "//internal/storage/sourceindex",
+        "@org_modernc_libc//:libc",
         "@org_modernc_sqlite//:sqlite",
+        "@org_modernc_sqlite//lib",
     ],
 )
 

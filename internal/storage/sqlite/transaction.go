@@ -43,6 +43,8 @@ type transaction struct {
 	parentCounters    map[string]driver.ParentCounter
 	allocated         map[string]bool
 
+	nativeRestoreBlobs driver.NativeRestoreBlobSource
+
 	checkpointGuards          map[string]uint64
 	checkpointWrites          map[string]driver.Checkpoint
 	sourceOverlay             sourceindex.Overlay
@@ -90,6 +92,7 @@ func (t *transaction) finish() {
 		_ = t.stream.close()
 	}
 	t.closed = true
+	_ = t.reader.closeLegacyBlobs()
 	_ = t.tx.Rollback()
 	t.tx = nil
 	releaseGuards(t.guards)
@@ -637,6 +640,11 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		}
 		if err = t.publishParentCounters(ctx, c); err != nil {
 			return err
+		}
+		if t.nativeRestoreBlobs != nil {
+			if err := publishNativeRestoreBlobs(ctx, c, revKey(head+1), t.nativeRestoreBlobs); err != nil {
+				return err
+			}
 		}
 		for hash, blob := range t.blobs {
 			if blob == nil {
