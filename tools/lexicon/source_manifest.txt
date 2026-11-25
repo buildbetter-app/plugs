@@ -235,6 +235,8 @@ internal/core/dumpformat/source_planes_test.go
 internal/core/dumpformat/sources.go
 internal/core/dumpformat/status_categories.go
 internal/core/dumpformat/status_categories_test.go
+internal/core/dumpformat/stream_elements.go
+internal/core/dumpformat/stream_elements_test.go
 internal/core/dumpformat/testdata/commit-schema-registry-c8ab0ce7.json
 internal/core/dumpformat/testdata/commit-schema-registry-ff8006bf.json
 internal/core/dumpformat/testdata/native-joined-public-ca26683b/creation-record.json

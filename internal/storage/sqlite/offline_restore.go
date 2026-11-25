@@ -101,7 +101,7 @@ func (t *transaction) StageNativeRestoreBlobs(ctx context.Context, source driver
 	if err := t.check(ctx); err != nil {
 		return err
 	}
-	if t.nativeRestore == nil || t.nativeRestoreBlobs != nil || source == nil {
+	if (t.nativeRestore == nil && t.stream == nil) || t.nativeRestoreBlobs != nil || source == nil {
 		return fmt.Errorf("sqlite: native restore blob source is not admissible")
 	}
 	t.nativeRestoreBlobs = source

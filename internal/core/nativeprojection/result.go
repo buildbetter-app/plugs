@@ -39,6 +39,7 @@ type Snapshot struct {
 	Derived            []DerivedImage
 	DerivedDigest      string
 	Blobs              map[string][]byte
+	CollectionConfig   dumpformat.File
 	Allocators         []driver.OfflineAllocator
 	Sentinels          []driver.Sentinel
 	NativeFamilies     []NativeFamilyReport
@@ -209,7 +210,7 @@ func (p Plan) SnapshotWithAccounting(owner *dumpformat.Archive) (Snapshot, error
 	if err := owner.ChargeNativeDeltaBytes("planner_snapshot_record_slots", uint64(len(p.image.records))*uint64(reflect.TypeFor[driver.Record]().Size())); err != nil {
 		return Snapshot{}, err
 	}
-	view := Snapshot{Derived: p.image.derived, DerivedDigest: p.image.derivedDigest, Blobs: p.image.blobs, Allocators: p.image.allocators, Sentinels: p.image.sentinels, NativeFamilies: p.image.nativeFamilies, NativeSchemas: p.image.nativeSchemas, NativeHistories: p.image.nativeHistories, NativeDeltaHistory: p.image.nativeDeltaHistory}
+	view := Snapshot{Derived: p.image.derived, DerivedDigest: p.image.derivedDigest, Blobs: p.image.blobs, CollectionConfig: p.image.collectionConfig, Allocators: p.image.allocators, Sentinels: p.image.sentinels, NativeFamilies: p.image.nativeFamilies, NativeSchemas: p.image.nativeSchemas, NativeHistories: p.image.nativeHistories, NativeDeltaHistory: p.image.nativeDeltaHistory}
 	copiedBytes := snapshotCopyBytes(p.image, view) + pointerCopyBytes(view.NativeDeltaHistory)
 	if view.NativeDeltaHistory != nil {
 		copiedBytes += pointerCopyBytes(view.NativeDeltaHistory.OmittedPrefix)

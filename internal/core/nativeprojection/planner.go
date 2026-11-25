@@ -27,19 +27,20 @@ type restoreRecord struct {
 }
 
 type restorePlan struct {
-	migration       *dumpformat.ImportMigration
-	nativeOntology  *dumpformat.NativeStatusOntology
-	nativeFamilies  []NativeFamilyReport
-	nativeSchemas   []NativeSchemaReport
-	nativeHistories []NativeHistoryReport
+	migration          *dumpformat.ImportMigration
+	nativeOntology     *dumpformat.NativeStatusOntology
+	nativeFamilies     []NativeFamilyReport
+	nativeSchemas      []NativeSchemaReport
+	nativeHistories    []NativeHistoryReport
 	nativeDeltaHistory *driver.NativeDeltaHistoryEvidence
-	records         []restoreRecord
-	sentinels       []driver.Sentinel
-	derived         []DerivedImage
-	derivedDigest   string
-	blobs           map[string][]byte
-	nativeCapture   *dumpformat.Archive
-	allocators      []driver.OfflineAllocator
+	records            []restoreRecord
+	sentinels          []driver.Sentinel
+	derived            []DerivedImage
+	derivedDigest      string
+	blobs              map[string][]byte
+	collectionConfig   dumpformat.File
+	nativeCapture      *dumpformat.Archive
+	allocators         []driver.OfflineAllocator
 }
 
 // ImportBindingEvidence is an immutable, transaction-local copy of the full

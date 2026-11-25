@@ -238,7 +238,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...drive
 				if err != nil {
 					return reverseconverter.Dump{}, retainedReverseReadFailure(err)
 				}
-				dump, err := reverseconverter.AdaptValidatedArchive(archive)
+				dump, err := reverseconverter.AdaptValidatedArchiveForConversion(archive)
 				if collection != nil {
 					_ = collection.close()
 				} else {
@@ -290,7 +290,7 @@ func retainedReverseDump(ctx context.Context, r driver.Reader, profiles ...drive
 		if err != nil {
 			return reverseconverter.Dump{}, retainedReverseReadFailure(err)
 		}
-		dump, err := reverseconverter.AdaptValidatedArchive(native)
+		dump, err := reverseconverter.AdaptValidatedArchiveForConversion(native)
 		native.ReleaseNativeDecoded()
 		if err != nil {
 			return reverseconverter.Dump{}, err

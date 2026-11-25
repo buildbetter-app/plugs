@@ -194,11 +194,36 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 		if readErr != nil {
 			return nil, fmt.Errorf("read archive member %q: %w", header.Name, readErr)
 		}
-		if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
+		if header.Name == SourceConfigMember && nativeDeltaAttachment {
+			// The encoded member stays available for exact source readback.
+			// Only one decoded element is live across each validation pass.
+			if err := visitJSONElements(bytes.NewReader(member), true, configAccounting{decoded: decodeWork, headWindow: bufferBound}, func([]byte, uint64) error { return nil }); err != nil {
+				return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+			}
+		} else if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
 			// Head members are JSON or NDJSON. Every retained decoded value is
 			// admitted from its compact escaped source preimage before any
 			// legacy validator parses or transforms it.
 			var count uint64
+			admit := func(line []byte, enclosingDepth int) error {
+				if bufferBound != nil {
+					footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
+					if err != nil {
+						return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+					}
+					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
+						return err
+					}
+				}
+				c := deltaSizeCounter{}
+				if err := c.raw(line); err != nil {
+					return err
+				}
+				if err := deltaAddCount(&count, c.n+1); err != nil {
+					return err
+				}
+				return nil
+			}
 			for rest := member; len(rest) != 0; {
 				line := rest
 				if strings.HasSuffix(header.Name, ".ndjson") {
@@ -209,20 +234,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
 				}
-				if bufferBound != nil {
-					footprint, err := driver.ReverseJSONFootprint(line, 0)
-					if err != nil {
-						return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
-					}
-					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
-						return nil, err
-					}
-				}
-				c := deltaSizeCounter{}
-				if err := c.raw(line); err != nil {
-					return nil, err
-				}
-				if err := deltaAddCount(&count, c.n+1); err != nil {
+				if err := admit(line, 0); err != nil {
 					return nil, err
 				}
 			}
@@ -295,10 +307,11 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" || manifest.NativeReverseProjection != nil {
 		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
 	}
-	if err := validateManifest(manifest, members); err != nil {
+	config := configEntrySource{data: members[SourceConfigMember], accounting: configAccounting{decoded: decodeWork, headWindow: bufferBound}, bounded: nativeDeltaAttachment}
+	if err := validateManifest(manifest, members, config); err != nil {
 		return nil, err
 	}
-	byKind, migration, err := validateRecords(manifest, members, nativeDeltaAttachment)
+	byKind, migration, err := validateRecords(manifest, members, config, nativeDeltaAttachment)
 	if err != nil {
 		return nil, err
 	}
@@ -532,7 +545,7 @@ func validateNativeLine(line []byte, label string) error {
 	return nil
 }
 
-func validateManifest(manifest Manifest, members map[string][]byte) error {
+func validateManifest(manifest Manifest, members map[string][]byte, config configEntrySource) error {
 	if err := validateStatusCategoryContract(manifest); err != nil {
 		return err
 	}
@@ -609,7 +622,7 @@ func validateManifest(manifest Manifest, members map[string][]byte) error {
 	if _, ok := manifest.Files["config/sources.json"]; !ok {
 		return fmt.Errorf("missing configuration provenance")
 	}
-	if err := validateConfigProvenance(members["config/sources.json"]); err != nil {
+	if err := validateConfigProvenance(config); err != nil {
 		return err
 	}
 	return nil
@@ -644,7 +657,7 @@ func validateProjects(input []Project) error {
 	return nil
 }
 
-func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAttachment bool) (map[string][]Record, *ImportMigration, error) {
+func validateRecords(manifest Manifest, members map[string][]byte, config configEntrySource, nativeDeltaAttachment bool) (map[string][]Record, *ImportMigration, error) {
 	registry := map[string]bool{}
 	byKind := map[string][]Record{}
 	counts := map[string]int{}
@@ -692,7 +705,7 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 		if !hasHistory && manifest.SourceFamilyContract != SourceFamilyContract {
 			return nil, nil, ErrSourceHistory{Reason: "missing source project history"}
 		}
-		if err := validateScopedSourceRecords(manifest, byKind, members["config/sources.json"]); err != nil {
+		if err := validateScopedSourceRecords(manifest, byKind, config); err != nil {
 			return nil, nil, err
 		}
 		return byKind, nil, nil
@@ -704,14 +717,13 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 			}
 		}
 	}
-	var sourceEntries []externalEntry
-	if err := decodeJSON(members["config/sources.json"], &sourceEntries); err != nil {
-		return nil, nil, err
-	}
-	for _, e := range sourceEntries {
+	if err := config.visit(func(e externalEntry) error {
 		if e.Identity != nil {
-			return nil, nil, fmt.Errorf("configuration source identity requires explicit contract")
+			return fmt.Errorf("configuration source identity requires explicit contract")
 		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
 	}
 	planes := manifest.SourcePlaneAddressContract == SourcePlaneAddressContract
 	var migration *ImportMigration
@@ -720,20 +732,20 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 	if planes {
 		if manifest.StatusCategoryContract == StatusCategoryContract {
 			var categories map[string]string
-			categories, err = sourcePlaneCatalogCategoriesFor(byKind, members["config/sources.json"], true)
+			categories, err = sourcePlaneCatalogCategoriesFor(byKind, config, true)
 			statuses = make(map[string]bool, len(categories))
 			for name := range categories {
 				statuses[name] = true
 			}
 		} else {
-			statuses, err = validateSourcePlaneCatalog(byKind, members["config/sources.json"])
+			statuses, err = validateSourcePlaneCatalog(byKind, config)
 		}
 	}
 	if err == nil && manifest.StatusCategoryContract == StatusCategoryContract {
-		err = validateNativeStatusCatalogConservation(manifest, byKind, members["config/sources.json"])
+		err = validateNativeStatusCatalogConservation(manifest, byKind, config)
 	}
 	if err == nil && (!planes || manifest.Verification["ontology"] == StrictUnionOntologyVerification) {
-		migration, err = compileImportMigration(manifest, byKind, members["config/sources.json"], hasHistory)
+		migration, err = compileImportMigration(manifest, byKind, config, hasHistory)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -754,7 +766,7 @@ func validateRecords(manifest Manifest, members map[string][]byte, nativeDeltaAt
 			}
 		}
 	}
-	if err := validateCaptureDispositionsForVersion(manifest.Sources, counts, members["config/sources.json"], migration, planes, manifest.MainVersion, nativeDeltaAttachment, manifest.SourceFamilyContract); err != nil {
+	if err := validateCaptureDispositionsForVersion(manifest.Sources, counts, config, migration, planes, manifest.MainVersion, nativeDeltaAttachment, manifest.SourceFamilyContract); err != nil {
 		return nil, nil, err
 	}
 	if migration == nil {
@@ -787,6 +799,10 @@ func digest(data []byte) string {
 }
 
 func decodeJSON(data []byte, target any) error {
+	return decodeJSONAtDepth(data, target, 0)
+}
+
+func decodeJSONAtDepth(data []byte, target any, depth int) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("JSON must be UTF-8")
 	}
@@ -795,7 +811,7 @@ func decodeJSON(data []byte, target any) error {
 	}
 	check := json.NewDecoder(bytes.NewReader(data))
 	check.UseNumber()
-	if err := checkValue(check, 0); err != nil {
+	if err := checkValue(check, depth); err != nil {
 		return err
 	}
 	if _, err := check.Token(); err != io.EOF {

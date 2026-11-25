@@ -13,6 +13,12 @@ fingerprints. It retains original member bytes and all source archives.
 `Archive.Manifest`, `Archive.Records`, and `Archive.Member` return detached
 copies. Source nulls and JSON numbers retain their values.
 
+## Bounded joined configuration
+
+Joined native capture config is assembled through a file-backed element spool. Sort references, framing buffers and output copying are charged to the native decoded budget, and each externalEntry is framed and decoded independently with a bounded nesting depth. The 128 MiB head window is shared by the encoded member and every live frame and decoded element. The retained head remains authenticated by its manifest digest and size.
+
+SQLite is the streamed publication path. Its native restore transaction publishes the joined config with 1 MiB blob chunks and validates the content digest while writing. Memory and PostgreSQL keep their existing single-blob representations. They refuse a joined config above the 32 MiB per-blob budget with native_decoded_limit before opening or allocating the payload. A PostgreSQL chunked representation is a follow-up when deployments require larger archives.
+
 `internal/core/restore` supplies the callable empty-store writer for supported
 native head images on memory and SQLite. It validates the complete archive and
 binds uploaded bytes to the admitted manifest before opening the publication

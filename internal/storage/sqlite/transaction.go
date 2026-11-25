@@ -105,6 +105,7 @@ func (t *transaction) finish() {
 	t.records = nil
 	t.derived = nil
 	t.blobs = nil
+	t.nativeRestoreBlobs = nil
 	t.bumps = nil
 	t.allocators = nil
 	t.parentCounters = nil

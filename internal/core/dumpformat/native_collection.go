@@ -3,9 +3,13 @@ package dumpformat
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -32,12 +36,25 @@ type NativeJoinedBinding struct {
 }
 
 type nativeCaptureCollection struct {
-	binding    NativeJoinedBinding
-	metadata   []NativeHistoryMetadata
-	files      map[string]File
-	added      int
-	ready      bool
-	commitment []byte
+	binding      NativeJoinedBinding
+	metadata     []NativeHistoryMetadata
+	files        map[string]File
+	config       *os.File
+	configRefs   *NativeDeltaBudget
+	configOutput *os.File
+	elements     []nativeConfigElement
+	added        int
+	ready        bool
+	commitment   []byte
+}
+
+type nativeConfigElement struct {
+	precedence int
+	family     string
+	path       string
+	identity   string
+	offset     int64
+	size       int64
 }
 
 // NativeCaptureCollection keeps only the joint CURRENT portable image and
@@ -46,7 +63,6 @@ type nativeCaptureCollection struct {
 // Only authenticated capture-set Archives can append to this private builder.
 type NativeCaptureCollection struct {
 	archive *Archive
-	entries []externalEntry
 	closed  bool
 }
 
@@ -108,7 +124,17 @@ func NewNativeCaptureCollection(ctx context.Context, binding NativeJoinedBinding
 	if err = decodeJSON(raw, &detached); err != nil {
 		return nil, err
 	}
-	state := &nativeCaptureCollection{binding: detached, files: map[string]File{}, commitment: raw}
+	config, err := os.CreateTemp("", "plug-native-config-*")
+	if err != nil {
+		return nil, err
+	}
+	state := &nativeCaptureCollection{binding: detached, files: map[string]File{}, commitment: raw, config: config, configRefs: owner.Scope()}
+	defer func() {
+		if !ok {
+			_ = config.Close()
+			_ = os.Remove(config.Name())
+		}
+	}()
 	a := &Archive{sha256: digest(raw), nativeBudget: owner, collection: state, byKind: map[string][]Record{}, members: map[string][]byte{}}
 	a.manifest.StoreID = "merge-" + a.sha256
 	ok = true
@@ -244,18 +270,42 @@ func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity Source
 			c.archive.byKind[kind] = append(c.archive.byKind[kind], namespaceRecord(row, identity))
 		}
 	}
-	if err := c.archive.ChargeNativeDeltaBytes("collection_config_decode", uint64(len(source.members["config/sources.json"]))*4); err != nil {
-		return err
-	}
-	var entries []externalEntry
-	if err := decodeJSON(source.members["config/sources.json"], &entries); err != nil {
-		return err
-	}
-	for _, entry := range entries {
+	return c.appendConfig(source, identity)
+}
+
+func (c *NativeCaptureCollection) appendConfig(source *Archive, identity SourceIdentity) error {
+	state := c.archive.collection
+	return source.visitConfigEntries(c.archive.nativeBudget, func(entry externalEntry, _ []byte) error {
 		entry.Identity = &identity
-		c.entries = append(c.entries, entry)
-	}
-	return nil
+		work := c.archive.nativeBudget.Scope()
+		defer work.Release()
+		if err := work.ChargeJSON("collection_config_encoding", entry); err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		// Reserve the retained key strings and the ref slice, including
+		// slack and both backing arrays during a growth.
+		refBytes := uint64(len(identity.StoreID)+len(identity.Project)+len(entry.Input.Family)+len(entry.Input.Path))*8 + 512
+		if err := state.configRefs.ChargeBytes("collection_config_refs", refBytes); err != nil {
+			return err
+		}
+		identityKey := externalEntryKey(entry)
+		offset, err := state.config.Seek(0, io.SeekEnd)
+		if err != nil {
+			return err
+		}
+		if _, err := state.config.Write(encoded); err != nil {
+			return err
+		}
+		state.elements = append(state.elements, nativeConfigElement{
+			precedence: entry.Input.Precedence, family: entry.Input.Family,
+			path: entry.Input.Path, identity: identityKey, offset: offset, size: int64(len(encoded)),
+		})
+		return nil
+	})
 }
 
 func nativeCollectionDirectiveUsed(source *Archive, directive OntologyDirective) bool {
@@ -327,28 +377,96 @@ func (c *NativeCaptureCollection) Finish() (*Archive, error) {
 		a.members[kind.File] = data.Bytes()
 		a.manifest.Files[kind.File] = File{SHA256: digest(data.Bytes()), Size: int64(data.Len())}
 	}
-	sort.Slice(c.entries, func(i, j int) bool { return compareExternalEntries(c.entries[i], c.entries[j]) < 0 })
-	if err := a.ChargeNativeDeltaJSON("collection_sidecars", c.entries); err != nil {
-		return nil, err
-	}
-	config, err := json.Marshal(c.entries)
+	configFile, commitment, err := a.collection.writeConfig(a.nativeBudget)
 	if err != nil {
 		return nil, err
 	}
-	config = append(config, '\n')
-	a.members["config/sources.json"] = config
-	a.manifest.Files["config/sources.json"] = File{SHA256: digest(config), Size: int64(len(config))}
+	a.manifest.Files[SourceConfigMember] = commitment
 	if err := a.ChargeNativeDeltaJSON("collection_manifest_encoding", a.manifest); err != nil {
+		closeConfigFile(configFile)
 		return nil, err
 	}
 	raw, err := json.Marshal(a.manifest)
 	if err != nil {
+		closeConfigFile(configFile)
 		return nil, err
 	}
 	a.members["manifest.json"] = raw
-	a.collection.ready = true
-	c.entries = nil
+	state := a.collection
+	state.configOutput = configFile
+	state.ready = true
+	closeConfigFile(state.config)
+	state.config = nil
+	state.elements = nil
+	state.configRefs.Release()
 	return a, nil
+}
+
+func (state *nativeCaptureCollection) writeConfig(owner *NativeDeltaBudget) (*os.File, File, error) {
+	sort.Slice(state.elements, func(i, j int) bool {
+		a, b := state.elements[i], state.elements[j]
+		if a.precedence != b.precedence {
+			return a.precedence < b.precedence
+		}
+		if a.family != b.family {
+			return a.family < b.family
+		}
+		if a.path != b.path {
+			return a.path < b.path
+		}
+		return a.identity < b.identity
+	})
+	work := owner.Scope()
+	defer work.Release()
+	const copyBytes = 32 << 10
+	if err := work.ChargeBytes("collection_config_copy_buffer", copyBytes); err != nil {
+		return nil, File{}, err
+	}
+	file, err := os.CreateTemp("", "plug-native-config-output-*")
+	if err != nil {
+		return nil, File{}, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			closeConfigFile(file)
+		}
+	}()
+	hash := sha256.New()
+	output := io.MultiWriter(file, hash)
+	if _, err := io.WriteString(output, "["); err != nil {
+		return nil, File{}, err
+	}
+	size := int64(1)
+	buffer := make([]byte, copyBytes)
+	for i, element := range state.elements {
+		if i != 0 {
+			if _, err := io.WriteString(output, ","); err != nil {
+				return nil, File{}, err
+			}
+			size++
+		}
+		n, err := io.CopyBuffer(output, io.NewSectionReader(state.config, element.offset, element.size), buffer)
+		if err != nil {
+			return nil, File{}, err
+		}
+		if n != element.size {
+			return nil, File{}, io.ErrUnexpectedEOF
+		}
+		size += n
+	}
+	if _, err := io.WriteString(output, "]\n"); err != nil {
+		return nil, File{}, err
+	}
+	ok = true
+	return file, File{SHA256: hex.EncodeToString(hash.Sum(nil)), Size: size + 2}, nil
+}
+
+func closeConfigFile(file *os.File) {
+	if file != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}
 }
 
 func (a *Archive) HasNativeCaptureCollection() bool {
@@ -386,8 +504,11 @@ func (c *NativeCaptureCollection) Close() {
 	c.closed = true
 	a := c.archive
 	c.archive = nil
-	c.entries = nil
 	if a != nil {
+		if a.collection != nil {
+			closeConfigFile(a.collection.config)
+			closeConfigFile(a.collection.configOutput)
+		}
 		a.byKind = nil
 		a.members = nil
 		a.collection = nil

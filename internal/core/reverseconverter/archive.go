@@ -25,7 +25,7 @@ func Read(r io.Reader) (Dump, error) {
 	if err != nil {
 		return Dump{}, refusal("canonical plug-dump/1 validation failed: %v", err)
 	}
-	return adaptArchive(archive)
+	return adaptArchive(archive, false)
 }
 
 func ReadBytes(data []byte) (Dump, error) { return Read(bytes.NewReader(data)) }
@@ -39,10 +39,19 @@ func AdaptValidatedArchive(archive *dumpformat.Archive) (Dump, error) {
 	if archive == nil {
 		return Dump{}, refusal("nil validated archive")
 	}
-	return adaptArchive(archive)
+	return adaptArchive(archive, false)
 }
 
-func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
+// AdaptValidatedArchiveForConversion retains authenticated commitments and the
+// records used by conversion. The caller keeps the source evidence separately.
+func AdaptValidatedArchiveForConversion(archive *dumpformat.Archive) (Dump, error) {
+	if archive == nil {
+		return Dump{}, refusal("nil validated archive")
+	}
+	return adaptArchive(archive, true)
+}
+
+func adaptArchive(archive *dumpformat.Archive, conversionOnly bool) (Dump, error) {
 	source := archive.Manifest()
 	manifest := Manifest{
 		Format:                     source.Format,
@@ -94,12 +103,14 @@ func adaptArchive(archive *dumpformat.Archive) (Dump, error) {
 	}
 
 	dump := Dump{Manifest: manifest, Records: make(map[string][]Record), Members: make(map[string][]byte)}
-	if member, ok := archive.Member("manifest.json"); ok {
-		dump.Members["manifest.json"] = member
-	}
-	for name := range source.Files {
-		if member, ok := archive.Member(name); ok {
-			dump.Members[name] = member
+	if !conversionOnly {
+		if member, ok := archive.Member("manifest.json"); ok {
+			dump.Members["manifest.json"] = member
+		}
+		for name := range source.Files {
+			if member, ok := archive.Member(name); ok {
+				dump.Members[name] = member
+			}
 		}
 	}
 	for _, kind := range source.Kinds {

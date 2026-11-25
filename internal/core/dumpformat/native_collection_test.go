@@ -3,7 +3,10 @@ package dumpformat
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,4 +378,92 @@ func physicalCollectionDirectory(t *testing.T, database string) string {
 	}
 	t.Fatal("unknown pinned physical source")
 	return ""
+}
+
+func TestNativeCollectionStreamsLargeConfigWithinAccountingBounds(t *testing.T) {
+	const elementCount = 52
+	const leafBytes = 512 << 10
+	payload := strings.Repeat("x", leafBytes)
+	input, err := os.CreateTemp(t.TempDir(), "public-sources-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	if _, err := io.WriteString(input, "["); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < elementCount; i++ {
+		if i != 0 {
+			if _, err := io.WriteString(input, ","); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := fmt.Fprintf(input, `{"input":{"family":"project-config","path":"/public/p48/%03d","state":"json-config","precedence":%d},"values":{"public_sample":"%s"}}`, i, i, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := io.WriteString(input, "]\n"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := input.Stat()
+	if err != nil || info.Size() <= 24<<20 {
+		t.Fatalf("public fixture must exceed 24 MiB: %v %v", info, err)
+	}
+	source := &Archive{manifest: Manifest{Files: map[string]File{SourceConfigMember: {Size: info.Size()}}}, collection: &nativeCaptureCollection{configOutput: input}}
+	budget := NewNativeDeltaBudget(4 << 20)
+	ctx := WithNativeDeltaBudget(context.Background(), budget)
+	collection, err := NewNativeCaptureCollection(ctx, physicalCollectionBinding(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer collection.Close()
+	if err := collection.appendConfig(source, SourceIdentity{StoreID: "public-test", Project: "ops"}); err != nil {
+		t.Fatal(err)
+	}
+	state := collection.archive.collection
+	if got := budget.ReservedBytes("collection_config_refs"); got == 0 || got >= 128<<10 {
+		t.Fatalf("retained sort refs = %d bytes", got)
+	}
+	state.added = 2 // Exercise assembly independently of the source transport.
+	collection.archive.manifest.Projects = []Project{{Prefix: "ops", IDMode: "sequential"}}
+	archive, err := collection.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitment := archive.manifest.Files[SourceConfigMember]
+	if _, materialized := archive.members[SourceConfigMember]; materialized || commitment.Size <= info.Size() {
+		t.Fatalf("joined member must stay file-backed: %+v", commitment)
+	}
+	observed := 0
+	err = archive.visitConfigEntries(budget, func(entry externalEntry, _ []byte) error {
+		if entry.Identity == nil || entry.Identity.Project != "ops" || entry.Input.Precedence != observed || entry.Values["public_sample"] != payload {
+			t.Fatal("joined config element changed")
+		}
+		observed++
+		return nil
+	})
+	if err != nil || observed != elementCount {
+		t.Fatalf("read back %d config elements: %v", observed, err)
+	}
+	reader, _ := archive.configReader()
+	hash := sha256.New()
+	if n, err := io.Copy(hash, reader); err != nil || n != commitment.Size || fmt.Sprintf("%x", hash.Sum(nil)) != commitment.SHA256 {
+		t.Fatalf("streamed config checksum or length changed: %d %v", n, err)
+	}
+	usage := budget.Usage()
+	if usage.CumulativeCategories["collection_config_copy_buffer"] != 32<<10 ||
+		usage.CumulativeCategories["config_element_decoded"] <= uint64(info.Size()) ||
+		usage.PeakAccountedDecodedBytes >= 3<<20 ||
+		usage.CurrentAccountedDecodedBytes >= 128<<10 ||
+		budget.ReservedBytes("collection_config_refs") != 0 {
+		t.Fatalf("config exceeded live memory bounds: %+v", usage)
+	}
+	path := state.configOutput.Name()
+	collection.Close()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("finished config file survived Close: %v", err)
+	}
+	if got := budget.Usage().CurrentAccountedDecodedBytes; got != 0 {
+		t.Fatalf("close retained %d accounted bytes", got)
+	}
 }

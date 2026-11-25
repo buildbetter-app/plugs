@@ -611,7 +611,7 @@ func validateHistoryImage(rows []Record, manifest Manifest) error {
 		for _, record := range rows {
 			byKind[record.Kind] = append(byKind[record.Kind], record)
 		}
-		if err := validateNativeStatusCatalogConservation(manifest, byKind, []byte("[]")); err != nil {
+		if err := validateNativeStatusCatalogConservation(manifest, byKind, configEntrySource{data: []byte("[]")}); err != nil {
 			return err
 		}
 	}

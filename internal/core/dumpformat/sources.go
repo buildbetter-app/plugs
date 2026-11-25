@@ -17,25 +17,20 @@ type externalEntry struct {
 	Values map[string]any `json:"values,omitempty"`
 }
 
-func validateConfigProvenance(data []byte) error {
-	var entries []externalEntry
-	if err := decodeJSON(data, &entries); err != nil {
-		return fmt.Errorf("invalid configuration provenance: %w", err)
-	}
+func validateConfigProvenance(config configEntrySource) error {
 	allowed, seen, families := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, family := range externalFamilies {
 		allowed[family] = true
 	}
 	var previous *externalEntry
-	for i := range entries {
-		entry := &entries[i]
+	if err := config.visit(func(entry externalEntry) error {
 		input := entry.Input
-		key := externalEntryKey(*entry)
+		key := externalEntryKey(entry)
 		if !allowed[input.Family] || !path.IsAbs(input.Path) || strings.ContainsRune(input.Path, '\x00') || seen[key] || input.Precedence < 0 {
 			return fmt.Errorf("unknown, duplicate or inconsistent configuration input")
 		}
 		if previous != nil {
-			if compareExternalEntries(*previous, *entry) >= 0 {
+			if compareExternalEntries(*previous, entry) >= 0 {
 				return fmt.Errorf("unordered configuration inputs")
 			}
 		}
@@ -54,8 +49,14 @@ func validateConfigProvenance(data []byte) error {
 		if err := validateSecretReferences(entry.Values); err != nil {
 			return err
 		}
+		if err := config.reserve("config_provenance_keys", uint64(len(key)+len(input.Path)+len(input.Family))*2+256); err != nil {
+			return err
+		}
 		seen[key], families[input.Family] = true, true
-		previous = entry
+		previous = &externalEntry{Identity: entry.Identity, Input: entry.Input}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("invalid configuration provenance: %w", err)
 	}
 	if len(families) != len(allowed) {
 		return fmt.Errorf("unaccounted configuration provenance family")
@@ -63,7 +64,7 @@ func validateConfigProvenance(data []byte) error {
 	return nil
 }
 
-func validateDispositions(sources []Disposition, counts map[string]int, config []byte) error {
+func validateDispositions(sources []Disposition, counts map[string]int, config configEntrySource) error {
 	return validateMigratedDispositions(sources, counts, config, nil)
 }
 
@@ -74,29 +75,25 @@ func migrationAction(table string, migration *ImportMigration) string {
 	return actionFor(table)
 }
 
-func validateMigratedDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration) error {
+func validateMigratedDispositions(sources []Disposition, counts map[string]int, config configEntrySource, migration *ImportMigration) error {
 	return validateBoundDispositions(sources, counts, config, migration, false)
 }
 
-func validateBoundDispositions(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, familyContracts ...string) error {
+func validateBoundDispositions(sources []Disposition, counts map[string]int, config configEntrySource, migration *ImportMigration, planes bool, familyContracts ...string) error {
 	return validateBoundDispositionsForVersion(sources, counts, config, migration, planes, 72, familyContracts...)
 }
 
-func validateBoundDispositionsForVersion(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, mainVersion int, familyContracts ...string) error {
+func validateBoundDispositionsForVersion(sources []Disposition, counts map[string]int, config configEntrySource, migration *ImportMigration, planes bool, mainVersion int, familyContracts ...string) error {
 	return validateCaptureDispositionsForVersion(sources, counts, config, migration, planes, mainVersion, false, familyContracts...)
 }
 
-func validateCaptureDispositionsForVersion(sources []Disposition, counts map[string]int, config []byte, migration *ImportMigration, planes bool, mainVersion int, nativeDeltaAttachment bool, familyContracts ...string) error {
+func validateCaptureDispositionsForVersion(sources []Disposition, counts map[string]int, config configEntrySource, migration *ImportMigration, planes bool, mainVersion int, nativeDeltaAttachment bool, familyContracts ...string) error {
 	columns := sourceTableColumns(mainVersion)
 	native := len(familyContracts) != 0 && familyContracts[0] == SourceFamilyContract
-	var entries []externalEntry
-	if err := decodeJSON(config, &entries); err != nil {
-		return err
-	}
 	// Multiple paths in a source family are legal. Match the complete multiset,
 	// including zero-row and absent entries, rather than silently coalescing it.
 	expected := map[Disposition]int{}
-	for _, entry := range entries {
+	if err := config.visit(func(entry externalEntry) error {
 		d := Disposition{Family: entry.Input.Family}
 		if entry.Input.State == "absent" {
 			d.Action, d.Reason = "manifest/rebuild", "requested source absent at declared path"
@@ -104,6 +101,9 @@ func validateCaptureDispositionsForVersion(sources []Disposition, counts map[str
 			d.Rows, d.Action, d.Reason = len(entry.Values), "archive", "explicit JSON config; secrets are references; precedence retained, effective config not inferred"
 		}
 		expected[d]++
+		return nil
+	}); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	lastFamily, lastReason := "", ""

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"sort"
 
- "github.com/buildbetter-app/plugs/internal/core/dumpformat"
+	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -20,11 +20,14 @@ type Auxiliary struct {
 	Allocators map[string]driver.OfflineAllocator
 	Parents    map[string]driver.ParentCounter
 	Blobs      map[driver.Hash][]byte
-	Bumps      map[string]driver.LockKey
+	// StreamedBlobs describes authenticated streams whose bytes the writer
+	// validates during publication before checking the auxiliary root.
+	StreamedBlobs map[driver.Hash]int64 `json:",omitempty"`
+	Bumps         map[string]driver.LockKey
 }
 
 func AuxiliaryRoot(a Auxiliary) (Root, error) {
- return auxiliaryRoot(a, nil)
+	return auxiliaryRoot(a, nil)
 }
 
 // originals is private verifier output from successful reauthentication. It
@@ -72,20 +75,42 @@ func auxiliaryRoot(a Auxiliary, originals map[string]dumpformat.File) (Root, err
 			return Root{}, err
 		}
 	}
- type blob struct { Bytes int64; SHA256 string }
- blobs := map[driver.Hash]blob{}
- for key, value := range a.Blobs {
-  sum := sha256.Sum256(value)
-  if string(key) != hex.EncodeToString(sum[:]) { return Root{}, ErrCheckpoint{"staged blob differs from content address"} }
-  blobs[key] = blob{int64(len(value)), string(key)}
- }
- for _, file := range originals {
-  key := driver.Hash(file.SHA256)
-  value := blob{file.Size, file.SHA256}
-  if old, exists := blobs[key]; exists && old != value { return Root{}, ErrCheckpoint{"original blob differs from receiving image"} }
-  blobs[key] = value
- }
- for key, value := range blobs { if err := add("blob", string(key), value); err != nil { return Root{}, err } }
+	type blob struct {
+		Bytes  int64
+		SHA256 string
+	}
+	blobs := map[driver.Hash]blob{}
+	for key, value := range a.Blobs {
+		sum := sha256.Sum256(value)
+		if string(key) != hex.EncodeToString(sum[:]) {
+			return Root{}, ErrCheckpoint{"staged blob differs from content address"}
+		}
+		blobs[key] = blob{int64(len(value)), string(key)}
+	}
+	for key, size := range a.StreamedBlobs {
+		decoded, err := hex.DecodeString(string(key))
+		value := blob{size, string(key)}
+		if err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != string(key) || size < 0 {
+			return Root{}, ErrCheckpoint{"invalid streamed blob commitment"}
+		}
+		if old, exists := blobs[key]; exists && old != value {
+			return Root{}, ErrCheckpoint{"streamed blob differs from receiving image"}
+		}
+		blobs[key] = value
+	}
+	for _, file := range originals {
+		key := driver.Hash(file.SHA256)
+		value := blob{file.Size, file.SHA256}
+		if old, exists := blobs[key]; exists && old != value {
+			return Root{}, ErrCheckpoint{"original blob differs from receiving image"}
+		}
+		blobs[key] = value
+	}
+	for key, value := range blobs {
+		if err := add("blob", string(key), value); err != nil {
+			return Root{}, err
+		}
+	}
 
 	for key, v := range a.Bumps {
 		if err := add("bump", key, v); err != nil {

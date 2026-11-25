@@ -331,7 +331,15 @@ func retainArchive(plan *restorePlan, archive *dumpformat.Archive, add func(mode
 			return err
 		}
 		plan.blobs[archive.SHA256()] = commitment
+		_, config, ok := archive.OpenCollectionConfig()
+		if !ok || manifest.Files[dumpformat.SourceConfigMember] != config {
+			return fmt.Errorf("collection current configuration spool differs")
+		}
+		plan.collectionConfig = config
 		for name, expected := range manifest.Files {
+			if name == dumpformat.SourceConfigMember {
+				continue
+			}
 			raw, ok, err := archive.MemberChecked(name)
 			if err != nil {
 				return err

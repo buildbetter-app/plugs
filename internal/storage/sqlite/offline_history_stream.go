@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -127,8 +128,11 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 	for _, key := range t.bumps {
 		bumps = append(bumps, key)
 	}
-	if err := s.private.CheckAuxiliary(historyverify.Auxiliary{Derived: t.derived, Allocators: t.allocators, Parents: t.parentCounters, Blobs: t.blobs, Bumps: t.bumps}); err != nil {
-		return zero, err
+	auxiliary := historyverify.Auxiliary{Derived: t.derived, Allocators: t.allocators, Parents: t.parentCounters, Blobs: t.blobs, Bumps: t.bumps}
+	if t.nativeRestoreBlobs == nil {
+		if err := s.private.CheckAuxiliary(auxiliary); err != nil {
+			return zero, err
+		}
 	}
 	if err := s.private.Finalize(ctx, h, t.records, t.acquired, bumps); err != nil {
 		return zero, err
@@ -226,7 +230,28 @@ func (s *historyStreamStage) Publish(ctx context.Context, proof driver.OfflineHi
 				return e
 			}
 		}
+		if source := t.nativeRestoreBlobs; source != nil {
+			auxiliary.StreamedBlobs = make(map[driver.Hash]int64)
+			err := publishNativeRestoreBlobs(ctx, c, revKey(mustUint(s.binding.Meta.Head)), func(write func(driver.Hash, int64, io.Reader) error) error {
+				return source(func(hash driver.Hash, size int64, input io.Reader) error {
+					if err := write(hash, size, input); err != nil {
+						return err
+					}
+					auxiliary.StreamedBlobs[hash] = size
+					return nil
+				})
+			})
+			if err != nil {
+				return err
+			}
+			if err := s.private.CheckAuxiliary(auxiliary); err != nil {
+				return err
+			}
+		}
 		for hash, data := range t.blobs {
+			if _, streamed := auxiliary.StreamedBlobs[hash]; streamed {
+				continue
+			}
 			if data == nil {
 				data = []byte{}
 			}

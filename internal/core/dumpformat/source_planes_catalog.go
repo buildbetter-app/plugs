@@ -8,7 +8,7 @@ import (
 
 // This validates raw catalog conservation only. No catalog category chooses
 // a workflow status, target kind, principal or lifetime for an active entity.
-func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[string]bool, error) {
+func validateSourcePlaneCatalog(rows map[string][]Record, config configEntrySource) (map[string]bool, error) {
 	categories, err := sourcePlaneCatalogCategories(rows, config)
 	if err != nil {
 		return nil, err
@@ -20,11 +20,11 @@ func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[st
 	return statuses, nil
 }
 
-func sourcePlaneCatalogCategories(rows map[string][]Record, config []byte) (map[string]string, error) {
+func sourcePlaneCatalogCategories(rows map[string][]Record, config configEntrySource) (map[string]string, error) {
 	return sourcePlaneCatalogCategoriesFor(rows, config, false)
 }
 
-func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, native bool) (map[string]string, error) {
+func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config configEntrySource, native bool) (map[string]string, error) {
 	var declarations []ConfigDeclaration
 	seenStatus, seenType := map[string]bool{}, map[string]bool{}
 	stored := map[string]any{}
@@ -68,29 +68,33 @@ func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, na
 		return nil, err
 	}
 	declarations = append(declarations, decls...)
-	var entries []externalEntry
-	if err := decodeJSON(config, &entries); err != nil {
-		return nil, err
-	}
-	for _, entry := range entries {
+	if err := config.visit(func(entry externalEntry) error {
 		if entry.Input.State == "absent" {
-			continue
+			return nil
 		}
 		origin := entry.Input.Family + ":" + entry.Input.Path
 		// Match the producer's native YAML projection: direct external JSON
 		// and opaque engine census directories remain retained source bytes.
 		// Stored declarations are read from their actual SQL config records.
 		if !sourcePlaneFileFamily(entry.Input.Family) {
-			continue
+			return nil
 		}
 		if _, captured := entry.Values["observations"]; !captured {
-			continue
+			return nil
 		}
 		decls, err = declarationsFromSourceWith(entry.Values, entry.Input.Family, origin, sourcePlaneCatalogValues, true)
 		if err != nil {
-			return nil, err
+			return err
+		}
+		for _, decl := range decls {
+			if err := config.reserve("config_catalog_declarations", uint64(len(decl.Name)+len(decl.Category)+len(decl.Origin))+256); err != nil {
+				return err
+			}
 		}
 		declarations = append(declarations, decls...)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	statuses := map[string]bool{}
 	categories := map[string]string{}

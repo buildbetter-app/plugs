@@ -194,7 +194,7 @@ func TestNativeHistoricalCatalogNeedsIndependentStoredEvidence(t *testing.T) {
 
 func TestNativeLiteralFrozenRequiresAnExplicitCustomCatalogEntry(t *testing.T) {
 	rows := map[string][]Record{"beads-archive": {{Kind: "beads-archive", Source: Provenance{Table: "custom_statuses", Fields: Row{"name": "frozen", "category": "frozen"}}}}}
-	catalog, err := sourcePlaneCatalogCategoriesFor(rows, []byte("[]"), true)
+	catalog, err := sourcePlaneCatalogCategoriesFor(rows, configEntrySource{data: []byte("[]")}, true)
 	if err != nil || catalog["frozen"] != "frozen" {
 		t.Fatal("explicit native frozen category refused", err)
 	}

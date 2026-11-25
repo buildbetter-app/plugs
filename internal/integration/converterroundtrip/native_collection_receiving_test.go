@@ -2,6 +2,7 @@ package converterroundtrip
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -304,6 +306,197 @@ func TestNativeCollectionReceivingOneSessionRecoveryAndPerOriginalTraversalCaps(
 				t.Fatal("one shared decoded owner cleanup/cap", budget.Usage())
 			}
 			t.Logf("JOINED_PHYSICAL_RECEIVE engine=%s sources=2 commits=194 key=one writes=one clean_original_traversals=3 later_readback=1 usage=%+v", engine, budget.Usage())
+		})
+	}
+}
+
+// Start from the frozen public physical capture pair. Only the config member,
+// its dispositions, and the manifests that authenticate it are changed.
+func widenJoinedPublicConfig(t *testing.T, ledger *joinedOriginalLedger) {
+	t.Helper()
+	const rows, leafBytes = 50, 512 << 10
+	directory := ledger.directories[0]
+	dest := t.TempDir()
+	input := ledger.binding.Sources[0]
+	for _, file := range input.Files {
+		target := filepath.Join(dest, file.Name)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(directory, file.Name), target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	head, err := os.ReadFile(filepath.Join(directory, "head.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	members := tarMembers(t, head)
+	var manifest dumpformat.Manifest
+	decode(t, members["manifest.json"], &manifest)
+	var entries []json.RawMessage
+	decode(t, members[dumpformat.SourceConfigMember], &entries)
+	value := strings.Repeat("x", leafBytes)
+	for i := 0; i < rows; i++ {
+		entry := fmt.Sprintf(`{"input":{"family":"project-config","path":"/public/p48/%03d","state":"json-config","precedence":%d},"values":{"row":"%s"}}`, i, 10000+i, value)
+		entries = append(entries, json.RawMessage(entry))
+		manifest.Sources = append(manifest.Sources, dumpformat.Disposition{
+			Family: "project-config", Rows: 1, Action: "archive",
+			Reason: "explicit JSON config; secrets are references; precedence retained, effective config not inferred",
+		})
+	}
+	sort.SliceStable(manifest.Sources, func(i, j int) bool {
+		left, right := manifest.Sources[i], manifest.Sources[j]
+		if left.Family != right.Family {
+			return left.Family < right.Family
+		}
+		return left.Reason < right.Reason
+	})
+	config := encode(t, entries)
+	if len(config) <= 24<<20 {
+		t.Fatalf("public config covers only %d bytes", len(config))
+	}
+	members[dumpformat.SourceConfigMember] = config
+	manifest.Files[dumpformat.SourceConfigMember] = dumpformat.File{SHA256: hashBytes(config), Size: int64(len(config))}
+	members["manifest.json"] = encode(t, manifest)
+	head = writeTarMembers(t, members)
+
+	rootRaw, err := os.ReadFile(filepath.Join(directory, "capture-set.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root dumpformat.NativeCaptureSet
+	decode(t, rootRaw, &root)
+	root.HeadArchive = dumpformat.File{SHA256: hashBytes(head), Size: int64(len(head))}
+	rootRaw = encode(t, root)
+	for i, file := range input.Files {
+		var data []byte
+		switch file.Name {
+		case "capture-set.json":
+			data = rootRaw
+		case "head.tar":
+			data = head
+		default:
+			continue
+		}
+		target := filepath.Join(dest, file.Name)
+		if err := os.Remove(target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		input.Files[i].Bytes, input.Files[i].SHA256 = uint64(len(data)), hashBytes(data)
+	}
+	input.ArchiveSHA256 = hashBytes(rootRaw)
+	ledger.directories[0], ledger.binding.Sources[0] = dest, input
+}
+
+func TestNativeCollectionReceivingStreamsWidePublicConfig(t *testing.T) {
+	ledger := newJoinedOriginalLedger(t)
+	widenJoinedPublicConfig(t, ledger)
+	budget := dumpformat.NewNativeDeltaBudget(0)
+	peak := map[string]uint64{
+		"detached_member": 0, "config_element_decoded": 0, "config_wire_element": 0,
+		"collection_config_refs": 0, "collection_config_copy_buffer": 0,
+		"receiving_collection_config_stream": 0,
+	}
+	budget.Observe(func(event dumpformat.NativeDeltaAllocationEvent) {
+		if high, tracked := peak[event.Phase]; tracked && event.Action == "reserve" {
+			peak[event.Phase] = max(high, budget.ReservedBytes(event.Phase))
+		}
+	})
+	ctx := dumpformat.WithNativeDeltaBudget(context.Background(), budget)
+	store, lease, cleanup := openIdentityTarget(t, "sqlite")
+	defer cleanup()
+	profile := joinedPhysicalProfile(t, ctx, ledger, store, lease)
+	report, err := RestoreNativeCaptureCollectionImportWithLease(ctx, ledger.binding, ledger.sources(), store, lease, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer report.Close()
+	snapshot, err := store.Read(ctx, driver.View{Incarnation: report.Restored.Incarnation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	meta, err := store.Meta(ctx)
+	if err != nil || meta != report.Restored {
+		t.Fatalf("receiving reported stale store metadata: %+v, %+v, %v", meta, report.Restored, err)
+	}
+	records, err := snapshot.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("archive evidence: %d records, %v", len(records), err)
+	}
+	var evidence archiveEvidence
+	decode(t, records[0].Body, &evidence)
+	config := evidence.Members[dumpformat.SourceConfigMember]
+	if config.Size <= 24<<20 {
+		t.Fatalf("retained config only has %d bytes", config.Size)
+	}
+	source, size, err := snapshot.(driver.BlobStreamReader).OpenBlob(ctx, driver.Hash(config.SHA256))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.New()
+	n, err := io.Copy(digest, source)
+	if err = errors.Join(err, source.Close()); err != nil || n != size || n != config.Size || fmt.Sprintf("%x", digest.Sum(nil)) != config.SHA256 {
+		t.Fatalf("published config commitment differs: %d / %d bytes, %v", n, size, err)
+	}
+	dump, err := retainedReverseDump(driver.WithNativeReverseRead(ctx), snapshot, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dump.Manifest.Files[dumpformat.SourceConfigMember]; got.Size != size || got.SHA256 != config.SHA256 || len(dump.Members) != 0 {
+		t.Fatalf("reverse should use the joined config commitment without hydrating member bytes: %+v, %d members", got, len(dump.Members))
+	}
+	usage := budget.Usage()
+	if usage.CumulativeCategories["config_element_decoded"] <= uint64(size) ||
+		usage.CumulativeCategories["receiving_collection_config_stream"] != 1<<20 ||
+		usage.CumulativeCategories["receiving_collection_config_read"] != 0 ||
+		usage.CurrentCategories["collection_config_refs"] != 0 {
+		t.Fatalf("wide config did not use bounded publication: %+v", usage)
+	}
+	for phase, bytes := range peak {
+		if bytes == 0 || bytes >= 4<<20 {
+			t.Fatalf("unexpected peak for %s: %d bytes", phase, bytes)
+		}
+	}
+	t.Logf("published config %d bytes, peak charged bytes by phase %v", size, peak)
+}
+
+func TestNativeCollectionBufferedBlobRefusesBeforeAllocation(t *testing.T) {
+	for _, engine := range []string{"memory", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			const measured = nativeCollectionBufferedBlobBytes + 1
+			file := dumpformat.File{Size: measured, SHA256: strings.Repeat("a", 64)}
+			// No archive is available to open. The real writer must refuse
+			// using the committed size before touching a payload or spool.
+			err = stageCollectionConfig(ctx, nil, tx, file)
+			var limit *dumpformat.NativeDeltaDecodedLimitError
+			if !errors.As(err, &limit) || limit.Code() != "native_decoded_limit" ||
+				limit.Phase != "receiving_collection_config_blob" || limit.MeasuredBytes != measured ||
+				limit.LimitBytes != nativeCollectionBufferedBlobBytes || limit.AdmittedBytes != 0 {
+				t.Fatalf("expected typed upfront blob refusal, got %v", err)
+			}
+			if err := tx.Close(); err != nil {
+				t.Fatal(err)
+			}
+			after, err := store.Meta(ctx)
+			if err != nil || after != before {
+				t.Fatalf("refusal changed store metadata: %+v, %+v, %v", before, after, err)
+			}
 		})
 	}
 }
