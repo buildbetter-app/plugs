@@ -46,9 +46,12 @@ type nativeCaptureCollection struct {
 }
 
 type nativeConfigElement struct {
-	entry  externalEntry
-	offset int64
-	size   int64
+	precedence int
+	family     string
+	path       string
+	identity   string
+	offset     int64
+	size       int64
 }
 
 // NativeCaptureCollection keeps only the joint CURRENT portable image and
@@ -57,7 +60,6 @@ type nativeConfigElement struct {
 // Only authenticated capture-set Archives can append to this private builder.
 type NativeCaptureCollection struct {
 	archive *Archive
-	entries []externalEntry
 	closed  bool
 }
 
@@ -285,7 +287,12 @@ func (c *NativeCaptureCollection) appendCurrent(source *Archive, identity Source
 		if _, err := state.config.Write(encoded); err != nil {
 			return err
 		}
-		state.elements = append(state.elements, nativeConfigElement{entry: externalEntry{Identity: entry.Identity, Input: entry.Input}, offset: offset, size: int64(len(encoded))})
+		identityKey := externalEntryKey(entry)
+		refBytes := uint64(len(identityKey) + len(entry.Input.Family) + len(entry.Input.Path) + 32)
+		if err := c.archive.ChargeNativeDeltaBytes("collection_config_ref", refBytes); err != nil {
+			return err
+		}
+		state.elements = append(state.elements, nativeConfigElement{precedence: entry.Input.Precedence, family: entry.Input.Family, path: entry.Input.Path, identity: identityKey, offset: offset, size: int64(len(encoded))})
 		return nil
 	}); err != nil {
 		return err
@@ -364,22 +371,60 @@ func (c *NativeCaptureCollection) Finish() (*Archive, error) {
 	}
 	state := a.collection
 	sort.Slice(state.elements, func(i, j int) bool {
-		return compareExternalEntries(state.elements[i].entry, state.elements[j].entry) < 0
+		a, b := state.elements[i], state.elements[j]
+		if a.precedence != b.precedence {
+			return a.precedence < b.precedence
+		}
+		if a.family != b.family {
+			return a.family < b.family
+		}
+		if a.path != b.path {
+			return a.path < b.path
+		}
+		return a.identity < b.identity
 	})
-	var config bytes.Buffer
-	config.WriteByte('[')
+	configFile, err := os.CreateTemp("", "plug-native-config-output-*")
+	if err != nil {
+		return nil, err
+	}
+	configPath := configFile.Name()
+	defer func() { _ = configFile.Close(); _ = os.Remove(configPath) }()
+	if _, err := configFile.Write([]byte{'['}); err != nil {
+		return nil, err
+	}
 	for i, element := range state.elements {
 		if i != 0 {
-			config.WriteByte(',')
+			if _, err := configFile.Write([]byte{','}); err != nil {
+				return nil, err
+			}
 		}
 		raw := make([]byte, element.size)
 		if _, err := state.config.ReadAt(raw, element.offset); err != nil {
 			return nil, err
 		}
-		config.Write(raw)
+		if _, err := configFile.Write(raw); err != nil {
+			return nil, err
+		}
+		if err := a.ChargeNativeDeltaBytes("collection_config_output", uint64(len(raw))); err != nil {
+			return nil, err
+		}
 	}
-	config.WriteString("]\n")
-	encodedConfig := config.Bytes()
+	if _, err := configFile.WriteString("]\n"); err != nil {
+		return nil, err
+	}
+	if err := a.ChargeNativeDeltaBytes("collection_config_output", 2); err != nil {
+		return nil, err
+	}
+	if err := configFile.Close(); err != nil {
+		return nil, err
+	}
+	encodedConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.ChargeNativeDeltaBytes("collection_config_member", uint64(len(encodedConfig))); err != nil {
+		return nil, err
+	}
 	a.members["config/sources.json"] = encodedConfig
 	a.manifest.Files["config/sources.json"] = File{SHA256: digest(encodedConfig), Size: int64(len(encodedConfig))}
 	if err := a.ChargeNativeDeltaJSON("collection_manifest_encoding", a.manifest); err != nil {
