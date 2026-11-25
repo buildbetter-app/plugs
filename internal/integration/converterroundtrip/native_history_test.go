@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/reverseconverter"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -101,6 +104,180 @@ func nativeHistoryPlan(t *testing.T, data []byte, store driver.Store, lease driv
 		t.Fatal("declared native history", err)
 	}
 	return nativeHistoryPlanFromArchive(t, a, store, lease)
+}
+
+func statusRoundTripHistory(t *testing.T) ([]byte, []dumpformat.ProjectStatus) {
+	t.Helper()
+	members := tarMembers(t, nativeHistoryFixture(t, "pl", "active"))
+	var manifest dumpformat.Manifest
+	decode(t, members["manifest.json"], &manifest)
+	statuses := append([]dumpformat.ProjectStatus{}, manifest.Projects[0].Statuses[:7]...)
+	var custom []string
+	for _, category := range []string{"active", "done", "frozen", "wip"} {
+		name := "p50_" + category
+		statuses = append(statuses, dumpformat.ProjectStatus{Name: name, Category: category})
+		custom = append(custom, name+":"+category)
+	}
+	sort.Slice(statuses, func(i, j int) bool { return statuses[i].Name < statuses[j].Name })
+	manifest.Projects[0].Statuses = statuses
+	edge := dumpformat.Record{Kind: "edge", ID: "status-fixture-edge", Project: "pl",
+		Body: dumpformat.Row{
+			"from": "pl-p5000", "to": "pl-p5001", "target_kind": "depends_on_issue_id",
+			"type": "relates-to", "metadata": map[string]any{}, "thread_id": "",
+		},
+		Source: dumpformat.Provenance{Table: dumpformat.DurableDependencyTable, Fields: dumpformat.Row{
+			"id": "status-fixture-edge", "issue_id": "pl-p5000", "depends_on_issue_id": "pl-p5001",
+			dumpformat.EphemeralDependencyTargetField: nil, "depends_on_external": nil,
+			"type": "relates-to", "metadata": map[string]any{}, "thread_id": "",
+			"created_at": "2026-01-01T00:00:00Z", "created_by": "fixture-author",
+		}}}
+
+	rewrite := func(rows []dumpformat.Record) []dumpformat.Record {
+		var result []dumpformat.Record
+		for _, row := range rows {
+			if row.Kind == "config" {
+				value := strings.Join(custom, ",")
+				row.Body["value"], row.Source.Fields["value"] = value, value
+			}
+			if row.Kind != "bead" {
+				result = append(result, row)
+				continue
+			}
+			raw := encode(t, row)
+			for i, status := range statuses {
+				var bead dumpformat.Record
+				decode(t, raw, &bead)
+				bead.ID = fmt.Sprintf("pl-p50%02d", i)
+				bead.Source.Fields["id"], bead.Source.Fields["status"] = bead.ID, status.Name
+				bead.Body["status_category"] = status.Category
+				if status.Category == "done" {
+					bead.Body["result"] = "success"
+				}
+				result = append(result, bead)
+			}
+		}
+		return result
+	}
+	for _, name := range []string{"bead", "config"} {
+		path := "records/" + name + ".ndjson"
+		var row dumpformat.Record
+		decode(t, members[path], &row)
+		var rewritten bytes.Buffer
+		for _, record := range rewrite([]dumpformat.Record{row}) {
+			rewritten.Write(encode(t, record))
+		}
+		members[path] = rewritten.Bytes()
+	}
+	for i := range manifest.Kinds {
+		if manifest.Kinds[i].Name == "bead" {
+			manifest.Kinds[i].Count = len(statuses)
+		}
+	}
+	const edgePath = "records/edge.ndjson"
+	members[edgePath] = encode(t, edge)
+	manifest.Kinds = append(manifest.Kinds, dumpformat.Kind{Name: "edge", Version: dumpformat.EdgeVersionLocalOpaque, File: edgePath, Count: 1})
+	sort.Slice(manifest.Kinds, func(i, j int) bool { return manifest.Kinds[i].Name < manifest.Kinds[j].Name })
+	for i := range manifest.Sources {
+		switch manifest.Sources[i].Family {
+		case "issues", "issues.row_lock", "issues.is_blocked":
+			manifest.Sources[i].Rows = len(statuses)
+		case "labels":
+			manifest.Sources[i].Rows *= len(statuses)
+		case dumpformat.DurableDependencyTable:
+			manifest.Sources[i].Rows = 1
+		}
+	}
+	var history dumpformat.SourceHistory
+	decode(t, members[dumpformat.SourceHistoryMember], &history)
+	for i := range history.Range.Frames {
+		frame := &history.Range.Frames[i]
+		frame.Records = rewrite(frame.Records)
+		for _, row := range frame.Records {
+			if row.Kind == "bead" {
+				frame.Records = append(frame.Records, edge)
+				break
+			}
+		}
+	}
+	members[dumpformat.SourceHistoryMember] = encode(t, history)
+	for _, path := range []string{"records/bead.ndjson", "records/config.ndjson", edgePath, dumpformat.SourceHistoryMember} {
+		raw := members[path]
+		manifest.Files[path] = dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
+	}
+	members["manifest.json"] = encode(t, manifest)
+	return writeTarMembers(t, members), statuses
+}
+
+func TestBeadsDestinationStatusRoundTripAllDrivers(t *testing.T) {
+	data, statuses := statusRoundTripHistory(t)
+	for _, engine := range []string{"memory", "sqlite", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			archive, err := dumpformat.Read(bytes.NewReader(data))
+			if err != nil {
+				t.Fatal("read Beads status fixture", err)
+			}
+			plan := nativeHistoryPlanFromArchive(t, archive, store, lease)
+			var pairs []driver.SourcePlaneStringPairV1
+			for _, status := range statuses {
+				pairs = append(pairs, driver.SourcePlaneStringPairV1{From: status.Name, To: status.Name})
+			}
+			plan.Dispositions[0].Statuses = pairs
+			records, err := archive.SourcePlaneRecords()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, record := range records {
+				if record.Kind != "edge" {
+					continue
+				}
+				plan.Origins = slices.DeleteFunc(plan.Origins, func(origin driver.SourcePlaneOriginV1) bool {
+					return origin.Table == record.Table && origin.ID == record.ID
+				})
+				to := driver.SourceEntityKey{Project: "pl", Plane: dumpformat.DurableEntityTable, ID: "pl-p5001"}
+				plan.Relations = append(plan.Relations, driver.SourcePlaneRelationV1{
+					Source: driver.SourceEdgeKey{Project: "pl", Table: record.Table, ID: record.ID},
+					From:   driver.SourceEntityKey{Project: "pl", Plane: dumpformat.DurableEntityTable, ID: "pl-p5000"},
+					To:     &to, Kind: "relates-to", PredicateContract: "beads-typed-metadata/1",
+					PredicateJSON: []byte("null"),
+					Origin:        jointCommitment(record.Raw, "object"), Fields: jointFields(t, record),
+				})
+			}
+			profile := driver.RestoreImportProfile{
+				Admission: driver.RestoreImportAdmission{
+					Mode: "authenticated", Actor: model.PrincipalRef{Kind: "user", ID: "restore-admin"},
+					Authority: "restore-admin", AdmissionDigest: strings.Repeat("a", 64),
+				},
+				SourceStoreID: driver.StoreID(plan.SourceStoreID), Method: "offline.restore.import",
+				IdempotencyKey: strings.Repeat("b", 32), ArchiveDigest: plan.ArchiveSHA256,
+				HistoryMode: driver.RestoreHistoryModeFull, HistoryTime: nativeFixtureTime.Format(time.RFC3339Nano),
+			}
+			profile, err = BindSourceImport(ctx, bytes.NewReader(data), profile, plan)
+			if err != nil {
+				t.Fatal("bind Beads status fixture", err)
+			}
+			if _, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile); err != nil {
+				t.Fatal("import Beads status fixture", err)
+			}
+			reversed, err := ReverseRestoredWithOptions(ctx, store, reverseconverter.Options{BeadsDestination: true})
+			if err != nil {
+				t.Fatal("reverse Beads status fixture", err)
+			}
+			rows := sourceReverseRows(t, reversed.Result.JSONL)
+			if len(rows) != len(statuses) {
+				t.Fatalf("reverse issue count = %d, want %d", len(rows), len(statuses))
+			}
+			for i, status := range statuses {
+				t.Run(status.Name, func(t *testing.T) {
+					id := fmt.Sprintf("pl-p50%02d", i)
+					if got := rows[id]["status"]; got != status.Name {
+						t.Fatalf("Beads status = %q, want %q", got, status.Name)
+					}
+				})
+			}
+		})
+	}
 }
 
 func nativeHistoryPlanFromArchive(t *testing.T, a *dumpformat.Archive, store driver.Store, lease driver.ActiveLease) driver.SourcePlanePlanV1 {

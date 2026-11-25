@@ -32,6 +32,11 @@ link metadata, and memory values. A source status of `hooked` remains
 `pinned`, and `frozen` retain their source status while their category remains
 `backlog`. A completed source must carry `success` or `failure`.
 
+For native-status captures, `BeadsDestination` emits the stored Beads status
+name, including declared custom names. The per-project category validates
+that status and its outcome. The default conversion retains the portable
+status projection and provenance for the legacy Plug-native importer.
+
 Unknown source issue types are closed-world refusals unless the caller supplies
 an explicit `ontologymigration.MapType` directive to
 `ConvertWithDirectives` (or `ConvertArchiveWithDirectives`). The directive

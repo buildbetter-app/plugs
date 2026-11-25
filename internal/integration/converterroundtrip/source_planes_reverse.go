@@ -348,12 +348,10 @@ func projectJointReverseDump(ctx context.Context, reader driver.Reader, bound dr
 	return nil
 }
 
-// Native status catalogs retain source names and categories that the generic
-// JSONL reverse converter cannot emit as live Beads workflow values. Legacy
-// Plug-native output retains those exact values in provenance metadata, while
-// BeadsDestination keeps them in the authenticated source fields.
+// The legacy Plug-native importer uses portable workflow categories. Keep
+// the authenticated status and category intact for Beads destinations.
 func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reverseconverter.Dump, emitProvenance bool) error {
-	if dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract || dump.Manifest.StatusCategoryContract != dumpformat.StatusCategoryContract {
+	if !emitProvenance || dump.Manifest.SourcePlaneAddressContract != dumpformat.SourcePlaneAddressContract || dump.Manifest.StatusCategoryContract != dumpformat.StatusCategoryContract {
 		return nil
 	}
 	nativeStatus := stringValue(projected.Source.Fields["status"])
@@ -385,7 +383,7 @@ func projectNativeStatusForReverse(projected *reverseconverter.Record, dump reve
 	default:
 		return ReverseRefusal{"unsupported_native_status_category"}
 	}
-	if emitProvenance && !nativeStatusCompatible(nativeCategory, nativeStatus) {
+	if !nativeStatusCompatible(nativeCategory, nativeStatus) {
 		if err := mergeNativeReverseMetadata(projected, map[string]any{
 			"_plug_native_status": nativeStatus, "_plug_native_status_category": nativeCategory,
 		}); err != nil {
