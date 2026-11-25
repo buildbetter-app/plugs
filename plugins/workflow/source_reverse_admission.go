@@ -24,27 +24,10 @@ func decodeSourceReverseImage(raw []byte, target any) error {
 	return decoder.Decode(target)
 }
 
-// The codec frames strings with their byte lengths. JSON may escape each byte
-// as a six-byte Unicode escape; the declaration allowance accounts for that
-// representation rather than applying the encoded-plan cap to JSON again.
-// Raw records additionally carry base64 and the closed DTO's repeated identity
-// fields. Their JSON allowance includes escaped identities plus fixed framing
-// per record; the actual decoded Raw total is checked separately below.
-func reverseImageSectionLimits() (plan, records, mutable, aggregate uint64) {
-	raw := uint64(driver.SourcePlaneMaxPlanBytes)
-	escape := uint64(len(`\u0000`))
-	plan = raw * escape
-	records = raw*escape + ((raw+2)/3)*4 + uint64(driver.SourcePlaneMaxListEntries)*uint64(len(`{"Kind":"","Project":"","Table":"","ID":"","Raw":""},`))
-	mutable = raw
-	framing := uint64(len(`{"runs":,"items":,"receipts":,"audit":,"source":{"schema":"workflow/source-state/1","entities":,"relations":,"origins":,"records":}}`))
-	aggregate = plan + records + mutable*4 + framing
-	return
-}
-
 // This scanner borrows slices only. No section is decoded, copied or cloned
 // until all independent section bounds and the composed aggregate pass.
 func admitReverseImage(ctx context.Context, raw []byte) error {
-	planLimit, recordsLimit, mutableLimit, aggregateLimit := reverseImageSectionLimits()
+	planLimit, recordsLimit, mutableLimit, aggregateLimit := driver.SourcePlaneReverseImageLimits()
 	if uint64(len(raw)) > aggregateLimit {
 		return sourceRefusal("reverse aggregate byte limit")
 	}

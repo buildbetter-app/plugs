@@ -200,7 +200,7 @@ func restorePreparedNativeCaptureCollection(ctx context.Context, p *nativeCollec
 // Protected reverse metadata is small by format. Check the size on the
 // pinned reader before selecting or allocating the complete JSON value.
 func readReverseMetadataBlob(ctx context.Context, reader driver.Reader, hash driver.Hash, limit int64) ([]byte, error) {
-	if streams, ok := reader.(driver.BlobStreamReader); ok && driver.NativeReverseRead(ctx) {
+	if streams, ok := reader.(driver.BlobStreamReader); ok && driver.RetainedSourceRead(ctx) {
 		source, size, err := streams.OpenBlob(ctx, hash)
 		if err != nil {
 			return nil, err
@@ -292,7 +292,7 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 	if len(source.Files) < 3 {
 		return nil, driver.ErrRestoreBindingMismatch{Field: "collection.files"}
 	}
-	if streams, ok := reader.(driver.BlobStreamReader); ok && options.PrepareReceiving && driver.NativeReverseRead(ctx) {
+	if streams, ok := reader.(driver.BlobStreamReader); ok && options.PrepareReceiving && driver.RetainedSourceRead(ctx) {
 		return streamRetainedNativeCollectionSource(ctx, streams, source, options)
 	}
 	budget := dumpformat.NativeDeltaBudgetFromContext(ctx)
@@ -340,24 +340,11 @@ func readRetainedNativeCollectionSource(ctx context.Context, reader driver.Reade
 }
 
 func streamRetainedNativeCollectionSource(ctx context.Context, reader driver.BlobStreamReader, source dumpformat.NativeJoinedInput, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
-	open := func(ctx context.Context, file dumpformat.NativeCaptureFile, max uint64) (io.ReadCloser, error) {
-		if file.Bytes == 0 || file.Bytes > max {
-			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}
-		}
-		raw, size, err := reader.OpenBlob(ctx, driver.Hash(file.SHA256))
-		if err != nil {
-			return nil, err
-		}
-		if size != int64(file.Bytes) {
-			return nil, errors.Join(driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}, raw.Close())
-		}
-		return &retainedCaptureReader{raw: raw, digest: sha256.New(), want: file}, nil
-	}
-	root, err := open(ctx, source.Files[0], dumpformat.NativeDeltaRootBytes)
+	root, err := openRetainedCaptureBlob(ctx, reader, source.Files[0], dumpformat.NativeDeltaRootBytes)
 	if err != nil {
 		return nil, err
 	}
-	head, err := open(ctx, source.Files[1], dumpformat.MaxArchiveBytes)
+	head, err := openRetainedCaptureBlob(ctx, reader, source.Files[1], dumpformat.MaxArchiveBytes)
 	if err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
@@ -366,7 +353,7 @@ func streamRetainedNativeCollectionSource(ctx context.Context, reader driver.Blo
 		if ordinal == 0 || ordinal > uint64(len(source.Files)-2) {
 			return nil, driver.ErrRestoreBindingMismatch{Field: "collection.partIndex"}
 		}
-		return open(ctx, source.Files[ordinal+1], dumpformat.NativeDeltaPartBytes+dumpformat.NativeDeltaPartHeaderBytes)
+		return openRetainedCaptureBlob(ctx, reader, source.Files[ordinal+1], dumpformat.NativeDeltaPartBytes+dumpformat.NativeDeltaPartHeaderBytes)
 	}, options)
 	if err := errors.Join(err, root.Close(), head.Close()); err != nil {
 		if a != nil {
@@ -375,6 +362,20 @@ func streamRetainedNativeCollectionSource(ctx context.Context, reader driver.Blo
 		return nil, err
 	}
 	return a, nil
+}
+
+func openRetainedCaptureBlob(ctx context.Context, reader driver.BlobStreamReader, file dumpformat.NativeCaptureFile, max uint64) (io.ReadCloser, error) {
+	if file.Bytes == 0 || file.Bytes > max {
+		return nil, driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}
+	}
+	raw, size, err := reader.OpenBlob(ctx, driver.Hash(file.SHA256))
+	if err != nil {
+		return nil, err
+	}
+	if size != int64(file.Bytes) {
+		return nil, errors.Join(driver.ErrRestoreBindingMismatch{Field: "collection.fileSize"}, raw.Close())
+	}
+	return &retainedCaptureReader{raw: raw, digest: sha256.New(), want: file}, nil
 }
 
 type retainedCaptureReader struct {

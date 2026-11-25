@@ -3,10 +3,13 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"errors"
 	"sort"
+	"strconv"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
-	"time"
 )
 
 // The caller already owns the complete lock set and Head. Core-only and
@@ -148,23 +151,49 @@ func (r *reader) sourceCheckpoints(ctx context.Context, keys []string, all bool)
 		}
 	}
 	checkpoints := make(map[string]driver.Checkpoint, len(keys))
-	totalBytes := 0
-	for _, key := range keys {
-		cp, err := r.sourceCheckpoint(ctx, key)
+	var totalBytes uint64
+	bounded := driver.RetainedSourceRead(ctx)
+	for index, key := range keys {
+		workflow := bounded && key == driver.SourcePlaneWorkflowNamespaceV1
+		limit := driver.SourcePlaneCheckpointEnvelopeBytes()
+		if all && !workflow {
+			limit = driver.SourcePlaneMaxPlanBytes - totalBytes
+		}
+		cp, err := r.sourceCheckpoint(ctx, key, limit, uint64(index))
 		if err != nil {
 			return nil, err
 		}
-		totalBytes += len(cp.Payload)
-		if all && totalBytes > driver.SourcePlaneMaxPlanBytes {
-			return nil, driver.ErrUnsupported
+		if all && !workflow {
+			totalBytes += uint64(len(cp.Payload))
+			if totalBytes > driver.SourcePlaneMaxPlanBytes {
+				return nil, driver.ErrUnsupported
+			}
 		}
-		cp.Payload = bytes.Clone(cp.Payload)
 		checkpoints[key] = cp
 	}
 	return checkpoints, nil
 }
-func (r *reader) sourceCheckpoint(ctx context.Context, key string) (driver.Checkpoint, error) {
-	return loadCheckpoint(ctx, r.tx, key)
+func (r *reader) sourceCheckpoint(ctx context.Context, key string, limit, index uint64) (driver.Checkpoint, error) {
+	if !driver.RetainedSourceRead(ctx) {
+		return loadCheckpoint(ctx, r.tx, key)
+	}
+	var cp driver.Checkpoint
+	var generation string
+	var size uint64
+	err := r.tx.QueryRowContext(ctx, `SELECT generation, coalesce(length(payload), 0),
+		CASE WHEN length(payload)<=? THEN payload END FROM checkpoints WHERE key=?`, limit, key).
+		Scan(&generation, &size, &cp.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return cp, nil
+	}
+	if err != nil {
+		return driver.Checkpoint{}, err
+	}
+	if size > limit {
+		return driver.Checkpoint{}, driver.SourcePlaneCheckpointSizeError(size, limit, index)
+	}
+	cp.Generation, err = strconv.ParseUint(generation, 10, 64)
+	return cp, err
 }
 
 type sourcePlaneSnapshot struct {

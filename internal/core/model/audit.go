@@ -366,3 +366,12 @@ func (c *Changeset) UnmarshalJSON(data []byte) error {
 	*c = d
 	return nil
 }
+
+// DecodeChangesetArrayElement applies the Changeset wire checks to an
+// individual element when a caller streams a persisted changeset array.
+func DecodeChangesetArrayElement[T string | ChangeRecord | EventDescriptor](raw json.RawMessage, value *T) error {
+	if err := checkWireValue(raw, reflect.TypeFor[T](), false); err != nil {
+		return err
+	}
+	return decodeJSON(raw, value)
+}

@@ -128,7 +128,7 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 
 	var a *Archive
 	if staged != nil && options.SpoolOriginals {
-		a, err = readSpooledCaptureHead(staged, root.HeadArchive, headInput)
+		a, err = readSpooledCaptureHead(staged, owner, root.HeadArchive, headInput)
 	} else {
 		head, readErr := nativeDeltaReadBounded(headInput, uint64(root.HeadArchive.Size), owner, "head_tar")
 		if readErr != nil {
@@ -213,7 +213,7 @@ func ReadNativeCaptureSet(ctx context.Context, rootInput, headInput io.Reader, o
 // The prepared file visitor retains the exact source tar in the spool.
 // Validate its members from the file directly so legal tar padding never
 // contributes to retained or transient heap.
-func readSpooledCaptureHead(staged *NativeDeltaPrepared, binding File, input io.Reader) (*Archive, error) {
+func readSpooledCaptureHead(staged *NativeDeltaPrepared, owner *NativeDeltaBudget, binding File, input io.Reader) (*Archive, error) {
 	if err := staged.spoolFile("head.tar", input, uint64(binding.Size)); err != nil {
 		return nil, err
 	}
@@ -231,7 +231,9 @@ func readSpooledCaptureHead(staged *NativeDeltaPrepared, binding File, input io.
 	}
 	const metadataAndCopyReserve = 4 << 20
 	bufferBound := NewNativeDeltaBudget(MaxArchiveBytes - metadataAndCopyReserve)
-	return readArchiveMembers(io.NewSectionReader(head, 0, binding.Size), nil, binding.SHA256, true, staged.budget, bufferBound)
+	// Parsed members belong to the archive. The preparation can release the
+	// spooled originals independently of those members and detached ledgers.
+	return readArchiveMembers(io.NewSectionReader(head, 0, binding.Size), nil, binding.SHA256, true, owner, bufferBound)
 }
 
 // ReadNativeCaptureSetDirectory accepts only the canonical fixed layout. A

@@ -630,19 +630,20 @@ func (r *reader) VisitNativeHeadRecords(ctx context.Context, maxBytes int, visit
 	if r.owner != nil || r.at != mustUint(r.meta.Head) {
 		return fmt.Errorf("%w: native head scan requires the pinned current image", driver.ErrUnsupported)
 	}
-	rows, err := r.tx.QueryContext(ctx, `SELECT CASE WHEN length(r.data)<=? THEN r.data END
+	rows, err := r.tx.QueryContext(ctx, `SELECT length(r.data), CASE WHEN length(r.data)<=? THEN r.data END
 		FROM objects AS o JOIN records AS r ON o.key=r.key ORDER BY o.key`, maxBytes)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	for rows.Next() {
+	for index := uint64(0); rows.Next(); index++ {
 		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
+		var size uint64
+		if err := rows.Scan(&size, &raw); err != nil {
 			return err
 		}
-		if len(raw) == 0 {
-			return fmt.Errorf("sqlite: native head row exceeds buffer bound")
+		if size > uint64(maxBytes) {
+			return reverseMetadataLimit("storage_row_bytes", size, uint64(maxBytes), "records/native.ndjson", "$", index)
 		}
 		var record driver.Record
 		if err := json.Unmarshal(raw, &record); err != nil {
@@ -666,34 +667,37 @@ func (r *reader) GetNativeHeadRecords(ctx context.Context, refs []driver.Ref) ([
 	}
 	var records []driver.Record
 	total := 0
-	for _, ref := range refs {
+	bodyLimit, totalLimit := reverseMetadataBounds(ctx)
+	storageLimit := bodyLimit*4/3 + (1 << 20)
+	for index, ref := range refs {
 		key, err := recordKey(ref)
 		if err != nil {
 			return nil, err
 		}
 		var raw []byte
+		var size uint64
 		err = r.tx.QueryRowContext(ctx,
-			`SELECT CASE WHEN length(data)<=? THEN data END FROM records WHERE key=?`,
-			driver.NativeHeadStorageRowBytes, key).Scan(&raw)
+			`SELECT length(data), CASE WHEN length(data)<=? THEN data END FROM records WHERE key=?`,
+			storageLimit, key).Scan(&size, &raw)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		if len(raw) == 0 {
-			return nil, fmt.Errorf("sqlite: native head lookup row exceeds buffer bound")
+		if size > uint64(storageLimit) {
+			return nil, reverseMetadataLimit("storage_row_bytes", size, uint64(storageLimit), "records/native.ndjson", "$", uint64(index))
 		}
 		var record driver.Record
 		if err := json.Unmarshal(raw, &record); err != nil {
 			return nil, err
 		}
 		total += len(record.Body)
-		if len(record.Body) > driver.NativeHeadRecordBytes || total > driver.NativeHeadMaterialBytes/2 {
-			return nil, fmt.Errorf("sqlite: native head lookup material exceeds buffer bound")
+		if total > totalLimit {
+			return nil, reverseMetadataLimit("retained_metadata_bytes", uint64(total), uint64(totalLimit), "records/native.ndjson", "$.body", uint64(index))
 		}
-		if err := driver.CheckReverseRecordJSON(record.Ref, record.Kind, record.Body, 0); err != nil {
-			return nil, err
+		if err := checkReverseMetadata(ctx, record.Ref, record.Kind, record.Body, 0); err != nil {
+			return nil, driver.LocateReverseJSONLimit(err, "records/native.ndjson", "$.body", uint64(index))
 		}
 		records = append(records, record)
 	}

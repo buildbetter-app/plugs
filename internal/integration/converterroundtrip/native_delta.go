@@ -85,7 +85,7 @@ func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []
 		return dumpformat.ReadWithNativeDeltaAccounting(ctx, bytes.NewReader(raw))
 	}
 	if evidence.NativeCaptureFiles == nil {
-		rows, err := reader.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+		rows, err := driver.GetNativeHeadRecords(ctx, reader, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 		if err != nil {
 			return nil, err
 		}
@@ -93,12 +93,50 @@ func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []
 			return nil, driver.ErrRestoreBindingMismatch{Field: "receipt.restoreArchive"}
 		}
 	}
-	if evidence.ArchiveSHA256 != hashBytes(raw) {
+	return readRetainedCaptureArchive(ctx, reader, raw, evidence, dumpformat.NativeCaptureSetOptions{
+		DecodedLimitOrigin: "retained recovery option", PrepareReceiving: true,
+	})
+}
+
+func readRetainedCaptureArchive(ctx context.Context, reader driver.Reader, raw []byte, evidence archiveEvidence, options dumpformat.NativeCaptureSetOptions) (*dumpformat.Archive, error) {
+	rootFile := dumpformat.File{SHA256: hashBytes(raw), Size: int64(len(raw))}
+	if evidence.ArchiveSHA256 != rootFile.SHA256 || evidence.NativeCaptureFiles["capture-set.json"] != rootFile {
 		return nil, driver.ErrRestoreBindingMismatch{Field: "archiveDigest"}
 	}
+	var root dumpformat.NativeCaptureSet
+	if err := json.Unmarshal(raw, &root); err != nil || len(evidence.NativeCaptureFiles) < 2 ||
+		root.PartCount != uint64(len(evidence.NativeCaptureFiles)-2) {
+		return nil, driver.ErrRestoreBindingMismatch{Field: "capture.fileCensus"}
+	}
 	file, ok := evidence.NativeCaptureFiles["head.tar"]
-	if !ok {
+	if !ok || file != root.HeadArchive {
 		return nil, driver.ErrRestoreBindingMismatch{Field: "capture.head"}
+	}
+	options.DecodedLimitBytes = evidence.NativeDecodedLimitBytes
+	if streams, ok := reader.(driver.BlobStreamReader); ok && driver.RetainedSourceRead(ctx) {
+		open := func(ctx context.Context, file dumpformat.File, max uint64) (io.ReadCloser, error) {
+			return openRetainedCaptureBlob(ctx, streams, dumpformat.NativeCaptureFile{SHA256: file.SHA256, Bytes: uint64(file.Size)}, max)
+		}
+		head, err := open(ctx, file, dumpformat.MaxArchiveBytes)
+		if err != nil {
+			return nil, err
+		}
+		options.PrepareReceiving, options.SpoolOriginals = true, true
+		archive, err := dumpformat.ReadNativeCaptureSet(ctx, bytes.NewReader(raw), head, func(ctx context.Context, n uint64) (io.ReadCloser, error) {
+			name := fmt.Sprintf("parts/%020d.part", n)
+			file, ok := evidence.NativeCaptureFiles[name]
+			if !ok {
+				return nil, driver.ErrRestoreBindingMismatch{Field: "capture.partIndex"}
+			}
+			return open(ctx, file, dumpformat.NativeDeltaPartBytes+dumpformat.NativeDeltaPartHeaderBytes)
+		}, options)
+		if err := errors.Join(err, head.Close()); err != nil {
+			if archive != nil {
+				archive.DiscardNativeCaptureSet()
+			}
+			return nil, err
+		}
+		return archive, nil
 	}
 	head, err := reader.Blob(ctx, driver.Hash(file.SHA256))
 	if err != nil {
@@ -121,7 +159,7 @@ func readRetainedImportArchive(ctx context.Context, reader driver.Reader, raw []
 			return nil, driver.ErrRestoreBindingMismatch{Field: "capture.partDigest"}
 		}
 		return io.NopCloser(bytes.NewReader(data)), nil
-	}, dumpformat.NativeCaptureSetOptions{DecodedLimitBytes: evidence.NativeDecodedLimitBytes, DecodedLimitOrigin: "retained recovery option", PrepareReceiving: true})
+	}, options)
 }
 
 // historyDelta's two indexes retain one driver ordering string per input Ref.

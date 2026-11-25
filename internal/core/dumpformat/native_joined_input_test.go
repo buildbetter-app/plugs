@@ -198,3 +198,47 @@ func TestReverseHeadRequiresExactEnvelopeKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestRetainedHeadHistoryStreamsLargeCommitCensus(t *testing.T) {
+	body := strings.Repeat("x", 9<<20)
+	raw := []byte(`{"format":"beads-dolt-images/1","commits":[{"id":"first","parents":[],"metadata":{"note":"` +
+		body + `"}},{"id":"second","parents":["first"],"metadata":{"note":"` + body +
+		`"}}]}`)
+	var history SourceHistory
+	if _, err := decodeRetainedHeadJSON(raw, SourceHistoryMember, NewNativeDeltaBudget(0), &history); err != nil {
+		t.Fatal(err)
+	}
+	if len(history.Commits) != 2 || history.Commits[0].Metadata["note"] != body ||
+		history.Commits[1].Metadata["note"] != body || history.Commits[1].Parents[0] != "first" {
+		t.Fatal("history commit census changed")
+	}
+}
+
+func TestRetainedHeadManifestRedactsMapKeyOnDepthRefusal(t *testing.T) {
+	const depth = 10_001
+	raw := []byte(`{"files":{"private-entry-name":` + strings.Repeat("[", depth) +
+		"0" + strings.Repeat("]", depth) + "}}")
+	var manifest Manifest
+	_, err := decodeRetainedHeadJSON(raw, "manifest.json", NewNativeDeltaBudget(0), &manifest)
+	var limit *driver.ReverseJSONLimitError
+	if !errors.As(err, &limit) || limit.Resource != "nesting_depth" || limit.Member != "manifest.json" ||
+		limit.JSONPath != "$.files.<id>" || limit.ElementIndex == nil || *limit.ElementIndex != 0 ||
+		strings.Contains(err.Error(), "private-entry-name") {
+		t.Fatalf("expected located redacted depth error, got %v", err)
+	}
+}
+
+func TestRetainedHeadHistoryRejectsMalformedContainers(t *testing.T) {
+	for _, raw := range []string{
+		`{"format":"beads-dolt-images/1",}`,
+		`{"format":"beads-dolt-images/1","commits":[{"id":"one","parents":[],"metadata":{}},]}`,
+		`{"format":"beads-dolt-images/1","commits":[`,
+		`{"format":"beads-dolt-images/1","\u0066ormat":"duplicate"}`,
+		"{\"format\":\"beads-dolt-images/1\"}\u00a0",
+	} {
+		var history SourceHistory
+		if _, err := decodeRetainedHeadJSON([]byte(raw), SourceHistoryMember, NewNativeDeltaBudget(0), &history); err == nil {
+			t.Fatalf("malformed history was accepted: %q", raw)
+		}
+	}
+}

@@ -86,7 +86,7 @@ func inspectSourceReverseImage(ctx context.Context, logical []byte, decode func(
 	if err := ctx.Err(); err != nil {
 		return empty, err
 	}
-	_, _, _, aggregate := reverseImageSectionLimits()
+	_, _, _, aggregate := driver.SourcePlaneReverseImageLimits()
 	if uint64(len(logical)) > aggregate {
 		return empty, sourceRefusal("reverse aggregate byte limit")
 	}

@@ -26,6 +26,7 @@ go_library(
         "offline_history_source_order.go",
         "offline_history_stream_consume.go",
         "restore.go",
+        "source_checkpoint_read.go",
         "source_links.go",
         "source_planes.go",
         "source_planes_codec.go",

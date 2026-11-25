@@ -38,19 +38,22 @@ func retainNativeDeltaArchive(plan *restorePlan, archive *dumpformat.Archive, ad
 	if err != nil {
 		return err
 	}
-	if err := prepared.Visit(context.Background(), dumpformat.NativeDeltaVisitor{File: func(name string, data []byte) error {
-		file := dumpformat.File{SHA256: HashBytes(data), Size: int64(len(data))}
+	ledgerOwner := dumpformat.NativeDeltaBudgetFromContext(archive.WithNativeDeltaAccounting(context.Background())).Scope()
+	defer ledgerOwner.Release()
+	files, err := prepared.NativeCaptureFileLedger(ledgerOwner)
+	if err != nil {
+		return err
+	}
+	for _, captured := range files {
+		file := dumpformat.File{SHA256: captured.SHA256, Size: int64(captured.Bytes)}
 		entry := struct {
 			Name string          `json:"name"`
 			File dumpformat.File `json:"file"`
-		}{name, file}
+		}{captured.Name, file}
 		if err := archive.ChargeNativeDeltaJSON("retained_capture_ledger", entry); err != nil {
 			return err
 		}
-		evidence.NativeCaptureFiles[name] = file
-		return nil
-	}}); err != nil {
-		return err
+		evidence.NativeCaptureFiles[captured.Name] = file
 	}
 	plan.nativeCapture = archive
 	return add(model.RefByID("restore/archive", model.Natural64(0)), "restore-archive", evidence)

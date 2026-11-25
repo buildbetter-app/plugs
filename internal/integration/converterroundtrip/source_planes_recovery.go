@@ -203,8 +203,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 		return Report{}, nil, fmt.Errorf("source checkpoint: %w", err)
 	}
 	// Origin is immutable; generation and the live logical image may advance.
-	inspector := pluginhost.NewDurableState(nil, nil, "workflow", "default").(driver.SourcePlaneOriginReader)
-	origin, current, err := inspector.InspectSourcePlaneOrigin(cp)
+	origin, current, err := pluginhost.InspectBorrowedSourcePlaneOrigin(cp)
 	if err != nil {
 		return Report{}, nil, err
 	}

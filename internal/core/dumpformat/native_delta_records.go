@@ -32,6 +32,9 @@ type nativeDeltaRecordReader struct {
 	input        *bufio.Reader
 	bounded      bool
 	limit        uint64
+	index        uint64
+	offset       uint64
+	partBytes    uint64
 	budget       *NativeDeltaBudget
 	buffer       *NativeDeltaBudget
 	record       *NativeDeltaBudget
@@ -41,8 +44,11 @@ type nativeDeltaRecordReader struct {
 func newNativeDeltaRecordReader(ctx context.Context, input io.Reader, budgets ...*NativeDeltaBudget) *nativeDeltaRecordReader {
 	r := &nativeDeltaRecordReader{ctx: ctx, limit: NativeDeltaRecordLimit}
 	if spooled, _ := ctx.Value(spooledCaptureKey{}).(bool); spooled {
-		r.limit = driver.NativeHeadRecordBytes
+		r.limit = driver.ReverseJSONElementBytes + 1 // includes the newline
 		r.bounded = true
+		if parts, ok := input.(*NativeDeltaPartReader); ok {
+			r.partBytes = parts.payloadLimit
+		}
 	}
 	if len(budgets) != 0 && budgets[0] != nil {
 		r.budget = budgets[0]
@@ -87,6 +93,11 @@ func (r *nativeDeltaRecordReader) next() ([]byte, error) {
 		measured := uint64(len(record)) + uint64(len(fragment))
 		// Check before copying a cross-part fragment into the record buffer.
 		if measured > r.limit {
+			if r.bounded {
+				return nil, r.locate(&driver.ReverseJSONLimitError{
+					Resource: "value_bytes", Measured: r.limit, Limit: r.limit - 1,
+				})
+			}
 			return nil, &NativeDeltaRecordLimitError{measured, r.limit}
 		}
 		if measured > uint64(cap(record)) {
@@ -116,10 +127,12 @@ func (r *nativeDeltaRecordReader) next() ([]byte, error) {
 				return nil, fmt.Errorf("empty native delta logical record")
 			}
 			if r.bounded {
-				if err := driver.CheckReverseJSONShape(record); err != nil {
-					return nil, err
+				if _, err := driver.ReverseJSONElementFootprint(record[:len(record)-1], 0); err != nil {
+					return nil, r.locate(err)
 				}
 			}
+			r.index++
+			r.offset += uint64(len(record))
 			return record, nil
 		case errors.Is(err, bufio.ErrBufferFull):
 			continue
@@ -132,4 +145,12 @@ func (r *nativeDeltaRecordReader) next() ([]byte, error) {
 			return nil, err
 		}
 	}
+}
+
+func (r *nativeDeltaRecordReader) locate(err error) error {
+	member := "parts/<id>.part"
+	if r.partBytes != 0 {
+		member = fmt.Sprintf("parts/%020d.part", r.offset/r.partBytes+1)
+	}
+	return driver.LocateReverseJSONLimit(err, member, "$", r.index)
 }

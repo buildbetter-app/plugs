@@ -754,7 +754,7 @@ type NativeHeadRecordReader interface {
 }
 
 func GetNativeHeadRecords(ctx context.Context, reader Reader, refs []Ref) ([]Record, error) {
-	if bounded, ok := reader.(NativeHeadRecordReader); ok && NativeReverseRead(ctx) {
+	if bounded, ok := reader.(NativeHeadRecordReader); ok && RetainedSourceRead(ctx) {
 		return bounded.GetNativeHeadRecords(ctx, refs)
 	}
 	return reader.Get(ctx, refs)
@@ -771,6 +771,22 @@ const NativeHeadStorageRowBytes = NativeHeadRecordBytes*4/3 + (1 << 20)
 // NativeHeadJSONDepth matches the strict native JSON parser's nesting bound.
 const NativeHeadJSONDepth = 128
 
+// ReverseJSONElementBytes allows large individual capture rows while keeping
+// the input for one streamed value bounded. The decoded estimate also covers
+// the input and its decoded string copy, with 32 MiB for structural overhead.
+const ReverseJSONElementBytes = 64 << 20
+const reverseJSONElementDecodedBytes = 160 << 20
+
+// SourceRecoveryMetadataBytes covers a full binary source plan after base64
+// encoding plus its persisted protected-record or receipt envelope.
+const SourceRecoveryMetadataBytes = 2 * SourcePlaneMaxPlanBytes
+
+// CheckSourceRecoveryMetadata bounds startup metadata before typed decoding.
+func CheckSourceRecoveryMetadata(raw []byte, enclosingDepth int) error {
+	_, err := scanReverseJSON(raw, enclosingDepth, SourceRecoveryMetadataBytes)
+	return err
+}
+
 // CheckReverseJSONShape admits one value before a generic JSON decoder runs.
 func CheckReverseJSONShape(raw []byte) error {
 	_, err := ReverseJSONFootprint(raw, 0)
@@ -780,7 +796,7 @@ func CheckReverseJSONShape(raw []byte) error {
 // CheckReverseJSONWire admits a complete encoded value before decoding
 // smaller pieces. It does not account an entire decoded graph.
 func CheckReverseJSONWire(raw []byte) error {
-	_, err := scanReverseJSON(raw, 0)
+	_, err := scanReverseJSON(raw, 0, NativeHeadRecordBytes)
 	return err
 }
 
@@ -789,19 +805,28 @@ func CheckReverseJSONWire(raw []byte) error {
 // keeps no token strings or container entries. Syntax, Unicode and duplicate
 // keys are checked by the caller's strict decoder.
 func ReverseJSONFootprint(raw []byte, enclosingDepth int) (uint64, error) {
-	footprint, err := scanReverseJSON(raw, enclosingDepth)
+	return reverseJSONFootprint(raw, enclosingDepth, NativeHeadRecordBytes, NativeHeadMaterialBytes)
+}
+
+// ReverseJSONElementFootprint admits one element of a retained source capture.
+func ReverseJSONElementFootprint(raw []byte, enclosingDepth int) (uint64, error) {
+	return reverseJSONFootprint(raw, enclosingDepth, ReverseJSONElementBytes, reverseJSONElementDecodedBytes)
+}
+
+func reverseJSONFootprint(raw []byte, enclosingDepth, wireLimit int, decodedLimit uint64) (uint64, error) {
+	footprint, err := scanReverseJSON(raw, enclosingDepth, wireLimit)
 	if err != nil {
 		return 0, err
 	}
-	if footprint > NativeHeadMaterialBytes {
-		return 0, &ReverseJSONLimitError{Resource: "decoded_bytes", Measured: footprint, Limit: NativeHeadMaterialBytes}
+	if footprint > decodedLimit {
+		return 0, &ReverseJSONLimitError{Resource: "decoded_bytes", Measured: footprint, Limit: decodedLimit}
 	}
 	return footprint, nil
 }
 
-func scanReverseJSON(raw []byte, depth int) (uint64, error) {
-	if len(raw) > NativeHeadRecordBytes {
-		return 0, &ReverseJSONLimitError{Resource: "value_bytes", Measured: uint64(len(raw)), Limit: NativeHeadRecordBytes}
+func scanReverseJSON(raw []byte, depth, wireLimit int) (uint64, error) {
+	if len(raw) > wireLimit {
+		return 0, &ReverseJSONLimitError{Resource: "value_bytes", Measured: uint64(len(raw)), Limit: uint64(wireLimit)}
 	}
 	// Reserve space for a decoded string copy and the decoder's input. A
 	// container and each array item or object entry reserve room for Go
@@ -860,8 +885,27 @@ func NativeReverseRead(ctx context.Context) bool {
 	return enabled
 }
 
+type retainedSourceReadKey struct{}
+
+// WithRetainedSourceRead selects streamed capture reads and bounded source
+// checkpoint reads for startup recovery on the store's pinned snapshot.
+func WithRetainedSourceRead(ctx context.Context) context.Context {
+	return context.WithValue(ctx, retainedSourceReadKey{}, true)
+}
+
+func RetainedSourceRead(ctx context.Context) bool {
+	return SourceRecoveryRead(ctx) || NativeReverseRead(ctx)
+}
+
+// SourceRecoveryRead identifies composition startup even when an offline
+// caller also marked the context for native transport reads.
+func SourceRecoveryRead(ctx context.Context) bool {
+	bounded, _ := ctx.Value(retainedSourceReadKey{}).(bool)
+	return bounded
+}
+
 func ReadNativeReverseReceipt(ctx context.Context, reader Reader, principal, agent, method, key string, keep func(Ref) bool) (*IdempotencyRecord, error) {
-	if bounded, ok := reader.(NativeReverseReceiptReader); ok && NativeReverseRead(ctx) {
+	if bounded, ok := reader.(NativeReverseReceiptReader); ok && RetainedSourceRead(ctx) {
 		return bounded.ReadNativeReverseReceipt(ctx, principal, agent, method, key, keep)
 	}
 	return reader.IdempotencyByKey(ctx, principal, agent, method, key)

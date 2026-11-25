@@ -239,44 +239,27 @@ func ValidateSourcePlaneInitialCheckpoint(cp Checkpoint, provider SourcePlanePro
 	if cp.Generation != provider.Origin.InitialGeneration || hex.EncodeToString(sum[:]) != provider.EnvelopeSHA256 {
 		return sourcePlaneError("joint checkpoint stage differs from commit binding")
 	}
-	fields := map[string]bool{"values": true, "sourceOrigin": true}
-	if err := sourcePlaneJSONObject(cp.Payload, fields, true); err != nil {
+	origin, revision, value, err := ReadSourcePlaneCheckpointEnvelope(cp)
+	if err != nil {
 		return err
 	}
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(cp.Payload, &envelope); err != nil {
-		return err
-	}
-	if err := sourcePlaneJSONObject(envelope["sourceOrigin"], map[string]bool{"version": true, "jointPlanDigest": true, "requestHash": true, "storeId": true, "incarnation": true, "namespace": true, "initialGeneration": true, "logicalImageSHA256": true, "lifetime": true}, true); err != nil {
-		return err
-	}
-	var origin SourcePlaneOriginBindingV1
-	if err := json.Unmarshal(envelope["sourceOrigin"], &origin); err != nil || origin != provider.Origin {
+	if origin != provider.Origin {
 		return sourcePlaneError("joint checkpoint immutable origin differs")
 	}
-	if err := sourcePlaneJSONObject(envelope["values"], map[string]bool{"workflow/state": true}, true); err != nil {
-		return err
-	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(envelope["values"], &values); err != nil {
-		return err
-	}
-	value := values["workflow/state"]
-	if err := sourcePlaneJSONObject(value, map[string]bool{"revision": true, "value": true}, true); err != nil {
-		return err
-	}
-	var item struct {
-		Revision uint64          `json:"revision"`
-		Value    json.RawMessage `json:"value"`
-	}
-	if err := json.Unmarshal(value, &item); err != nil {
-		return err
-	}
-	sum = sha256.Sum256(item.Value)
-	if item.Revision != 1 || uint64(len(item.Value)) != provider.Provider.LogicalImageSize || hex.EncodeToString(sum[:]) != provider.Provider.LogicalImageSHA256 {
+	sum = sha256.Sum256(value)
+	if revision != 1 || uint64(len(value)) != provider.Provider.LogicalImageSize || hex.EncodeToString(sum[:]) != provider.Provider.LogicalImageSHA256 {
 		return sourcePlaneError("joint checkpoint logical image differs")
 	}
-	return sourcePlaneJSONObject(item.Value, nil, false)
+	logical, err := checkpointFields(value, 0)
+	if err != nil {
+		return err
+	}
+	for _, key := range []string{"sourcePlanes", "nativeDeltaHistory"} {
+		if bytes.Equal(logical[key], []byte("null")) {
+			return sourcePlaneError("explicit null sourcePlanes")
+		}
+	}
+	return nil
 }
 
 func validateSourcePlaneRestoreProviders(plan SourcePlanePlanV1) error {
