@@ -254,7 +254,7 @@ func convertCanonical(dump Dump, options Options, report Report) (Result, error)
 	var reasons []string
 	edgeIDs := make(map[[2]string]bool)
 	commentIDs := make(map[[2]string]bool)
-	entities, edges, comments, physicalReasons := physicalExportRecords(dump)
+	entities, edges, comments, physicalReasons := physicalExportRecords(dump, options.BeadsDestination)
 	reasons = append(reasons, physicalReasons...)
 	for _, records := range dump.Records {
 		for _, row := range records {
@@ -672,24 +672,13 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 		reasons = append(reasons, fmt.Sprintf("bead %q status is not a string", record.ID))
 	}
 	statusFieldPresent = statusFieldPresent && status != ""
-	customStatusCategory := ""
-	for _, project := range manifest.Projects {
-		if project.Prefix != record.Project {
-			continue
-		}
-		for _, candidate := range project.Statuses {
-			if candidate.Name == status {
-				customStatusCategory = candidate.Category
-				break
-			}
-		}
-	}
-	nativeStatusOriginal, nativeCategoryOriginal := status, customStatusCategory
+	catalogCategory := projectStatusCategory(manifest, record.Project, status)
+	nativeStatusOriginal, nativeCategoryOriginal := status, catalogCategory
 	nativeStatusMapped := false
 	nativeMetadata, _ := dumpformat.SourceMetadataObject(body["metadata"])
 	_, nativeStatusPreserved := nativeMetadata["_plug_native_status"]
-	if !nativeStatusPreserved && manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && customStatusCategory != "" {
-		switch customStatusCategory {
+	if emitProvenance && !nativeStatusPreserved && manifest.SourcePlaneAddressContract == dumpformat.SourcePlaneAddressContract && manifest.StatusCategoryContract == dumpformat.StatusCategoryContract && catalogCategory != "" {
+		switch catalogCategory {
 		case "active":
 			status, category = "open", "unstarted"
 		case "wip":
@@ -701,7 +690,7 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 		}
 		nativeStatusMapped = nativeStatusOriginal != status || nativeCategoryOriginal != category
 	}
-	if status != "" && !supportedStatuses[status] && customStatusCategory == "" {
+	if status != "" && !supportedStatuses[status] && catalogCategory == "" {
 		reasons = append(reasons, fmt.Sprintf("bead %q has unsupported status %q", record.ID, status))
 	}
 	if status == "" {
@@ -709,13 +698,13 @@ func convertBead(record Record, manifest Manifest, report *Report, directives *t
 		if status == "" {
 			reasons = append(reasons, fmt.Sprintf("bead %q category %q cannot be represented by Beads", record.ID, category))
 		}
-	} else if expected := categoryForStatus(status); expected != category && !(customStatusCategory != "" && customStatusCategory == category) {
+	} else if expected := categoryForStatus(status); expected != category && !(catalogCategory != "" && catalogCategory == category) {
 		reasons = append(reasons, fmt.Sprintf("bead %q status/category mismatch (%q/%q)", record.ID, status, category))
 	}
 	// Native status catalogs use their literal category names. The native
 	// catalog's `done` category carries the same authenticated outcome
 	// contract as the portable `completed` category.
-	completedCategory := category == "completed" || customStatusCategory == "done"
+	completedCategory := category == "completed" || catalogCategory == "done"
 	if completedCategory {
 		if outcome != "success" && outcome != "failure" {
 			reasons = append(reasons, fmt.Sprintf("bead %q completed status lacks success/failure outcome", record.ID))

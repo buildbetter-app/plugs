@@ -14,14 +14,27 @@ import (
 type Options struct {
 	All        bool
 	Directives []ontologymigration.Directive
-	// BeadsDestination emits only source user metadata. The default keeps the
-	// legacy Plug provenance channel for callers that feed the JSONL back into
-	// Plug-native admission.
+	// BeadsDestination preserves authenticated Beads statuses and emits only
+	// source user metadata. The default keeps the portable status projection
+	// and provenance channel for Plug-native admission.
 	BeadsDestination bool
 	// NativeImport selects the bounded physical importer, which cannot carry
 	// every SQL source cell. Opaque JSONL serialization alone retains those
 	// cells in metadata and does not claim physical restoration.
 	NativeImport bool
+}
+
+func projectStatusCategory(manifest Manifest, prefix, status string) string {
+	for _, project := range manifest.Projects {
+		if project.Prefix == prefix {
+			for _, candidate := range project.Statuses {
+				if candidate.Name == status {
+					return candidate.Category
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func sourceFlag(fields map[string]any, name string) (bool, bool) {
@@ -85,7 +98,7 @@ func SourcePlaneEntityRecord(project string, fields map[string]any) Record {
 	return Record{Kind: "bead", ID: text(source["id"]), Project: project, Body: body, Source: Provenance{Table: dumpformat.EphemeralEntityTable, Fields: source}}
 }
 
-func physicalExportRecords(dump Dump) (entities, edges, comments []Record, reasons []string) {
+func physicalExportRecords(dump Dump, beadsDestination bool) (entities, edges, comments []Record, reasons []string) {
 	entities = append(entities, dump.Records["bead"]...)
 	edges = append(edges, dump.Records["edge"]...)
 	comments = append(comments, dump.Records["comment"]...)
@@ -113,6 +126,15 @@ func physicalExportRecords(dump Dump) (entities, edges, comments []Record, reaso
 			continue
 		}
 		record := SourcePlaneEntityRecord(project, row.Source.Fields)
+		if beadsDestination && dump.Manifest.StatusCategoryContract == dumpformat.StatusCategoryContract {
+			status := text(record.Source.Fields["status"])
+			if category := projectStatusCategory(dump.Manifest, project, status); category != "" {
+				record.Body["status_category"] = category
+				if category == "done" {
+					record.Body["result"] = "success"
+				}
+			}
+		}
 		if active[record.ID] != nil {
 			reasons = append(reasons, fmt.Sprintf("duplicate active id %q", record.ID))
 			continue
