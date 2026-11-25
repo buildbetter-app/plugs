@@ -443,6 +443,13 @@ func TestNativeCollectionReceivingStreamsWidePublicConfig(t *testing.T) {
 	if err = errors.Join(err, source.Close()); err != nil || n != size || n != config.Size || fmt.Sprintf("%x", digest.Sum(nil)) != config.SHA256 {
 		t.Fatalf("published config commitment differs: %d / %d bytes, %v", n, size, err)
 	}
+	dump, err := retainedReverseDump(driver.WithNativeReverseRead(ctx), snapshot, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dump.Manifest.Files[dumpformat.SourceConfigMember]; got.Size != size || got.SHA256 != config.SHA256 || len(dump.Members) != 0 {
+		t.Fatalf("reverse should use the joined config commitment without hydrating member bytes: %+v, %d members", got, len(dump.Members))
+	}
 	usage := budget.Usage()
 	if usage.CumulativeCategories["config_element_decoded"] <= uint64(size) ||
 		usage.CumulativeCategories["receiving_collection_config_stream"] != 1<<20 ||
