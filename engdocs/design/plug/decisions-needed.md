@@ -8,15 +8,7 @@ acceptance still require evidence. #19 sets the current local Bazel merge gate.
 
 ## Open
 
-- **Compaction head-of-line block (raised 2026-11-23 by B12).** `admin.compact`
-  works on one record per call, oldest eligible first (closed time, then ID).
-  A record whose summary can never be smaller is refused on every call, so no
-  later record is ever compacted. Native Beads compacts the others and leaves
-  that one. Options: (a) an optional exclusive `afterId` cursor that changes
-  selection only, where the refusal names the refused record and the cursor
-  joins the request digest; (b) a skip marker written on refusal. Recommended:
-  **(a)**, because a refusal never writes. B12 records the current behavior as
-  a known gap.
+None.
 
 New product questions need options and a recommendation; routine
 implementation choices follow the recorded design. Testing runs locally
@@ -24,6 +16,13 @@ through Bazel with no hosted CI (2026-11-12), so no CI admin actions remain.
 
 ## Answered
 
+- **Compaction head-of-line block (2026-11-24, Nikhil chose (a)):** raised
+  2026-11-23 by B12. `admin.compact` works on one record per call, oldest
+  eligible first, so a record whose summary is never smaller blocked every
+  later record. Nikhil chose (a), 2026-11-24: an optional exclusive `afterId`
+  cursor that changes selection only. Refusals name the refused record and
+  write nothing, and `afterId` joins the request digest. Option (b), a skip
+  marker written on refusal, was rejected. Implemented by P47.
 - **Switch trial (2026-11-20 to 11-24, Nikhil):** run a supervised trial on
   disposable copies of the real ledgers, nightly or on root's go, and keep
   diagnosing, fixing and re-running until a trial is fully green (2026-11-24).

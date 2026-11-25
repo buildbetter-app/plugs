@@ -35,6 +35,10 @@ type ErrorData struct {
 type Error struct {
 	Message string
 	Data    ErrorData
+	// NotRetryable marks one failure that a caller must not repeat unchanged.
+	// Transports clear the code's catalog-default retryable flag for it; it can
+	// only downgrade retryability, never grant it.
+	NotRetryable bool
 }
 
 func (e *Error) Error() string {

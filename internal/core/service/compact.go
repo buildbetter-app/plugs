@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -62,8 +63,19 @@ func WithCompaction(config CompactionConfig) Option {
 	return func(s *Service) { s.compaction = config }
 }
 
+// CompactionRequest selects the next eligible record in (closed time, ID)
+// order. AfterID is an optional exclusive cursor: selection resumes strictly
+// after the named record's position in that order. The named record must be in
+// the caller's project, currently closed, and have a recorded close time: an
+// imported closed_at field when present, used as recorded (an unparseable one
+// means no recorded close time), otherwise the latest close transition in
+// permanent history, so a reopened and re-closed record without an imported
+// closed_at moves later. Its own current
+// eligibility does not matter, so the ID that a refusal names can always be
+// passed back. AfterID joins only the idempotency request hash.
 type CompactionRequest struct {
 	BeforeRevision *model.Revision
+	AfterID        *string
 	DryRun         bool
 }
 
@@ -101,6 +113,63 @@ type compactionCandidate struct {
 
 func compactionUnavailable(hint string) error { return failure("compaction_unavailable", hint) }
 
+// compactionRefused names the selected record so a caller can pass its ID as
+// afterId on the next call. A refusal never writes, so the record is unchanged.
+// A final refusal (the summary is not smaller) is not retryable: repeating the
+// same call selects the same record again.
+func compactionRefused(candidate compactionCandidate, hint string, final bool) error {
+	return &model.Error{NotRetryable: final, Data: model.ErrorData{Code: "compaction_unavailable", Hint: hint, Details: compactionSelected(candidate)}}
+}
+
+func compactionSelected(candidate compactionCandidate) map[string]any {
+	return map[string]any{"id": candidate.row.doc.ID, "tier": candidate.tier}
+}
+
+// namedCompactionError names the selected record on a failure after selection
+// (for example at the write step). errors.Is still reaches the cause; errors.As
+// for *model.Error yields the cause's typed data, or internal_error for an
+// untyped cause, with the selected record added to its details. Authorization
+// outcomes and idempotency_key_reused are never named: they describe the
+// caller or the key, not the record. Existing detail keys are never replaced.
+type namedCompactionError struct {
+	cause error
+	named *model.Error
+}
+
+func (e *namedCompactionError) Error() string { return e.cause.Error() }
+func (e *namedCompactionError) Unwrap() error { return e.cause }
+func (e *namedCompactionError) As(target any) bool {
+	out, ok := target.(**model.Error)
+	if ok {
+		*out = e.named
+	}
+	return ok
+}
+
+func nameCompactionFailure(err error, candidate compactionCandidate) error {
+	if err == nil {
+		return nil
+	}
+	named := &model.Error{Message: err.Error(), Data: model.ErrorData{Code: "internal_error"}}
+	var typed *model.Error
+	if errors.As(err, &typed) {
+		if code := string(typed.Data.Code); code == "forbidden" || strings.HasPrefix(code, "authz_") || code == "idempotency_key_reused" {
+			return err
+		}
+		copied := *typed
+		named = &copied
+	}
+	details := make(map[string]any, len(named.Data.Details)+2)
+	for key, value := range compactionSelected(candidate) {
+		details[key] = value
+	}
+	for key, value := range named.Data.Details {
+		details[key] = value
+	}
+	named.Data.Details = details
+	return &namedCompactionError{cause: err, named: named}
+}
+
 // CompactWithOutcome selects one record, in closed-time/ID order. Repeating
 // calls is the non-atomic batch; a failed item never publishes another item.
 // beforeRevision excludes a selected row at or above the boundary.
@@ -111,7 +180,13 @@ func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef,
 	if req.BeforeRevision != nil && req.BeforeRevision.Validate() != nil {
 		return port.WriteOutcome{}, failure("invalid_params", "invalid compaction revision boundary")
 	}
+	if req.AfterID != nil && strings.TrimSpace(*req.AfterID) != *req.AfterID || req.AfterID != nil && *req.AfterID == "" {
+		return port.WriteOutcome{}, failure("invalid_params", "afterId must be a nonempty record ID")
+	}
 	meta.Method, meta.DryRun = "admin.compact", meta.DryRun || req.DryRun
+	if req.AfterID != nil {
+		meta.CompactionAfterID = *req.AfterID
+	}
 	if !meta.DryRun {
 		cs, found, err := s.compactionReplay(ctx, by, req, meta)
 		if err != nil {
@@ -130,7 +205,7 @@ func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef,
 	}
 	probe, err := s.authorizeCompaction(ctx, by, candidate.row.record.Ref, meta)
 	if err != nil {
-		return port.WriteOutcome{}, err
+		return port.WriteOutcome{}, nameCompactionFailure(err, candidate)
 	}
 	if meta.DryRun {
 		// This is a selection preview, not a generated or committed summary.
@@ -144,10 +219,10 @@ func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef,
 	}
 	summary, err := s.compaction.Summary.Summary(ctx, CompactionInput{Ref: candidate.row.record.Ref, Revision: candidate.row.record.Revision, Tier: candidate.tier, ClosedAt: candidate.closedAt, Text: text})
 	if err != nil {
-		return port.WriteOutcome{}, compactionUnavailable("supplied summary failed")
+		return port.WriteOutcome{}, compactionRefused(candidate, "supplied summary failed", false)
 	}
 	if !utf8.ValidString(summary) || len(summary) >= candidate.size {
-		return port.WriteOutcome{}, compactionUnavailable("summary must be valid text smaller than the original")
+		return port.WriteOutcome{}, compactionRefused(candidate, "summary must be valid text smaller than the original; pass afterId="+candidate.row.doc.ID+" to continue after this record", true)
 	}
 	state := compactionState{Format: "plug-compaction/1", Tier: candidate.tier, SourceRevision: candidate.row.record.Revision, BeforeRevision: req.BeforeRevision, Time: s.now().UTC(), OriginalSize: candidate.size}
 	raw, err := json.Marshal(state)
@@ -155,7 +230,8 @@ func (s *Service) CompactWithOutcome(ctx context.Context, by model.PrincipalRef,
 		return port.WriteOutcome{}, err
 	}
 	cs := compactionChangeSet(candidate.row, summary, raw, candidate.tier)
-	return s.apply(ctx, by, meta.Method, cs, meta, true)
+	outcome, err := s.apply(ctx, by, meta.Method, cs, meta, true)
+	return outcome, nameCompactionFailure(err, candidate)
 }
 
 func (s *Service) authorizeCompaction(ctx context.Context, by model.PrincipalRef, ref model.Ref, meta model.WriteMeta) (port.WriteOutcome, error) {
@@ -186,6 +262,14 @@ func compactionChangeSet(row storedBead, summary string, state json.RawMessage, 
 		{Kind: model.OpPatch, Patch: &model.PatchOp{Target: ref, Fields: fields}},
 		{Kind: model.OpSetMeta, SetMeta: &model.SetMetaOp{Target: ref, Key: compactionMetadata, Value: state}},
 	}, Expect: []model.Precondition{model.PreconditionByRevision(ref, row.record.Revision)}}
+}
+
+// compactionBefore is the selection order: closed time, then record ID.
+func compactionBefore(aAt time.Time, aID string, bAt time.Time, bID string) bool {
+	if aAt.Equal(bAt) {
+		return aID < bID
+	}
+	return aAt.Before(bAt)
 }
 
 func (s *Service) nextCompaction(ctx context.Context, by model.PrincipalRef, req CompactionRequest, project string) (compactionCandidate, error) {
@@ -242,14 +326,35 @@ func (s *Service) nextCompaction(ctx context.Context, by model.PrincipalRef, req
 		}
 		candidates = append(candidates, compactionCandidate{row: row, tier: level + 1, closedAt: closedAt, text: text, size: size})
 	}
+	if req.AfterID != nil {
+		// The cursor's position is the named record's own (closed time, ID),
+		// resolved from the same snapshot whether or not it is still eligible.
+		cursor, ok := graph[*req.AfterID]
+		cursorAt := time.Time{}
+		if ok && cursor.doc.Project == project {
+			category, known := s.ontology.effective(project).Category(state(cursor.doc).Status)
+			if known && category.Completed() {
+				if cursorAt, err = s.compactionClosedAt(ctx, by, r, cursor); err != nil {
+					return compactionCandidate{}, err
+				}
+			}
+		}
+		if cursorAt.IsZero() {
+			return compactionCandidate{}, failure("invalid_params", "afterId must name a closed record in this project")
+		}
+		after := candidates[:0]
+		for _, candidate := range candidates {
+			if compactionBefore(cursorAt, *req.AfterID, candidate.closedAt, candidate.row.doc.ID) {
+				after = append(after, candidate)
+			}
+		}
+		candidates = after
+	}
 	if len(candidates) == 0 {
-		return compactionCandidate{}, compactionUnavailable("no eligible record before the revision boundary")
+		return compactionCandidate{}, compactionUnavailable("no eligible record before the revision boundary and after the cursor")
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].closedAt.Equal(candidates[j].closedAt) {
-			return candidates[i].row.doc.ID < candidates[j].row.doc.ID
-		}
-		return candidates[i].closedAt.Before(candidates[j].closedAt)
+		return compactionBefore(candidates[i].closedAt, candidates[i].row.doc.ID, candidates[j].closedAt, candidates[j].row.doc.ID)
 	})
 	return candidates[0], nil
 }

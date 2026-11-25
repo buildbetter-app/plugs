@@ -5342,6 +5342,14 @@
           }
         },
         {
+          "name": "afterId",
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be in the caller's project, currently closed, and have a recorded close time: an imported closed_at field when present, used as recorded (an unparseable imported closed_at means no recorded close time), otherwise the latest close transition in history, so a reopened and re-closed record without an imported closed_at moves later. Its own eligibility does not matter, so a refused record's ID can be passed back. Any other value is refused with invalid_params and writes nothing. Refusals write nothing. Once a record is selected, every refusal or failure names it in error data details.id and details.tier, except authorization outcomes (forbidden and authz_* codes) and idempotency_key_reused, which name no record; failures before selection name no record. A compaction that commits but whose response then fails returns busy with details.committedRevision; retry the same idempotency key to read the committed result. Dry runs name the selected record in the result ref. A summary that is not smaller is refused with retryable false: pass its details.id as afterId to continue. afterId is part of the operation: once an idempotency key has committed, reusing it with a different afterId is refused with idempotency_key_reused."
+          }
+        },
+        {
           "name": "dryRun",
           "schema": {
             "type": "boolean"
@@ -5365,6 +5373,9 @@
       "errors": [
         {
           "$ref": "#/components/errors/Forbidden"
+        },
+        {
+          "$ref": "#/components/errors/InvalidParams"
         },
         {
           "$ref": "#/components/errors/CompactionUnavailable"
@@ -14435,7 +14446,7 @@
     "methodCount": 87,
     "nameOrder": "methods are compared in this order; the final item is followed by LF",
     "nameSha256": "50abe444c30fbc487fbcb43271eceebfc686c4c2b8b563d45d0b7e859f52d6e6",
-    "descriptorSha256": "6e689edd7e452e1341be562b8e6f592326e3c97dc4e0b81656b0902d7bfa03fb",
+    "descriptorSha256": "9b5db5199a81aeed5965eac6224c148bf7cf3de9ba6dce6863fc08830eb92ada",
     "requiredDescriptorFields": [
       "name",
       "effect",
@@ -14542,6 +14553,14 @@
             }
           },
           {
+            "name": "afterId",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional exclusive cursor over the selection order (closed time, then record ID; equal closed times order by ID). Selection returns the next eligible record strictly after the named record's position. The named record must be in the caller's project, currently closed, and have a recorded close time: an imported closed_at field when present, used as recorded (an unparseable imported closed_at means no recorded close time), otherwise the latest close transition in history, so a reopened and re-closed record without an imported closed_at moves later. Its own eligibility does not matter, so a refused record's ID can be passed back. Any other value is refused with invalid_params and writes nothing. Refusals write nothing. Once a record is selected, every refusal or failure names it in error data details.id and details.tier, except authorization outcomes (forbidden and authz_* codes) and idempotency_key_reused, which name no record; failures before selection name no record. A compaction that commits but whose response then fails returns busy with details.committedRevision; retry the same idempotency key to read the committed result. Dry runs name the selected record in the result ref. A summary that is not smaller is refused with retryable false: pass its details.id as afterId to continue. afterId is part of the operation: once an idempotency key has committed, reusing it with a different afterId is refused with idempotency_key_reused."
+            }
+          },
+          {
             "name": "dryRun",
             "schema": {
               "type": "boolean"
@@ -14560,6 +14579,7 @@
         },
         "errors": [
           "#/components/errors/Forbidden",
+          "#/components/errors/InvalidParams",
           "#/components/errors/CompactionUnavailable",
           "#/components/errors/Busy",
           "#/components/errors/RateLimited",

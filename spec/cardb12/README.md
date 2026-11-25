@@ -13,8 +13,8 @@ Canonical card: `engdocs/design/plug/spec/behaviors/content.md` B12.
   `testdata/b12-native-vectors.json`; any difference fails the target.
 - `TestB12NativeVectorPairing` in `//spec/s1-b09-b12/compaction:compaction_test`
   reads the same committed vectors and runs Plug's public counterpart for each
-  vector on memory, SQLite and PostgreSQL. Each pair is labeled **SAME**,
-  **ADOPTED DEVIATION** or **KNOWN GAP** in the test table and its log line
+  vector on memory, SQLite and PostgreSQL. Each pair is labeled **SAME**
+  or **ADOPTED DEVIATION** in the test table and its log line
   `B12_PAIR`.
 
 Run the native recording through local-bazel:
@@ -77,7 +77,7 @@ through public config; it neither invents a callback nor changes Beads code.
 | auto-summary-not-smaller-refused | ADOPTED DEVIATION | native writes a "skipped" warning comment; a Plug refusal writes nothing |
 | restore-preview | SAME | original readable without writing (`history.get`) |
 | restore-apply-snapshot | SAME | original text and level zero restored, audit kept; Plug also requires D32 |
-| auto-batch-mixed | KNOWN GAP (head-of-line), pending decision | Option A (2026-11-02): one record per `admin.compact` call; a record whose summary is never smaller stays first in line and later records are not reached, while native's sweep continues. Public API shape is with Nikhil |
+| auto-batch-mixed | ADOPTED DEVIATION | Option A (2026-11-02): one record per `admin.compact` call. Native's sweep skips the not-smaller record; Plug's refusal names it (`details.id`, nothing written) and the next call passes it as the exclusive `afterId` cursor, so Plug compacts the same records (P47; Nikhil chose (a) 2026-11-24) |
 
 Snapshot/update fault conservation has no native public vector (native cannot
 inject a storage fault through its CLI). It is covered on the Plug side by

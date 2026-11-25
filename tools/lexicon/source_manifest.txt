@@ -3168,6 +3168,7 @@ spec/s1-b09-b12/accepted_source_test.go
 spec/s1-b09-b12/capture_harness_test.go
 spec/s1-b09-b12/capture_policy_test.go
 spec/s1-b09-b12/compaction/BUILD.bazel
+spec/s1-b09-b12/compaction/afterid_test.go
 spec/s1-b09-b12/compaction/audit_test.go
 spec/s1-b09-b12/compaction/b09_b10_conservation_test.go
 spec/s1-b09-b12/compaction/b09_b10_publication_test.go

@@ -75,6 +75,9 @@ func (c *Catalog) MapError(err error) *Error {
 		if out.Data.Code == string(domain.Data.Code) {
 			out.Data.RetryAfterMS = domain.Data.RetryAfterMs
 			out.Data.TraceID = domain.Data.TraceID
+			if domain.NotRetryable {
+				out.Data.Retryable = false
+			}
 		}
 		return out
 	}

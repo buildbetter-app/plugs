@@ -343,13 +343,15 @@ func requestHash(cs model.ChangeSet, meta model.WriteMeta) (string, error) {
 	if meta.GateAction == "" {
 		// Keep the pre-gate request identity byte-for-byte compatible so a
 		// rolling restart can still replay receipts created by an older host.
+		// Omitted empty members keep older request hashes unchanged.
 		data, err = json.Marshal(struct {
 			ChangeSet               model.ChangeSet
 			Method, Project, Return string
 			ClaimNextIdentity       string `json:",omitempty"`
+			CompactionAfterID       string `json:",omitempty"`
 			DryRun                  bool
 			TargetStatus            *string `json:",omitempty"`
-		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.DryRun, meta.TargetStatus})
+		}{cs, meta.Method, meta.Project, meta.Return, meta.ClaimNextIdentity, meta.CompactionAfterID, meta.DryRun, meta.TargetStatus})
 	} else {
 		data, err = json.Marshal(struct {
 			ChangeSet                                      model.ChangeSet
