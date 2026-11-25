@@ -408,17 +408,26 @@ func nativeReceivingPostCommitError(report Report, cause error) error {
 	return fmt.Errorf("native import committed at %s; receipt key %q; post-commit verification failed: %v", report.Restored.Head, report.IdempotencyKey, cause)
 }
 
-// The config is assembled once by the collection planner. SQLite validates
-// and publishes the replayable section inside the verified history commit.
-// The other engines' existing blob representation needs a transaction-owned
-// value, so its input and clone must both fit the native receiving budget.
+// The non-streaming engines can hold input, transaction and publication
+// copies of one blob. Cap each blob at 32 MiB to bound those copies to 96 MiB.
+// The shared receiving budget separately admits all simultaneously live data.
+const nativeCollectionBufferedBlobBytes = 32 << 20
+
+// SQLite authenticates and publishes the replayable config in the verified
+// history commit. Memory and PostgreSQL retain their existing representations
+// and refuse large config blobs before opening the spool or allocating bytes.
 func stageCollectionConfig(ctx context.Context, archive *dumpformat.Archive, tx driver.WriteTx, config dumpformat.File) error {
+	stage, streamed := tx.(driver.NativeRestoreBlobTx)
+	if !streamed && config.Size > nativeCollectionBufferedBlobBytes {
+		limit := dumpformat.NewNativeDeltaBudget(nativeCollectionBufferedBlobBytes)
+		return limit.ChargeBytes("receiving_collection_config_blob", uint64(config.Size))
+	}
 	input, file, ok := archive.OpenCollectionConfig()
 	if !ok || file != config {
 		return fmt.Errorf("receiving configuration spool differs from plan")
 	}
 	hash := driver.Hash(file.SHA256)
-	if stage, ok := tx.(driver.NativeRestoreBlobTx); ok {
+	if streamed {
 		if err := archive.ChargeNativeDeltaBytes("receiving_collection_config_stream", 1<<20); err != nil {
 			return err
 		}
@@ -435,7 +444,7 @@ func stageCollectionConfig(ctx context.Context, archive *dumpformat.Archive, tx 
 	if err := temporary.ChargeNativeDeltaBytes("receiving_collection_config_read", uint64(file.Size)); err != nil {
 		return err
 	}
-	if err := archive.ChargeNativeDeltaBytes("receiving_collection_config_blob", uint64(file.Size)); err != nil {
+	if err := archive.ChargeNativeDeltaBytes("receiving_collection_config_blob", 2*uint64(file.Size)); err != nil {
 		return err
 	}
 	data := make([]byte, file.Size)

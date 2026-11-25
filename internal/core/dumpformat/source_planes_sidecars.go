@@ -26,7 +26,7 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 	bounded := a.collection != nil || a.delta != nil
 	owner := a.decodedBudget()
 	var origins []driver.SourcePlaneOriginV1
-	if err := visitJSONElements(input, bounded, owner, func(entry []byte, footprint uint64) error {
+	if err := visitJSONElements(input, bounded, configAccounting{decoded: owner}, func(entry []byte, footprint uint64) error {
 		if bounded && owner != nil {
 			work := owner.Scope()
 			defer work.Release()

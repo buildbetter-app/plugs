@@ -464,3 +464,39 @@ func TestNativeCollectionReceivingStreamsWidePublicConfig(t *testing.T) {
 	}
 	t.Logf("published config %d bytes, peak charged bytes by phase %v", size, peak)
 }
+
+func TestNativeCollectionBufferedBlobRefusesBeforeAllocation(t *testing.T) {
+	for _, engine := range []string{"memory", "postgres"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			store, lease, _ := openIdentityTarget(t, engine)
+			before, err := store.Meta(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx, err := store.Write(ctx, lease)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Close()
+			const measured = nativeCollectionBufferedBlobBytes + 1
+			file := dumpformat.File{Size: measured, SHA256: strings.Repeat("a", 64)}
+			// No archive is available to open. The real writer must refuse
+			// using the committed size before touching a payload or spool.
+			err = stageCollectionConfig(ctx, nil, tx, file)
+			var limit *dumpformat.NativeDeltaDecodedLimitError
+			if !errors.As(err, &limit) || limit.Code() != "native_decoded_limit" ||
+				limit.Phase != "receiving_collection_config_blob" || limit.MeasuredBytes != measured ||
+				limit.LimitBytes != nativeCollectionBufferedBlobBytes || limit.AdmittedBytes != 0 {
+				t.Fatalf("expected typed upfront blob refusal, got %v", err)
+			}
+			if err := tx.Close(); err != nil {
+				t.Fatal(err)
+			}
+			after, err := store.Meta(ctx)
+			if err != nil || after != before {
+				t.Fatalf("refusal changed store metadata: %+v, %+v, %v", before, after, err)
+			}
+		})
+	}
+}

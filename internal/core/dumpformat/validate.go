@@ -197,7 +197,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 		if header.Name == SourceConfigMember && nativeDeltaAttachment {
 			// The encoded member stays available for exact source readback.
 			// Only one decoded element is live across each validation pass.
-			if err := visitJSONElements(bytes.NewReader(member), true, decodeWork, func([]byte, uint64) error { return nil }); err != nil {
+			if err := visitJSONElements(bytes.NewReader(member), true, configAccounting{decoded: decodeWork, headWindow: bufferBound}, func([]byte, uint64) error { return nil }); err != nil {
 				return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
 			}
 		} else if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
@@ -307,7 +307,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" || manifest.NativeReverseProjection != nil {
 		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
 	}
-	config := configEntrySource{data: members[SourceConfigMember], owner: decodeWork, bounded: nativeDeltaAttachment}
+	config := configEntrySource{data: members[SourceConfigMember], accounting: configAccounting{decoded: decodeWork, headWindow: bufferBound}, bounded: nativeDeltaAttachment}
 	if err := validateManifest(manifest, members, config); err != nil {
 		return nil, err
 	}

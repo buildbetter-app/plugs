@@ -87,3 +87,24 @@ func TestStreamConfigEntriesPreservesOrdinaryArchiveValueRange(t *testing.T) {
 		t.Fatalf("ordinary config read: %d entries, %v", visited, err)
 	}
 }
+
+func TestStreamJSONElementsSharesRetainedHeadBufferAllowance(t *testing.T) {
+	const limit = 512 << 10
+	window := NewNativeDeltaBudget(limit)
+	decoded := NewNativeDeltaBudget(0)
+	if err := window.ChargeBytes("head_member_payloads", limit-(64<<10)); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`[{"input":{"family":"project-config","path":"/public/head-window","state":"json-config","precedence":0},"values":{"row":"` + strings.Repeat("x", 16<<10) + `"}}]`)
+	err := streamConfigReader(bytes.NewReader(data), true, configAccounting{decoded: decoded, headWindow: window}, func(externalEntry, []byte) error {
+		t.Fatal("oversized live config reached its visitor")
+		return nil
+	})
+	var refusal *NativeDeltaDecodedLimitError
+	if !errors.As(err, &refusal) || refusal.LimitBytes != limit || refusal.MeasuredBytes <= limit {
+		t.Fatalf("expected retained head buffer refusal, got %v", err)
+	}
+	if got := decoded.Usage().CurrentAccountedDecodedBytes; got != 0 {
+		t.Fatalf("failed pass retained %d shared bytes", got)
+	}
+}
