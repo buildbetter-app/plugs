@@ -200,11 +200,11 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 			// legacy validator parses or transforms it.
 			var count uint64
 			admit := func(line []byte, enclosingDepth int) error {
+				footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
+				if err != nil {
+					return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+				}
 				if bufferBound != nil {
-					footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
-					if err != nil {
-						return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
-					}
 					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
 						return err
 					}
