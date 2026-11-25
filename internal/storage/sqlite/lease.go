@@ -317,7 +317,7 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	defer unlockFile(gate)
 	// No publication belonged to this lease while we waited. Use the normal
 	// immediate boundary, which registers a bridge before advancing the timer.
-	if err := l.store.immediateLocked(ctx, l, func(*sql.Conn) error {
+	if err := l.store.immediateLocked(ctx, l, false, func(*sql.Conn) error {
 		_, err := l.renewPublication(ctx)
 		return err
 	}); err != nil {

@@ -155,7 +155,10 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	}
 	if len(receiptBytes) == 0 || json.Unmarshal(receiptBytes, &binding) != nil {
 		rows, rowErr := driver.GetNativeHeadRecords(ctx, r, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
-		if rowErr != nil || len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
+		if rowErr != nil {
+			return Report{}, nil, sourceInspectionFailure(rowErr, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"})
+		}
+		if len(rows) != 1 || rows[0].Kind != "instance_config" || json.Unmarshal(rows[0].Body, &binding) != nil {
 			return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.commitReceipt"}
 		}
 	}

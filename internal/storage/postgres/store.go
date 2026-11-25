@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	sqldriver "database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // Store owns a connection pool and its readers, transactions and active leases.
@@ -51,10 +52,11 @@ func Open(ctx context.Context, cfg driver.Config) (*Store, error) {
 	if cfg.DSN == "" || len(cfg.Options) != 0 {
 		return nil, fmt.Errorf("%w: postgres requires DSN and no options", driver.ErrUnsupported)
 	}
-	db, err := sql.Open("pgx", cfg.DSN)
+	connector, err := stdlib.GetDefaultDriver().(sqldriver.DriverContext).OpenConnector(cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: invalid connection configuration")
 	}
+	db := sql.OpenDB(commitEntryConnector{Connector: connector})
 	db.SetMaxOpenConns(96)
 	db.SetMaxIdleConns(16)
 	lockConn, err := db.Conn(ctx)

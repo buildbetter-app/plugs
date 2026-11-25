@@ -304,6 +304,30 @@ func TestRestoreImportAuthenticatedBindingRequiresLiveInteractiveUser(t *testing
 	}
 }
 
+type cancelAfterRestoreContextRead struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterRestoreContextRead) Err() error {
+	err := c.Context.Err()
+	c.cancel()
+	return err
+}
+
+func TestRestoreImportAuthenticatedBindingPreservesContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Expire the request between the adapter's admission check and authn's
+	// independent context check inside RequireInteractiveUser.
+	ctx = cancelAfterRestoreContextRead{Context: ctx, cancel: cancel}
+	a := &restoreImportAdapter{authMode: "authenticated"}
+	user := model.PrincipalRef{Kind: "user", ID: "user:restore"}
+	if _, _, _, _, err := a.binding(ctx, user, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("authenticated restore lost cancellation: %v", err)
+	}
+}
+
 func TestRestoreImportAnonymousBindingKeepsHonestScope(t *testing.T) {
 	a := &restoreImportAdapter{authMode: "anonymous"}
 	actor := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}

@@ -178,7 +178,7 @@ func TestSQLitePublicationLeaseWaitingRenewalSeesRegistration(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	err = s.immediateLocked(ctx, lease, func(c *sql.Conn) error {
+	err = s.immediateLocked(ctx, lease, false, func(c *sql.Conn) error {
 		select {
 		case err := <-renewal:
 			if err != nil {

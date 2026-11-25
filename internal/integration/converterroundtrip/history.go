@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -47,7 +48,7 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 	if p.HistoryMode == driver.RestoreHistoryModeSnapshot || when.IsZero() || p.SourceStoreID != driver.StoreID(archive.Manifest().StoreID) || p.ArchiveDigest != archive.SHA256() {
 		return p, fmt.Errorf("history binding requires admitted source, non-snapshot mode and actual restore time")
 	}
-	if err = validateArchiveHistoryPolicy(p.HistoryMode, archive); err != nil {
+	if err = validateArchiveHistoryPolicy(ctx, p.HistoryMode, archive); err != nil {
 		return p, err
 	}
 	p.HistoryTime = when.UTC().Format(time.RFC3339Nano)
@@ -89,12 +90,12 @@ func bindHistoryArchive(ctx context.Context, archive *dumpformat.Archive, p driv
 // complete native source histories that the converter will lower. Existing
 // host-side preparation computes the binding when those fields are empty, so
 // this check only applies to values admitted through admin.restore.begin.
-func ValidateBoundHistoryTime(archive *dumpformat.Archive, profile driver.RestoreImportProfile) error {
+func ValidateBoundHistoryTime(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile) error {
 	if archive.Manifest().SourceFamilyContract != dumpformat.SourceFamilyContract || !archive.HasNativeSourceHistories() {
 		return nil
 	}
 	var latest time.Time
-	err := archive.VisitNativeSourceHistories(context.Background(), func(history dumpformat.NativeHistory) error {
+	err := archive.VisitNativeSourceHistories(ctx, func(history dumpformat.NativeHistory) error {
 		for _, commit := range history.Commits {
 			if commit.ID != history.Head {
 				continue
@@ -114,6 +115,9 @@ func ValidateBoundHistoryTime(archive *dumpformat.Archive, profile driver.Restor
 		}
 		return fmt.Errorf("native history has no HEAD commit")
 	})
+	if e := ctx.Err(); e != nil {
+		return e
+	}
 	if err != nil || latest.IsZero() || profile.HistoryTime != latest.UTC().Format(time.RFC3339Nano) {
 		return driver.ErrRestoreHistoryRefused{Mode: profile.HistoryMode, History: archive.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
@@ -127,7 +131,10 @@ func historyReadError(mode driver.RestoreHistoryMode, err error) error {
 	return err
 }
 
-func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
+func validateArchiveHistoryPolicy(ctx context.Context, mode driver.RestoreHistoryMode, a *dumpformat.Archive) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// A v2 attachment is exposed only after every graph/schema/table and both
 	// checkpoints have passed. Avoid copying all rows just to repeat this gate.
 	if a.HasNativeCaptureCollection() {
@@ -146,7 +153,7 @@ func validateArchiveHistoryPolicy(mode driver.RestoreHistoryMode, a *dumpformat.
 		if mode != driver.RestoreHistoryModeFull {
 			return driver.ErrRestoreHistoryRefused{Mode: mode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonNotYetSupported}
 		}
-		return a.VisitNativeSourceHistories(context.Background(), func(scope dumpformat.NativeHistory) error { return nativePolicyRefusal(mode, a, scope) })
+		return a.VisitNativeSourceHistories(ctx, func(scope dumpformat.NativeHistory) error { return nativePolicyRefusal(mode, a, scope) })
 	}
 	if mode == driver.RestoreHistoryModeSnapshot {
 		return nil
@@ -195,15 +202,19 @@ func portableHistoryRecords(plan restorePlan) []driver.Record {
 }
 
 func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, when time.Time, contexts ...context.Context) (driver.OfflineHistory, error) {
+	ctx := nativeOperationContext(contexts)
 	if a.HasNativeSourceHistories() {
-		return lowerNativeTableHistory(a, p, nativeOperationContext(contexts))
+		return lowerNativeTableHistory(a, p, ctx)
 	}
-	refuse := func() (driver.OfflineHistory, error) {
+	refuse := func(cause error) (driver.OfflineHistory, error) {
+		if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+			return driver.OfflineHistory{}, cause
+		}
 		return driver.OfflineHistory{}, driver.ErrRestoreHistoryRefused{Mode: p.HistoryMode, History: a.Manifest().History, Reason: driver.RestoreHistoryReasonUnmappable}
 	}
 	scopes, ok := restoreHistoryScopes(a)
 	if !ok || len(scopes) == 0 {
-		return refuse()
+		return refuse(nil)
 	}
 	if len(scopes) > 1 {
 		// Independent project histories have no source-defined cross-project
@@ -213,7 +224,7 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		// project-scoped floor contract.
 		for _, scoped := range scopes {
 			if scoped.Range.Status != "verified" || !scoped.Range.Complete || scoped.Range.First != 1 || len(scoped.Range.Gaps) != 0 || len(scoped.Range.Baseline) != 0 {
-				return refuse()
+				return refuse(nil)
 			}
 		}
 		sort.Slice(scopes, func(i, j int) bool { return scopes[i].Project < scopes[j].Project })
@@ -229,11 +240,14 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		}
 	}
 	image := func(sequence uint64) ([]driver.Record, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		snapshot, err := a.HistoryImage(sequence)
 		if err != nil {
 			return nil, err
 		}
-		plan, err := buildPlanWithProfile(snapshot, &p, when)
+		plan, err := buildPlanWithProfile(snapshot, &p, when, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +260,7 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 			var err error
 			before, err = image(r.First - 1)
 			if err != nil {
-				return refuse()
+				return refuse(err)
 			}
 			h.Baseline = before
 		}
@@ -257,7 +271,7 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		for _, frame := range r.Frames {
 			after, err := image(frame.Sequence)
 			if err != nil {
-				return refuse()
+				return refuse(err)
 			}
 			batch := driver.SourceHistoryBatch{Sequence: frame.Sequence, CommitIDs: []string{frame.CommitID}, EventIDs: []string{}, Changes: historyDelta(before, after)}
 			if a.Manifest().SourceIdentityContract == dumpformat.SourceIdentityContract {
@@ -281,13 +295,16 @@ func lowerSourceHistory(a *dumpformat.Archive, p driver.RestoreImportProfile, wh
 		before := []driver.Record{}
 		previousEvents := map[string]bool{}
 		for _, frame := range scoped.Range.Frames {
+			if err := ctx.Err(); err != nil {
+				return driver.OfflineHistory{}, err
+			}
 			after, err := a.HistoryImageForProject(scoped.Project, frame.Sequence)
 			if err != nil {
-				return refuse()
+				return refuse(err)
 			}
-			beforePlan, err := buildPlanWithProfile(after, &p, when)
+			beforePlan, err := buildPlanWithProfile(after, &p, when, ctx)
 			if err != nil {
-				return refuse()
+				return refuse(err)
 			}
 			afterRecords := portableHistoryRecords(beforePlan)
 			globalSequence++

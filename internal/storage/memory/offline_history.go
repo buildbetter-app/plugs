@@ -166,7 +166,7 @@ func (t *transaction) CommitOfflineHistory(ctx context.Context, h driver.Changes
 	if err = t.checkCommit(ctx); err != nil {
 		return zero, err
 	}
-	if err := s.withLeasePublication(t.lease, func() {
+	if err := s.withLeasePublicationContext(ctx, t.lease, func() {
 		s.state = next
 		s.checkpoints = checkpoints
 		t.finish()

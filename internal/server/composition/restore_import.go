@@ -44,12 +44,15 @@ type RestoreImportRequest struct {
 // checked the paged archive, canonical manifest hash and initiating principal;
 // this hook performs the trusted converter inspection/admission and returns a
 // normal restore status for the same session.
-func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, archive []byte, manifestHash string, historyMode driver.RestoreHistoryMode, historyDigest, historyTime string, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
-	if strings.TrimSpace(manifestHash) == "" {
-		return restore.RestoreStatus{}, fmt.Errorf("restore import manifest hash is required")
-	}
+func (a *restoreImportAdapter) Import(ctx context.Context, restoreID string, principal model.PrincipalRef, data []byte, archive *dumpformat.Archive, historyMode driver.RestoreHistoryMode, historyDigest, historyTime string, meta model.WriteMeta, presence restore.Presence) (restore.RestoreStatus, error) {
 	request := RestoreImportRequest{IdempotencyKey: meta.IdempotencyKey, AgentLabel: meta.AgentLabel, HistoryMode: historyMode, HistoryDigest: historyDigest, HistoryTime: historyTime, Presence: presence}
-	report, err := a.importArchive(ctx, principal, bytes.NewReader(archive), request)
+	if err := a.validateRequest(ctx, &request); err != nil {
+		return restore.RestoreStatus{}, err
+	}
+	report, err := a.importValidatedArchive(ctx, principal, data, request, archive)
+	if report.Archive != nil && report.Archive != archive {
+		defer report.Archive.ReleaseNativeDecoded()
+	}
 	if err != nil {
 		return restore.RestoreStatus{}, err
 	}
@@ -84,25 +87,11 @@ func (r *Runtime) RestoreImport(ctx context.Context, principal model.PrincipalRe
 }
 
 func (a *restoreImportAdapter) importArchive(ctx context.Context, principal model.PrincipalRef, input io.Reader, request RestoreImportRequest) (converterroundtrip.Report, error) {
-	if a == nil || a.store == nil || a.lease == nil || a.presence == nil || a.planner == nil {
-		return converterroundtrip.Report{}, converterroundtrip.ErrRestoreUnavailable
-	}
-	if ctx == nil {
-		return converterroundtrip.Report{}, errors.New("restore import context is required")
+	if err := a.validateRequest(ctx, &request); err != nil {
+		return converterroundtrip.Report{}, err
 	}
 	if input == nil {
 		return converterroundtrip.Report{}, errors.New("restore import archive is required")
-	}
-	if strings.TrimSpace(request.IdempotencyKey) != request.IdempotencyKey || request.IdempotencyKey == "" {
-		return converterroundtrip.Report{}, errors.New("restore import idempotency key is required")
-	}
-	historyMode, err := driver.ParseRestoreHistoryMode(string(request.HistoryMode))
-	if err != nil {
-		return converterroundtrip.Report{}, err
-	}
-	request.HistoryMode = historyMode
-	if request.Presence == nil {
-		return converterroundtrip.Report{}, authn.ErrHumanPresenceRequired
 	}
 	data, err := io.ReadAll(io.LimitReader(input, dumpformat.MaxArchiveBytes+1))
 	if err != nil {
@@ -111,12 +100,44 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if len(data) > dumpformat.MaxArchiveBytes {
 		return converterroundtrip.Report{}, fmt.Errorf("restore import archive exceeds %d bytes", dumpformat.MaxArchiveBytes)
 	}
-	archive, err := dumpformat.Read(bytes.NewReader(data))
+	archive, err := dumpformat.ReadWithNativeDeltaAccounting(ctx, bytes.NewReader(data))
 	if err != nil {
 		return converterroundtrip.Report{}, err
 	}
+	report, err := a.importValidatedArchive(ctx, principal, data, request, archive)
+	if report.Archive != archive {
+		archive.ReleaseNativeDecoded()
+	}
+	return report, err
+}
+
+func (a *restoreImportAdapter) validateRequest(ctx context.Context, request *RestoreImportRequest) error {
+	if a == nil || a.store == nil || a.lease == nil || a.presence == nil || a.planner == nil {
+		return converterroundtrip.ErrRestoreUnavailable
+	}
+	if ctx == nil {
+		return errors.New("restore import context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(request.IdempotencyKey) != request.IdempotencyKey || request.IdempotencyKey == "" {
+		return errors.New("restore import idempotency key is required")
+	}
+	historyMode, err := driver.ParseRestoreHistoryMode(string(request.HistoryMode))
+	if err != nil {
+		return err
+	}
+	request.HistoryMode = historyMode
+	if request.Presence == nil {
+		return authn.ErrHumanPresenceRequired
+	}
+	return nil
+}
+
+func (a *restoreImportAdapter) importValidatedArchive(ctx context.Context, principal model.PrincipalRef, data []byte, request RestoreImportRequest, archive *dumpformat.Archive) (converterroundtrip.Report, error) {
 	if request.HistoryDigest != "" {
-		if err := converterroundtrip.ValidateBoundHistoryTime(archive, driver.RestoreImportProfile{HistoryMode: request.HistoryMode, HistoryDigest: request.HistoryDigest, HistoryTime: request.HistoryTime}); err != nil {
+		if err := converterroundtrip.ValidateBoundHistoryTime(ctx, archive, driver.RestoreImportProfile{HistoryMode: request.HistoryMode, HistoryDigest: request.HistoryDigest, HistoryTime: request.HistoryTime}); err != nil {
 			return converterroundtrip.Report{}, err
 		}
 	}
@@ -176,7 +197,7 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 	if err := a.admit(ctx, principal, request.AgentLabel, currentDigest, request.Presence); err != nil {
 		return converterroundtrip.Report{}, err
 	}
-	report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), a.store, a.lease, profile)
+	report, err := converterroundtrip.RestoreValidatedImportWithLease(ctx, archive, a.store, a.lease, profile)
 	if err == nil {
 		return report, nil
 	}
@@ -201,12 +222,20 @@ func (a *restoreImportAdapter) importArchive(ctx context.Context, principal mode
 }
 
 func (a *restoreImportAdapter) binding(ctx context.Context, principal model.PrincipalRef, agent string) (string, model.PrincipalRef, string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", model.PrincipalRef{}, "", "", err
+	}
 	switch a.authMode {
 	case "authenticated":
 		if principal.Kind != "user" || principal.Sponsor != nil || len(principal.Caveats) != 0 || authn.ValidatePrincipal(principal) != nil {
 			return "", model.PrincipalRef{}, "", "", authn.ErrUnauthenticated
 		}
 		if err := authn.RequireInteractiveUser(ctx, principal); err != nil {
+			// The live session check categorizes an expired request as unavailable.
+			// Preserve the interruption so an admitted restore can be retried.
+			if stopped := ctx.Err(); stopped != nil && errors.Is(err, authn.ErrUnavailable) {
+				err = stopped
+			}
 			return "", model.PrincipalRef{}, "", "", err
 		}
 		return "authenticated", principal, "", "restore-admin", nil
@@ -227,7 +256,14 @@ func (a *restoreImportAdapter) admit(ctx context.Context, principal model.Princi
 	if _, _, _, _, err := a.binding(ctx, principal, agent); err != nil {
 		return err
 	}
-	if err := a.presence.Verify(ctx, "admin.restore.begin", operationDigest, presence); err != nil {
+	err := a.presence.Verify(ctx, "admin.restore.begin", operationDigest, presence)
+	if interrupted := ctx.Err(); interrupted != nil {
+		return interrupted
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if err != nil {
 		return &model.Error{Data: model.ErrorData{Code: "human_presence_required", Hint: err.Error()}}
 	}
 	return nil

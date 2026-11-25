@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +12,35 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/testclock"
 )
+
+func TestMemoryRestoreChecksCancellationAtPublicationFence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var armed atomic.Bool
+	now := time.Now()
+	s, err := NewWithOptions(Options{Clock: func() time.Time {
+		if armed.CompareAndSwap(true, false) {
+			cancel()
+		}
+		return now
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	lease, err := s.Lease(ctx, "restore-publication-cancel", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := false
+	s.mu.Lock()
+	armed.Store(true)
+	err = s.withLeasePublicationContext(ctx, lease, func() { published = true })
+	s.mu.Unlock()
+	if err != context.Canceled || published {
+		t.Fatalf("interruption during final lease fence: publication=%t err=%v", published, err)
+	}
+}
 
 func TestMemoryLeaseRenewalDuringSlowCommit(t *testing.T) {
 	ctx := context.Background()

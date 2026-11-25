@@ -15,7 +15,6 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	"github.com/buildbetter-app/plugs/internal/storage/sourceindex"
-	"github.com/jackc/pgx/v5/stdlib"
 )
 
 type transaction struct {
@@ -44,6 +43,7 @@ type transaction struct {
 	bumps             map[string]driver.LockKey
 	allocated         map[string]bool
 	done              chan struct{}
+	commitEntered     *bool
 
 	checkpointGuards          map[string]uint64
 	checkpointWrites          map[string]driver.Checkpoint
@@ -64,13 +64,16 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	}
 	var cleanupDone <-chan struct{}
 	if err = conn.Raw(func(raw any) error {
-		cleanupDone = raw.(*stdlib.Conn).Conn().PgConn().CleanupDone()
+		sqlConn := raw.(*commitEntryConn).Conn
+		cleanupDone = sqlConn.Conn().PgConn().CleanupDone()
 		return nil
 	}); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	tx, err := conn.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	commitEntered := false
+	txCtx := context.WithValue(ctx, commitEntryKey{}, &commitEntered)
+	tx, err := conn.BeginTx(txCtx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -94,6 +97,7 @@ func (s *Store) Write(ctx context.Context, lease driver.ActiveLease) (driver.Wri
 	r := &reader{store: s, sql: tx, meta: m, conn: conn, cleanupDone: cleanupDone}
 	r.at, _ = m.Head.Uint64()
 	t := &transaction{reader: r, lease: l, leasePrepared: true, records: make(map[string]*driver.Record), identities: make(map[string]driver.Record), derived: make(map[string]driver.LockState), blobs: make(map[driver.Hash][]byte), allocators: make(map[string]driver.OfflineAllocator), bumps: make(map[string]driver.LockKey), allocated: make(map[string]bool), done: make(chan struct{})}
+	t.commitEntered = &commitEntered
 	r.writer = t
 	if err = s.track(r); err != nil {
 		_ = r.finish()

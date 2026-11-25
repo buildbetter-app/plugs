@@ -247,7 +247,7 @@ func TestRestoreImportConflictClassificationAcrossStores(t *testing.T) {
 				}
 				defer lease.Release(ctx)
 				manager := restore.NewManager(target, lease, trustedPresenceVerifier())
-				manager.SetImportHook(func(context.Context, string, model.PrincipalRef, []byte, string, driver.RestoreHistoryMode, string, string, model.WriteMeta, restore.Presence) (restore.RestoreStatus, error) {
+				manager.SetImportHook(func(context.Context, string, model.PrincipalRef, []byte, *dumpformat.Archive, driver.RestoreHistoryMode, string, string, model.WriteMeta, restore.Presence) (restore.RestoreStatus, error) {
 					return restore.RestoreStatus{}, testCase.err
 				})
 				status, err := manager.BeginAs(ctx, model.PrincipalRef{Kind: "user", ID: "restore-owner"}, manifestValue.(map[string]any), "head", restore.Presence(presence))

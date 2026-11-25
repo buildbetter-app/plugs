@@ -123,7 +123,7 @@ func publicProofCaptureSelection(archive *dumpformat.Archive, mode driver.Restor
 // Keep typed policy refusal before lower-level binding and require the
 // explicit operator opt-in supplied by the actual native mode receiver layer.
 func publicProofBindCapture(ctx context.Context, archive *dumpformat.Archive, profile driver.RestoreImportProfile, plan driver.SourcePlanePlanV1) (driver.RestoreImportProfile, error) {
-	if err := validateArchiveHistoryPolicy(profile.HistoryMode, archive); err != nil {
+	if err := validateArchiveHistoryPolicy(ctx, profile.HistoryMode, archive); err != nil {
 		return driver.RestoreImportProfile{}, err
 	}
 	if profile.NativeDeltaHistory != nil {

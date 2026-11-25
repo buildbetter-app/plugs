@@ -311,6 +311,9 @@ func (t *nativeRestoreFaultTx) Put(ctx context.Context, r driver.Record) error {
 }
 func (t *nativeRestoreFaultTx) Commit(ctx context.Context, h driver.ChangesetHeader) (model.Changeset, error) {
 	t.owner.commits++
+	if t.owner.fault == "interrupted-uncommitted" {
+		return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: h.IdempotencyKey, RestoreInterrupted: true}
+	}
 	if t.owner.fault == "uncertain-uncommitted" {
 		return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: h.IdempotencyKey}
 	}
@@ -319,6 +322,66 @@ func (t *nativeRestoreFaultTx) Commit(ctx context.Context, h driver.ChangesetHea
 		return model.Changeset{}, driver.ErrIndeterminate{IdempotencyKey: h.IdempotencyKey}
 	}
 	return entry, err
+}
+
+func TestRestoreInterruptedOutcomeSurvivesLostLease(t *testing.T) {
+	data, archive := nativeProfileArchive(t)
+	manifest, hash := manifestForRestore(t, archive)
+	ctx := context.Background()
+	store := memory.New()
+	defer store.Close()
+	lease, err := store.Lease(ctx, "interrupted-restore", driver.LeaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(ctx)
+	target := &nativeRestoreFaultStore{Store: store, fault: "interrupted-uncommitted"}
+	bound := trustedPresenceVerifier()
+	reject := false
+	manager := restore.NewManager(target, lease, restore.PresenceVerifierFunc(func(ctx context.Context, method, digest string, proof restore.Presence) error {
+		if reject {
+			return errors.New("refused proof")
+		}
+		return bound.Verify(ctx, method, digest, proof)
+	}))
+	proof := restore.Presence(presence)
+	principal := model.PrincipalRef{Kind: "user", ID: "interrupted-restore-owner"}
+	meta := model.WriteMeta{Method: "admin.restore.finish", IdempotencyKey: "interrupted-restore-key"}
+	session, err := manager.BeginAs(ctx, principal, manifest, "head", proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for page, offset := uint64(0), 0; offset < len(data); page++ {
+		end := min(offset+1024, len(data))
+		if _, err := manager.ChunkAs(ctx, principal, session.RestoreID, page, data[offset:end], sha(data[offset:end]), proof); err != nil {
+			t.Fatal(err)
+		}
+		offset = end
+	}
+	assertPending := func() {
+		t.Helper()
+		_, err := manager.Finish(ctx, session.RestoreID, hash, principal, meta, proof)
+		var uncertain driver.ErrIndeterminate
+		if !errors.As(err, &uncertain) || !uncertain.RestoreInterrupted || uncertain.IdempotencyKey != meta.IdempotencyKey {
+			t.Fatalf("finish lost the interrupted publication outcome: %v", err)
+		}
+	}
+	assertPending()
+	if err := lease.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reject = true
+	_, err = manager.Finish(ctx, session.RestoreID, hash, principal, meta, proof)
+	var refused *model.Error
+	if !errors.As(err, &refused) || refused.Data.Code != "human_presence_required" {
+		t.Fatalf("unverified caller could inspect the unknown publication: %v", err)
+	}
+	reject = false
+	assertPending()
+	if target.commits != 1 {
+		t.Fatalf("read-only repeat entered commit %d times", target.commits)
+	}
+	assertEmptyRestoreTarget(t, ctx, store)
 }
 
 func TestNativeRestoreFailureCleanupAndReadOnlyUncertainLookup(t *testing.T) {

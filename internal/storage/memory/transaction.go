@@ -662,7 +662,11 @@ func (t *transaction) Commit(ctx context.Context, header driver.ChangesetHeader)
 	if err := t.check(ctx); err != nil {
 		return model.Changeset{}, err
 	}
-	if err := s.withLeasePublication(t.lease, func() {
+	publishCtx := context.Background()
+	if t.restore != nil {
+		publishCtx = ctx
+	}
+	if err := s.withLeasePublicationContext(publishCtx, t.lease, func() {
 		s.state = next
 		s.checkpoints = checkpoints
 		t.finish()
