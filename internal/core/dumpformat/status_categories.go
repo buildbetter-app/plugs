@@ -95,7 +95,7 @@ func validateStatusCategoryContract(manifest Manifest) error {
 	return nil
 }
 
-func validateNativeStatusCatalogConservation(manifest Manifest, records map[string][]Record, config []byte) error {
+func validateNativeStatusCatalogConservation(manifest Manifest, records map[string][]Record, config configEntrySource) error {
 	custom, err := sourcePlaneCatalogCategoriesFor(records, config, true)
 	if err != nil {
 		return err

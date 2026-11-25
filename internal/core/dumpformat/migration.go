@@ -70,7 +70,7 @@ var declarationName = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 
 // collectConfigDeclarations reads the raw layers separately. It deliberately
 // never consults precedence or the companion's effective DB-first view.
-func collectConfigDeclarations(records map[string][]Record, config []byte) ([]ConfigDeclaration, error) {
+func collectConfigDeclarations(records map[string][]Record, config configEntrySource) ([]ConfigDeclaration, error) {
 	var result []ConfigDeclaration
 	for _, kind := range sortedRecordKinds(records) {
 		for _, r := range records[kind] {
@@ -97,7 +97,7 @@ func collectConfigDeclarations(records map[string][]Record, config []byte) ([]Co
 			}
 		}
 	}
-	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
+	if err := config.visit(func(entry externalEntry) error {
 		if entry.Input.State == "absent" {
 			return nil
 		}
@@ -105,6 +105,11 @@ func collectConfigDeclarations(records map[string][]Record, config []byte) ([]Co
 		decls, err := declarationsFromSource(entry.Values, entry.Input.Family, origin)
 		if err != nil {
 			return err
+		}
+		for _, decl := range decls {
+			if err := config.reserve("config_migration_declarations", uint64(len(decl.Name)+len(decl.Category)+len(decl.Origin))+256); err != nil {
+				return err
+			}
 		}
 		result = append(result, decls...)
 		return nil
@@ -267,7 +272,7 @@ func validateMigrationDirectives(directives []OntologyDirective, projects []Proj
 	return nil
 }
 
-func compileImportMigration(manifest Manifest, records map[string][]Record, config []byte, hasHistory bool) (*ImportMigration, error) {
+func compileImportMigration(manifest Manifest, records map[string][]Record, config configEntrySource, hasHistory bool) (*ImportMigration, error) {
 	decls, err := collectConfigDeclarations(records, config)
 	if err != nil {
 		return nil, err

@@ -183,7 +183,7 @@ func validateSourceIdentityMarker(fields map[string]json.RawMessage, manifest Ma
 // validateScopedSourceRecords reuses the admitted source validators within
 // each declared source project, then checks the aggregate census. It does not
 // create a shared catalog, global physical ID or cross-project deduplication.
-func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []byte) error {
+func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config configEntrySource) error {
 	bySource := map[SourceIdentity]map[string][]Record{}
 	owners := map[string]SourceIdentity{}
 	for kind, records := range rows {
@@ -205,12 +205,10 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 	if len(owners) != len(m.Projects) {
 		return ErrSourceHistory{Reason: "missing source project records"}
 	}
-	configs := map[SourceIdentity][]externalEntry{}
-	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
+	if err := config.visit(func(entry externalEntry) error {
 		if entry.Identity == nil || owners[entry.Identity.Project] != *entry.Identity || bySource[*entry.Identity] == nil {
 			return HistoryMergeRefusal{Kind: "configuration source identity", Reason: "configuration provenance has no declared source"}
 		}
-		configs[*entry.Identity] = append(configs[*entry.Identity], entry)
 		return nil
 	}); err != nil {
 		return err
@@ -240,15 +238,9 @@ func validateScopedSourceRecords(m Manifest, rows map[string][]Record, config []
 				scoped.Ontology = append(scoped.Ontology, d)
 			}
 		}
-		localEntries := append([]externalEntry{}, configs[identity]...)
-		for i := range localEntries {
-			localEntries[i].Identity = nil
-		}
-		localConfig, err := json.Marshal(localEntries)
-		if err != nil {
-			return err
-		}
-		if err = validateConfigProvenance(localConfig); err != nil {
+		localConfig := config
+		localConfig.identity = &identity
+		if err := validateConfigProvenance(localConfig); err != nil {
 			return err
 		}
 		var statuses map[string]bool

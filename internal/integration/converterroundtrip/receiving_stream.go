@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
@@ -226,6 +227,11 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 			return report, fmt.Errorf("restore blob digest mismatch")
 		}
 	}
+	if image.CollectionConfig.Size != 0 {
+		if err := stageCollectionConfig(ctx, archive, tx, image.CollectionConfig); err != nil {
+			return report, err
+		}
+	}
 	if archive.HasNativeCaptureCollection() {
 		// Each callback buffer is separately charged by the verifier. The writer
 		// retains its own transaction clone through commit/abort, admitted first.
@@ -312,6 +318,9 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 	evidenceVerified := false
 	evidence.beforeInspection = func(inspectCtx context.Context, recovered *Report) (context.Context, error) {
 		evidenceVerified = true
+		// Streamed SQLite blob publication can upgrade the storage schema in
+		// the same commit. The pinned recovery read observes the committed one.
+		report.Restored.SchemaVersion = recovered.Restored.SchemaVersion
 		// Retain only fields exported by the result. The logical input is still
 		// owned by the caller's preparation, independently of these dead buffers.
 		output, releaseOutput := retainedArchive.NativeDeltaAccountingScope()
@@ -397,4 +406,45 @@ func recoverNativeReceivingIndeterminate(ctx context.Context, target driver.Stor
 // durable import as a conflict or invite replay under another receipt key.
 func nativeReceivingPostCommitError(report Report, cause error) error {
 	return fmt.Errorf("native import committed at %s; receipt key %q; post-commit verification failed: %v", report.Restored.Head, report.IdempotencyKey, cause)
+}
+
+// The config is assembled once by the collection planner. SQLite validates
+// and publishes the replayable section inside the verified history commit.
+// The other engines' existing blob representation needs a transaction-owned
+// value, so its input and clone must both fit the native receiving budget.
+func stageCollectionConfig(ctx context.Context, archive *dumpformat.Archive, tx driver.WriteTx, config dumpformat.File) error {
+	input, file, ok := archive.OpenCollectionConfig()
+	if !ok || file != config {
+		return fmt.Errorf("receiving configuration spool differs from plan")
+	}
+	hash := driver.Hash(file.SHA256)
+	if stage, ok := tx.(driver.NativeRestoreBlobTx); ok {
+		if err := archive.ChargeNativeDeltaBytes("receiving_collection_config_stream", 1<<20); err != nil {
+			return err
+		}
+		return stage.StageNativeRestoreBlobs(ctx, func(visit func(driver.Hash, int64, io.Reader) error) error {
+			reader, actual, ok := archive.OpenCollectionConfig()
+			if !ok || actual != file {
+				return fmt.Errorf("receiving configuration spool unavailable")
+			}
+			return visit(hash, file.Size, reader)
+		})
+	}
+	temporary, release := archive.NativeDeltaAccountingScope()
+	defer release()
+	if err := temporary.ChargeNativeDeltaBytes("receiving_collection_config_read", uint64(file.Size)); err != nil {
+		return err
+	}
+	if err := archive.ChargeNativeDeltaBytes("receiving_collection_config_blob", uint64(file.Size)); err != nil {
+		return err
+	}
+	data := make([]byte, file.Size)
+	if _, err := io.ReadFull(input, data); err != nil {
+		return err
+	}
+	actual, err := tx.PutBlob(ctx, data)
+	if err == nil && actual != hash {
+		return fmt.Errorf("receiving configuration spool digest differs")
+	}
+	return err
 }

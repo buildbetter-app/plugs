@@ -71,3 +71,19 @@ func TestStreamJSONElementsReportsOversizeElement(t *testing.T) {
 		t.Fatalf("oversize element error = %v", err)
 	}
 }
+
+func TestStreamConfigEntriesPreservesOrdinaryArchiveValueRange(t *testing.T) {
+	leaf := strings.Repeat("x", driver.NativeHeadRecordBytes)
+	data := []byte(`[{"input":{"family":"project-config","path":"/public/large","state":"json-config","precedence":0},"values":{"row":"` + leaf + `"}}]`)
+	visited := 0
+	err := streamConfigEntries(data, func(entry externalEntry, _ []byte) error {
+		if entry.Input.Path != "/public/large" || entry.Values["row"] != leaf {
+			t.Fatal("ordinary entry changed")
+		}
+		visited++
+		return nil
+	})
+	if err != nil || visited != 1 {
+		t.Fatalf("ordinary config read: %d entries, %v", visited, err)
+	}
+}

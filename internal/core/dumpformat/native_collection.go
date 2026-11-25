@@ -381,7 +381,7 @@ func (c *NativeCaptureCollection) Finish() (*Archive, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.manifest.Files[sourceConfigMember] = commitment
+	a.manifest.Files[SourceConfigMember] = commitment
 	if err := a.ChargeNativeDeltaJSON("collection_manifest_encoding", a.manifest); err != nil {
 		closeConfigFile(configFile)
 		return nil, err

@@ -8,7 +8,7 @@ import (
 
 // This validates raw catalog conservation only. No catalog category chooses
 // a workflow status, target kind, principal or lifetime for an active entity.
-func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[string]bool, error) {
+func validateSourcePlaneCatalog(rows map[string][]Record, config configEntrySource) (map[string]bool, error) {
 	categories, err := sourcePlaneCatalogCategories(rows, config)
 	if err != nil {
 		return nil, err
@@ -20,11 +20,11 @@ func validateSourcePlaneCatalog(rows map[string][]Record, config []byte) (map[st
 	return statuses, nil
 }
 
-func sourcePlaneCatalogCategories(rows map[string][]Record, config []byte) (map[string]string, error) {
+func sourcePlaneCatalogCategories(rows map[string][]Record, config configEntrySource) (map[string]string, error) {
 	return sourcePlaneCatalogCategoriesFor(rows, config, false)
 }
 
-func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, native bool) (map[string]string, error) {
+func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config configEntrySource, native bool) (map[string]string, error) {
 	var declarations []ConfigDeclaration
 	seenStatus, seenType := map[string]bool{}, map[string]bool{}
 	stored := map[string]any{}
@@ -68,7 +68,7 @@ func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, na
 		return nil, err
 	}
 	declarations = append(declarations, decls...)
-	if err := streamConfigEntries(config, func(entry externalEntry, _ []byte) error {
+	if err := config.visit(func(entry externalEntry) error {
 		if entry.Input.State == "absent" {
 			return nil
 		}
@@ -85,6 +85,11 @@ func sourcePlaneCatalogCategoriesFor(rows map[string][]Record, config []byte, na
 		decls, err = declarationsFromSourceWith(entry.Values, entry.Input.Family, origin, sourcePlaneCatalogValues, true)
 		if err != nil {
 			return err
+		}
+		for _, decl := range decls {
+			if err := config.reserve("config_catalog_declarations", uint64(len(decl.Name)+len(decl.Category)+len(decl.Origin))+256); err != nil {
+				return err
+			}
 		}
 		declarations = append(declarations, decls...)
 		return nil

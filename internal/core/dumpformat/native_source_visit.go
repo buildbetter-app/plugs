@@ -88,8 +88,18 @@ func (a *Archive) ManifestChecked() (Manifest, error) {
 	return a.Manifest(), nil
 }
 
+// OpenCollectionConfig borrows the finished config spool until the collection
+// closes. Each reader starts at byte zero and can be consumed independently.
+func (a *Archive) OpenCollectionConfig() (io.Reader, File, bool) {
+	if a.collection == nil || a.collection.configOutput == nil {
+		return nil, File{}, false
+	}
+	input, _ := a.configReader()
+	return input, a.manifest.Files[SourceConfigMember], true
+}
+
 func (a *Archive) MemberChecked(path string) ([]byte, bool, error) {
-	if path == sourceConfigMember && a.collection != nil && a.collection.configOutput != nil {
+	if path == SourceConfigMember && a.collection != nil && a.collection.configOutput != nil {
 		size := a.manifest.Files[path].Size
 		if err := a.ChargeNativeDeltaBytes("detached_member", uint64(size)); err != nil {
 			return nil, false, err

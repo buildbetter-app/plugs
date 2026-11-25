@@ -409,7 +409,7 @@ func TestNativeCollectionStreamsLargeConfigWithinAccountingBounds(t *testing.T) 
 	if err != nil || info.Size() <= 24<<20 {
 		t.Fatalf("public fixture must exceed 24 MiB: %v %v", info, err)
 	}
-	source := &Archive{manifest: Manifest{Files: map[string]File{sourceConfigMember: {Size: info.Size()}}}, collection: &nativeCaptureCollection{configOutput: input}}
+	source := &Archive{manifest: Manifest{Files: map[string]File{SourceConfigMember: {Size: info.Size()}}}, collection: &nativeCaptureCollection{configOutput: input}}
 	budget := NewNativeDeltaBudget(4 << 20)
 	ctx := WithNativeDeltaBudget(context.Background(), budget)
 	collection, err := NewNativeCaptureCollection(ctx, physicalCollectionBinding(t))
@@ -430,8 +430,8 @@ func TestNativeCollectionStreamsLargeConfigWithinAccountingBounds(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	commitment := archive.manifest.Files[sourceConfigMember]
-	if _, materialized := archive.members[sourceConfigMember]; materialized || commitment.Size <= info.Size() {
+	commitment := archive.manifest.Files[SourceConfigMember]
+	if _, materialized := archive.members[SourceConfigMember]; materialized || commitment.Size <= info.Size() {
 		t.Fatalf("joined member must stay file-backed: %+v", commitment)
 	}
 	observed := 0

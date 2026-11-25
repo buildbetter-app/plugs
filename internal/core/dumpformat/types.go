@@ -304,7 +304,7 @@ func (a *Archive) Manifest() Manifest {
 }
 
 func (a *Archive) Member(path string) ([]byte, bool) {
-	if path == sourceConfigMember && a.collection != nil && a.collection.configOutput != nil {
+	if path == SourceConfigMember && a.collection != nil && a.collection.configOutput != nil {
 		reader, _ := a.configReader()
 		data, err := io.ReadAll(reader)
 		return data, err == nil
