@@ -3,6 +3,7 @@ package dumpformat
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 )
 
@@ -88,6 +89,16 @@ func (a *Archive) ManifestChecked() (Manifest, error) {
 }
 
 func (a *Archive) MemberChecked(path string) ([]byte, bool, error) {
+	if path == sourceConfigMember && a.collection != nil && a.collection.configOutput != nil {
+		size := a.manifest.Files[path].Size
+		if err := a.ChargeNativeDeltaBytes("detached_member", uint64(size)); err != nil {
+			return nil, false, err
+		}
+		reader, _ := a.configReader()
+		data := make([]byte, size)
+		_, err := io.ReadFull(reader, data)
+		return data, err == nil, err
+	}
 	if err := a.ChargeNativeDeltaBytes("detached_member", uint64(len(a.members[path]))); err != nil {
 		return nil, false, err
 	}

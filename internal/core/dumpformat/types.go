@@ -3,7 +3,10 @@
 // opens a store or creates a revision.
 package dumpformat
 
-import "unicode/utf8"
+import (
+	"io"
+	"unicode/utf8"
+)
 
 const (
 	Format          = "plug-dump/1"
@@ -301,6 +304,11 @@ func (a *Archive) Manifest() Manifest {
 }
 
 func (a *Archive) Member(path string) ([]byte, bool) {
+	if path == sourceConfigMember && a.collection != nil && a.collection.configOutput != nil {
+		reader, _ := a.configReader()
+		data, err := io.ReadAll(reader)
+		return data, err == nil
+	}
 	data, ok := a.members[path]
 	return append([]byte(nil), data...), ok
 }

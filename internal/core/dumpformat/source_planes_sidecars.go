@@ -18,12 +18,8 @@ func (a *Archive) SourcePlaneSidecarOrigins() ([]driver.SourcePlaneOriginV1, err
 	if a == nil || a.manifest.SourcePlaneAddressContract != SourcePlaneAddressContract {
 		return nil, fmt.Errorf("source plane sidecars require the explicit contract")
 	}
-	data, ok := a.Member("config/sources.json")
-	if !ok {
-		return nil, fmt.Errorf("missing captured configuration")
-	}
 	var origins []driver.SourcePlaneOriginV1
-	if err := streamConfigEntries(data, func(value externalEntry, entry []byte) error {
+	if err := a.visitConfigEntries(a.decodedBudget(), func(value externalEntry, entry []byte) error {
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(entry, &fields); err != nil {
 			return err

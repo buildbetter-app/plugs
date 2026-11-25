@@ -194,17 +194,23 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 		if readErr != nil {
 			return nil, fmt.Errorf("read archive member %q: %w", header.Name, readErr)
 		}
-		if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
+		if header.Name == sourceConfigMember && (nativeDeltaAttachment || bytes.HasPrefix(bytes.TrimSpace(member), []byte("["))) {
+			// The encoded member stays available for exact source readback.
+			// Only one decoded element is live across each validation pass.
+			if err := streamJSONElements(member, func([]byte) error { return nil }); err != nil {
+				return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+			}
+		} else if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
 			// Head members are JSON or NDJSON. Every retained decoded value is
 			// admitted from its compact escaped source preimage before any
 			// legacy validator parses or transforms it.
 			var count uint64
 			admit := func(line []byte, enclosingDepth int) error {
-				footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
-				if err != nil {
-					return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
-				}
 				if bufferBound != nil {
+					footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
+					if err != nil {
+						return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+					}
 					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
 						return err
 					}
@@ -218,26 +224,18 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 				}
 				return nil
 			}
-			if header.Name == "config/sources.json" {
-				if err := streamJSONElements(member, func(element []byte) error {
-					return admit(element, 1)
-				}); err != nil {
-					return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+			for rest := member; len(rest) != 0; {
+				line := rest
+				if strings.HasSuffix(header.Name, ".ndjson") {
+					line, rest, _ = bytes.Cut(rest, []byte{'\n'})
+				} else {
+					rest = nil
 				}
-			} else {
-				for rest := member; len(rest) != 0; {
-					line := rest
-					if strings.HasSuffix(header.Name, ".ndjson") {
-						line, rest, _ = bytes.Cut(rest, []byte{'\n'})
-					} else {
-						rest = nil
-					}
-					if len(bytes.TrimSpace(line)) == 0 {
-						continue
-					}
-					if err := admit(line, 0); err != nil {
-						return nil, err
-					}
+				if len(bytes.TrimSpace(line)) == 0 {
+					continue
+				}
+				if err := admit(line, 0); err != nil {
+					return nil, err
 				}
 			}
 			if err := charge(budget, "head_decoded_payloads", count); err != nil {

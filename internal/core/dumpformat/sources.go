@@ -50,8 +50,7 @@ func validateConfigProvenance(data []byte) error {
 			return err
 		}
 		seen[key], families[input.Family] = true, true
-		copy := entry
-		previous = &copy
+		previous = &externalEntry{Identity: entry.Identity, Input: entry.Input}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("invalid configuration provenance: %w", err)
