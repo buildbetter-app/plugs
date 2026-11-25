@@ -276,7 +276,7 @@ func (a *Archive) historyImageForProject(scoped ProjectSourceHistory, sequence u
 	return image, nil
 }
 
-func validateSourceHistory(a *Archive) error {
+func validateSourceHistory(a *Archive, h *SourceHistory) error {
 	raw, present := a.members[SourceHistoryMember]
 	if !present {
 		if a.manifest.History == "verified" {
@@ -284,15 +284,17 @@ func validateSourceHistory(a *Archive) error {
 		}
 		return nil
 	}
-	var h SourceHistory
-	if err := decodeJSON(raw, &h); err != nil {
-		return fmt.Errorf("source history shape: %w", err)
+	if h == nil {
+		h = new(SourceHistory)
+		if err := decodeJSON(raw, h); err != nil {
+			return fmt.Errorf("source history shape: %w", err)
+		}
 	}
 	fail := func(reason string) error { return ErrSourceHistory{Reason: reason} }
 	if h.Format != SourceHistoryFormat || len(h.Commits) > 100000 || len(h.Range.Frames) > 100000 || len(h.ProjectHistories) > 100000 {
 		return fail("unmappable")
 	}
-	scopes, err := sourceHistoryProjects(h, a.manifest)
+	scopes, err := sourceHistoryProjects(*h, a.manifest)
 	if err != nil {
 		return err
 	}
@@ -361,7 +363,7 @@ func validateSourceHistory(a *Archive) error {
 	if allVerified && a.manifest.History != "verified" || !allVerified && a.manifest.History != "available-unverified" {
 		return fail("non-contiguous")
 	}
-	a.history = &h
+	a.history = h
 	return nil
 }
 

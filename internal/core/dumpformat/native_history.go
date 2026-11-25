@@ -725,7 +725,9 @@ func validateNativeSourceHistories(a *Archive) error {
 func bindNativePortableCensus(a *Archive, h NativeHistory, scoped bool) error {
 	mismatch := nativeGap(h, "native-portable-commit-census-mismatch")
 	var portable SourceHistory
-	if err := decodeJSON(a.members[SourceHistoryMember], &portable); err != nil {
+	if a.history != nil {
+		portable = *a.history
+	} else if err := decodeJSON(a.members[SourceHistoryMember], &portable); err != nil {
 		return mismatch
 	}
 	commits := portable.Commits

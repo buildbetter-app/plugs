@@ -245,9 +245,12 @@ func stageReverseRecords(ctx context.Context, s nativeDumpSource, records *os.Fi
 	var index []reverseRecordSpan
 	var evidence []nativeRecord
 	var materialBytes int
+	var scanIndex uint64
 	visit := func(row driver.Record) error {
+		elementIndex := scanIndex
+		scanIndex++
 		if err := driver.CheckReverseRecordJSON(row.Ref, row.Kind, row.Body, 1); err != nil {
-			return err
+			return driver.LocateReverseJSONLimit(err, reverseRecordsMember, "$.body", elementIndex)
 		}
 		if !json.Valid(row.Body) {
 			return fmt.Errorf("reverse archive record has invalid JSON")
@@ -268,7 +271,7 @@ func stageReverseRecords(ctx context.Context, s nativeDumpSource, records *os.Fi
 		if profile != nil && driver.IsReverseDiscardedOrigin(record.Ref, record.Kind) {
 			fields, err := dumpformat.DecodeReverseOriginFields(record.Body)
 			if err != nil {
-				return err
+				return driver.LocateReverseJSONLimit(err, reverseRecordsMember, "$.body", elementIndex)
 			}
 			if projection.DiscardedOrigins == nil {
 				projection.DiscardedOrigins = &dumpformat.NativeReverseOriginLoss{}
@@ -294,7 +297,7 @@ func stageReverseRecords(ctx context.Context, s nativeDumpSource, records *os.Fi
 		}
 		size, err := writeReverseRecord(records, record)
 		if err != nil {
-			return err
+			return driver.LocateReverseJSONLimit(err, reverseRecordsMember, "$", elementIndex)
 		}
 		indexBytes += int64(len(key) + 64)
 		if indexBytes > reverseIndexBytes || offset+size > maxDumpBytes {
@@ -532,7 +535,7 @@ func restoreStreamRecords(ctx context.Context, stream *dumpformat.NativeHeadStre
 			return nil, fmt.Errorf("native material image exceeds buffer bound")
 		}
 		if err := dumpformat.ValidateNativeHeadRecord(line); err != nil {
-			return nil, err
+			return nil, driver.LocateReverseJSONLimit(err, reverseRecordsMember, "$", uint64(len(records)))
 		}
 		record, err := decodeNativeRecordForArchive(line, true)
 		if err != nil {
@@ -549,7 +552,7 @@ func restoreStreamRecords(ctx context.Context, stream *dumpformat.NativeHeadStre
 		records = append(records, record)
 	}
 	if err := scan.Err(); err != nil {
-		return nil, err
+		return nil, driver.LocateReverseJSONLimit(err, reverseRecordsMember, "$", uint64(len(records)))
 	}
 	if len(records) != manifest.RecordCount || hex.EncodeToString(hash.Sum(nil)) != manifest.Files[reverseRecordsMember].SHA256 {
 		return nil, fmt.Errorf("reverse record count or checksum differs")

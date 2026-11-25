@@ -177,7 +177,9 @@ func validateNativeEventsAttachment(a *Archive, h NativeHistory, scoped bool) er
 		return err
 	}
 	var original SourceHistory
-	if err := decodeJSON(raw, &original); err != nil {
+	if !scoped && a.history != nil {
+		original = *a.history
+	} else if err := decodeJSON(raw, &original); err != nil {
 		return err
 	}
 	events, present := h.Current["events"]
@@ -200,7 +202,9 @@ func validateNativeEventsAttachment(a *Archive, h NativeHistory, scoped bool) er
 
 func nativePortableScope(a *Archive, h NativeHistory, scoped bool) (ProjectSourceHistory, error) {
 	var portable SourceHistory
-	if err := decodeJSON(a.members[SourceHistoryMember], &portable); err != nil {
+	if a.history != nil {
+		portable = *a.history
+	} else if err := decodeJSON(a.members[SourceHistoryMember], &portable); err != nil {
 		return ProjectSourceHistory{}, err
 	}
 	if !scoped {

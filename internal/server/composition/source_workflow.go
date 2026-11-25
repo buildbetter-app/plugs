@@ -57,11 +57,19 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 	return r.Service.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt)
 }
 
-func (r *Runtime) recoverSourceWorkflow(ctx context.Context) error {
+func (r *Runtime) recoverSourceWorkflow(ctx context.Context) (err error) {
+	ctx = driver.WithRetainedSourceRead(ctx)
 	profile, report, found, err := converterroundtrip.RecoverBoundSourceImport(ctx, r.Store)
 	if err != nil || !found {
 		return err
 	}
+	defer func() {
+		archive := report.Archive
+		err = errors.Join(err, report.Close())
+		if report.Archive != nil && archive.HasNativeDelta() {
+			archive.ReleaseNativeDecoded()
+		}
+	}()
 	if report.SourcePlanes != nil && len(report.SourcePlanes.Providers) == 1 {
 		capability, err := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease)
 		if err != nil {
@@ -72,7 +80,7 @@ func (r *Runtime) recoverSourceWorkflow(ctx context.Context) error {
 			return err
 		}
 		if historical {
-			return report.Close()
+			return nil
 		}
 	}
 	return r.installSourceWorkflow(ctx, profile, report)

@@ -159,6 +159,9 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 	}
 
 	members := map[string][]byte{}
+	var manifest Manifest
+	var manifestFields map[string]json.RawMessage
+	var sourceHistory *SourceHistory
 	paths := []string{}
 	tr := tar.NewReader(input)
 	for {
@@ -194,24 +197,34 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 		if readErr != nil {
 			return nil, fmt.Errorf("read archive member %q: %w", header.Name, readErr)
 		}
-		if header.Name == SourceConfigMember && nativeDeltaAttachment {
+		switch {
+		case header.Name == SourceConfigMember && nativeDeltaAttachment:
 			// The encoded member stays available for exact source readback.
 			// Only one decoded element is live across each validation pass.
-			if err := visitJSONElements(bytes.NewReader(member), true, configAccounting{decoded: decodeWork, headWindow: bufferBound}, func([]byte, uint64) error { return nil }); err != nil {
+			if err := visitJSONElements(bytes.NewReader(member), true, configAccounting{decoded: decodeWork}, func([]byte, uint64) error { return nil }); err != nil {
 				return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, err)
 			}
-		} else if decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/") {
+		case bufferBound != nil && header.Name == "manifest.json":
+			manifestFields, readErr = decodeRetainedHeadJSON(member, header.Name, budget, &manifest)
+		case bufferBound != nil && header.Name == SourceHistoryMember:
+			sourceHistory = new(SourceHistory)
+			_, readErr = decodeRetainedHeadJSON(member, header.Name, budget, sourceHistory)
+		case bufferBound != nil && !strings.HasSuffix(header.Name, ".ndjson") && !strings.HasPrefix(header.Name, "blobs/"):
+			// A capture-set head has no allocator or separate native history
+			// attachments. Refuse them before attempting any JSON decode.
+			return nil, fmt.Errorf("unexpected JSON attachment in retained capture head")
+		case decodeWork != nil && !strings.HasPrefix(header.Name, "blobs/"):
 			// Head members are JSON or NDJSON. Every retained decoded value is
 			// admitted from its compact escaped source preimage before any
 			// legacy validator parses or transforms it.
 			var count uint64
-			admit := func(line []byte, enclosingDepth int) error {
+			admit := func(line []byte, index uint64) error {
 				if bufferBound != nil {
-					footprint, err := driver.ReverseJSONFootprint(line, enclosingDepth)
+					footprint, err := driver.ReverseJSONElementFootprint(line, 0)
 					if err != nil {
-						return fmt.Errorf("validate retained head member %q: %w", header.Name, err)
+						return driver.LocateReverseJSONLimit(err, header.Name, "$", index)
 					}
-					if err := bufferBound.ChargeBytes("head_decoded_shapes", footprint); err != nil {
+					if err := budget.ChargeBytes("head_decoded_shapes", footprint); err != nil {
 						return err
 					}
 				}
@@ -224,7 +237,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 				}
 				return nil
 			}
-			for rest := member; len(rest) != 0; {
+			for index, rest := uint64(0), member; len(rest) != 0; index++ {
 				line := rest
 				if strings.HasSuffix(header.Name, ".ndjson") {
 					line, rest, _ = bytes.Cut(rest, []byte{'\n'})
@@ -234,23 +247,26 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 				if len(bytes.TrimSpace(line)) == 0 {
 					continue
 				}
-				if err := admit(line, 0); err != nil {
+				if err := admit(line, index); err != nil {
 					return nil, err
 				}
 			}
-			if err := charge(budget, "head_decoded_payloads", count); err != nil {
+			if err := budget.ChargeBytes("head_decoded_payloads", count); err != nil {
 				return nil, err
 			}
 			for _, phase := range []string{"head_validation_input", "head_shape_input", "head_typed_input"} {
-				if err := charge(decodeWork, phase, uint64(len(member))); err != nil {
+				if err := decodeWork.ChargeBytes(phase, uint64(len(member))); err != nil {
 					return nil, err
 				}
 			}
 			for _, phase := range []string{"head_validation_tokens", "head_shape_values"} {
-				if err := charge(decodeWork, phase, count); err != nil {
+				if err := decodeWork.ChargeBytes(phase, count); err != nil {
 					return nil, err
 				}
 			}
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("validate retained head member %q: %w", header.Name, readErr)
 		}
 		members[header.Name] = member
 		paths = append(paths, header.Name)
@@ -262,16 +278,13 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 		return nil, fmt.Errorf("manifest must be first and remaining members sorted")
 	}
 
-	var manifest Manifest
-	if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
-		return nil, fmt.Errorf("invalid manifest: %w", err)
-	}
-	// Presence is significant: an explicitly empty contract is not omission.
-	// The complete manifest was strictly decoded above; inspect only presence
-	// here without changing its retained bytes or numeric representation.
-	var manifestFields map[string]json.RawMessage
-	if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
-		return nil, err
+	if manifestFields == nil {
+		if err := decodeJSON(members["manifest.json"], &manifest); err != nil {
+			return nil, fmt.Errorf("invalid manifest: %w", err)
+		}
+		if err := json.Unmarshal(members["manifest.json"], &manifestFields); err != nil {
+			return nil, err
+		}
 	}
 	if _, present := manifestFields["source_fields_contract"]; present && manifest.SourceFieldsContract != IssueSourceFieldsContract {
 		return nil, fmt.Errorf("unsupported source fields contract")
@@ -307,7 +320,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 	if _, present := members[NativeAllocatorMember]; present || manifest.NativeAllocatorProfile != "" || manifest.NativeAllocatorDigest != "" || manifest.NativeReverseProjection != nil {
 		return nil, fmt.Errorf("native allocator snapshot requires plug-native-store scope")
 	}
-	config := configEntrySource{data: members[SourceConfigMember], accounting: configAccounting{decoded: decodeWork, headWindow: bufferBound}, bounded: nativeDeltaAttachment}
+	config := configEntrySource{data: members[SourceConfigMember], accounting: configAccounting{decoded: decodeWork}, bounded: nativeDeltaAttachment}
 	if err := validateManifest(manifest, members, config); err != nil {
 		return nil, err
 	}
@@ -334,7 +347,7 @@ func readArchiveMembers(input io.Reader, data []byte, sha string, nativeDeltaAtt
 			}
 		}
 	}
-	if err := validateSourceHistory(archive); err != nil {
+	if err := validateSourceHistory(archive, sourceHistory); err != nil {
 		return nil, err
 	}
 	return archive, nil

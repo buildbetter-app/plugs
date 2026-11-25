@@ -192,10 +192,40 @@ references. It refuses unknown members or kinds, malformed checksums or
 ordering, unsupported fields/statuses/links, active or ephemeral rows,
 external or dangling targets, duplicate identities, invalid typed values,
 unclassified configuration, and malformed secret references. The refusal is a
-typed `*Refusal` with the same structured report; it does not open a Plug
-store, start an importer, resolve a secret, or write a database. This package
-is not present on current `main`, so no rollback conversion is available from
-the installed executable.
+typed `*Refusal` with the same structured report. The switch trial adapter
+calls this package offline.
+
+Offline reverse reopens the imported runtime against the original captures.
+With streaming store blobs, the retained head decodes configuration entries,
+portable history commits, events and frame rows, manifest inventory entries, and NDJSON rows
+individually. A completed capture keeps the exact wire bytes and the typed
+state needed for census comparisons. Native delta replay reads one logical
+row at a time across authenticated parts. Catalog, migration and
+source-identity checks use these validated rows and config entries. The
+capture-set root and protected metadata have their own admission limits.
+Startup's protected metadata allowance covers the base64 representation of
+the existing binary source-plan range. SQLite startup streams the persisted
+restore changeset one change or event at a time and preserves its order for
+header validation. Standalone native reverse applies its transport allowance
+to the receipt changeset.
+Native transport history markers check their ledger entries individually
+inside the separately bounded native record.
+SQLite checks the workflow checkpoint's encoded size in the pinned query.
+Recovery reads the typed origin and borrows the logical image directly from
+the checkpoint envelope. The workflow reader then admits each logical
+section under its existing section and aggregate limits.
+
+The retained capture limit is 64 MiB per encoded JSON element. It admits
+large individual source values while bounding the largest frame in memory.
+The 160 MiB decoded estimate allows for the input, a decoded string copy
+and structural overhead. The shared capture budget charges strict-decoder
+scratch, live element work, and retained images separately from admission
+of the head's wire bytes. Configuration walks borrowed spans and builds one
+decoded graph, with the live element charge covering the graph and scalar
+unescaping. Nesting remains capped at 128 for capture elements.
+The `reverse_json_limit` refusal
+includes the member, a structural JSON path and a zero-based index.
+Arrays appear as `[]`, and data-defined map keys appear as `<id>`.
 
 ## Warnings and secret references
 

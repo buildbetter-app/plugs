@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -18,7 +17,7 @@ import (
 
 const (
 	sourceStateKey  = "workflow/state"
-	sourceNamespace = "plugin/workflow/default/durable"
+	sourceNamespace = driver.SourcePlaneWorkflowNamespaceV1
 )
 
 // NewSourceRuntimeState selects a restored namespace on the actual store. The
@@ -79,7 +78,7 @@ func SourceRuntimeCheckpointIsHistorical(ctx context.Context, target driver.Stor
 	if err != nil {
 		return false, err
 	}
-	origin, _, err := (&durableAccess{}).InspectSourcePlaneOrigin(checkpoint)
+	origin, _, err := InspectBorrowedSourcePlaneOrigin(checkpoint)
 	if err != nil {
 		return false, err
 	}
@@ -92,7 +91,7 @@ func restoredHistoryMarker(ctx context.Context, target driver.Store, incarnation
 		return false, err
 	}
 	defer reader.Close()
-	rows, err := reader.Get(ctx, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
+	rows, err := driver.GetNativeHeadRecords(ctx, reader, []model.Ref{model.RefByID("restore/archive", model.Natural64(0))})
 	if err != nil || len(rows) == 0 {
 		return false, err
 	}
@@ -226,13 +225,9 @@ func (d *durableStateAccess) ReadSourceRuntimeCheckpoint(ctx context.Context) (j
 }
 
 func sourceObject(data []byte) error {
-	var object map[string]json.RawMessage
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := decoder.Decode(&object); err != nil || object == nil {
+	data = bytes.Trim(data, " \t\r\n")
+	if len(data) == 0 || data[0] != '{' || !json.Valid(data) {
 		return fmt.Errorf("source runtime requires a JSON object")
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return fmt.Errorf("source runtime has trailing JSON")
 	}
 	return nil
 }
@@ -242,31 +237,20 @@ func decodeSourceNamespace(checkpoint driver.Checkpoint) (durableNamespace, erro
 	if checkpoint.Generation == 0 || len(checkpoint.Payload) == 0 {
 		return ns, driver.ErrCheckpointConflict
 	}
-	decoder := json.NewDecoder(bytes.NewReader(checkpoint.Payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&ns); err != nil {
+	origin, revision, logical, err := driver.ReadSourcePlaneCheckpointEnvelope(checkpoint)
+	if err != nil {
 		return ns, err
 	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return ns, fmt.Errorf("source namespace has trailing JSON")
-	}
-	if ns.Origin == nil || len(ns.Values) != 1 {
-		return ns, driver.ErrCheckpointConflict
-	}
-	if err := validateSourceOrigin(*ns.Origin); err != nil {
+	if err := validateSourceOrigin(origin); err != nil {
 		return ns, err
 	}
-	value, ok := ns.Values[sourceStateKey]
-	if !ok || value.Revision == 0 || checkpoint.Generation < ns.Origin.InitialGeneration {
+	if checkpoint.Generation < origin.InitialGeneration {
 		return ns, driver.ErrCheckpointConflict
 	}
-	if err := sourceObject(value.Value); err != nil {
-		return ns, err
-	}
-	if checkpoint.Generation == ns.Origin.InitialGeneration && (value.Revision != 1 || sourceHash(value.Value) != ns.Origin.LogicalImageSHA256) {
+	if checkpoint.Generation == origin.InitialGeneration && (revision != 1 || sourceHash(logical) != origin.LogicalImageSHA256) {
 		return ns, driver.ErrCheckpointConflict
 	}
-	return ns, nil
+	return durableNamespace{Origin: &origin, Values: map[string]durableValue{sourceStateKey: {Revision: revision, Value: logical}}}, nil
 }
 
 // loadSource pins the graph and namespace together. Even a checkpoint-only
@@ -408,11 +392,19 @@ func (d *durableAccess) PrepareRestoreCheckpoint(ctx context.Context, newMeta dr
 // InspectSourcePlaneOrigin checks the complete envelope while returning the
 // current payload, which may legitimately differ from the initial image.
 func (d *durableAccess) InspectSourcePlaneOrigin(checkpoint driver.Checkpoint) (driver.SourcePlaneOriginBindingV1, json.RawMessage, error) {
+	origin, logical, err := InspectBorrowedSourcePlaneOrigin(checkpoint)
+	return origin, bytes.Clone(logical), err
+}
+
+// InspectBorrowedSourcePlaneOrigin verifies a caller-owned checkpoint and
+// returns a logical image backed by that checkpoint. The caller may read it
+// while it owns the checkpoint bytes.
+func InspectBorrowedSourcePlaneOrigin(checkpoint driver.Checkpoint) (driver.SourcePlaneOriginBindingV1, json.RawMessage, error) {
 	namespace, err := decodeSourceNamespace(checkpoint)
 	if err != nil {
 		return driver.SourcePlaneOriginBindingV1{}, nil, err
 	}
-	return *namespace.Origin, append(json.RawMessage(nil), namespace.Values[sourceStateKey].Value...), nil
+	return *namespace.Origin, namespace.Values[sourceStateKey].Value, nil
 }
 
 var _ driver.SourcePlaneCheckpointPreparer = (*durableAccess)(nil)

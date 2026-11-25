@@ -91,3 +91,22 @@ func TestSourcePlaneFinalPublicationRequiresCompleteOriginalBinding(t *testing.T
 		})
 	}
 }
+
+func TestSourcePlaneCheckpointEnvelopeBorrowsLogicalImage(t *testing.T) {
+	_, binding, _, checkpoints, _ := sourcePlanePublicationFixture(t)
+	wantOrigin := binding.Providers[0].Origin
+	checkpoint := checkpoints[wantOrigin.Namespace]
+	origin, revision, logical, err := ReadSourcePlaneCheckpointEnvelope(checkpoint)
+	if err != nil || origin != wantOrigin || revision != 1 || !bytes.Equal(logical, []byte("{}")) {
+		t.Fatalf("checkpoint fields changed: revision=%d err=%v", revision, err)
+	}
+	index := bytes.LastIndex(checkpoint.Payload, []byte("{}"))
+	if index < 0 || &logical[0] != &checkpoint.Payload[index] {
+		t.Fatal("logical image was copied")
+	}
+
+	checkpoint.Payload = bytes.Replace(checkpoint.Payload, []byte(`"revision":1`), []byte(`"revision":1,"revision":2`), 1)
+	if _, _, _, err := ReadSourcePlaneCheckpointEnvelope(checkpoint); err == nil {
+		t.Fatal("duplicate checkpoint revision was accepted")
+	}
+}

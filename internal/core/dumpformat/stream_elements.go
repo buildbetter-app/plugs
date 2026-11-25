@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
@@ -28,7 +31,7 @@ func visitJSONElements(input io.Reader, bounded bool, accounting configAccountin
 	reader := bufio.NewReaderSize(input, readerBytes)
 	limit := MaxArchiveBytes
 	if bounded {
-		limit = driver.NativeHeadRecordBytes
+		limit = driver.ReverseJSONElementBytes
 	}
 	first, err := readJSONNonspace(reader)
 	if err != nil || first != '[' {
@@ -36,16 +39,17 @@ func visitJSONElements(input io.Reader, bounded bool, accounting configAccountin
 	}
 	next, err := readJSONNonspace(reader)
 	var raw []byte
+	var index uint64
 	for err == nil && next != ']' {
 		raw, err = readJSONElement(reader, raw[:0], next, limit, bounded, work)
 		if err != nil {
-			return err
+			return driver.LocateReverseJSONLimit(err, SourceConfigMember, "$[]", index)
 		}
 		var footprint uint64
 		if bounded {
-			footprint, err = driver.ReverseJSONFootprint(raw, 1)
+			footprint, err = driver.ReverseJSONElementFootprint(raw, 1)
 			if err != nil {
-				return err
+				return driver.LocateReverseJSONLimit(err, SourceConfigMember, "$[]", index)
 			}
 		}
 		if !json.Valid(raw) {
@@ -54,6 +58,7 @@ func visitJSONElements(input io.Reader, bounded bool, accounting configAccountin
 		if err := visit(raw, footprint); err != nil {
 			return err
 		}
+		index++
 		next, err = readJSONNonspace(reader)
 		if err == nil && next == ',' {
 			next, err = readJSONNonspace(reader)
@@ -186,19 +191,66 @@ func streamConfigEntries(data []byte, visit func(externalEntry, []byte) error) e
 
 func streamConfigReader(input io.Reader, bounded bool, accounting configAccounting, visit func(externalEntry, []byte) error) error {
 	return visitJSONElements(input, bounded, accounting, func(raw []byte, footprint uint64) error {
+		var entry externalEntry
 		if bounded {
 			work := accounting.scope()
 			defer work.release()
+			// The graph and scalar unescaping share this reservation. The
+			// framer accounts its input slice separately.
 			if err := work.charge("config_element_decoded", footprint); err != nil {
 				return err
 			}
-		}
-		var entry externalEntry
-		if err := decodeJSONAtDepth(raw, &entry, 1); err != nil {
+			if err := decodeStreamedConfig(raw, &entry); err != nil {
+				return err
+			}
+		} else if err := decodeJSONAtDepth(raw, &entry, 1); err != nil {
 			return err
 		}
 		return visit(entry, raw)
 	})
+}
+
+// decodeStreamedConfig receives a JSON-valid, depth-admitted element. It
+// checks the exact typed shape and uses the checked map directly so a wide
+// values object is decoded once. Number spellings stay as json.Number.
+func decodeStreamedConfig(raw []byte, entry *externalEntry) error {
+	if !utf8.Valid(raw) {
+		return fmt.Errorf("JSON must be UTF-8")
+	}
+	if err := checkUnicodeEscapes(raw); err != nil {
+		return err
+	}
+	reader := retainedHeadJSON{rest: raw}
+	value, err := reader.decodeAny()
+	if err != nil {
+		return err
+	}
+	if err := checkShape(value, reflect.TypeFor[externalEntry]()); err != nil {
+		return err
+	}
+	fields := value.(map[string]any)
+	input := fields["input"].(map[string]any)
+	precedence, err := strconv.Atoi(string(input["precedence"].(json.Number)))
+	if err != nil {
+		return fmt.Errorf("invalid configuration precedence")
+	}
+	entry.Input.Family = input["family"].(string)
+	entry.Input.Path = input["path"].(string)
+	entry.Input.State = input["state"].(string)
+	entry.Input.Precedence = precedence
+	if identityValue, ok := fields["identity"]; ok {
+		if err := checkShape(identityValue, reflect.TypeFor[SourceIdentity]()); err != nil {
+			return fmt.Errorf("member identity: %w", err)
+		}
+		identityFields := identityValue.(map[string]any)
+		identity := SourceIdentity{StoreID: identityFields["store_id"].(string), Project: identityFields["project"].(string)}
+		if !validSourceIdentity(identity) {
+			return fmt.Errorf("source identity requires nonempty unambiguous store/project")
+		}
+		entry.Identity = &identity
+	}
+	entry.Values, _ = fields["values"].(map[string]any)
+	return nil
 }
 
 func (a *Archive) configReader() (io.Reader, bool) {
@@ -217,53 +269,33 @@ func (a *Archive) visitConfigEntries(owner *NativeDeltaBudget, visit func(extern
 	return streamConfigReader(input, a.collection != nil || a.delta != nil, configAccounting{decoded: owner}, visit)
 }
 
-// A reverse head's scratch uses the shared decoded budget and the tighter
-// retained-head buffer allowance. Each frame releases both reservations.
+// One config frame and its decoded representation share the capture's
+// decoded budget. The retained head wire window accounts the source bytes.
 type configAccounting struct {
-	decoded    *NativeDeltaBudget
-	headWindow *NativeDeltaBudget
+	decoded *NativeDeltaBudget
 }
 
 func (a configAccounting) scope() configAccounting {
 	if a.decoded != nil {
 		a.decoded = a.decoded.Scope()
 	}
-	if a.headWindow != nil {
-		a.headWindow = a.headWindow.Scope()
-	}
 	return a
 }
 
 func (a configAccounting) charge(phase string, bytes uint64) error {
-	if a.headWindow != nil {
-		if err := a.headWindow.ChargeBytes(phase, bytes); err != nil {
-			return err
-		}
-	}
 	if a.decoded != nil {
-		if err := a.decoded.ChargeBytes(phase, bytes); err != nil {
-			if a.headWindow != nil {
-				a.headWindow.ReleaseBytes(phase, bytes)
-			}
-			return err
-		}
+		return a.decoded.ChargeBytes(phase, bytes)
 	}
 	return nil
 }
 
 func (a configAccounting) releaseBytes(phase string, bytes uint64) {
-	if a.headWindow != nil {
-		a.headWindow.ReleaseBytes(phase, bytes)
-	}
 	if a.decoded != nil {
 		a.decoded.ReleaseBytes(phase, bytes)
 	}
 }
 
 func (a configAccounting) release() {
-	if a.headWindow != nil {
-		a.headWindow.Release()
-	}
 	if a.decoded != nil {
 		a.decoded.Release()
 	}

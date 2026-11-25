@@ -18,15 +18,33 @@ var (
 // ReverseJSONLimitError reports which offline JSON resource exhausted its
 // budget before decoding. Decoded bytes are an estimated allocation charge.
 type ReverseJSONLimitError struct {
-	Resource string `json:"resource"`
-	Measured uint64 `json:"measured"`
-	Limit    uint64 `json:"limit"`
+	Resource     string  `json:"resource"`
+	Measured     uint64  `json:"measured"`
+	Limit        uint64  `json:"limit"`
+	Member       string  `json:"member,omitempty"`
+	JSONPath     string  `json:"json_path,omitempty"`
+	ElementIndex *uint64 `json:"element_index,omitempty"`
 }
 
 func (e *ReverseJSONLimitError) Code() string { return "reverse_json_limit" }
 
 func (e *ReverseJSONLimitError) Error() string {
+	if e.ElementIndex != nil {
+		return fmt.Sprintf("%s: %s measured %d, limit %d at %s %s index %d", e.Code(), e.Resource, e.Measured, e.Limit, e.Member, e.JSONPath, *e.ElementIndex)
+	}
 	return fmt.Sprintf("%s: %s measured %d, limit %d", e.Code(), e.Resource, e.Measured, e.Limit)
+}
+
+// LocateReverseJSONLimit attaches a static or redacted archive member and
+// structural path to an admission failure. Index is zero-based in that path.
+func LocateReverseJSONLimit(err error, member, path string, index uint64) error {
+	var limit *ReverseJSONLimitError
+	if !errors.As(err, &limit) || limit.ElementIndex != nil {
+		return err
+	}
+	located := *limit
+	located.Member, located.JSONPath, located.ElementIndex = member, path, &index
+	return &located
 }
 
 // ErrRestoreBindingMismatch identifies an import receipt/profile field that

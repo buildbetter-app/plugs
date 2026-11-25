@@ -142,7 +142,20 @@ func PrepareNativeArchive(ctx context.Context, archive *dumpformat.Archive, prof
 	if err != nil {
 		return nil, err
 	}
-	if err = prepared.Visit(ctx, dumpformat.NativeDeltaVisitor{Commit: b.commit, TableState: b.checkpoint, File: b.captureFile}); err != nil {
+	ledgerOwner := dumpformat.NativeDeltaBudgetFromContext(owner.WithNativeDeltaAccounting(ctx)).Scope()
+	defer ledgerOwner.Release()
+	files, err := prepared.NativeCaptureFileLedger(ledgerOwner)
+	if err != nil {
+		return nil, err
+	}
+	for _, file := range files {
+		if err = b.captureFileCommitment(file.Name, dumpformat.File{Size: int64(file.Bytes), SHA256: file.SHA256}); err != nil {
+			return nil, err
+		}
+	}
+	files = nil
+	ledgerOwner.Release()
+	if err = prepared.Visit(ctx, dumpformat.NativeDeltaVisitor{Commit: b.commit, TableState: b.checkpoint}); err != nil {
 		return nil, err
 	}
 	if err = b.finish(); err != nil {

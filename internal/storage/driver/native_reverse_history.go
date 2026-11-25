@@ -50,7 +50,7 @@ func CheckReverseRecordJSON(ref Ref, kind string, raw []byte, enclosingDepth int
 	}
 	// The complete marker remains bounded in wire size and depth. Its
 	// ordered ledgers are never decoded as one graph.
-	if _, err := scanReverseJSON(raw, enclosingDepth); err != nil {
+	if _, err := scanReverseJSON(raw, enclosingDepth, NativeHeadRecordBytes); err != nil {
 		return err
 	}
 	fields, err := ReadNativeHistoryMarkerFields(raw)

@@ -224,6 +224,7 @@ internal/core/dumpformat/native_source_visit.go
 internal/core/dumpformat/ontology.go
 internal/core/dumpformat/ontology_test.go
 internal/core/dumpformat/records.go
+internal/core/dumpformat/retained_head_json.go
 internal/core/dumpformat/source_fields_contract_test.go
 internal/core/dumpformat/source_identity.go
 internal/core/dumpformat/source_identity_test.go
@@ -2460,6 +2461,7 @@ internal/storage/driver/restore.go
 internal/storage/driver/restore_test.go
 internal/storage/driver/selection.go
 internal/storage/driver/selection_contract_test.go
+internal/storage/driver/source_checkpoint_read.go
 internal/storage/driver/source_links.go
 internal/storage/driver/source_links_contract_test.go
 internal/storage/driver/source_planes.go

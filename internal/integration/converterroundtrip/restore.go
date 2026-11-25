@@ -726,10 +726,10 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 		// binding checks remain exact and no write is replayed.
 		refs := []model.Ref{model.RefByID("restore/archive", model.Natural64(0)), model.RefByID(importBindingRecordID, model.Natural64(0)), model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))}
 		rows, rowErr := driver.GetNativeHeadRecords(ctx, r, refs)
-		if errors.Is(rowErr, context.Canceled) || errors.Is(rowErr, context.DeadlineExceeded) {
-			return Report{}, rowErr
+		if rowErr != nil {
+			return Report{}, sourceInspectionFailure(rowErr, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"})
 		}
-		if rowErr != nil || len(rows) < 3 {
+		if len(rows) < 3 {
 			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
 		}
 		var imported importBindingEvidence
@@ -742,10 +742,10 @@ func recoverImportReader(ctx context.Context, r driver.Reader, meta driver.Meta,
 			}
 		}
 		rows, rowErr = driver.GetNativeHeadRecords(ctx, r, refs)
-		if errors.Is(rowErr, context.Canceled) || errors.Is(rowErr, context.DeadlineExceeded) {
-			return Report{}, rowErr
+		if rowErr != nil {
+			return Report{}, sourceInspectionFailure(rowErr, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"})
 		}
-		if rowErr != nil || len(rows) != len(refs) {
+		if len(rows) != len(refs) {
 			return Report{}, driver.ErrRestoreBindingMismatch{Field: "native.receipt.records"}
 		}
 		results := make([]model.OpResult, 0, len(rows))
