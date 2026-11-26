@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
@@ -16,7 +18,162 @@ import (
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
+
+func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
+	ctx := context.Background()
+	var checkRetained atomic.Bool
+	var retainedReads atomic.Int64
+	config := composition.Config{
+		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "joint-recovery.db"), Project: "demo",
+		RestorePresence: restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }),
+		StoreFactory: func(ctx context.Context, _ string, config driver.Config) (driver.Store, error) {
+			store, err := (sqlite.Driver{}).Open(ctx, config)
+			if err != nil {
+				return nil, err
+			}
+			return &reacquireSourceStore{Store: store.(*sqlite.Store), rejectRetained: &checkRetained, retainedReads: &retainedReads}, nil
+		},
+	}
+	runtime, err := composition.Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := runtime.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	data := converterroundtrip.JointFixtureForTest(t)
+	owner := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	profile := converterroundtrip.JointProfileForTest(t, data, runtime.Store, runtime.Lease, owner)
+	plan, err := profile.SourcePlanes.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := composition.RestoreImportRequest{
+		IdempotencyKey: strings.Repeat("c", 32), HistoryMode: driver.RestoreHistoryModeSnapshot,
+		Presence: restore.Presence{"proof": "disposable source fixture"}, SourcePlanes: &plan,
+	}
+	report, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer report.Close()
+	if report.SourceOriginSHA256() == "" {
+		t.Fatal("import did not retain its verified immutable source digest")
+	}
+	ref := model.RefByID("demo-7", model.Natural64(0))
+	converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.update", 701, map[string]any{"id": ref, "fields": map[string]any{"title": "current checkpoint title"}})
+
+	for _, phase := range []string{"after import", "after startup"} {
+		if !runtime.Service.SourceRuntimeInstalled() {
+			t.Fatalf("source provider absent %s", phase)
+		}
+		old := runtime
+		if err := old.Lease.Release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		checkRetained.Store(true)
+		start := time.Now()
+		next, err := old.Reacquire(ctx)
+		if err != nil {
+			t.Fatalf("reacquire %s: %v", phase, err)
+		}
+		runtime = next
+		if elapsed := time.Since(start); elapsed >= 3*time.Second || next.Store != old.Store || next.Lease.Epoch() != old.Lease.Epoch()+1 {
+			t.Fatalf("reacquire %s took %s, store reused = %t, epoch %d -> %d", phase, elapsed, next.Store == old.Store, old.Lease.Epoch(), next.Lease.Epoch())
+		}
+		t.Logf("source rebind %s completed in %s, epoch %d -> %d", phase, time.Since(start), old.Lease.Epoch(), next.Lease.Epoch())
+		got := converterroundtrip.JointHTTPForTest(t, next.HTTPHandler, "bead.get", 0, map[string]any{"id": ref})
+		if !bytes.Contains(got, []byte("current checkpoint title")) {
+			t.Fatalf("rebound provider did not resolve the current source alias: %s", got)
+		}
+		if phase == "after import" {
+			if err := next.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			checkRetained.Store(false)
+			runtime, err = composition.Open(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("tampered_advanced_checkpoint_falls_back", func(t *testing.T) {
+		checkRetained.Store(false)
+		store := runtime.Store.(*reacquireSourceStore)
+		checkpoint, err := store.LoadCheckpoint(ctx, driver.SourcePlaneWorkflowNamespaceV1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		origin, revision, logical, err := driver.ReadSourcePlaneCheckpointEnvelope(checkpoint)
+		if err != nil || checkpoint.Generation <= origin.InitialGeneration {
+			t.Fatalf("expected advanced checkpoint: generation=%d initial=%d error=%v", checkpoint.Generation, origin.InitialGeneration, err)
+		}
+		var image struct {
+			Source struct {
+				Records []driver.SourcePlaneRecordV1
+			}
+		}
+		if err := json.Unmarshal(logical, &image); err != nil {
+			t.Fatal(err)
+		}
+		var payload []byte
+		for _, record := range image.Source.Records {
+			changed := bytes.Replace(record.Raw, []byte("Exact active collision"), []byte("Edited retained source"), 1)
+			if !bytes.Equal(changed, record.Raw) {
+				original, _ := json.Marshal(record.Raw)
+				replaced, _ := json.Marshal(changed)
+				payload = bytes.Replace(checkpoint.Payload, original, replaced, 1)
+				break
+			}
+		}
+		if len(payload) == 0 || bytes.Equal(payload, checkpoint.Payload) {
+			t.Fatal("fixture has no modified retained record")
+		}
+		// Save only the checkpoint. Keep its origin, revision and protected
+		// commit row intact so the archive-free digest must detect the edit.
+		corrupt, err := store.SaveCheckpoint(ctx, runtime.Lease, driver.SourcePlaneWorkflowNamespaceV1, checkpoint.Generation, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preserved, gotRevision, _, err := driver.ReadSourcePlaneCheckpointEnvelope(corrupt)
+		if err != nil || preserved != origin || gotRevision != revision {
+			t.Fatalf("tamper changed the envelope binding: %v", err)
+		}
+		if err := runtime.Lease.Release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		before := retainedReads.Load()
+		next, err := runtime.Reacquire(ctx)
+		if next != nil {
+			runtime = next
+			t.Fatal("rebind accepted a changed retained source record")
+		}
+		var mismatch driver.ErrRestoreBindingMismatch
+		if retainedReads.Load() <= before || !errors.As(err, &mismatch) || (mismatch.Field != "source.reverseImage" && mismatch.Field != "source.originDigest") {
+			t.Fatalf("expected full retained-source recovery to refuse the checkpoint, got %v", err)
+		}
+	})
+}
+
+type reacquireSourceStore struct {
+	*sqlite.Store
+	rejectRetained *atomic.Bool
+	retainedReads  *atomic.Int64
+}
+
+func (s *reacquireSourceStore) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, keys []string) (driver.SourcePlaneSnapshot, error) {
+	if driver.RetainedSourceRead(ctx) {
+		s.retainedReads.Add(1)
+		if s.rejectRetained.Load() {
+			return nil, errors.New("reacquisition opened a retained-source recovery snapshot")
+		}
+	}
+	return s.Store.ReadSourcePlaneSnapshot(ctx, view, keys)
+}
 
 func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 	data := converterroundtrip.JointFixtureForTest(t)

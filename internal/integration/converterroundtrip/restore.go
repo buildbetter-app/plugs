@@ -49,7 +49,12 @@ type Report struct {
 	NativeDeltaHistory *driver.NativeDeltaHistoryEvidence `json:",omitempty"`
 	GraphCertification *GraphCertification                `json:",omitempty"`
 	collection         *nativeCollectionReceiving
+	sourceOriginSHA256 string
 }
+
+// SourceOriginSHA256 returns the immutable checkpoint digest verified against
+// the admitted archive. Reports without that verification return an empty string.
+func (r Report) SourceOriginSHA256() string { return r.sourceOriginSHA256 }
 
 // Verification is a trusted offline comparison, bound to the exact tar bytes.
 // The Beads exporter has no derived certificate. Callers must independently
@@ -565,6 +570,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 		}
 		report.Restored, report.Recovered = recovered.Restored, true
 		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
+		report.sourceOriginSHA256 = recovered.sourceOriginSHA256
 		report.GraphCertification = recovered.GraphCertification
 		report.NativeFamilies = recovered.NativeFamilies
 		report.NativeSchemas = recovered.NativeSchemas
@@ -583,6 +589,7 @@ func restoreArchiveWithProfile(ctx context.Context, archive *dumpformat.Archive,
 			return report, recoverErr
 		}
 		report.SourcePlanes, report.Receipt = recovered.SourcePlanes, recovered.Receipt
+		report.sourceOriginSHA256 = recovered.sourceOriginSHA256
 	}
 	return report, nil
 }

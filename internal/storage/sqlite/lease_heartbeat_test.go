@@ -200,6 +200,9 @@ func TestSQLiteHeartbeatJournalPersistenceFailureLosesLease(t *testing.T) {
 	default:
 		t.Fatal("unpersisted heartbeat left a live owner")
 	}
+	if got := lease.LossReason(); got != "heartbeat journal update failed" {
+		t.Fatalf("lease loss reason = %q", got)
+	}
 	requireFenced(t, lease.Renew(ctx))
 	cp, err := observer.LoadCheckpoint(ctx, "journal-failure")
 	if err != nil || cp.Generation != 0 {

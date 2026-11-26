@@ -517,7 +517,7 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, restore boo
 		}
 		if registered {
 			if errors.As(err, &uncertain) {
-				l.signalLost()
+				l.signalLost("native publication outcome was uncertain")
 			}
 			l.abortPublication(durable)
 		}

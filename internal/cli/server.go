@@ -93,9 +93,9 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 	}
 
 	var recoveries leaseRecoveryBudget
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve() }()
 	for {
-		serveDone := make(chan error, 1)
-		go func() { serveDone <- server.Serve() }()
 		exitCode := 0
 		select {
 		case serveErr := <-serveDone:
@@ -118,9 +118,9 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 					break
 				}
 				fmt.Fprintln(errOut, "server: active storage lease was lost, reacquiring")
-				next, err := runtime.Reacquire(ctx, config)
-				<-serveDone
+				next, err := runtime.Reacquire(ctx)
 				if err != nil {
+					<-serveDone
 					if ctx.Err() != nil {
 						return 0
 					}
@@ -128,12 +128,6 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 					return 1
 				}
 				runtime = next
-				server, err = runtime.Listen(ctx, address, nil)
-				if err != nil {
-					_ = runtime.Close(context.Background())
-					fmt.Fprintf(errOut, "server: listen after lease recovery failed: %s\n", redactServerError(err, config.DSN))
-					return 1
-				}
 				recoveries.record(time.Now())
 				fmt.Fprintln(errOut, "server: active storage lease reacquired")
 				continue

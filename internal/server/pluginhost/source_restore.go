@@ -24,6 +24,12 @@ const (
 // origin is verified before exposing state and on every subsequent operation.
 // A process lifetime does not grant the legacy restart-durable capability.
 func NewSourceRuntimeState(ctx context.Context, store driver.WorkflowCheckpointStore, lease driver.ActiveLease, binding driver.SourcePlaneProviderCommitV1) (pluginapi.DurableState, error) {
+	return NewSourceRuntimeStateWithVerification(ctx, store, lease, binding, nil)
+}
+
+// NewSourceRuntimeStateWithVerification also verifies the logical bytes from
+// the same checkpoint observation used to bind the provider.
+func NewSourceRuntimeStateWithVerification(ctx context.Context, store driver.WorkflowCheckpointStore, lease driver.ActiveLease, binding driver.SourcePlaneProviderCommitV1, verify func([]byte) error) (pluginapi.DurableState, error) {
 	if store == nil || lease == nil {
 		return nil, driver.ErrUnsupported
 	}
@@ -38,8 +44,14 @@ func NewSourceRuntimeState(ctx context.Context, store driver.WorkflowCheckpointS
 	}
 	d := newDurableAccess(store, lease, "workflow", "default")
 	d.source = &binding
-	if _, _, _, err := d.loadSource(ctx); err != nil {
+	_, namespace, _, err := d.loadSource(ctx)
+	if err != nil {
 		return nil, err
+	}
+	if verify != nil {
+		if err := verify(namespace.Values[sourceStateKey].Value); err != nil {
+			return nil, err
+		}
 	}
 	return d, nil
 }

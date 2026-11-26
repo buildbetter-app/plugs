@@ -41,7 +41,12 @@ func (b *synchronizedBuffer) String() string {
 
 func waitForEndpoint(t *testing.T, output *synchronizedBuffer) string {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	return waitForEndpointWithin(t, output, 3*time.Second)
+}
+
+func waitForEndpointWithin(t *testing.T, output *synchronizedBuffer, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		fields := strings.Fields(output.String())
 		for i, field := range fields {
