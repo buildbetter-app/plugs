@@ -126,6 +126,7 @@ internal/cli/parse_test.go
 internal/cli/remote_test.go
 internal/cli/run.go
 internal/cli/server.go
+internal/cli/server_lease_test.go
 internal/cli/server_test.go
 internal/cli/session.go
 internal/client/BUILD.bazel
@@ -2189,6 +2190,7 @@ internal/server/composition/mcp.go
 internal/server/composition/mcp_lifecycle_test.go
 internal/server/composition/native.go
 internal/server/composition/native_test.go
+internal/server/composition/ready_contention_test.go
 internal/server/composition/restore_actual_archive_digest_test.go
 internal/server/composition/restore_actual_archive_test.go
 internal/server/composition/restore_import.go
