@@ -454,6 +454,8 @@ type readyCombinedSnapshot struct {
 	now         time.Time
 }
 
+var errReadyHeadChanged = failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+
 // readyCombinedSnapshot collects both planes while the core reader remains
 // pinned and the provider supplies all of its eligibility facts from one
 // checkpoint image. The returned bindings are the only inputs used to cut an
@@ -505,7 +507,7 @@ func (s *Service) readyCombinedSnapshot(ctx context.Context, by model.PrincipalR
 		return readyCombinedSnapshot{}, mapped(driver.ErrIncarnationChanged{From: view.Incarnation, To: current.Incarnation})
 	}
 	if current.Head.String() != view.At.String() {
-		return readyCombinedSnapshot{}, failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+		return readyCombinedSnapshot{}, errReadyHeadChanged
 	}
 	workflowBlocked := make(map[string]bool, len(graph))
 	lookup := func(id string) (workflowplugin.OrdinaryParentFact, error) { return provider.OrdinaryParents[id], nil }
@@ -725,7 +727,16 @@ func spreadClaimNextItems(items []Bead, seed string, order ...map[string]readyOr
 }
 
 func (s *Service) Ready(ctx context.Context, by model.PrincipalRef, req ReadyRequest) (BeadPage, error) {
-	return s.readyCombined(ctx, by, req, false)
+	for attempt := 0; attempt < 3; attempt++ {
+		page, err := s.readyCombined(ctx, by, req, false)
+		if !errors.Is(err, errReadyHeadChanged) || req.Position != nil || req.Cursor != "" {
+			return page, err
+		}
+		if err := ctx.Err(); err != nil {
+			return BeadPage{}, err
+		}
+	}
+	return BeadPage{}, failure("busy", "ready source changed during repeated first-page reads")
 }
 
 // ReadyWithFilter is the composition-root entry point for a compiled finite

@@ -85,27 +85,60 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "server: listen failed: %s\n", redactServerError(err, config.DSN))
 		return 1
 	}
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.Serve() }()
-	endpoint := "http://" + server.Addr().String()
+	address := server.Addr().String()
+	endpoint := "http://" + address
 	fmt.Fprintf(out, "plug server listening on %s\n", endpoint)
 	if options.local || config.Driver == "memory" {
 		fmt.Fprintln(errOut, "warning: memory storage is disposable; data is discarded when this server exits")
 	}
 
-	select {
-	case serveErr := <-serveDone:
-		closeErr := runtime.Close(context.Background())
-		if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
-			fmt.Fprintf(errOut, "server: serve failed: %s\n", redactServerError(serveErr, config.DSN))
-			return 1
+	var recoveries leaseRecoveryBudget
+	for {
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve() }()
+		exitCode := 0
+		select {
+		case serveErr := <-serveDone:
+			closeErr := runtime.Close(context.Background())
+			if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
+				fmt.Fprintf(errOut, "server: serve failed: %s\n", redactServerError(serveErr, config.DSN))
+				return 1
+			}
+			if closeErr != nil {
+				fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
+				return 1
+			}
+			return 0
+		case <-ctx.Done():
+		case <-runtime.Lease.Lost():
+			if ctx.Err() == nil {
+				if err := recoveries.check(time.Now(), runtime.LeaseRenewed()); err != nil {
+					fmt.Fprintf(errOut, "server: %v, exiting for supervisor restart\n", err)
+					exitCode = 1
+					break
+				}
+				fmt.Fprintln(errOut, "server: active storage lease was lost, reacquiring")
+				next, err := runtime.Reacquire(ctx, config)
+				<-serveDone
+				if err != nil {
+					if ctx.Err() != nil {
+						return 0
+					}
+					fmt.Fprintf(errOut, "server: lease recovery failed: %s\n", redactServerError(err, config.DSN))
+					return 1
+				}
+				runtime = next
+				server, err = runtime.Listen(ctx, address, nil)
+				if err != nil {
+					_ = runtime.Close(context.Background())
+					fmt.Fprintf(errOut, "server: listen after lease recovery failed: %s\n", redactServerError(err, config.DSN))
+					return 1
+				}
+				recoveries.record(time.Now())
+				fmt.Fprintln(errOut, "server: active storage lease reacquired")
+				continue
+			}
 		}
-		if closeErr != nil {
-			fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
-			return 1
-		}
-		return 0
-	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		closeErr := runtime.Close(shutdownCtx)
 		cancel()
@@ -115,13 +148,30 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 			return 1
 		}
 		if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
-			// Runtime.Close normally converts this to http.ErrServerClosed. Keep
-			// unexpected errors visible while treating a signal as graceful.
 			fmt.Fprintf(errOut, "server: serve failed during shutdown: %s\n", redactServerError(serveErr, config.DSN))
 			return 1
 		}
-		return 0
+		return exitCode
 	}
+}
+
+type leaseRecoveryBudget struct {
+	recent [3]time.Time
+}
+
+func (b *leaseRecoveryBudget) check(now time.Time, renewed bool) error {
+	if !b.recent[2].IsZero() && !renewed {
+		return errors.New("replacement storage lease was lost before its first successful renewal")
+	}
+	if !b.recent[0].IsZero() && now.Sub(b.recent[0]) < 10*time.Minute {
+		return errors.New("storage lease recovery limit reached (3 in 10 minutes)")
+	}
+	return nil
+}
+
+func (b *leaseRecoveryBudget) record(now time.Time) {
+	copy(b.recent[:], b.recent[1:])
+	b.recent[2] = now
 }
 
 func redactServerError(err error, dsn string) string {

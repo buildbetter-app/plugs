@@ -12,12 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
@@ -222,6 +224,8 @@ type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	renewDone chan struct{}
+	renewed   atomic.Bool
+	signing   runtimeSigningKeys
 	mcp       http.Handler
 	websocket *websocket.Handler
 	httpMu    sync.Mutex
@@ -230,6 +234,14 @@ type Runtime struct {
 	once      sync.Once
 	closeErr  error
 }
+
+type runtimeSigningKeys struct {
+	cursor []byte
+	mcp    [32]byte
+}
+
+// LeaseRenewed reports whether this runtime has completed a successful renewal.
+func (r *Runtime) LeaseRenewed() bool { return r.renewed.Load() }
 
 // ConvertReverse uses the same immutable converter that controls this runtime's
 // write admission. The default converter refuses native workflow content.
@@ -246,6 +258,16 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	config, err := normalizeConfig(config)
 	if err != nil {
 		return nil, err
+	}
+	signing := runtimeSigningKeys{cursor: append([]byte(nil), config.CursorKey...)}
+	if len(signing.cursor) == 0 {
+		signing.cursor = make([]byte, 32)
+		if _, err := rand.Read(signing.cursor); err != nil {
+			return nil, fmt.Errorf("composition: generate cursor key: %w", err)
+		}
+	}
+	if _, err := rand.Read(signing.mcp[:]); err != nil {
+		return nil, fmt.Errorf("composition: generate MCP session key: %w", err)
 	}
 	restored, err := restoreConfiguredWASI(ctx, config)
 	if err != nil {
@@ -265,18 +287,75 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("composition: acquire active lease: %w", err)
 	}
+	r, err := bindRuntime(ctx, config, store, lease, restored, signing)
+	restored = nil // bindRuntime owns the artifact even on failure.
+	return r, err
+}
 
+func bindRuntime(ctx context.Context, config Config, store driver.Store, lease driver.ActiveLease, restored *restoredWASI, signing runtimeSigningKeys) (*Runtime, error) {
 	lifetime, cancel := context.WithCancel(ctx)
-	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored}
-	restored = nil // Runtime now owns the artifact on success and bind failure.
+	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored, signing: signing}
 	// Start renewal before binding optional subsystems so a failed bind can
 	// still be canceled and joined by Close without leaking the lease.
-	go r.renew(config.LeaseHolder)
+	go r.renew()
 	if err := r.bind(config); err != nil {
 		_ = r.Close(context.Background())
 		return nil, err
 	}
 	return r, nil
+}
+
+// Reacquire retires a fenced runtime and binds a fresh storage epoch over the
+// open store. The caller owns the runtime and must start its new listener.
+func (r *Runtime) Reacquire(ctx context.Context, config Config) (*Runtime, error) {
+	select {
+	case <-r.Lease.Lost():
+	default:
+		return nil, errors.New("composition: active lease is still live")
+	}
+	store := r.Store
+	defer func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := r.shutdown(shutdownCtx, false)
+	cancel()
+	if err != nil {
+		slog.WarnContext(ctx, "retired fenced runtime with cleanup errors", "error_type", fmt.Sprintf("%T", err))
+	}
+	config, err = normalizeConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	restored, err := restoreConfiguredWASI(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("composition: restore artifact for fresh lease: %w", err)
+	}
+	defer func() { _ = closeRestoredWASI(restored) }()
+
+	// A native writer can briefly prevent even opening the acquisition
+	// transaction. Retry without reopening the database or refreshing the
+	// fenced lease. Bound recovery so a permanently broken store can exit.
+	recoveryCtx, stopRecovery := context.WithTimeout(ctx, 30*time.Second)
+	defer stopRecovery()
+	for {
+		lease, err := store.Lease(recoveryCtx, config.LeaseHolder, driver.LeaseTTL)
+		if err == nil {
+			retireCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_ = r.Lease.Release(retireCtx)
+			cancel()
+			next, bindErr := bindRuntime(ctx, config, store, lease, restored, r.signing)
+			store, restored = nil, nil // bindRuntime owns both even on failure.
+			return next, bindErr
+		}
+		select {
+		case <-recoveryCtx.Done():
+			return nil, fmt.Errorf("composition: reacquire active lease: %w", recoveryCtx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // runtimeEventProvider adapts the already-composed durable event service to
@@ -700,13 +779,7 @@ func (r *Runtime) bind(config Config) error {
 		return fmt.Errorf("composition: bind collaboration: %w", err)
 	}
 
-	key := append([]byte(nil), config.CursorKey...)
-	if len(key) == 0 {
-		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return fmt.Errorf("composition: generate cursor key: %w", err)
-		}
-	}
+	key := r.signing.cursor
 	cursors, err := servertsevents.NewCursorCodec(key)
 	if err != nil {
 		return fmt.Errorf("composition: create event cursor codec: %w", err)
@@ -817,9 +890,17 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create authenticator: %w", err)
 	}
+	// Up to one active graph write and sixteen waiters across transports.
+	// Keep a read slot free of graph writes at lower configured HTTP limits.
+	const graphWriteCapacity = 17
+	writeCapacity := graphWriteCapacity
+	if limit := config.HTTP.MaxConcurrentRequests; limit > 0 {
+		writeCapacity = min(writeCapacity, max(1, limit-1))
+	}
 	r.RPC, err = rpc.New(registry, rpc.Config{
 		Incarnation: meta.Incarnation, DefaultProject: config.Project,
 		AuthMode: config.AuthMode, OntologyRevision: model.Natural64(1), CursorKey: key,
+		GraphWriteCapacity: writeCapacity,
 		CurrentIncarnation: func(ctx context.Context) (string, error) {
 			current, err := r.Store.Meta(ctx)
 			return current.Incarnation, err
@@ -834,7 +915,7 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create HTTP handler: %w", err)
 	}
-	r.mcp, err = newMCPHandler(r.RPC, r.Authenticator)
+	r.mcp, err = newMCPHandler(r.RPC, r.Authenticator, r.signing.mcp)
 	if err != nil {
 		return fmt.Errorf("composition: create MCP handler: %w", err)
 	}
@@ -984,10 +1065,11 @@ func (r *Runtime) HTTPServer() *httpjson.Server {
 	return r.http
 }
 
-func (r *Runtime) renew(holder string) {
+func (r *Runtime) renew() {
 	defer close(r.renewDone)
-	ticker := time.NewTicker(driver.LeaseRenewEvery)
-	defer ticker.Stop()
+	timer := time.NewTimer(driver.LeaseRenewEvery)
+	defer timer.Stop()
+	const retryDelay = 250 * time.Millisecond
 	// Leave a full renewal interval between a heartbeat timeout and the
 	// driver's lease deadline. A short request-side timeout can otherwise turn
 	// transient SQL/lock contention into an avoidable lease loss.
@@ -995,19 +1077,43 @@ func (r *Runtime) renew(holder string) {
 	if renewTimeout <= 0 {
 		renewTimeout = driver.LeaseRenewEvery
 	}
+	retrying := false
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
 		case <-r.Lease.Lost():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			started := time.Now()
 			ctx, cancel := context.WithTimeout(r.ctx, renewTimeout)
 			err := r.Lease.Renew(ctx)
 			cancel()
-			if err != nil {
+			if err == nil {
+				r.renewed.Store(true)
+				retrying = false
+				timer.Reset(time.Until(started.Add(driver.LeaseRenewEvery)))
+				continue
+			}
+			if r.ctx.Err() != nil {
 				return
 			}
+			if !retrying {
+				// Driver error text can contain connection details.
+				attrs := []any{"epoch", r.Lease.Epoch(), "error_type", fmt.Sprintf("%T", err)}
+				var native interface{ Code() int }
+				if errors.As(err, &native) {
+					attrs = append(attrs, "error_code", native.Code())
+				}
+				slog.WarnContext(r.ctx, "active storage lease renewal failed", attrs...)
+			}
+			if code, _, _ := driver.ErrorMapping(err); code == "lease_not_held" {
+				return
+			}
+			// Retry the same lease. The driver owns expiry and fencing, and
+			// its Lost channel is terminal.
+			retrying = true
+			timer.Reset(retryDelay)
 		}
 	}
 }
@@ -1016,6 +1122,10 @@ func (r *Runtime) renew(holder string) {
 // lease, and finally closes the store. Each step is idempotent through the
 // single owner, so failed composition paths cannot leak a lease or store.
 func (r *Runtime) Close(ctx context.Context) error {
+	return r.shutdown(ctx, true)
+}
+
+func (r *Runtime) shutdown(ctx context.Context, closeStore bool) error {
 	if r == nil {
 		return nil
 	}
@@ -1033,7 +1143,12 @@ func (r *Runtime) Close(ctx context.Context) error {
 			r.closeErr = errors.Join(r.closeErr, r.websocket.Close())
 		}
 		if httpServer != nil {
-			r.closeErr = errors.Join(r.closeErr, httpServer.Shutdown(ctx))
+			err := httpServer.Shutdown(ctx)
+			// Shutdown force-closes outstanding HTTP connections on timeout.
+			// The fenced lease remains terminal while storage ownership moves.
+			if closeStore || !errors.Is(err, context.DeadlineExceeded) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
 		}
 		if r.Watches != nil {
 			r.closeErr = errors.Join(r.closeErr, r.Watches.Close())
@@ -1050,10 +1165,12 @@ func (r *Runtime) Close(ctx context.Context) error {
 		}
 		r.closeErr = errors.Join(r.closeErr, closeRestoredWASI(r.restoredWASI))
 		<-r.renewDone
-		leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))
-		cancel()
-		r.closeErr = errors.Join(r.closeErr, r.Store.Close())
+		if closeStore {
+			leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))
+			cancel()
+			r.closeErr = errors.Join(r.closeErr, r.Store.Close())
+		}
 	})
 	return r.closeErr
 }

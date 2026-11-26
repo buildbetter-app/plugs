@@ -58,8 +58,11 @@ func New(server *rpc.Server, authenticator *authn.Authenticator, config Config) 
 		return nil, err
 	}
 	h := &Handler{rpc: server, authn: authenticator, cfg: config, notifications: newNotificationHub(), slots: make(chan struct{}, config.MaxConcurrentRequests), active: make(map[string]activeCall), methods: make(map[string]string)}
-	if _, err := rand.Read(h.sessionKey[:]); err != nil {
-		return nil, fmt.Errorf("mcp: session key unavailable: %w", err)
+	h.sessionKey = config.SessionKey
+	if h.sessionKey == ([32]byte{}) {
+		if _, err := rand.Read(h.sessionKey[:]); err != nil {
+			return nil, fmt.Errorf("mcp: session key unavailable: %w", err)
+		}
 	}
 	return h, nil
 }
@@ -1228,9 +1231,8 @@ func (h *Handler) sessionMAC(principal model.PrincipalRef, nonce []byte) []byte 
 	return mac.Sum(nil)
 }
 
-// Session IDs are random and authenticated for this handler and principal.
-// No session store or new authorization path is needed; restarts invalidate
-// these transport scopes and clients can initialize again.
+// Session IDs are random and authenticated for the signing key and principal.
+// A new process key invalidates these scopes and clients initialize again.
 func (h *Handler) newSessionID(principal model.PrincipalRef) (string, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
