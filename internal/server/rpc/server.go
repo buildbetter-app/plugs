@@ -36,15 +36,19 @@ type Config struct {
 	CurrentIncarnation  func(context.Context) (string, error)
 	Visible             func(context.Context, model.PrincipalRef, wire.MethodDesc) (bool, error)
 	DroppedNotification func(context.Context, string)
+	// QueueGraphWrites admits one ordinary graph RPC at a time before the
+	// write pipeline starts its own preparation budget.
+	QueueGraphWrites bool
 	// CursorKey is an optional >=32-byte signing secret. Supplying a stable key
 	// preserves cursors across server restarts; nil generates a per-server key.
 	CursorKey []byte
 }
 
 type Server struct {
-	registry *Registry
-	config   Config
-	paging   *pageCodec
+	registry   *Registry
+	config     Config
+	paging     *pageCodec
+	graphWrite chan struct{}
 }
 type principalKey struct{}
 
@@ -83,6 +87,9 @@ func New(registry *Registry, config Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{registry: registry.snapshot(), config: config, paging: paging}
+	if config.QueueGraphWrites {
+		s.graphWrite = make(chan struct{}, 1)
+	}
 	for name, handler := range map[string]Handler{"server.hello": s.hello, "rpc.methods": s.methods, "rpc.describe": s.describe, "rpc.discover": s.discover} {
 		if err := s.registry.Register(name, handler); err != nil {
 			return nil, err
@@ -227,6 +234,17 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		copy := *s.paging
 		copy.incarnation = incarnation
 		paging = &copy
+	}
+	if s.graphWrite != nil && bound.desc.Effect == "write" && (strings.HasPrefix(method, "bead.") || method == "tx.apply") {
+		select {
+		case s.graphWrite <- struct{}{}:
+			defer func() { <-s.graphWrite }()
+		case <-ctx.Done():
+			return respond("busy", "graph write admission deadline or cancellation reached", nil)
+		}
+		if ctx.Err() != nil {
+			return respond("busy", "graph write admission deadline or cancellation reached", nil)
+		}
 	}
 	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: paging})
 	if !idPresent {

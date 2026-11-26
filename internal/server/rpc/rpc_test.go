@@ -78,6 +78,64 @@ func requireCode(t *testing.T, response map[string]any, code string) {
 	}
 }
 
+func TestGraphWriteAdmissionQueuesWithinRequestDeadline(t *testing.T) {
+	r := registry(t)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.Register("bead.create", func(ctx context.Context, _ rpc.Call) (any, error) {
+		entered <- struct{}{}
+		select {
+		case <-release:
+			return commitResult(), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{QueueGraphWrites: true})
+	create := request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`)
+	first := make(chan []byte, 1)
+	go func() { first <- s.Dispatch(ctx, create) }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("first write never entered")
+	}
+	result(t, call(t, s, ctx, "rpc.methods", "{}"))
+	short, stop := context.WithTimeout(ctx, 50*time.Millisecond)
+	raw := s.Dispatch(short, create)
+	stop()
+	var admission struct{ Error *wire.Error }
+	if err := json.Unmarshal(raw, &admission); err != nil || admission.Error == nil || admission.Error.Data.Code != "busy" ||
+		admission.Error.Data.Hint != "graph write admission deadline or cancellation reached" {
+		t.Fatalf("queued write response = %s, error = %v", raw, err)
+	}
+
+	queued := make(chan []byte, 1)
+	go func() { queued <- s.Dispatch(ctx, create) }()
+	close(release)
+	for _, response := range []<-chan []byte{first, queued} {
+		select {
+		case raw := <-response:
+			decoded, err := wire.DecodeJSON(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result(t, decoded.(map[string]any))
+		case <-ctx.Done():
+			t.Fatal("accepted graph writes did not complete")
+		}
+	}
+	select {
+	case <-entered:
+	default:
+		t.Fatal("queued write did not reach the handler")
+	}
+}
+
 func TestCurrentIncarnationResolvesAfterAdmissionForEveryBatchCall(t *testing.T) {
 	current, lookups := "before-restore", 0
 	type requestKey struct{}
