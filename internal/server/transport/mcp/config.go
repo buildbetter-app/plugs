@@ -45,6 +45,9 @@ type Config struct {
 	ProtocolVersion       string
 	ServerName            string
 	OnNotification        NotificationSink
+	// SessionKey authenticates IDs across handler replacements in a process.
+	// A zero key generates a fresh secret for this handler.
+	SessionKey [32]byte
 }
 
 func (c Config) defaults() (Config, error) {

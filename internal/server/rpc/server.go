@@ -36,9 +36,9 @@ type Config struct {
 	CurrentIncarnation  func(context.Context) (string, error)
 	Visible             func(context.Context, model.PrincipalRef, wire.MethodDesc) (bool, error)
 	DroppedNotification func(context.Context, string)
-	// QueueGraphWrites admits one ordinary graph RPC at a time before the
-	// write pipeline starts its own preparation budget.
-	QueueGraphWrites bool
+	// GraphWriteCapacity bounds the active ordinary graph RPC and its waiters.
+	// Zero disables queuing.
+	GraphWriteCapacity int
 	// CursorKey is an optional >=32-byte signing secret. Supplying a stable key
 	// preserves cursors across server restarts; nil generates a per-server key.
 	CursorKey []byte
@@ -49,6 +49,7 @@ type Server struct {
 	config     Config
 	paging     *pageCodec
 	graphWrite chan struct{}
+	graphSlots chan struct{}
 }
 type principalKey struct{}
 
@@ -79,6 +80,9 @@ func New(registry *Registry, config Config) (*Server, error) {
 	if config.AuthMode != "anonymous" && config.AuthMode != "authenticated" {
 		return nil, fmt.Errorf("unknown auth mode %q", config.AuthMode)
 	}
+	if config.GraphWriteCapacity < 0 {
+		return nil, errors.New("RPC graph write capacity must not be negative")
+	}
 	if err := config.OntologyRevision.Validate(); err != nil {
 		return nil, err
 	}
@@ -87,8 +91,9 @@ func New(registry *Registry, config Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{registry: registry.snapshot(), config: config, paging: paging}
-	if config.QueueGraphWrites {
+	if config.GraphWriteCapacity > 0 {
 		s.graphWrite = make(chan struct{}, 1)
+		s.graphSlots = make(chan struct{}, config.GraphWriteCapacity)
 	}
 	for name, handler := range map[string]Handler{"server.hello": s.hello, "rpc.methods": s.methods, "rpc.describe": s.describe, "rpc.discover": s.discover} {
 		if err := s.registry.Register(name, handler); err != nil {
@@ -235,7 +240,13 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		copy.incarnation = incarnation
 		paging = &copy
 	}
-	if s.graphWrite != nil && bound.desc.Effect == "write" && (strings.HasPrefix(method, "bead.") || method == "tx.apply") {
+	if s.graphWrite != nil && bound.desc.Effect == "write" && method != "bead.heartbeat" && (strings.HasPrefix(method, "bead.") || method == "tx.apply") {
+		select {
+		case s.graphSlots <- struct{}{}:
+			defer func() { <-s.graphSlots }()
+		default:
+			return respond("busy", "graph write queue is full", nil)
+		}
 		select {
 		case s.graphWrite <- struct{}{}:
 			defer func() { <-s.graphWrite }()

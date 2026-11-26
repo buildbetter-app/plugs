@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -36,7 +41,7 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 			defer cancel()
 			endpoint, stderr, done := startSQLiteLeaseServer(t, ctx)
 			transport, err := client.NewHTTP(client.HTTPConfig{Server: endpoint})
@@ -54,6 +59,27 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 				"type": "issue", "fields": map[string]any{"title": "persistent across the lease change"},
 			}, ""); err != nil {
 				t.Fatal(err)
+			}
+			var readyCursor, mcpSession string
+			if !tc.transient {
+				if _, err := remote.Call(ctx, "bead.create", map[string]any{
+					"type": "issue", "fields": map[string]any{"title": "second ready page"},
+				}, ""); err != nil {
+					t.Fatal(err)
+				}
+				page, err := remote.Call(ctx, "bead.ready", map[string]any{"limit": 1}, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result struct{ NextCursor string }
+				if err := json.Unmarshal(page.JSON, &result); err != nil || result.NextCursor == "" {
+					t.Fatalf("first Ready page = %s, error = %v", page.JSON, err)
+				}
+				readyCursor = result.NextCursor
+				mcpSession = leaseMCPRequest(t, ctx, endpoint, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"lease-test","version":"1"}}}`)
+				if mcpSession == "" {
+					t.Fatal("MCP initialization did not issue a session")
+				}
 			}
 
 			db, err := sql.Open("sqlite", "file:.plug/server.db?mode=rw&_pragma=busy_timeout(0)")
@@ -77,6 +103,10 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 				t.Fatal(err)
 			}
 			deadline := time.Unix(0, expires)
+			var draining *bufio.Reader
+			if !tc.transient {
+				draining = holdLeaseRPCBody(t, endpoint, deadline.Add(15*time.Second))
+			}
 
 			// An independent native writer holds SQLite's write lock across
 			// renewal attempts. The HTTP load exercises WAL reads concurrently.
@@ -141,7 +171,7 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 				return
 			}
 
-			for until := time.Now().Add(5 * time.Second); !strings.Contains(stderr.String(), "lease was lost; reacquiring"); {
+			for until := time.Now().Add(5 * time.Second); !strings.Contains(stderr.String(), "lease was lost, reacquiring"); {
 				if time.Now().After(until) {
 					if _, err := remote.Call(ctx, "admin.health", nil, ""); err != nil {
 						logSQLiteLeaseFailure(t, ctx, remote, err)
@@ -156,6 +186,13 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 			}
 			if _, err := writer.ExecContext(ctx, "ROLLBACK"); err != nil {
 				t.Fatal(err)
+			}
+			// The old listener admitted this body before fencing. Recovery
+			// must force-close it at the drain deadline and then reacquire.
+			if _, err := draining.ReadByte(); err == nil {
+				t.Fatal("incomplete request received a response during the drain")
+			} else if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+				t.Fatal("incomplete request was not force-closed")
 			}
 			for {
 				if _, err := remote.Call(ctx, "admin.health", nil, ""); err == nil {
@@ -176,11 +213,115 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 			var currentEpoch, head string
 			err = db.QueryRowContext(ctx, "SELECT active_lease.epoch, meta.head FROM active_lease JOIN meta USING (singleton)").Scan(&currentEpoch, &head)
 			nextEpoch, parseErr := strconv.ParseUint(currentEpoch, 10, 64)
-			if err != nil || parseErr != nil || nextEpoch != epoch+1 || head != "00000000000000000001" {
+			if err != nil || parseErr != nil || nextEpoch != epoch+1 || head != "00000000000000000002" {
 				t.Fatalf("after recovery epoch = %q, want %d, head = %q, errors = %v / %v", currentEpoch, epoch+1, head, err, parseErr)
+			}
+			// Remove the replacement's identity before its first renewal.
+			// Fencing is detected on that renewal, and must exit instead of
+			// repeatedly rebuilding the runtime.
+			if _, err := writer.ExecContext(ctx, "UPDATE active_lease SET token='', expires=0 WHERE singleton=1"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := remote.Call(ctx, "bead.ready", map[string]any{"limit": 1, "cursor": readyCursor}, ""); err != nil {
+				t.Fatalf("Ready continuation after reacquiring: %v", err)
+			}
+			leaseMCPRequest(t, ctx, endpoint, mcpSession, `{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}`)
+			select {
+			case code := <-done:
+				if code != 1 || !strings.Contains(stderr.String(), "lost before its first successful renewal") {
+					t.Fatalf("exit after early replacement loss = %d, stderr = %q", code, stderr.String())
+				}
+			case <-ctx.Done():
+				t.Fatalf("server did not exit after early replacement loss, stderr = %q", stderr.String())
 			}
 		})
 	}
+}
+
+func holdLeaseRPCBody(t *testing.T, endpoint string, deadline time.Time) *bufio.Reader {
+	t.Helper()
+	address := strings.TrimPrefix(endpoint, "http://")
+	conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(conn, "POST /rpc/v1 HTTP/1.1\r\nHost: %s\r\nPlug-RPC: 1\r\nContent-Type: application/json\r\nContent-Length: 100\r\nExpect: 100-continue\r\n\r\n", address); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusContinue {
+		t.Fatalf("incomplete request was not admitted: %s", response.Status)
+	}
+	return reader
+}
+
+func leaseMCPRequest(t *testing.T, ctx context.Context, endpoint, session, payload string) string {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+"/mcp", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Plug-RPC", "1")
+	request.Header.Set("Content-Type", "application/json")
+	if session != "" {
+		request.Header.Set("MCP-Session-Id", session)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("MCP request returned %s", response.Status)
+	}
+	var reply struct{ Error *wire.Error }
+	if err := json.NewDecoder(response.Body).Decode(&reply); err != nil || reply.Error != nil {
+		t.Fatalf("MCP reply error = %v, decode error = %v", reply.Error, err)
+	}
+	return response.Header.Get("MCP-Session-Id")
+}
+
+func TestLeaseRecoveryBudget(t *testing.T) {
+	start := time.Unix(1000, 0)
+	t.Run("fourth_rebind_within_ten_minutes", func(t *testing.T) {
+		var budget leaseRecoveryBudget
+		for _, elapsed := range []time.Duration{0, time.Minute, 2 * time.Minute} {
+			at := start.Add(elapsed)
+			if err := budget.check(at, true); err != nil {
+				t.Fatal(err)
+			}
+			budget.record(at)
+		}
+		if err := budget.check(start.Add(9*time.Minute), true); err == nil || !strings.Contains(err.Error(), "recovery limit") {
+			t.Fatalf("fourth rebind error = %v", err)
+		}
+		if err := budget.check(start.Add(10*time.Minute), true); err != nil {
+			t.Fatalf("oldest rebind should leave the window: %v", err)
+		}
+		budget.record(start.Add(10 * time.Minute))
+		if err := budget.check(start.Add(10*time.Minute+time.Second), true); err == nil {
+			t.Fatal("other rebinds should remain in the sliding window")
+		}
+	})
+	t.Run("replacement_lost_before_first_renewal", func(t *testing.T) {
+		var budget leaseRecoveryBudget
+		if err := budget.check(start, false); err != nil {
+			t.Fatalf("first recovery should be allowed: %v", err)
+		}
+		budget.record(start)
+		if err := budget.check(start.Add(time.Second), false); err == nil || !strings.Contains(err.Error(), "first successful renewal") {
+			t.Fatalf("early replacement loss error = %v", err)
+		}
+	})
 }
 
 func startSQLiteLeaseServer(t *testing.T, parent context.Context) (string, *synchronizedBuffer, <-chan int) {

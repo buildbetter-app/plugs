@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
@@ -223,6 +224,8 @@ type Runtime struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	renewDone chan struct{}
+	renewed   atomic.Bool
+	signing   runtimeSigningKeys
 	mcp       http.Handler
 	websocket *websocket.Handler
 	httpMu    sync.Mutex
@@ -231,6 +234,14 @@ type Runtime struct {
 	once      sync.Once
 	closeErr  error
 }
+
+type runtimeSigningKeys struct {
+	cursor []byte
+	mcp    [32]byte
+}
+
+// LeaseRenewed reports whether this runtime has completed a successful renewal.
+func (r *Runtime) LeaseRenewed() bool { return r.renewed.Load() }
 
 // ConvertReverse uses the same immutable converter that controls this runtime's
 // write admission. The default converter refuses native workflow content.
@@ -247,6 +258,16 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	config, err := normalizeConfig(config)
 	if err != nil {
 		return nil, err
+	}
+	signing := runtimeSigningKeys{cursor: append([]byte(nil), config.CursorKey...)}
+	if len(signing.cursor) == 0 {
+		signing.cursor = make([]byte, 32)
+		if _, err := rand.Read(signing.cursor); err != nil {
+			return nil, fmt.Errorf("composition: generate cursor key: %w", err)
+		}
+	}
+	if _, err := rand.Read(signing.mcp[:]); err != nil {
+		return nil, fmt.Errorf("composition: generate MCP session key: %w", err)
 	}
 	restored, err := restoreConfiguredWASI(ctx, config)
 	if err != nil {
@@ -266,14 +287,14 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("composition: acquire active lease: %w", err)
 	}
-	r, err := bindRuntime(ctx, config, store, lease, restored)
+	r, err := bindRuntime(ctx, config, store, lease, restored, signing)
 	restored = nil // bindRuntime owns the artifact even on failure.
 	return r, err
 }
 
-func bindRuntime(ctx context.Context, config Config, store driver.Store, lease driver.ActiveLease, restored *restoredWASI) (*Runtime, error) {
+func bindRuntime(ctx context.Context, config Config, store driver.Store, lease driver.ActiveLease, restored *restoredWASI, signing runtimeSigningKeys) (*Runtime, error) {
 	lifetime, cancel := context.WithCancel(ctx)
-	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored}
+	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored, signing: signing}
 	// Start renewal before binding optional subsystems so a failed bind can
 	// still be canceled and joined by Close without leaking the lease.
 	go r.renew()
@@ -302,7 +323,7 @@ func (r *Runtime) Reacquire(ctx context.Context, config Config) (*Runtime, error
 	err := r.shutdown(shutdownCtx, false)
 	cancel()
 	if err != nil {
-		return nil, fmt.Errorf("composition: retire fenced runtime: %w", err)
+		slog.WarnContext(ctx, "retired fenced runtime with cleanup errors", "error_type", fmt.Sprintf("%T", err))
 	}
 	config, err = normalizeConfig(config)
 	if err != nil {
@@ -325,7 +346,7 @@ func (r *Runtime) Reacquire(ctx context.Context, config Config) (*Runtime, error
 			retireCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			_ = r.Lease.Release(retireCtx)
 			cancel()
-			next, bindErr := bindRuntime(ctx, config, store, lease, restored)
+			next, bindErr := bindRuntime(ctx, config, store, lease, restored, r.signing)
 			store, restored = nil, nil // bindRuntime owns both even on failure.
 			return next, bindErr
 		}
@@ -758,13 +779,7 @@ func (r *Runtime) bind(config Config) error {
 		return fmt.Errorf("composition: bind collaboration: %w", err)
 	}
 
-	key := append([]byte(nil), config.CursorKey...)
-	if len(key) == 0 {
-		key = make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return fmt.Errorf("composition: generate cursor key: %w", err)
-		}
-	}
+	key := r.signing.cursor
 	cursors, err := servertsevents.NewCursorCodec(key)
 	if err != nil {
 		return fmt.Errorf("composition: create event cursor codec: %w", err)
@@ -875,10 +890,17 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create authenticator: %w", err)
 	}
+	// Up to one active graph write and sixteen waiters across transports.
+	// Keep a read slot free of graph writes at lower configured HTTP limits.
+	const graphWriteCapacity = 17
+	writeCapacity := graphWriteCapacity
+	if limit := config.HTTP.MaxConcurrentRequests; limit > 0 {
+		writeCapacity = min(writeCapacity, max(1, limit-1))
+	}
 	r.RPC, err = rpc.New(registry, rpc.Config{
 		Incarnation: meta.Incarnation, DefaultProject: config.Project,
 		AuthMode: config.AuthMode, OntologyRevision: model.Natural64(1), CursorKey: key,
-		QueueGraphWrites: true,
+		GraphWriteCapacity: writeCapacity,
 		CurrentIncarnation: func(ctx context.Context) (string, error) {
 			current, err := r.Store.Meta(ctx)
 			return current.Incarnation, err
@@ -893,7 +915,7 @@ func (r *Runtime) bind(config Config) error {
 	if err != nil {
 		return fmt.Errorf("composition: create HTTP handler: %w", err)
 	}
-	r.mcp, err = newMCPHandler(r.RPC, r.Authenticator)
+	r.mcp, err = newMCPHandler(r.RPC, r.Authenticator, r.signing.mcp)
 	if err != nil {
 		return fmt.Errorf("composition: create MCP handler: %w", err)
 	}
@@ -1068,6 +1090,7 @@ func (r *Runtime) renew() {
 			err := r.Lease.Renew(ctx)
 			cancel()
 			if err == nil {
+				r.renewed.Store(true)
 				retrying = false
 				timer.Reset(time.Until(started.Add(driver.LeaseRenewEvery)))
 				continue
@@ -1120,7 +1143,12 @@ func (r *Runtime) shutdown(ctx context.Context, closeStore bool) error {
 			r.closeErr = errors.Join(r.closeErr, r.websocket.Close())
 		}
 		if httpServer != nil {
-			r.closeErr = errors.Join(r.closeErr, httpServer.Shutdown(ctx))
+			err := httpServer.Shutdown(ctx)
+			// Shutdown force-closes outstanding HTTP connections on timeout.
+			// The fenced lease remains terminal while storage ownership moves.
+			if closeStore || !errors.Is(err, context.DeadlineExceeded) {
+				r.closeErr = errors.Join(r.closeErr, err)
+			}
 		}
 		if r.Watches != nil {
 			r.closeErr = errors.Join(r.closeErr, r.Watches.Close())

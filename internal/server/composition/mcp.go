@@ -16,8 +16,8 @@ import (
 //
 // Keep this helper narrow so the continuous notification stream can provide a
 // sink here without adding a second registry, authenticator or session store.
-func newMCPHandler(server *rpc.Server, authenticator *authn.Authenticator) (http.Handler, error) {
-	return mcp.New(server, authenticator, mcp.Config{})
+func newMCPHandler(server *rpc.Server, authenticator *authn.Authenticator, key [32]byte) (http.Handler, error) {
+	return mcp.New(server, authenticator, mcp.Config{SessionKey: key})
 }
 
 // closeMCPHandler consumes the notification adapter's optional Close seam.

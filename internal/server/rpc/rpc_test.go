@@ -95,7 +95,12 @@ func TestGraphWriteAdmissionQueuesWithinRequestDeadline(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	s := server(t, r, rpc.Config{QueueGraphWrites: true})
+	if err := r.Register("bead.heartbeat", func(context.Context, rpc.Call) (any, error) {
+		return map[string]any{"leaseExpiresAt": "2026-11-26T01:00:00Z"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{GraphWriteCapacity: 2})
 	create := request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`)
 	first := make(chan []byte, 1)
 	go func() { first <- s.Dispatch(ctx, create) }()
@@ -105,6 +110,7 @@ func TestGraphWriteAdmissionQueuesWithinRequestDeadline(t *testing.T) {
 		t.Fatal("first write never entered")
 	}
 	result(t, call(t, s, ctx, "rpc.methods", "{}"))
+	result(t, call(t, s, ctx, "bead.heartbeat", `{"id":{"id":"p-1","branch":0},"_meta":{"idempotencyKey":"22222222222222222222222222222222"}}`))
 	short, stop := context.WithTimeout(ctx, 50*time.Millisecond)
 	raw := s.Dispatch(short, create)
 	stop()

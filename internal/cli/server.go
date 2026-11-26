@@ -92,9 +92,11 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintln(errOut, "warning: memory storage is disposable; data is discarded when this server exits")
 	}
 
+	var recoveries leaseRecoveryBudget
 	for {
 		serveDone := make(chan error, 1)
 		go func() { serveDone <- server.Serve() }()
+		exitCode := 0
 		select {
 		case serveErr := <-serveDone:
 			closeErr := runtime.Close(context.Background())
@@ -110,7 +112,12 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 		case <-ctx.Done():
 		case <-runtime.Lease.Lost():
 			if ctx.Err() == nil {
-				fmt.Fprintln(errOut, "server: active storage lease was lost; reacquiring")
+				if err := recoveries.check(time.Now(), runtime.LeaseRenewed()); err != nil {
+					fmt.Fprintf(errOut, "server: %v, exiting for supervisor restart\n", err)
+					exitCode = 1
+					break
+				}
+				fmt.Fprintln(errOut, "server: active storage lease was lost, reacquiring")
 				next, err := runtime.Reacquire(ctx, config)
 				<-serveDone
 				if err != nil {
@@ -127,6 +134,7 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 					fmt.Fprintf(errOut, "server: listen after lease recovery failed: %s\n", redactServerError(err, config.DSN))
 					return 1
 				}
+				recoveries.record(time.Now())
 				fmt.Fprintln(errOut, "server: active storage lease reacquired")
 				continue
 			}
@@ -143,8 +151,27 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 			fmt.Fprintf(errOut, "server: serve failed during shutdown: %s\n", redactServerError(serveErr, config.DSN))
 			return 1
 		}
-		return 0
+		return exitCode
 	}
+}
+
+type leaseRecoveryBudget struct {
+	recent [3]time.Time
+}
+
+func (b *leaseRecoveryBudget) check(now time.Time, renewed bool) error {
+	if !b.recent[2].IsZero() && !renewed {
+		return errors.New("replacement storage lease was lost before its first successful renewal")
+	}
+	if !b.recent[0].IsZero() && now.Sub(b.recent[0]) < 10*time.Minute {
+		return errors.New("storage lease recovery limit reached (3 in 10 minutes)")
+	}
+	return nil
+}
+
+func (b *leaseRecoveryBudget) record(now time.Time) {
+	copy(b.recent[:], b.recent[1:])
+	b.recent[2] = now
 }
 
 func redactServerError(err error, dsn string) string {
