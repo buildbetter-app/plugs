@@ -589,8 +589,10 @@ func (s *Store) Close() error {
 	for _, c := range children {
 		errs = append(errs, c.Close())
 	}
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	for _, l := range leases {
-		errs = append(errs, l.Release(context.Background()))
+		errs = append(errs, l.Release(releaseCtx))
 	}
 	errs = append(errs, s.db.Close())
 	return errors.Join(errs...)

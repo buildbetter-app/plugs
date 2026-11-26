@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,7 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 		transient bool
 	}{
 		{name: "transient_writer_contention_keeps_same_lease", transient: true},
-		{name: "expired_lease_stops_listener_and_allows_restart"},
+		{name: "expired_lease_reacquires_on_same_endpoint"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Chdir(t.TempDir())
@@ -49,6 +50,11 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 			}
 			t.Setenv("PLUG_SERVER", endpoint)
 			t.Setenv("PLUG_TOKEN", "")
+			if _, err := remote.Call(ctx, "bead.create", map[string]any{
+				"type": "issue", "fields": map[string]any{"title": "persistent across the lease change"},
+			}, ""); err != nil {
+				t.Fatal(err)
+			}
 
 			db, err := sql.Open("sqlite", "file:.plug/server.db?mode=rw&_pragma=busy_timeout(0)")
 			if err != nil {
@@ -65,7 +71,7 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 			}
 			defer writer.ExecContext(context.Background(), "ROLLBACK")
 
-			var epoch string
+			var epoch uint64
 			var expires int64
 			if err := writer.QueryRowContext(ctx, "SELECT epoch, expires FROM active_lease WHERE singleton=1").Scan(&epoch, &expires); err != nil {
 				t.Fatal(err)
@@ -128,35 +134,50 @@ func TestServerCommandSQLiteLeaseContention(t *testing.T) {
 				}, ""); err != nil {
 					t.Fatalf("write after the original lease deadline: %v", err)
 				}
-				var currentEpoch string
+				var currentEpoch uint64
 				if err := writer.QueryRowContext(ctx, "SELECT epoch FROM active_lease WHERE singleton=1").Scan(&currentEpoch); err != nil || currentEpoch != epoch {
-					t.Fatalf("lease epoch after recovery = %q, want %q, error = %v", currentEpoch, epoch, err)
+					t.Fatalf("lease epoch after recovery = %d, want %d, error = %v", currentEpoch, epoch, err)
 				}
 				return
 			}
 
-			select {
-			case code := <-done:
-				if code != 1 || !strings.Contains(stderr.String(), "active storage lease was lost") {
-					t.Fatalf("server exit after lease loss = %d, stderr = %q", code, stderr.String())
+			for until := time.Now().Add(5 * time.Second); !strings.Contains(stderr.String(), "lease was lost; reacquiring"); {
+				if time.Now().After(until) {
+					if _, err := remote.Call(ctx, "admin.health", nil, ""); err != nil {
+						logSQLiteLeaseFailure(t, ctx, remote, err)
+					}
+					t.Fatalf("server did not attempt reacquisition, stderr = %q", stderr.String())
 				}
-			case <-time.After(time.Until(deadline.Add(4 * time.Second))):
-				if _, err := remote.Call(ctx, "admin.health", nil, ""); err != nil {
-					logSQLiteLeaseFailure(t, ctx, remote, err)
+				select {
+				case code := <-done:
+					t.Fatalf("server exited after lease loss (%d), stderr = %q", code, stderr.String())
+				case <-time.After(20 * time.Millisecond):
 				}
-				t.Fatalf("server kept serving after lease loss, stderr = %q", stderr.String())
 			}
 			if _, err := writer.ExecContext(ctx, "ROLLBACK"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := remote.Call(ctx, "admin.health", nil, ""); err == nil {
-				t.Fatal("old HTTP listener still serves health after exit")
+			for {
+				if _, err := remote.Call(ctx, "admin.health", nil, ""); err == nil {
+					break
+				}
+				select {
+				case code := <-done:
+					t.Fatalf("server exited during lease recovery (%d), stderr = %q", code, stderr.String())
+				case <-ctx.Done():
+					t.Fatalf("same endpoint failed to recover, stderr = %q", stderr.String())
+				case <-time.After(20 * time.Millisecond):
+				}
 			}
-			restarted, _, _ := startSQLiteLeaseServer(t, ctx)
-			t.Setenv("PLUG_SERVER", restarted)
 			var out, errOut strings.Builder
 			if code := Execute(ctx, []string{"health"}, strings.NewReader(""), &out, &errOut); code != 0 {
-				t.Fatalf("health after restart = %d, stderr = %q", code, errOut.String())
+				t.Fatalf("health after reacquiring = %d, stderr = %q", code, errOut.String())
+			}
+			var currentEpoch, head string
+			err = db.QueryRowContext(ctx, "SELECT active_lease.epoch, meta.head FROM active_lease JOIN meta USING (singleton)").Scan(&currentEpoch, &head)
+			nextEpoch, parseErr := strconv.ParseUint(currentEpoch, 10, 64)
+			if err != nil || parseErr != nil || nextEpoch != epoch+1 || head != "00000000000000000001" {
+				t.Fatalf("after recovery epoch = %q, want %d, head = %q, errors = %v / %v", currentEpoch, epoch+1, head, err, parseErr)
 			}
 		})
 	}

@@ -266,10 +266,14 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		_ = store.Close()
 		return nil, fmt.Errorf("composition: acquire active lease: %w", err)
 	}
+	r, err := bindRuntime(ctx, config, store, lease, restored)
+	restored = nil // bindRuntime owns the artifact even on failure.
+	return r, err
+}
 
+func bindRuntime(ctx context.Context, config Config, store driver.Store, lease driver.ActiveLease, restored *restoredWASI) (*Runtime, error) {
 	lifetime, cancel := context.WithCancel(ctx)
 	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored}
-	restored = nil // Runtime now owns the artifact on success and bind failure.
 	// Start renewal before binding optional subsystems so a failed bind can
 	// still be canceled and joined by Close without leaking the lease.
 	go r.renew()
@@ -278,6 +282,59 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// Reacquire retires a fenced runtime and binds a fresh storage epoch over the
+// open store. The caller owns the runtime and must start its new listener.
+func (r *Runtime) Reacquire(ctx context.Context, config Config) (*Runtime, error) {
+	select {
+	case <-r.Lease.Lost():
+	default:
+		return nil, errors.New("composition: active lease is still live")
+	}
+	store := r.Store
+	defer func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	err := r.shutdown(shutdownCtx, false)
+	cancel()
+	if err != nil {
+		return nil, fmt.Errorf("composition: retire fenced runtime: %w", err)
+	}
+	config, err = normalizeConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	restored, err := restoreConfiguredWASI(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("composition: restore artifact for fresh lease: %w", err)
+	}
+	defer func() { _ = closeRestoredWASI(restored) }()
+
+	// A native writer can briefly prevent even opening the acquisition
+	// transaction. Retry without reopening the database or refreshing the
+	// fenced lease. Bound recovery so a permanently broken store can exit.
+	recoveryCtx, stopRecovery := context.WithTimeout(ctx, 30*time.Second)
+	defer stopRecovery()
+	for {
+		lease, err := store.Lease(recoveryCtx, config.LeaseHolder, driver.LeaseTTL)
+		if err == nil {
+			retireCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_ = r.Lease.Release(retireCtx)
+			cancel()
+			next, bindErr := bindRuntime(ctx, config, store, lease, restored)
+			store, restored = nil, nil // bindRuntime owns both even on failure.
+			return next, bindErr
+		}
+		select {
+		case <-recoveryCtx.Done():
+			return nil, fmt.Errorf("composition: reacquire active lease: %w", recoveryCtx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // runtimeEventProvider adapts the already-composed durable event service to
@@ -1041,6 +1098,10 @@ func (r *Runtime) renew() {
 // lease, and finally closes the store. Each step is idempotent through the
 // single owner, so failed composition paths cannot leak a lease or store.
 func (r *Runtime) Close(ctx context.Context) error {
+	return r.shutdown(ctx, true)
+}
+
+func (r *Runtime) shutdown(ctx context.Context, closeStore bool) error {
 	if r == nil {
 		return nil
 	}
@@ -1075,10 +1136,12 @@ func (r *Runtime) Close(ctx context.Context) error {
 		}
 		r.closeErr = errors.Join(r.closeErr, closeRestoredWASI(r.restoredWASI))
 		<-r.renewDone
-		leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))
-		cancel()
-		r.closeErr = errors.Join(r.closeErr, r.Store.Close())
+		if closeStore {
+			leaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			r.closeErr = errors.Join(r.closeErr, r.Lease.Release(leaseCtx))
+			cancel()
+			r.closeErr = errors.Join(r.closeErr, r.Store.Close())
+		}
 	})
 	return r.closeErr
 }

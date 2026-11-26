@@ -85,47 +85,66 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintf(errOut, "server: listen failed: %s\n", redactServerError(err, config.DSN))
 		return 1
 	}
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.Serve() }()
-	endpoint := "http://" + server.Addr().String()
+	address := server.Addr().String()
+	endpoint := "http://" + address
 	fmt.Fprintf(out, "plug server listening on %s\n", endpoint)
 	if options.local || config.Driver == "memory" {
 		fmt.Fprintln(errOut, "warning: memory storage is disposable; data is discarded when this server exits")
 	}
 
-	exitCode := 0
-	select {
-	case serveErr := <-serveDone:
-		closeErr := runtime.Close(context.Background())
-		if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
-			fmt.Fprintf(errOut, "server: serve failed: %s\n", redactServerError(serveErr, config.DSN))
-			return 1
+	for {
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.Serve() }()
+		select {
+		case serveErr := <-serveDone:
+			closeErr := runtime.Close(context.Background())
+			if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
+				fmt.Fprintf(errOut, "server: serve failed: %s\n", redactServerError(serveErr, config.DSN))
+				return 1
+			}
+			if closeErr != nil {
+				fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
+				return 1
+			}
+			return 0
+		case <-ctx.Done():
+		case <-runtime.Lease.Lost():
+			if ctx.Err() == nil {
+				fmt.Fprintln(errOut, "server: active storage lease was lost; reacquiring")
+				next, err := runtime.Reacquire(ctx, config)
+				<-serveDone
+				if err != nil {
+					if ctx.Err() != nil {
+						return 0
+					}
+					fmt.Fprintf(errOut, "server: lease recovery failed: %s\n", redactServerError(err, config.DSN))
+					return 1
+				}
+				runtime = next
+				server, err = runtime.Listen(ctx, address, nil)
+				if err != nil {
+					_ = runtime.Close(context.Background())
+					fmt.Fprintf(errOut, "server: listen after lease recovery failed: %s\n", redactServerError(err, config.DSN))
+					return 1
+				}
+				fmt.Fprintln(errOut, "server: active storage lease reacquired")
+				continue
+			}
 		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeErr := runtime.Close(shutdownCtx)
+		cancel()
+		serveErr := <-serveDone
 		if closeErr != nil {
 			fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
 			return 1
 		}
-		return 0
-	case <-ctx.Done():
-	case <-runtime.Lease.Lost():
-		if ctx.Err() == nil {
-			fmt.Fprintln(errOut, "server: active storage lease was lost")
-			exitCode = 1
+		if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
+			fmt.Fprintf(errOut, "server: serve failed during shutdown: %s\n", redactServerError(serveErr, config.DSN))
+			return 1
 		}
+		return 0
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	closeErr := runtime.Close(shutdownCtx)
-	cancel()
-	serveErr := <-serveDone
-	if closeErr != nil {
-		fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
-		return 1
-	}
-	if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
-		fmt.Fprintf(errOut, "server: serve failed during shutdown: %s\n", redactServerError(serveErr, config.DSN))
-		return 1
-	}
-	return exitCode
 }
 
 func redactServerError(err error, dsn string) string {
