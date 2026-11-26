@@ -54,6 +54,32 @@ func runPlugInDir(t *testing.T, dir, input string, args ...string) (string, stri
 	return out.String(), errOut.String(), err
 }
 
+func TestExecutableCommandSucceedsWithDetachedStdin(t *testing.T) {
+	// A socket can be inherited as fd 0, but opening /dev/stdin on Linux
+	// cannot reopen it. A nil exec.Cmd.Stdin would use /dev/null instead.
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscall.CloseOnExec(fds[0])
+	syscall.CloseOnExec(fds[1])
+	defer syscall.Close(fds[1])
+	input := os.NewFile(uintptr(fds[0]), "detached-stdin")
+	defer input.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, plugBinary(t), "--memory", "--json", "ready")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "PLUG_SERVER=", "PLUG_TOKEN=")
+	cmd.Stdin = input
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	if err := cmd.Run(); err != nil || !strings.Contains(out.String(), `"items":[]`) {
+		t.Fatalf("plug with detached stdin: %v\nstdout: %s\nstderr: %s", err, &out, &errOut)
+	}
+}
+
 func TestExecutableIdleSessionExitsOnSignalBeforeStdinEOF(t *testing.T) {
 	for _, signal := range []os.Signal{syscall.SIGTERM, os.Interrupt} {
 		t.Run(signal.String(), func(t *testing.T) {
@@ -77,19 +103,23 @@ func TestExecutableIdleSessionExitsOnSignalBeforeStdinEOF(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() { done <- cmd.Wait() }()
-			read := make(chan bool, 1)
-			go func() { read <- bufio.NewScanner(stdout).Scan() }()
+			read := make(chan string, 1)
+			go func() {
+				scanner := bufio.NewScanner(stdout)
+				scanner.Scan()
+				read <- scanner.Text()
+			}()
 			if _, err := io.WriteString(stdin, "[\"ready\"]\n"); err != nil {
 				_ = cmd.Process.Kill()
 				<-done
 				t.Fatal(err)
 			}
 			select {
-			case ok := <-read:
-				if !ok {
+			case result := <-read:
+				if !strings.Contains(result, `"items":[]`) {
 					_ = cmd.Process.Kill()
 					<-done
-					t.Fatal("session did not return the first command result")
+					t.Fatalf("session did not execute the command from the pipe: %q", result)
 				}
 			case <-time.After(2 * time.Second):
 				_ = cmd.Process.Kill()

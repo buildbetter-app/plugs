@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/buildbetter-app/plugs/internal/cli"
@@ -19,11 +20,11 @@ func run() int {
 	defer stop()
 	// Reopen standard input so pipes use Go's poller. Closing the inherited
 	// os.Stdin can otherwise wait for its blocking read instead of canceling it.
-	input, err := os.Open("/dev/stdin")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	// Detached invocations can lack a reopenable stdin. Treat that as EOF.
+	var input io.Reader = strings.NewReader("")
+	if stdin, err := os.Open("/dev/stdin"); err == nil {
+		defer stdin.Close()
+		input = stdin
 	}
-	defer input.Close()
 	return cli.Execute(ctx, os.Args[1:], input, os.Stdout, os.Stderr)
 }
