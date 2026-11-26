@@ -455,7 +455,7 @@ func TestLockRejectsLeaseLostDuringGuardAcquisition(t *testing.T) {
 	value, err := (Driver{Clock: func() time.Time {
 		now := time.Now()
 		if loseOnFence.Swap(false) {
-			lease.signalLost()
+			lease.signalLost("test fence")
 		}
 		return now
 	}}).Open(ctx, driver.Config{DSN: filepath.Join(t.TempDir(), "guard-lost-acquisition.db")})

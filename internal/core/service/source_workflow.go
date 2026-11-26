@@ -19,6 +19,8 @@ import (
 
 type sourceWorkflow struct {
 	provider     *workflowplugin.Provider
+	binding      driver.SourcePlaneProviderCommitV1
+	commitRecord []byte
 	digest       string
 	profile      driver.RestoreImportProfile
 	restoreTime  time.Time
@@ -77,7 +79,7 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	if matched != 1 {
 		return driver.ErrConflict
 	}
-	installed := &sourceWorkflow{provider: provider, digest: commit.RequestHash, profile: bound, restoreTime: change.Time, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
+	installed := &sourceWorkflow{provider: provider, binding: commit.Providers[0], commitRecord: evidence, digest: commit.RequestHash, profile: bound, restoreTime: change.Time, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
 	for _, entity := range plan.Entities {
 		installed.addresses[sourceAddress{entity.Source.Project, entity.Source.ID}] = true
 		installed.allocatorIDs = append(installed.allocatorIDs, entity.Source.ID, entity.TargetID)
@@ -95,6 +97,45 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 		}
 	}
 	return nil
+}
+
+// RebindSourceWorkflow reuses verified routing on the same open store.
+// The protected marker must still match, and the provider is constructed
+// against the replacement lease and current checkpoint.
+func (s *Service) RebindSourceWorkflow(ctx context.Context, previous *Service, buildProvider func(context.Context, driver.SourcePlaneProviderCommitV1) (*workflowplugin.Provider, error)) (bool, error) {
+	bound := previous.source.Load()
+	if bound == nil {
+		return false, nil
+	}
+	meta, err := s.store.Meta(ctx)
+	if err != nil {
+		return false, err
+	}
+	origin := bound.binding.Origin
+	if meta.StoreID != origin.StoreID || meta.Incarnation != origin.Incarnation {
+		return false, nil
+	}
+	reader, err := s.store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return false, err
+	}
+	rows, readErr := driver.GetNativeHeadRecords(driver.WithRetainedSourceRead(ctx), reader, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+	if err := errors.Join(readErr, reader.Close()); err != nil {
+		return false, err
+	}
+	if len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, bound.commitRecord) {
+		return false, driver.ErrRestoreBindingMismatch{Field: "source.commitRecord"}
+	}
+	provider, err := buildProvider(ctx, bound.binding)
+	if err != nil {
+		return false, err
+	}
+	rebound := *bound
+	rebound.provider = provider
+	if !s.source.CompareAndSwap(nil, &rebound) {
+		return false, driver.ErrConflict
+	}
+	return true, nil
 }
 
 func (s *Service) workflowProvider() *workflowplugin.Provider {

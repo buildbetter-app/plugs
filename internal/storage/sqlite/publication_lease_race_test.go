@@ -350,7 +350,7 @@ func assertDurableHeartbeat(t *testing.T, ctx context.Context, observer *Store, 
 		t.Fatal(err)
 	}
 	lease.mu.Lock()
-	expires, deadline, publishing, lost := lease.expires, lease.deadline, lease.publishing, lease.lostFlag
+	expires, deadline, publishing, lost := lease.expires, lease.deadline, lease.publishing, lease.lossReason != ""
 	lease.mu.Unlock()
 	if row.epoch != lease.epoch || row.token != lease.token || row.expires != expires || row.expires != deadline.UnixNano() || publishing || lost {
 		t.Fatalf("publication left private or lost heartbeat: durable=%+v effective=%d deadline=%s publishing=%v lost=%v", row, expires, deadline, publishing, lost)
@@ -692,7 +692,7 @@ func TestSQLitePublicationLeaseClockCanSignalLoss(t *testing.T) {
 			if err := s.check(ctx); err != nil {
 				t.Error(err)
 			}
-			lease.signalLost()
+			lease.signalLost("test fence")
 		}
 		return time.Now()
 	}}).Open(ctx, driver.Config{DSN: path})

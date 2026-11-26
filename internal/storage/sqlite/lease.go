@@ -44,20 +44,25 @@ type activeLease struct {
 	deadline   time.Time
 	timer      *time.Timer
 	lost       chan struct{}
-	lostFlag   bool
+	lossReason string
 	released   bool
 }
 
 func (l *activeLease) Epoch() uint64         { return l.epoch }
 func (l *activeLease) Lost() <-chan struct{} { return l.lost }
-func (l *activeLease) signalLost() {
+func (l *activeLease) LossReason() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.loseLocked()
+	return l.lossReason
 }
-func (l *activeLease) loseLocked() {
-	if !l.lostFlag {
-		l.lostFlag = true
+func (l *activeLease) signalLost(reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.loseLocked(reason)
+}
+func (l *activeLease) loseLocked(reason string) {
+	if l.lossReason == "" {
+		l.lossReason = reason
 		close(l.lost)
 	}
 	if l.timer != nil {
@@ -67,12 +72,12 @@ func (l *activeLease) loseLocked() {
 func (l *activeLease) expire() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.lostFlag {
+	if l.lossReason != "" {
 		return
 	}
 	remaining := time.Until(l.deadline)
 	if remaining <= 0 {
-		l.loseLocked()
+		l.loseLocked("lease renewal deadline elapsed")
 		return
 	}
 	l.timer = time.AfterFunc(remaining, l.expire)
@@ -81,16 +86,22 @@ func (l *activeLease) expire() {
 // liveLocked checks time explicitly, not only the timer callback: a process
 // paused past its monotonic deadline must not renew or commit when it resumes.
 func (l *activeLease) liveLocked(now, expires int64) bool {
-	if l.lostFlag || l.released || now >= expires || !time.Now().Before(l.deadline) {
-		l.loseLocked()
+	if l.lossReason != "" {
+		return false
+	}
+	if l.released || now >= expires || !time.Now().Before(l.deadline) {
+		l.loseLocked("lease renewal deadline elapsed")
 		return false
 	}
 	return true
 }
 
 func (l *activeLease) fenceLocked(s *Store, r leaseRow, now, expires int64) error {
-	if l.store != s || r.epoch != l.epoch || r.token != l.token || !l.liveLocked(now, expires) {
-		l.loseLocked()
+	if l.store != s || r.epoch != l.epoch || r.token != l.token {
+		l.loseLocked("durable lease owner changed")
+		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
+	}
+	if !l.liveLocked(now, expires) {
 		return driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: r.epoch}
 	}
 	return nil
@@ -161,7 +172,7 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if l.store.closed {
-		l.loseLocked()
+		l.loseLocked("store closed during renewal")
 		return false, fmt.Errorf("sqlite: store closed")
 	}
 	// The callback and mutex acquisition may have taken time: check the old
@@ -179,17 +190,18 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 	}
 	expires := now.Add(l.ttl).UnixNano()
 	if err := l.persistHeartbeat(expires); err != nil {
-		l.loseLocked()
+		l.loseLocked("heartbeat journal update failed")
 		return false, err
 	}
 	// Journal I/O is not a grace period. In particular a process stopped inside
 	// fsync must not acknowledge or publish after its OLD real deadline. Clock
 	// callbacks remain outside both mutexes; this elapsed check is monotonic.
-	if !l.liveLocked(now.UnixNano(), l.expires) {
+	if !time.Now().Before(l.deadline) {
+		l.loseLocked("heartbeat journal update exceeded lease deadline")
 		return false, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
 	}
 	if err := ctx.Err(); err != nil {
-		l.loseLocked()
+		l.loseLocked("heartbeat journal update exceeded renewal attempt budget")
 		return false, err
 	}
 	l.expires = expires
@@ -222,7 +234,7 @@ func (l *activeLease) abortPublication(durable leaseHeartbeat) {
 		// persisted accepted heartbeats. A partially failed publication never
 		// relies on a possibly uncertain native outcome to keep its owner live.
 		if l.heartbeatLocked() != durable {
-			l.loseLocked()
+			l.loseLocked("publication aborted after a durable heartbeat")
 		}
 		l.publishing = false
 	}
@@ -332,7 +344,7 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	return nil
 }
 func (l *activeLease) Release(ctx context.Context) error {
-	l.signalLost()
+	l.signalLost("lease released")
 	l.mu.Lock()
 	released := l.released
 	l.mu.Unlock()

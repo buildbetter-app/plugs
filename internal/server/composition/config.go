@@ -16,10 +16,12 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	coreevents "github.com/buildbetter-app/plugs/internal/core/events"
@@ -220,7 +222,9 @@ type Runtime struct {
 	restoredWASI         *restoredWASI
 	ontologyRuntime      *service.Ontology
 	nativeImportOntology bool
+	sourceMarker         sourceWorkflowMarker
 
+	config    Config
 	ctx       context.Context
 	cancel    context.CancelFunc
 	renewDone chan struct{}
@@ -229,7 +233,7 @@ type Runtime struct {
 	mcp       http.Handler
 	websocket *websocket.Handler
 	httpMu    sync.Mutex
-	http      *httpjson.Server
+	http      *runtimeListener
 	closed    bool
 	once      sync.Once
 	closeErr  error
@@ -280,25 +284,26 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	leaseCtx, leaseCancel := context.WithTimeout(ctx, 3*time.Second)
+	// A killed predecessor can leave a durable heartbeat with a full TTL.
+	leaseCtx, leaseCancel := context.WithTimeout(ctx, driver.LeaseTTL+5*time.Second)
 	lease, err := store.Lease(leaseCtx, config.LeaseHolder, driver.LeaseTTL)
 	leaseCancel()
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("composition: acquire active lease: %w", err)
 	}
-	r, err := bindRuntime(ctx, config, store, lease, restored, signing)
+	r, err := bindRuntime(ctx, config, store, lease, restored, signing, nil)
 	restored = nil // bindRuntime owns the artifact even on failure.
 	return r, err
 }
 
-func bindRuntime(ctx context.Context, config Config, store driver.Store, lease driver.ActiveLease, restored *restoredWASI, signing runtimeSigningKeys) (*Runtime, error) {
+func bindRuntime(ctx context.Context, config Config, store driver.Store, lease driver.ActiveLease, restored *restoredWASI, signing runtimeSigningKeys, previous *Runtime) (*Runtime, error) {
 	lifetime, cancel := context.WithCancel(ctx)
-	r := &Runtime{Store: store, Lease: lease, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored, signing: signing}
+	r := &Runtime{Store: store, Lease: lease, config: config, ctx: lifetime, cancel: cancel, renewDone: make(chan struct{}), restoredWASI: restored, signing: signing}
 	// Start renewal before binding optional subsystems so a failed bind can
 	// still be canceled and joined by Close without leaking the lease.
 	go r.renew()
-	if err := r.bind(config); err != nil {
+	if err := r.bind(config, previous); err != nil {
 		_ = r.Close(context.Background())
 		return nil, err
 	}
@@ -306,29 +311,35 @@ func bindRuntime(ctx context.Context, config Config, store driver.Store, lease d
 }
 
 // Reacquire retires a fenced runtime and binds a fresh storage epoch over the
-// open store. The caller owns the runtime and must start its new listener.
-func (r *Runtime) Reacquire(ctx context.Context, config Config) (*Runtime, error) {
+// open store. A running listener reports busy until ownership moves to the
+// replacement runtime. The caller owns both lifecycle operations.
+func (r *Runtime) Reacquire(ctx context.Context) (*Runtime, error) {
 	select {
 	case <-r.Lease.Lost():
 	default:
 		return nil, errors.New("composition: active lease is still live")
 	}
 	store := r.Store
+	r.httpMu.Lock()
+	listener := r.http
+	closed := r.closed
+	r.httpMu.Unlock()
+	if closed {
+		return nil, errors.New("composition: runtime is closed")
+	}
 	defer func() {
 		if store != nil {
 			_ = store.Close()
 		}
+		if listener != nil {
+			_ = listener.Close()
+		}
 	}()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	err := r.shutdown(shutdownCtx, false)
-	cancel()
+	err := r.shutdown(ctx, false)
 	if err != nil {
 		slog.WarnContext(ctx, "retired fenced runtime with cleanup errors", "error_type", fmt.Sprintf("%T", err))
 	}
-	config, err = normalizeConfig(config)
-	if err != nil {
-		return nil, err
-	}
+	config := r.config
 	restored, err := restoreConfiguredWASI(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("composition: restore artifact for fresh lease: %w", err)
@@ -346,8 +357,13 @@ func (r *Runtime) Reacquire(ctx context.Context, config Config) (*Runtime, error
 			retireCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			_ = r.Lease.Release(retireCtx)
 			cancel()
-			next, bindErr := bindRuntime(ctx, config, store, lease, restored, r.signing)
+			next, bindErr := bindRuntime(ctx, config, store, lease, restored, r.signing, r)
 			store, restored = nil, nil // bindRuntime owns both even on failure.
+			if bindErr == nil && listener != nil {
+				next.http = listener
+				listener.route.Store(next.httpRoute())
+				listener = nil
+			}
 			return next, bindErr
 		}
 		select {
@@ -565,7 +581,7 @@ func openStore(ctx context.Context, config Config) (driver.Store, error) {
 	}
 }
 
-func (r *Runtime) bind(config Config) error {
+func (r *Runtime) bind(config Config, previous *Runtime) error {
 	// Renewal is already running. Complete the current-image upgrade before
 	// any request is admitted; ordinary writes retain their two-second pre phase.
 	if err := pipeline.BuildSourceIndexes(r.ctx, r.Store, r.Lease); err != nil {
@@ -714,7 +730,7 @@ func (r *Runtime) bind(config Config) error {
 		serviceOptions = append(serviceOptions, service.WithCompaction(*config.Compaction))
 	}
 	r.Service = service.New(r.Store, r.Lease, writer, serviceOptions...)
-	if err := r.recoverSourceWorkflow(r.ctx); err != nil {
+	if err := r.bindSourceWorkflow(r.ctx, meta, previous); err != nil {
 		return fmt.Errorf("composition: recover source workflow: %w", err)
 	}
 	var ontologyService *ontologyops.Service
@@ -995,20 +1011,13 @@ func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Con
 	if err := validateAddress(address); err != nil {
 		return nil, err
 	}
-	mux := http.NewServeMux()
-	mux.Handle(httpjson.Path, r.HTTPHandler)
-	mux.Handle(mcp.Path, r.mcp)
-	mux.Handle(websocket.Path, r.websocket)
-	if r.UIHandler != nil {
-		mux.Handle("/ui/", r.UIHandler)
-	}
-	if r.WatchHTTP != nil {
-		mux.Handle(watchhttp.DefaultPath, r.watchStreamHandler())
-	}
-	server, err := r.HTTPHandler.ListenHandler(ctx, address, tlsConfig, mux)
+	listener := &runtimeListener{}
+	listener.route.Store(r.httpRoute())
+	server, err := r.HTTPHandler.ListenHandler(ctx, address, tlsConfig, listener)
 	if err != nil {
 		return nil, err
 	}
+	listener.Server = server
 	r.httpMu.Lock()
 	defer r.httpMu.Unlock()
 	if r.closed {
@@ -1019,8 +1028,59 @@ func (r *Runtime) Listen(ctx context.Context, address string, tlsConfig *tls.Con
 		_ = server.Close()
 		return nil, errors.New("composition: listener already started")
 	}
-	r.http = server
+	r.http = listener
 	return server, nil
+}
+
+type runtimeListener struct {
+	*httpjson.Server
+	route atomic.Pointer[runtimeRoute]
+}
+
+type runtimeRoute struct {
+	runtime *Runtime
+	mux     *http.ServeMux
+}
+
+func (r *Runtime) httpRoute() *runtimeRoute {
+	mux := http.NewServeMux()
+	mux.Handle(httpjson.Path, r.HTTPHandler)
+	mux.Handle(mcp.Path, r.mcp)
+	mux.Handle(websocket.Path, r.websocket)
+	if r.UIHandler != nil {
+		mux.Handle("/ui/", r.UIHandler)
+	}
+	if r.WatchHTTP != nil {
+		mux.Handle(watchhttp.DefaultPath, r.watchStreamHandler())
+	}
+	return &runtimeRoute{runtime: r, mux: mux}
+}
+
+func (l *runtimeListener) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	route := l.route.Load()
+	r := route.runtime
+	select {
+	case <-r.Lease.Lost():
+		const hint = "active storage lease was lost, reacquiring"
+		w.Header().Set("Retry-After", "1")
+		if req.URL.Path != httpjson.Path {
+			http.Error(w, hint, http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write(r.RPC.TransportError(&model.Error{Data: model.ErrorData{Code: "busy", Hint: hint}}))
+	default:
+		// Already admitted requests remain bound to their original epoch. On
+		// retirement, cancel them without closing the shared listener.
+		ctx, cancel := context.WithCancel(req.Context())
+		stop := context.AfterFunc(r.ctx, cancel)
+		defer cancel()
+		defer stop()
+		route.mux.ServeHTTP(w, req.WithContext(ctx))
+	}
 }
 
 // watchStreamHandler bridges the explicit HTTP stream to a collaboration
@@ -1062,11 +1122,30 @@ func (r *Runtime) HTTPServer() *httpjson.Server {
 	}
 	r.httpMu.Lock()
 	defer r.httpMu.Unlock()
-	return r.http
+	if r.http == nil {
+		return nil
+	}
+	return r.http.Server
 }
 
 func (r *Runtime) renew() {
 	defer close(r.renewDone)
+	lastSuccess := time.Now()
+	var lastFailure error
+	defer func() {
+		select {
+		case <-r.Lease.Lost():
+			attrs := []any{"epoch", r.Lease.Epoch(), "time_since_last_heartbeat", time.Since(lastSuccess)}
+			if lease, ok := r.Lease.(interface{ LossReason() string }); ok {
+				attrs = append(attrs, "reason", lease.LossReason())
+			}
+			if lastFailure != nil {
+				attrs = append(attrs, leaseRenewalErrorAttrs(lastFailure)...)
+			}
+			slog.WarnContext(r.ctx, "active storage lease ended", attrs...)
+		default:
+		}
+	}()
 	timer := time.NewTimer(driver.LeaseRenewEvery)
 	defer timer.Stop()
 	const retryDelay = 250 * time.Millisecond
@@ -1077,7 +1156,6 @@ func (r *Runtime) renew() {
 	if renewTimeout <= 0 {
 		renewTimeout = driver.LeaseRenewEvery
 	}
-	retrying := false
 	for {
 		select {
 		case <-r.ctx.Done():
@@ -1091,31 +1169,67 @@ func (r *Runtime) renew() {
 			cancel()
 			if err == nil {
 				r.renewed.Store(true)
-				retrying = false
+				lastSuccess = started
+				lastFailure = nil
 				timer.Reset(time.Until(started.Add(driver.LeaseRenewEvery)))
 				continue
 			}
-			if r.ctx.Err() != nil {
+			lost := false
+			select {
+			case <-r.Lease.Lost():
+				lost = true
+			default:
+			}
+			if r.ctx.Err() != nil && !lost {
 				return
 			}
-			if !retrying {
-				// Driver error text can contain connection details.
-				attrs := []any{"epoch", r.Lease.Epoch(), "error_type", fmt.Sprintf("%T", err)}
-				var native interface{ Code() int }
-				if errors.As(err, &native) {
-					attrs = append(attrs, "error_code", native.Code())
-				}
+			if lastFailure == nil || lost {
+				attrs := append([]any{"epoch", r.Lease.Epoch(), "attempt_duration", time.Since(started)}, leaseRenewalErrorAttrs(err)...)
 				slog.WarnContext(r.ctx, "active storage lease renewal failed", attrs...)
 			}
-			if code, _, _ := driver.ErrorMapping(err); code == "lease_not_held" {
+			lastFailure = err
+			if code, _, _ := driver.ErrorMapping(err); lost || code == "lease_not_held" {
 				return
 			}
 			// Retry the same lease. The driver owns expiry and fencing, and
 			// its Lost channel is terminal.
-			retrying = true
 			timer.Reset(retryDelay)
 		}
 	}
+}
+
+// Driver error text can contain connection details or file paths.
+func leaseRenewalErrorAttrs(err error) []any {
+	attrs := []any{"error_type", fmt.Sprintf("%T", err)}
+	var native interface{ Code() int }
+	var sqlState interface{ SQLState() string }
+	var path *os.PathError
+	var link *os.LinkError
+	var errno syscall.Errno
+	switch {
+	case errors.As(err, &native):
+		attrs = append(attrs, "error_code", native.Code())
+	case errors.As(err, &sqlState):
+		attrs = append(attrs, "sql_state", sqlState.SQLState())
+	case errors.As(err, &path):
+		attrs = append(attrs, "operation", path.Op)
+	case errors.As(err, &link):
+		attrs = append(attrs, "operation", link.Op)
+	case errors.Is(err, context.DeadlineExceeded):
+		attrs = append(attrs, "renewal_error", "attempt deadline exceeded")
+	case errors.Is(err, context.Canceled):
+		attrs = append(attrs, "renewal_error", "attempt canceled")
+	}
+	if errors.As(err, &errno) {
+		attrs = append(attrs, "errno", int(errno))
+	}
+	if code, details, ok := driver.ErrorMapping(err); ok {
+		attrs = append(attrs, "driver_code", code)
+		if code == "lease_not_held" {
+			attrs = append(attrs, "expected_epoch", details["expectedEpoch"], "observed_epoch", details["observedEpoch"])
+		}
+	}
+	return attrs
 }
 
 // Close releases MCP streams and WebSockets, drains HTTP, cancels collaboration/watch work,
@@ -1142,13 +1256,8 @@ func (r *Runtime) shutdown(ctx context.Context, closeStore bool) error {
 		if r.websocket != nil {
 			r.closeErr = errors.Join(r.closeErr, r.websocket.Close())
 		}
-		if httpServer != nil {
-			err := httpServer.Shutdown(ctx)
-			// Shutdown force-closes outstanding HTTP connections on timeout.
-			// The fenced lease remains terminal while storage ownership moves.
-			if closeStore || !errors.Is(err, context.DeadlineExceeded) {
-				r.closeErr = errors.Join(r.closeErr, err)
-			}
+		if closeStore && httpServer != nil {
+			r.closeErr = errors.Join(r.closeErr, httpServer.Shutdown(ctx))
 		}
 		if r.Watches != nil {
 			r.closeErr = errors.Join(r.closeErr, r.Watches.Close())

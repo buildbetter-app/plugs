@@ -28,15 +28,7 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 	if profile.SourcePlanes == nil || report.SourcePlanes == nil || report.Receipt == nil || len(report.SourcePlanes.Providers) != 1 {
 		return driver.ErrConflict
 	}
-	capability, err := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease)
-	if err != nil {
-		return err
-	}
-	state, err := pluginhost.NewSourceRuntimeState(ctx, capability, r.Lease, report.SourcePlanes.Providers[0])
-	if err != nil {
-		return err
-	}
-	provider, err := workflowplugin.NewSourceRuntime(state, report.SourcePlanes.Providers[0])
+	provider, err := r.newSourceProvider(ctx, report.SourcePlanes.Providers[0])
 	if err != nil {
 		return err
 	}
@@ -55,6 +47,54 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 		r.ontologyRuntime.Refresh(snapshot)
 	}
 	return r.Service.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt)
+}
+
+func (r *Runtime) newSourceProvider(ctx context.Context, binding driver.SourcePlaneProviderCommitV1) (*workflowplugin.Provider, error) {
+	capability, err := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease)
+	if err != nil {
+		return nil, err
+	}
+	state, err := pluginhost.NewSourceRuntimeState(ctx, capability, r.Lease, binding)
+	if err != nil {
+		return nil, err
+	}
+	return workflowplugin.NewSourceRuntime(state, binding)
+}
+
+type sourceWorkflowMarker struct {
+	storeID     driver.StoreID
+	incarnation string
+	digest      [sha256.Size]byte
+}
+
+func (r *Runtime) bindSourceWorkflow(ctx context.Context, meta driver.Meta, previous *Runtime) error {
+	if previous != nil {
+		bound, err := r.Service.RebindSourceWorkflow(ctx, previous.Service, r.newSourceProvider)
+		if bound || err != nil {
+			return err
+		}
+	}
+
+	// A cold bind can verify a historical import without installing a live
+	// provider. Remember that outcome by the protected marker and incarnation.
+	// A restore committed before its old runtime installed the provider has a
+	// new marker and still needs full validation.
+	r.sourceMarker = sourceWorkflowMarker{storeID: meta.StoreID, incarnation: meta.Incarnation}
+	reader, err := r.Store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+	if err != nil {
+		return err
+	}
+	rows, readErr := driver.GetNativeHeadRecords(driver.WithRetainedSourceRead(ctx), reader, []model.Ref{model.RefByID(driver.SourcePlaneCommitRecordID, model.Natural64(0))})
+	if err := errors.Join(readErr, reader.Close()); err != nil {
+		return err
+	}
+	if len(rows) == 1 {
+		r.sourceMarker.digest = sha256.Sum256(rows[0].Body)
+	}
+	if previous != nil && r.sourceMarker == previous.sourceMarker {
+		return nil
+	}
+	return r.recoverSourceWorkflow(ctx)
 }
 
 func (r *Runtime) recoverSourceWorkflow(ctx context.Context) (err error) {

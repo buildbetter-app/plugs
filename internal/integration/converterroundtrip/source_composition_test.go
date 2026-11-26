@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
@@ -16,7 +18,98 @@ import (
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
 )
+
+func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
+	ctx := context.Background()
+	var checkRetained atomic.Bool
+	config := composition.Config{
+		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "joint-recovery.db"), Project: "demo",
+		RestorePresence: restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }),
+		StoreFactory: func(ctx context.Context, _ string, config driver.Config) (driver.Store, error) {
+			store, err := (sqlite.Driver{}).Open(ctx, config)
+			if err != nil {
+				return nil, err
+			}
+			return &reacquireSourceStore{Store: store.(*sqlite.Store), rejectRetained: &checkRetained}, nil
+		},
+	}
+	runtime, err := composition.Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := runtime.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	data := converterroundtrip.JointFixtureForTest(t)
+	owner := model.PrincipalRef{Kind: "anonymous", ID: "anonymous"}
+	profile := converterroundtrip.JointProfileForTest(t, data, runtime.Store, runtime.Lease, owner)
+	plan, err := profile.SourcePlanes.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := composition.RestoreImportRequest{
+		IdempotencyKey: strings.Repeat("c", 32), HistoryMode: driver.RestoreHistoryModeSnapshot,
+		Presence: restore.Presence{"proof": "disposable source fixture"}, SourcePlanes: &plan,
+	}
+	report, err := runtime.RestoreImport(ctx, owner, bytes.NewReader(data), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer report.Close()
+	ref := model.RefByID("demo-7", model.Natural64(0))
+	converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.update", 701, map[string]any{"id": ref, "fields": map[string]any{"title": "current checkpoint title"}})
+
+	for _, phase := range []string{"after import", "after startup"} {
+		if !runtime.Service.SourceRuntimeInstalled() {
+			t.Fatalf("source provider absent %s", phase)
+		}
+		old := runtime
+		if err := old.Lease.Release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		checkRetained.Store(true)
+		start := time.Now()
+		next, err := old.Reacquire(ctx)
+		if err != nil {
+			t.Fatalf("reacquire %s: %v", phase, err)
+		}
+		runtime = next
+		if elapsed := time.Since(start); elapsed >= 3*time.Second || next.Store != old.Store || next.Lease.Epoch() != old.Lease.Epoch()+1 {
+			t.Fatalf("reacquire %s took %s, store reused = %t, epoch %d -> %d", phase, elapsed, next.Store == old.Store, old.Lease.Epoch(), next.Lease.Epoch())
+		}
+		t.Logf("source rebind %s completed in %s, epoch %d -> %d", phase, time.Since(start), old.Lease.Epoch(), next.Lease.Epoch())
+		got := converterroundtrip.JointHTTPForTest(t, next.HTTPHandler, "bead.get", 0, map[string]any{"id": ref})
+		if !bytes.Contains(got, []byte("current checkpoint title")) {
+			t.Fatalf("rebound provider did not resolve the current source alias: %s", got)
+		}
+		if phase == "after import" {
+			if err := next.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			checkRetained.Store(false)
+			runtime, err = composition.Open(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+type reacquireSourceStore struct {
+	*sqlite.Store
+	rejectRetained *atomic.Bool
+}
+
+func (s *reacquireSourceStore) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, keys []string) (driver.SourcePlaneSnapshot, error) {
+	if s.rejectRetained.Load() && driver.RetainedSourceRead(ctx) {
+		return nil, errors.New("reacquisition opened a retained-source recovery snapshot")
+	}
+	return s.Store.ReadSourcePlaneSnapshot(ctx, view, keys)
+}
 
 func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 	data := converterroundtrip.JointFixtureForTest(t)
