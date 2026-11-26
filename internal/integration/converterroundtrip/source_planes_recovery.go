@@ -264,6 +264,7 @@ func recoverSourceImportReader(ctx context.Context, r driver.SourcePlaneSnapshot
 	if initialImage.OriginSHA256 == "" || initialImage.OriginSHA256 != currentImage.OriginSHA256 {
 		return Report{}, nil, driver.ErrRestoreBindingMismatch{Field: "source.originDigest"}
 	}
+	report.sourceOriginSHA256 = currentImage.OriginSHA256
 	report.Archive, report.SourcePlanes, report.collection = archive, &binding, source.collection
 	keepArchive = true
 	return report, current, nil

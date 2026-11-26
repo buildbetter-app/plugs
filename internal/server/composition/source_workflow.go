@@ -28,7 +28,7 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 	if profile.SourcePlanes == nil || report.SourcePlanes == nil || report.Receipt == nil || len(report.SourcePlanes.Providers) != 1 {
 		return driver.ErrConflict
 	}
-	provider, err := r.newSourceProvider(ctx, report.SourcePlanes.Providers[0])
+	provider, err := r.newSourceProvider(ctx, report.SourcePlanes.Providers[0], "")
 	if err != nil {
 		return err
 	}
@@ -46,15 +46,28 @@ func (r *Runtime) installSourceWorkflow(ctx context.Context, profile driver.Rest
 		}
 		r.ontologyRuntime.Refresh(snapshot)
 	}
-	return r.Service.InstallSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt)
+	return r.Service.InstallVerifiedSourceWorkflow(ctx, provider, profile, *report.SourcePlanes, *report.Receipt, report.SourceOriginSHA256())
 }
 
-func (r *Runtime) newSourceProvider(ctx context.Context, binding driver.SourcePlaneProviderCommitV1) (*workflowplugin.Provider, error) {
+func (r *Runtime) newSourceProvider(ctx context.Context, binding driver.SourcePlaneProviderCommitV1, originDigest string) (*workflowplugin.Provider, error) {
 	capability, err := driver.RequireWorkflowCheckpointStore(r.Store, r.Lease)
 	if err != nil {
 		return nil, err
 	}
-	state, err := pluginhost.NewSourceRuntimeState(ctx, capability, r.Lease, binding)
+	var verify func([]byte) error
+	if originDigest != "" {
+		verify = func(logical []byte) error {
+			digest, err := workflowplugin.SourceOriginDigest(ctx, logical)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err != nil || digest != originDigest {
+				return driver.ErrRestoreBindingMismatch{Field: "source.originDigest"}
+			}
+			return nil
+		}
+	}
+	state, err := pluginhost.NewSourceRuntimeStateWithVerification(ctx, capability, r.Lease, binding, verify)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +83,10 @@ type sourceWorkflowMarker struct {
 func (r *Runtime) bindSourceWorkflow(ctx context.Context, meta driver.Meta, previous *Runtime) error {
 	if previous != nil {
 		bound, err := r.Service.RebindSourceWorkflow(ctx, previous.Service, r.newSourceProvider)
+		var mismatch driver.ErrRestoreBindingMismatch
+		if errors.As(err, &mismatch) && mismatch.Field == "source.originDigest" {
+			return r.recoverSourceWorkflow(ctx)
+		}
 		if bound || err != nil {
 			return err
 		}
@@ -91,7 +108,7 @@ func (r *Runtime) bindSourceWorkflow(ctx context.Context, meta driver.Meta, prev
 	if len(rows) == 1 {
 		r.sourceMarker.digest = sha256.Sum256(rows[0].Body)
 	}
-	if previous != nil && r.sourceMarker == previous.sourceMarker {
+	if previous != nil && !previous.Service.SourceRuntimeInstalled() && r.sourceMarker == previous.sourceMarker {
 		return nil
 	}
 	return r.recoverSourceWorkflow(ctx)
@@ -120,6 +137,10 @@ func (r *Runtime) recoverSourceWorkflow(ctx context.Context) (err error) {
 			return err
 		}
 		if historical {
+			if report.SourceOriginSHA256() != "" {
+				// The marker alone cannot cache a verified checkpoint image.
+				r.sourceMarker = sourceWorkflowMarker{}
+			}
 			return nil
 		}
 	}

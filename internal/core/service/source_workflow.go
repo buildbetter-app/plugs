@@ -21,6 +21,7 @@ type sourceWorkflow struct {
 	provider     *workflowplugin.Provider
 	binding      driver.SourcePlaneProviderCommitV1
 	commitRecord []byte
+	originDigest string
 	digest       string
 	profile      driver.RestoreImportProfile
 	restoreTime  time.Time
@@ -35,6 +36,13 @@ type sourceAddress struct{ project, id string }
 // receipt binds verified import attribution separately from raw source authors.
 // Installing preserves the method closures already bound by transports.
 func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, profile driver.RestoreImportProfile, commit driver.SourcePlaneCommitBindingV1, receipt driver.IdempotencyRecord) error {
+	return s.InstallVerifiedSourceWorkflow(ctx, provider, profile, commit, receipt, "")
+}
+
+// InstallVerifiedSourceWorkflow retains the immutable digest already verified
+// by the host against the admitted archive. An empty digest requires full
+// recovery before reusing the binding under another lease.
+func (s *Service) InstallVerifiedSourceWorkflow(ctx context.Context, provider *workflowplugin.Provider, profile driver.RestoreImportProfile, commit driver.SourcePlaneCommitBindingV1, receipt driver.IdempotencyRecord, originDigest string) error {
 	bound, err := profile.Detached()
 	if err != nil || bound.SourcePlanes == nil {
 		return driver.ErrConflict
@@ -79,7 +87,11 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 	if matched != 1 {
 		return driver.ErrConflict
 	}
-	installed := &sourceWorkflow{provider: provider, binding: commit.Providers[0], commitRecord: evidence, digest: commit.RequestHash, profile: bound, restoreTime: change.Time, active: map[string]string{}, addresses: map[sourceAddress]bool{}}
+	installed := &sourceWorkflow{
+		provider: provider, binding: commit.Providers[0], commitRecord: evidence, originDigest: originDigest,
+		digest: commit.RequestHash, profile: bound, restoreTime: change.Time,
+		active: map[string]string{}, addresses: map[sourceAddress]bool{},
+	}
 	for _, entity := range plan.Entities {
 		installed.addresses[sourceAddress{entity.Source.Project, entity.Source.ID}] = true
 		installed.allocatorIDs = append(installed.allocatorIDs, entity.Source.ID, entity.TargetID)
@@ -102,9 +114,9 @@ func (s *Service) InstallSourceWorkflow(ctx context.Context, provider *workflowp
 // RebindSourceWorkflow reuses verified routing on the same open store.
 // The protected marker must still match, and the provider is constructed
 // against the replacement lease and current checkpoint.
-func (s *Service) RebindSourceWorkflow(ctx context.Context, previous *Service, buildProvider func(context.Context, driver.SourcePlaneProviderCommitV1) (*workflowplugin.Provider, error)) (bool, error) {
+func (s *Service) RebindSourceWorkflow(ctx context.Context, previous *Service, buildProvider func(context.Context, driver.SourcePlaneProviderCommitV1, string) (*workflowplugin.Provider, error)) (bool, error) {
 	bound := previous.source.Load()
-	if bound == nil {
+	if bound == nil || bound.originDigest == "" {
 		return false, nil
 	}
 	meta, err := s.store.Meta(ctx)
@@ -126,7 +138,7 @@ func (s *Service) RebindSourceWorkflow(ctx context.Context, previous *Service, b
 	if len(rows) != 1 || rows[0].Kind != "instance_config" || !bytes.Equal(rows[0].Body, bound.commitRecord) {
 		return false, driver.ErrRestoreBindingMismatch{Field: "source.commitRecord"}
 	}
-	provider, err := buildProvider(ctx, bound.binding)
+	provider, err := buildProvider(ctx, bound.binding, bound.originDigest)
 	if err != nil {
 		return false, err
 	}

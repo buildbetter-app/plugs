@@ -365,6 +365,7 @@ func restorePreparedNativeReceivingStream(ctx context.Context, archive *dumpform
 		return report, nativeReceivingPostCommitError(report, err)
 	}
 	report.Receipt = recovered.Receipt
+	report.sourceOriginSHA256 = recovered.sourceOriginSHA256
 	return report, nil
 }
 

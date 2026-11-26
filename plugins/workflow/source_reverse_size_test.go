@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/dumpformat"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
@@ -130,6 +131,13 @@ func TestSourceReverseInspectionAdmitsMeasuredExpandedCurrentImage(t *testing.T)
 	if err != nil || inspected.OriginSHA256 != initial.OriginSHA256 {
 		t.Fatal("admitted mutable current image changed immutable origin", err)
 	}
+	start := time.Now()
+	digest, err := SourceOriginDigest(ctx, current)
+	elapsed := time.Since(start)
+	if err != nil || digest != initial.OriginSHA256 {
+		t.Fatal("fast digest differed from full archive inspection", err)
+	}
+	t.Logf("immutable digest for %d checkpoint image bytes took %s", len(current), elapsed)
 	if budget.Usage().CurrentCategories["workflow_reverse_result"] == 0 {
 		t.Fatal("returned inspection lost its owner", budget.Usage())
 	}

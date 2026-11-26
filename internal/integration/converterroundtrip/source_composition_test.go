@@ -24,6 +24,7 @@ import (
 func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
 	ctx := context.Background()
 	var checkRetained atomic.Bool
+	var retainedReads atomic.Int64
 	config := composition.Config{
 		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "joint-recovery.db"), Project: "demo",
 		RestorePresence: restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }),
@@ -32,7 +33,7 @@ func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			return &reacquireSourceStore{Store: store.(*sqlite.Store), rejectRetained: &checkRetained}, nil
+			return &reacquireSourceStore{Store: store.(*sqlite.Store), rejectRetained: &checkRetained, retainedReads: &retainedReads}, nil
 		},
 	}
 	runtime, err := composition.Open(ctx, config)
@@ -60,6 +61,9 @@ func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer report.Close()
+	if report.SourceOriginSHA256() == "" {
+		t.Fatal("import did not retain its verified immutable source digest")
+	}
 	ref := model.RefByID("demo-7", model.Natural64(0))
 	converterroundtrip.JointHTTPForTest(t, runtime.HTTPHandler, "bead.update", 701, map[string]any{"id": ref, "fields": map[string]any{"title": "current checkpoint title"}})
 
@@ -97,16 +101,76 @@ func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
 			}
 		}
 	}
+	t.Run("tampered_advanced_checkpoint_falls_back", func(t *testing.T) {
+		checkRetained.Store(false)
+		store := runtime.Store.(*reacquireSourceStore)
+		checkpoint, err := store.LoadCheckpoint(ctx, driver.SourcePlaneWorkflowNamespaceV1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		origin, revision, logical, err := driver.ReadSourcePlaneCheckpointEnvelope(checkpoint)
+		if err != nil || checkpoint.Generation <= origin.InitialGeneration {
+			t.Fatalf("expected advanced checkpoint: generation=%d initial=%d error=%v", checkpoint.Generation, origin.InitialGeneration, err)
+		}
+		var image struct {
+			Source struct {
+				Records []driver.SourcePlaneRecordV1
+			}
+		}
+		if err := json.Unmarshal(logical, &image); err != nil {
+			t.Fatal(err)
+		}
+		var payload []byte
+		for _, record := range image.Source.Records {
+			changed := bytes.Replace(record.Raw, []byte("Exact active collision"), []byte("Edited retained source"), 1)
+			if !bytes.Equal(changed, record.Raw) {
+				original, _ := json.Marshal(record.Raw)
+				replaced, _ := json.Marshal(changed)
+				payload = bytes.Replace(checkpoint.Payload, original, replaced, 1)
+				break
+			}
+		}
+		if len(payload) == 0 || bytes.Equal(payload, checkpoint.Payload) {
+			t.Fatal("fixture has no modified retained record")
+		}
+		// Save only the checkpoint. Keep its origin, revision and protected
+		// commit row intact so the archive-free digest must detect the edit.
+		corrupt, err := store.SaveCheckpoint(ctx, runtime.Lease, driver.SourcePlaneWorkflowNamespaceV1, checkpoint.Generation, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		preserved, gotRevision, _, err := driver.ReadSourcePlaneCheckpointEnvelope(corrupt)
+		if err != nil || preserved != origin || gotRevision != revision {
+			t.Fatalf("tamper changed the envelope binding: %v", err)
+		}
+		if err := runtime.Lease.Release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		before := retainedReads.Load()
+		next, err := runtime.Reacquire(ctx)
+		if next != nil {
+			runtime = next
+			t.Fatal("rebind accepted a changed retained source record")
+		}
+		var mismatch driver.ErrRestoreBindingMismatch
+		if retainedReads.Load() <= before || !errors.As(err, &mismatch) || (mismatch.Field != "source.reverseImage" && mismatch.Field != "source.originDigest") {
+			t.Fatalf("expected full retained-source recovery to refuse the checkpoint, got %v", err)
+		}
+	})
 }
 
 type reacquireSourceStore struct {
 	*sqlite.Store
 	rejectRetained *atomic.Bool
+	retainedReads  *atomic.Int64
 }
 
 func (s *reacquireSourceStore) ReadSourcePlaneSnapshot(ctx context.Context, view driver.View, keys []string) (driver.SourcePlaneSnapshot, error) {
-	if s.rejectRetained.Load() && driver.RetainedSourceRead(ctx) {
-		return nil, errors.New("reacquisition opened a retained-source recovery snapshot")
+	if driver.RetainedSourceRead(ctx) {
+		s.retainedReads.Add(1)
+		if s.rejectRetained.Load() {
+			return nil, errors.New("reacquisition opened a retained-source recovery snapshot")
+		}
 	}
 	return s.Store.ReadSourcePlaneSnapshot(ctx, view, keys)
 }

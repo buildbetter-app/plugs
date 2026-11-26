@@ -17,6 +17,45 @@ func InspectSourceReverseImageContext(ctx context.Context, logical []byte) (Sour
 func InspectSourceReverseImage(logical []byte) (SourceReverseImage, error) {
 	return InspectSourceReverseImageContext(context.Background(), logical)
 }
+
+// SourceOriginDigest hashes the immutable member of a logical image borrowed
+// from a validated checkpoint envelope. Full inspection proves the canonical
+// bytes at import or startup. A byte match reuses that proof without decoding
+// the raw records or rebuilding mutable workflow views.
+func SourceOriginDigest(ctx context.Context, logical []byte) (string, error) {
+	_, _, mutableLimit, aggregateLimit := driver.SourcePlaneReverseImageLimits()
+	if uint64(len(logical)) > aggregateLimit {
+		return "", sourceRefusal("reverse aggregate byte limit")
+	}
+	var source []byte
+	seen := make(map[string]bool, 5)
+	err := reverseObjectSections(ctx, logical, func(key string, value []byte) error {
+		if seen[key] || len(value) == 0 {
+			return sourceRefusal("duplicate or empty logical section")
+		}
+		seen[key] = true
+		switch key {
+		case `"source"`:
+			source = value
+		case `"runs"`, `"items"`, `"receipts"`, `"audit"`:
+			if uint64(len(value)) > mutableLimit {
+				return sourceRefusal("reverse mutable section byte limit: " + key)
+			}
+		default:
+			return sourceRefusal("unknown reverse logical section")
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(source) == 0 || !seen[`"runs"`] || !seen[`"items"`] || !seen[`"receipts"`] {
+		return "", sourceRefusal("incomplete source-restored logical image")
+	}
+	digest := sourceImageHash(source)
+	return digest, ctx.Err()
+}
+
 func decodeSourceReverseImage(raw []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
