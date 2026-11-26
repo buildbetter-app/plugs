@@ -35,7 +35,7 @@ func (s *Service) workflowBlockerResolverForGraph(ctx context.Context, by model.
 		return nil, mapped(driver.ErrIncarnationChanged{From: view.Incarnation, To: meta.Incarnation})
 	}
 	if meta.Head.String() != view.At.String() {
-		return nil, failure("cursor_invalid", "ready source changed while collecting candidates; restart paging")
+		return nil, errReadyHeadChanged
 	}
 	return &workflowCoreResolver{
 		service:   s,

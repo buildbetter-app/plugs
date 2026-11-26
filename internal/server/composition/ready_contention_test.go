@@ -53,6 +53,10 @@ func TestFirstReadyPageRetriesConcurrentGraphPublication(t *testing.T) {
 	store.afterRead <- create
 	got, err := f.client.Call(ctx, "bead.ready", map[string]any{"limit": 1}, "")
 	if err != nil {
+		var typed *wire.Error
+		if errors.As(err, &typed) {
+			t.Fatalf("first ready page: %v, hint = %q", err, typed.Data.Hint)
+		}
 		t.Fatal(err)
 	}
 	var page struct {
