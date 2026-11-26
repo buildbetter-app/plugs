@@ -93,6 +93,7 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 		fmt.Fprintln(errOut, "warning: memory storage is disposable; data is discarded when this server exits")
 	}
 
+	exitCode := 0
 	select {
 	case serveErr := <-serveDone:
 		closeErr := runtime.Close(context.Background())
@@ -106,22 +107,25 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 		}
 		return 0
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		closeErr := runtime.Close(shutdownCtx)
-		cancel()
-		serveErr := <-serveDone
-		if closeErr != nil {
-			fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
-			return 1
+	case <-runtime.Lease.Lost():
+		if ctx.Err() == nil {
+			fmt.Fprintln(errOut, "server: active storage lease was lost")
+			exitCode = 1
 		}
-		if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
-			// Runtime.Close normally converts this to http.ErrServerClosed. Keep
-			// unexpected errors visible while treating a signal as graceful.
-			fmt.Fprintf(errOut, "server: serve failed during shutdown: %s\n", redactServerError(serveErr, config.DSN))
-			return 1
-		}
-		return 0
 	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	closeErr := runtime.Close(shutdownCtx)
+	cancel()
+	serveErr := <-serveDone
+	if closeErr != nil {
+		fmt.Fprintf(errOut, "server: shutdown failed: %s\n", redactServerError(closeErr, config.DSN))
+		return 1
+	}
+	if serveErr != nil && !errors.Is(serveErr, context.Canceled) && !errors.Is(serveErr, os.ErrClosed) && !errors.Is(serveErr, io.ErrClosedPipe) && !errors.Is(serveErr, http.ErrServerClosed) {
+		fmt.Fprintf(errOut, "server: serve failed during shutdown: %s\n", redactServerError(serveErr, config.DSN))
+		return 1
+	}
+	return exitCode
 }
 
 func redactServerError(err error, dsn string) string {

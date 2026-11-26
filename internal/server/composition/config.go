@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -271,7 +272,7 @@ func Open(ctx context.Context, config Config) (*Runtime, error) {
 	restored = nil // Runtime now owns the artifact on success and bind failure.
 	// Start renewal before binding optional subsystems so a failed bind can
 	// still be canceled and joined by Close without leaking the lease.
-	go r.renew(config.LeaseHolder)
+	go r.renew()
 	if err := r.bind(config); err != nil {
 		_ = r.Close(context.Background())
 		return nil, err
@@ -984,10 +985,11 @@ func (r *Runtime) HTTPServer() *httpjson.Server {
 	return r.http
 }
 
-func (r *Runtime) renew(holder string) {
+func (r *Runtime) renew() {
 	defer close(r.renewDone)
-	ticker := time.NewTicker(driver.LeaseRenewEvery)
-	defer ticker.Stop()
+	timer := time.NewTimer(driver.LeaseRenewEvery)
+	defer timer.Stop()
+	const retryDelay = 250 * time.Millisecond
 	// Leave a full renewal interval between a heartbeat timeout and the
 	// driver's lease deadline. A short request-side timeout can otherwise turn
 	// transient SQL/lock contention into an avoidable lease loss.
@@ -995,19 +997,42 @@ func (r *Runtime) renew(holder string) {
 	if renewTimeout <= 0 {
 		renewTimeout = driver.LeaseRenewEvery
 	}
+	retrying := false
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
 		case <-r.Lease.Lost():
 			return
-		case <-ticker.C:
+		case <-timer.C:
+			started := time.Now()
 			ctx, cancel := context.WithTimeout(r.ctx, renewTimeout)
 			err := r.Lease.Renew(ctx)
 			cancel()
-			if err != nil {
+			if err == nil {
+				retrying = false
+				timer.Reset(time.Until(started.Add(driver.LeaseRenewEvery)))
+				continue
+			}
+			if r.ctx.Err() != nil {
 				return
 			}
+			if !retrying {
+				// Driver error text can contain connection details.
+				attrs := []any{"epoch", r.Lease.Epoch(), "error_type", fmt.Sprintf("%T", err)}
+				var native interface{ Code() int }
+				if errors.As(err, &native) {
+					attrs = append(attrs, "error_code", native.Code())
+				}
+				slog.WarnContext(r.ctx, "active storage lease renewal failed", attrs...)
+			}
+			if code, _, _ := driver.ErrorMapping(err); code == "lease_not_held" {
+				return
+			}
+			// Retry the same lease. The driver owns expiry and fencing, and
+			// its Lost channel is terminal.
+			retrying = true
+			timer.Reset(retryDelay)
 		}
 	}
 }
