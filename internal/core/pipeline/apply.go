@@ -250,6 +250,13 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 				committed = true
 			}
 		}
+		if unknown, ok := driver.Indeterminate(err); ok {
+			// Release the pre-write snapshot before opening durable readback.
+			_ = reader.Close()
+			result, own, resolveErr := w.resolvePublication(ctx, principal, by, cs, meta, hash, attemptID, unknown)
+			committed = own
+			return result, resolveErr
+		}
 		if errors.Is(err, errStale) || errors.Is(err, driver.ErrConflict) {
 			if errors.Is(err, errStale) {
 				w.observeConflict(ConflictStaleSnapshot)
@@ -259,37 +266,6 @@ func (w *Writer) applyWithOutcome(ctx context.Context, by model.PrincipalRef, cs
 			continue
 		}
 		if err != nil {
-			var unknown driver.ErrIndeterminate
-			if errors.As(err, &unknown) {
-				// Only a durable receipt can resolve an uncertain outcome. Never
-				// execute another attempt merely because its response was lost.
-				resolveCtx, resolveCancel := context.WithTimeout(ctx, 2*time.Second)
-				defer resolveCancel()
-				phaseStarted = time.Now()
-				fresh, e := w.reader(resolveCtx)
-				w.observePhaseSince(resolveCtx, PhaseAdmission, phaseStarted, e)
-				if e == nil {
-					defer fresh.Close()
-					// Read the receipt's attempt identity from this immutable
-					// snapshot before replay: a pending response makes replay
-					// wait out resolveCtx, after which no lookup can succeed.
-					entry, identityErr := fresh.IdempotencyByKey(resolveCtx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
-					phaseStarted = time.Now()
-					result, found, e := w.replay(resolveCtx, fresh, principal, by, cs, meta, hash)
-					w.observePhaseSince(resolveCtx, PhaseReplay, phaseStarted, e)
-					if found || e != nil {
-						// Locks have been released: another invocation may have
-						// won after our uncertain rollback. Only a matching
-						// private receipt token proves this attempt committed.
-						if identityErr != nil {
-							return port.WriteOutcome{}, identityErr
-						}
-						own := entry != nil && entry.AttemptID == attemptID
-						committed = found && e == nil && own
-						return port.WriteOutcome{Commit: result, Replayed: found && e == nil && !own}, e
-					}
-				}
-			}
 			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 				return port.WriteOutcome{}, failure("busy", "write pre phases exceeded their deadline")
 			}
@@ -378,17 +354,20 @@ func (w *Writer) replay(ctx context.Context, reader driver.Reader, principal str
 	if entry.RequestHash != hash {
 		return model.Commit{}, true, failure("idempotency_key_reused", "idempotency key was used with different parameters")
 	}
+	result, err := w.replayEntry(ctx, reader, entry, principal, by, cs, meta, hash)
+	return result, true, replayOutcomeError(err)
+}
+
+func (w *Writer) replayEntry(ctx context.Context, reader driver.Reader, entry *driver.IdempotencyRecord, principal string, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, hash string) (model.Commit, error) {
 	if entry.ResponsePending {
 		// Reauthorize the known receipt before exposing pending metadata, then
 		// again against the fresh snapshot that holds its final response.
 		if _, err := w.replayReceipt(ctx, reader, entry, by, cs, meta); err != nil {
-			return model.Commit{}, true, err
+			return model.Commit{}, err
 		}
-		result, err := w.waitResponse(ctx, principal, by, cs, meta, hash, entry.Commit.Revision)
-		return result, true, err
+		return w.waitResponse(ctx, principal, by, cs, meta, hash, entry.Commit.Revision)
 	}
-	result, err := w.replayReceipt(ctx, reader, entry, by, cs, meta)
-	return result, true, err
+	return w.replayReceipt(ctx, reader, entry, by, cs, meta)
 }
 
 func (w *Writer) replayReceipt(ctx context.Context, reader driver.Reader, entry *driver.IdempotencyRecord, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta) (model.Commit, error) {
@@ -702,6 +681,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 			return model.Commit{}, err
 		}
 		commit, err := noop.CommitNoop(ctx, driver.ChangesetHeader{AttemptID: attemptID, Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: response, LockKeys: keys})
+		if unknown, ok := driver.Indeterminate(err); ok {
+			return model.Commit{}, unknown
+		}
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return model.Commit{}, errStale
 		}
@@ -760,6 +742,9 @@ func (w *Writer) transact(ctx context.Context, p *prepared, by model.PrincipalRe
 	}
 	entry, err := tx.Commit(ctx, driver.ChangesetHeader{AttemptID: attemptID, Incarnation: p.snapshot.Snapshot().Incarnation, Kind: kind, Time: w.cfg.now().UTC(), Principal: by, Chain: chain, IdempotencyKey: meta.IdempotencyKey, Method: meta.Method, AgentLabel: meta.AgentLabel, RequestHash: hash, Response: commit, ResponsePending: len(p.changed) != 0 && len(w.cfg.posts) > 0, Mutators: p.mutators, Changes: changes, Events: events, LockKeys: keys})
 	if err != nil {
+		if unknown, ok := driver.Indeterminate(err); ok {
+			return model.Commit{}, unknown
+		}
 		if errors.Is(err, driver.ErrCheckpointConflict) {
 			return model.Commit{}, errStale
 		}

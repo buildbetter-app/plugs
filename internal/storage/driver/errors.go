@@ -85,6 +85,18 @@ func (e ErrRestoreCommitConflict) Unwrap() []error {
 	return []error{ErrConflict, e.Cause}
 }
 
+// Indeterminate finds a publication outcome even when it is joined with a
+// conflict, a refusal or a deadline. Callers must handle it before those errors.
+func Indeterminate(err error) (ErrIndeterminate, bool) {
+	var outcome interface{ indeterminate() ErrIndeterminate }
+	if errors.As(err, &outcome) {
+		return outcome.indeterminate(), true
+	}
+	return ErrIndeterminate{}, false
+}
+
+func (e ErrIndeterminate) indeterminate() ErrIndeterminate { return e }
+
 // ErrorMapping exposes only the closed catalog mapping and typed details;
 // adapters own JSON-RPC encoding. It recognizes wrapped value and pointer
 // driver errors. Unknown errors are never silently mapped to success.

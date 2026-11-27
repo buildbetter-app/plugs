@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	nativesqlite "modernc.org/sqlite"
 )
@@ -160,6 +164,89 @@ func TestSQLitePublicationRollbackPreservesTypedRefusal(t *testing.T) {
 			case <-lease.Lost():
 				t.Fatalf("confirmed rollback fenced epoch %d", lease.Epoch())
 			default:
+			}
+		})
+	}
+}
+
+type publicationAuthorizer func(port.AuthorizationStage) error
+
+func (f publicationAuthorizer) Authorize(_ context.Context, stage port.AuthorizationStage, _ port.ProposedChange, _ port.SnapshotReader) error {
+	return f(stage)
+}
+
+func TestSQLitePublicationUncertainCommitResolvesBeforeReplayGuards(t *testing.T) {
+	for _, landed := range []bool{true, false} {
+		name := "rolled_back"
+		if landed {
+			name = "landed"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "graph-publication.db")
+			store := openStore(t, ctx, path)
+			lease := getLease(t, ctx, store, driver.LeaseTTL)
+			// Model losing the driver's result while the caller is still waiting.
+			_, connector := interruptMetadataCommit(t, ctx, store, path, landed)
+			// The real Writer keeps a pinned snapshot open while publishing.
+			store.db.SetMaxOpenConns(0)
+			var replayChecks atomic.Int32
+			stale := func(stage port.AuthorizationStage) error {
+				if stage == port.AuthorizeReplay {
+					replayChecks.Add(1)
+					return &model.Error{Data: model.ErrorData{Code: "ontology_guard_failed"}}
+				}
+				return nil
+			}
+			writer := func(store *Store, lease driver.ActiveLease, authorize publicationAuthorizer) *pipeline.Writer {
+				return pipeline.New(store, lease, pipeline.WithOntology(service.NewOntology(nil)), pipeline.WithAuthorizer(authorize))
+			}
+			by := model.PrincipalRef{Kind: "user", ID: "user:publication-test"}
+			meta := model.WriteMeta{Project: "ops", Method: "bead.create", IdempotencyKey: "11111111111111111111111111111111"}
+			request := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "lost native acknowledgement"}}}}}
+			original, err := writer(store, lease, stale).ApplyWithOutcome(ctx, by, request, meta)
+			if connector.commitCalls.Load() != 1 || replayChecks.Load() != 0 {
+				t.Fatalf("COMMIT calls=%d replay authorization calls=%d error=%v", connector.commitCalls.Load(), replayChecks.Load(), err)
+			}
+			if landed {
+				if err != nil || original.Replayed || original.Commit.Revision.String() != "1" || connector.steps.Load() != 1 {
+					t.Fatalf("own durable COMMIT: %+v, error=%v, native commits=%d", original, err, connector.steps.Load())
+				}
+				requireUncertainLeaseLost(t, ctx, lease)
+			} else {
+				requireMetadataIndeterminate(t, err, meta.IdempotencyKey)
+				if connector.steps.Load() != 0 || connector.rollbacks.Load() != 1 || !getMeta(t, ctx, store).Head.IsZero() {
+					t.Fatal("unpublished attempt left a durable result")
+				}
+			}
+			if err := lease.Release(ctx); err != nil {
+				t.Fatal(err)
+			}
+			fresh := openStore(t, ctx, path)
+			next := getLease(t, ctx, fresh, driver.LeaseTTL)
+			if landed {
+				_, err := writer(fresh, next, stale).ApplyWithOutcome(ctx, by, request, meta)
+				var typed *model.Error
+				if !errors.As(err, &typed) || typed.Data.Code != "busy" || replayChecks.Load() != 1 {
+					t.Fatalf("stale guard over durable receipt = %v, replay checks=%d", err, replayChecks.Load())
+				}
+				_, err = writer(fresh, next, func(port.AuthorizationStage) error {
+					return errors.Join(&model.Error{Data: model.ErrorData{Code: "forbidden"}}, driver.ErrConflict)
+				}).ApplyWithOutcome(ctx, by, request, meta)
+				if !errors.As(err, &typed) || typed.Data.Code != "forbidden" {
+					t.Fatalf("revoked receipt access = %v", err)
+				}
+			}
+			retried, err := writer(fresh, next, func(port.AuthorizationStage) error { return nil }).ApplyWithOutcome(ctx, by, request, meta)
+			if err != nil || retried.Replayed != landed || retried.Commit.Revision.String() != "1" || (landed && !reflect.DeepEqual(retried.Commit, original.Commit)) {
+				t.Fatalf("same-key retry: %+v, original=%+v, error=%v", retried, original, err)
+			}
+			m := getMeta(t, ctx, fresh)
+			reader := getReader(t, ctx, fresh, m, nil)
+			principal, _ := driver.PrincipalKey(by)
+			entry, err := reader.IdempotencyByKey(ctx, principal, "", meta.Method, meta.IdempotencyKey)
+			if m.Head.String() != "1" || err != nil || entry == nil || !reflect.DeepEqual(entry.Commit, retried.Commit) {
+				t.Fatalf("durable receipt: head=%s entry=%+v error=%v", m.Head, entry, err)
 			}
 		})
 	}

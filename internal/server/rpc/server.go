@@ -269,10 +269,12 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		return nil
 	}
 	if callErr != nil {
-		var uncertain driver.ErrIndeterminate
-		if method == "admin.restore.finish" && errors.As(callErr, &uncertain) && uncertain.RestoreInterrupted {
-			return respond("busy", "request interrupted during publication; commit outcome is unknown",
-				map[string]any{"outcome": "unknown", "idempotencyKey": uncertain.IdempotencyKey})
+		if uncertain, ok := driver.Indeterminate(callErr); ok {
+			details := map[string]any{"outcome": "unknown"}
+			if uncertain.IdempotencyKey != "" {
+				details["idempotencyKey"] = uncertain.IdempotencyKey
+			}
+			return respond("busy", "Commit outcome is unknown. Retry the same request and idempotency key.", details)
 		}
 		if (write || strings.HasPrefix(method, "admin.restore.")) && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
 			// A deadline joined during cleanup does not replace a typed refusal

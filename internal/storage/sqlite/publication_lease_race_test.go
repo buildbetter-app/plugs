@@ -94,6 +94,14 @@ type publicationCommitConn struct {
 	connector *publicationCommitConnector
 }
 
+func (c *publicationCommitConn) BeginTx(ctx context.Context, options sqldriver.TxOptions) (sqldriver.Tx, error) {
+	return c.Conn.(sqldriver.ConnBeginTx).BeginTx(ctx, options)
+}
+
+func (c *publicationCommitConn) QueryContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Rows, error) {
+	return c.Conn.(sqldriver.QueryerContext).QueryContext(ctx, query, args)
+}
+
 func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
 	if query == "ROLLBACK" {
 		c.connector.rollbacks.Add(1)

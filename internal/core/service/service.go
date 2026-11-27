@@ -134,6 +134,9 @@ func mapped(err error) error {
 	if err == nil {
 		return nil
 	}
+	if unknown, ok := driver.Indeterminate(err); ok {
+		return unknown
+	}
 	if code, details, ok := driver.ErrorMapping(err); ok {
 		return &model.Error{Data: model.ErrorData{Code: code, Details: details, Retryable: code == "busy" || code == "write_conflict"}}
 	}

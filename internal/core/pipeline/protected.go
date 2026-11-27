@@ -11,6 +11,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/core/port"
@@ -128,22 +129,24 @@ func (w *Writer) ApplyProtected(ctx context.Context, by model.PrincipalRef, req 
 		}
 
 		commit, err := w.applyProtectedOnce(ctx, by, req, meta, principal, hash)
+		if unknown, ok := driver.Indeterminate(err); ok {
+			resolveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+			defer cancel()
+			fresh, readErr := w.reader(resolveCtx)
+			if readErr == nil {
+				result, found, replayErr := protectedReplay(resolveCtx, fresh, principal, meta, hash)
+				_ = fresh.Close()
+				if found && replayErr == nil {
+					return port.WriteOutcome{Commit: result, Replayed: true}, nil
+				}
+			}
+			return port.WriteOutcome{}, unknown
+		}
 		if errors.Is(err, errStale) || errors.Is(err, driver.ErrConflict) {
 			continue
 		}
 		if err == nil {
 			return port.WriteOutcome{Commit: commit}, nil
-		}
-		var indeterminate driver.ErrIndeterminate
-		if errors.As(err, &indeterminate) {
-			fresh, readErr := w.reader(ctx)
-			if readErr == nil {
-				result, found, replayErr := protectedReplay(ctx, fresh, principal, meta, hash)
-				_ = fresh.Close()
-				if found || replayErr != nil {
-					return port.WriteOutcome{Commit: result, Replayed: found && replayErr == nil}, replayErr
-				}
-			}
 		}
 		return port.WriteOutcome{}, mapProtectedError(err)
 	}
