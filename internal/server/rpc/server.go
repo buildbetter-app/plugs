@@ -275,7 +275,13 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 				map[string]any{"outcome": "unknown", "idempotencyKey": uncertain.IdempotencyKey})
 		}
 		if (write || strings.HasPrefix(method, "admin.restore.")) && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
-			return respond("busy", "request deadline or cancellation reached", nil)
+			// A deadline joined during cleanup does not replace a typed refusal
+			// from the operation. Only unclassified interruption becomes busy.
+			var domainErr *model.Error
+			var wireErr *wire.Error
+			if !errors.As(callErr, &domainErr) && !errors.As(callErr, &wireErr) {
+				return respond("busy", "request deadline or cancellation reached", nil)
+			}
 		}
 		mapped := s.registry.catalog.MapError(callErr)
 		if strings.HasPrefix(method, "admin.restore.") && mapped.Data.Code == "internal_error" {

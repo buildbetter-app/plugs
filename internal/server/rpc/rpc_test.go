@@ -160,6 +160,27 @@ func TestWriteDeadlineBeforePublicationReturnsRetryableBusy(t *testing.T) {
 	}
 }
 
+func TestWriteCleanupDeadlinePreservesTypedRefusal(t *testing.T) {
+	for _, code := range []model.ErrorCode{"ontology_guard_failed", "write_conflict"} {
+		t.Run(string(code), func(t *testing.T) {
+			r := registry(t)
+			if err := r.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+				refusal := &model.Error{Data: model.ErrorData{Code: code, Hint: "original refusal"}}
+				return nil, errors.Join(refusal, fmt.Errorf("cleanup: %w", context.DeadlineExceeded))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s := server(t, r, rpc.Config{})
+			raw := s.Dispatch(context.Background(), request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`))
+			var response struct{ Error *wire.Error }
+			if err := json.Unmarshal(raw, &response); err != nil || response.Error == nil ||
+				response.Error.Data.Code != string(code) || response.Error.Data.Hint != "original refusal" {
+				t.Fatalf("cleanup deadline obscured %s: response = %s, error = %v", code, raw, err)
+			}
+		})
+	}
+}
+
 func TestCurrentIncarnationResolvesAfterAdmissionForEveryBatchCall(t *testing.T) {
 	current, lookups := "before-restore", 0
 	type requestKey struct{}

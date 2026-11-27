@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	nativesqlite "modernc.org/sqlite"
 )
@@ -125,6 +126,42 @@ func TestSQLitePublicationCommitWatchDoesNotWaitForLeaseMutex(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSQLitePublicationRollbackPreservesTypedRefusal(t *testing.T) {
+	for _, code := range []model.ErrorCode{"ontology_guard_failed", "write_conflict"} {
+		t.Run(string(code), func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "publication-refusal.db")
+			store := openStore(t, ctx, path)
+			lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+			connector := hookPublicationCommit(t, store, path)
+			call, cancel := context.WithCancel(ctx)
+			defer cancel()
+			connector.beforeRollback = func(context.Context) { cancel() }
+			refusal := &model.Error{Data: model.ErrorData{Code: code}}
+			err := store.immediate(call, lease, func(c *sql.Conn) error {
+				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, "refused", revKey(1), []byte("staged")); err != nil {
+					return err
+				}
+				if err := lease.Renew(call); err != nil {
+					return err
+				}
+				return refusal
+			})
+			if err != refusal || call.Err() != context.Canceled || connector.rollbacks.Load() != 1 || connector.commitCalls.Load() != 0 {
+				t.Fatalf("publication refusal = %v, request = %v, rollbacks = %d, commits = %d", err, call.Err(), connector.rollbacks.Load(), connector.commitCalls.Load())
+			}
+			if cp, err := store.LoadCheckpoint(ctx, "refused"); err != nil || cp.Generation != 0 {
+				t.Fatalf("refused checkpoint became durable: %v %v", cp, err)
+			}
+			select {
+			case <-lease.Lost():
+				t.Fatalf("confirmed rollback fenced epoch %d", lease.Epoch())
+			default:
+			}
+		})
 	}
 }
 
