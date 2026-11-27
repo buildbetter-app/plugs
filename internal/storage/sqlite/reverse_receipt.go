@@ -47,7 +47,12 @@ func (r *reader) ReadNativeReverseReceipt(ctx context.Context, principal, agent,
 	if err != nil {
 		return nil, err
 	}
-	if !r.store.now().Before(time.Unix(0, created).Add(driver.IdempotencyWindow)) {
+	// Cold source recovery uses the original import receipt as provenance.
+	// Its age only limits ordinary idempotency replay. Keep that TTL for
+	// ordinary readers and native reverse, and retain the startup checks on
+	// identity, revision, changeset, and the admitted archive.
+	retainedImport := driver.SourceRecoveryRead(ctx) && method == "offline.restore.import"
+	if !retainedImport && !r.store.now().Before(time.Unix(0, created).Add(driver.IdempotencyWindow)) {
 		return nil, nil
 	}
 	record.ResponsePending = pending != 0
