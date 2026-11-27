@@ -10,6 +10,7 @@ import (
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func TestAdminRestoreUntypedInternalErrorLogsResponseTrace(t *testing.T) {
@@ -23,7 +24,10 @@ func TestAdminRestoreUntypedInternalErrorLogsResponseTrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	const cause = "postgres publication conflict"
-	if err := registry.Register("admin.restore.finish", func(context.Context, rpc.Call) (any, error) {
+	if err := registry.Register("admin.restore.finish", func(ctx context.Context, _ rpc.Call) (any, error) {
+		if method := driver.PublicationMethod(ctx); method != "admin.restore.finish" {
+			t.Errorf("storage publication method = %q", method)
+		}
 		return nil, errors.New(cause)
 	}); err != nil {
 		t.Fatal(err)

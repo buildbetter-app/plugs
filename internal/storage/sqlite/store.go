@@ -7,10 +7,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	sqldriver "database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,6 +24,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	_ "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Driver's optional Clock controls persisted time and expiry comparisons. A nil
@@ -487,44 +490,61 @@ func (s *Store) immediatePublication(ctx context.Context, l *activeLease, restor
 	if err != nil {
 		return err
 	}
-	defer unlockFile(gate)
-	return s.immediateLocked(ctx, l, restore, fn)
+	return s.immediateLocked(ctx, gate, l, restore, fn)
 }
 
-// immediateLocked requires the cross-process publication gate through cleanup.
+// immediateLocked owns the cross-process publication gate through cleanup.
 // Renew persists its own journal before acceptance, so COMMIT is the only native
 // publication and its confirmed success cannot turn into a handoff error.
-func (s *Store) immediateLocked(ctx context.Context, l *activeLease, restore bool, fn func(*sql.Conn) error) (err error) {
+func (s *Store) immediateLocked(ctx context.Context, gate *os.File, l *activeLease, restore bool, fn func(*sql.Conn) error) (err error) {
+	var reportAbort func()
+	defer func() {
+		unlockFile(gate)
+		if reportAbort != nil {
+			reportAbort()
+		}
+	}()
 	c, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	var registered, committed bool
+	var began, registered, committed bool
 	var durable leaseHeartbeat
+	start := time.Now()
 	// Cancellation may be reported after native BEGIN acquired the writer.
 	// Every unconfirmed path rolls back before returning the connection. After
 	// a confirmed COMMIT there must be no further native transaction work.
 	defer func() {
+		if committed {
+			return
+		}
+		_, rollbackErr := c.ExecContext(context.Background(), `ROLLBACK`)
+		rolledBack := rollbackErr == nil
 		var uncertain commitError
-		if !committed {
-			_, rollbackErr := c.ExecContext(context.Background(), `ROLLBACK`)
-			// A successful rollback on this reserved connection proves the
-			// original transaction remained open after the failed COMMIT.
-			if restore && rollbackErr == nil && errors.As(err, &uncertain) && uncertain.interrupted() {
-				err = uncertain.error
+		attempted := errors.As(err, &uncertain)
+		if registered {
+			renewed := l.abortPublication(durable, rolledBack, attempted)
+			duration, cause := time.Since(start), err
+			reportAbort = func() {
+				logPublicationAbort(ctx, l.epoch, duration, cause, rollbackErr, attempted, renewed)
 			}
 		}
-		if registered {
-			if errors.As(err, &uncertain) {
-				l.signalLost("native publication outcome was uncertain")
-			}
-			l.abortPublication(durable)
+		if !rolledBack && (began || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			// A connection that might still own an open native transaction
+			// must never return to the pool after the publication gate opens.
+			_ = c.Raw(func(any) error { return sqldriver.ErrBadConn })
+		}
+		// Preserve the existing restore-specific classification. Other
+		// publication callers retain their established COMMIT error contract.
+		if restore && rolledBack && attempted && uncertain.interrupted() {
+			err = uncertain.error
 		}
 	}()
 	if _, err = c.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
+	began = true
 	if l != nil {
 		durable, err = s.beginLeasePublication(ctx, c, l)
 		if err != nil {
@@ -544,6 +564,52 @@ func (s *Store) immediateLocked(ctx context.Context, l *activeLease, restore boo
 		registered = false
 	}
 	return nil
+}
+
+func logPublicationAbort(ctx context.Context, epoch uint64, duration time.Duration, cause, rollbackErr error, commitAttempted, renewed bool) {
+	method := driver.PublicationMethod(ctx)
+	if method == "" {
+		method = "store.internal"
+	}
+	attrs := []any{
+		"method", method, "epoch", epoch, "duration", duration, "commit_attempted", commitAttempted,
+		"rollback_confirmed", rollbackErr == nil, "heartbeat_advanced", renewed,
+	}
+	// Driver error text can contain SQL, record values or connection details.
+	var native interface{ Code() int }
+	switch {
+	case cause == nil:
+		attrs = append(attrs, "cause", "publication_interrupted")
+	case errors.Is(cause, context.Canceled):
+		attrs = append(attrs, "cause", "context_canceled")
+	case errors.Is(cause, context.DeadlineExceeded):
+		attrs = append(attrs, "cause", "deadline_exceeded")
+	case errors.As(cause, &native):
+		label := "sqlite_error"
+		switch native.Code() & 0xff {
+		case sqlite3.SQLITE_BUSY:
+			label = "sqlite_busy"
+		case sqlite3.SQLITE_LOCKED:
+			label = "sqlite_locked"
+		}
+		attrs = append(attrs, "cause", label, "sqlite_code", native.Code())
+	case errors.Is(cause, driver.ErrCheckpointConflict):
+		attrs = append(attrs, "cause", "checkpoint_conflict")
+	case errors.Is(cause, driver.ErrConflict):
+		attrs = append(attrs, "cause", "write_conflict")
+	default:
+		if code, _, ok := driver.ErrorMapping(cause); ok {
+			attrs = append(attrs, "cause", code)
+		} else {
+			attrs = append(attrs, "cause", "publication_error", "error_type", fmt.Sprintf("%T", cause))
+		}
+	}
+	if rollbackErr != nil {
+		attrs = append(attrs, "rollback_error_type", fmt.Sprintf("%T", rollbackErr))
+		slog.WarnContext(ctx, "sqlite publication aborted", attrs...)
+		return
+	}
+	slog.InfoContext(ctx, "sqlite publication aborted", attrs...)
 }
 
 func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease, durable leaseHeartbeat) (leaseHeartbeat, error) {

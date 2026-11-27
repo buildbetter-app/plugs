@@ -30,8 +30,10 @@ func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
 			call, connector := cancelMetadataCommit(t, ctx, s, path, tc.published)
 			const key = "restore-interrupted-commit"
 			err := s.immediatePublication(call, lease, true, func(c *sql.Conn) error {
-				_, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("restore"))
-				return err
+				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("restore")); err != nil {
+					return err
+				}
+				return lease.Renew(ctx)
 			})
 			durable, readErr := observer.LoadCheckpoint(ctx, key)
 			if readErr != nil || connector.rollbacks.Load() != 1 {
@@ -43,6 +45,15 @@ func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
 					t.Fatalf("unacknowledged publication: err=%v readback=%+v commits=%d", err, durable, connector.steps.Load())
 				}
 				requireUncertainLeaseLost(t, ctx, lease)
+				row, err := observer.readLease(ctx, observer.db)
+				if err != nil || row.expires != lease.expires {
+					t.Fatalf("locally fenced lease lost its durable expiry: %v", err)
+				}
+				wait, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+				defer cancel()
+				if next, err := observer.Lease(wait, "contender", driver.LeaseTTL); next != nil || !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("takeover ignored the durable expiry after local loss: %v %v", next, err)
+				}
 			} else {
 				if err != context.Canceled || durable.Generation != 0 || connector.steps.Load() != 0 {
 					t.Fatalf("confirmed rollback: err=%v readback=%+v commits=%d", err, durable, connector.steps.Load())

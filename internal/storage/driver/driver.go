@@ -436,6 +436,20 @@ type ChangesetHeader struct {
 	Events   []model.EventDescriptor
 	LockKeys []LockKey // complete, sorted set acquired before any write
 }
+
+type publicationMethodKey struct{}
+
+// WithPublicationMethod labels storage diagnostics with a trusted, registered
+// method name, without carrying request metadata or parameters into the log.
+func WithPublicationMethod(ctx context.Context, method string) context.Context {
+	return context.WithValue(ctx, publicationMethodKey{}, method)
+}
+
+func PublicationMethod(ctx context.Context) string {
+	method, _ := ctx.Value(publicationMethodKey{}).(string)
+	return method
+}
+
 type StoreHealth struct {
 	Driver               string
 	Role                 string // active, standby, unknown
