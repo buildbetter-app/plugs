@@ -25,11 +25,14 @@ func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
 	ctx := context.Background()
 	var checkRetained atomic.Bool
 	var retainedReads atomic.Int64
+	var clockOffset atomic.Int64
 	config := composition.Config{
 		Driver: "sqlite", DSN: filepath.Join(t.TempDir(), "joint-recovery.db"), Project: "demo",
 		RestorePresence: restore.PresenceVerifierFunc(func(context.Context, string, string, restore.Presence) error { return nil }),
 		StoreFactory: func(ctx context.Context, _ string, config driver.Config) (driver.Store, error) {
-			store, err := (sqlite.Driver{}).Open(ctx, config)
+			store, err := (sqlite.Driver{Clock: func() time.Time {
+				return time.Now().Add(time.Duration(clockOffset.Load()))
+			}}).Open(ctx, config)
 			if err != nil {
 				return nil, err
 			}
@@ -95,10 +98,29 @@ func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
 				t.Fatal(err)
 			}
 			checkRetained.Store(false)
+			clockOffset.Store(int64(driver.IdempotencyWindow + time.Second))
 			runtime, err = composition.Open(ctx, config)
+			if err != nil {
+				t.Fatalf("cold startup after import receipt replay expiry: %v", err)
+			}
+			meta, err := runtime.Store.Meta(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
+			reader, err := runtime.Store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			principal, err := driver.PrincipalKey(owner)
+			if err != nil {
+				_ = reader.Close()
+				t.Fatal(err)
+			}
+			replay, replayErr := reader.IdempotencyByKey(ctx, principal, "", "offline.restore.import", request.IdempotencyKey)
+			if err := errors.Join(replayErr, reader.Close()); err != nil || replay != nil {
+				t.Fatalf("expired import receipt escaped ordinary replay TTL: exists=%v error=%v", replay != nil, err)
+			}
+			t.Log("cold startup installed the source workflow after its ordinary import replay expired")
 		}
 	}
 	t.Run("tampered_advanced_checkpoint_falls_back", func(t *testing.T) {
