@@ -58,6 +58,15 @@ func requireUncertainLeaseLost(t *testing.T, ctx context.Context, lease driver.A
 	requireFenced(t, lease.Renew(ctx))
 }
 
+func assertCanceledCommitLease(t *testing.T, ctx context.Context, lease driver.ActiveLease, published bool) {
+	t.Helper()
+	if published {
+		requireUncertainLeaseLost(t, ctx, lease)
+	} else if err := lease.Renew(ctx); err != nil {
+		t.Fatalf("confirmed rollback lost the active lease: %v", err)
+	}
+}
+
 func TestSQLiteCheckpointCanceledCommitOutcomeUnknown(t *testing.T) {
 	for _, method := range []string{"SaveCheckpoint", "SaveCheckpointIfRecord"} {
 		for _, published := range []bool{false, true} {
@@ -102,7 +111,7 @@ func TestSQLiteCheckpointCanceledCommitOutcomeUnknown(t *testing.T) {
 				if saved.Generation != 0 || saved.Payload != nil {
 					t.Fatalf("uncertain COMMIT fabricated a successful checkpoint: %+v", saved)
 				}
-				requireUncertainLeaseLost(t, ctx, lease)
+				assertCanceledCommitLease(t, ctx, lease, published)
 				if err := lease.Release(ctx); err != nil {
 					t.Fatal(err)
 				}
@@ -169,7 +178,7 @@ func TestSQLiteFinalizerCanceledCommitOutcomeUnknown(t *testing.T) {
 				t.Fatalf("real COMMIT boundary: call=%v nativeCommits=%d durable=%+v want=%+v", call.Err(), connector.steps.Load(), durable, want)
 			}
 			requireMetadataIndeterminate(t, finalErr, h.IdempotencyKey)
-			requireUncertainLeaseLost(t, ctx, lease)
+			assertCanceledCommitLease(t, ctx, lease, published)
 			if err := lease.Release(ctx); err != nil {
 				t.Fatal(err)
 			}

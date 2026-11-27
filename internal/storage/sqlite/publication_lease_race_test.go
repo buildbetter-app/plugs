@@ -1,12 +1,15 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	sqldriver "database/sql/driver"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -66,6 +69,7 @@ type publicationCommitConnector struct {
 	before            func()
 	after             func()
 	checkContextAfter bool
+	rollbackFailure   error
 	armed             atomic.Bool
 	every             atomic.Bool
 	steps             atomic.Int32
@@ -87,6 +91,10 @@ type publicationCommitConn struct {
 }
 
 func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
+	if query == "ROLLBACK" && c.connector.rollbackFailure != nil {
+		c.connector.rollbacks.Add(1)
+		return nil, c.connector.rollbackFailure
+	}
 	hook := query == "COMMIT" && (c.connector.armed.CompareAndSwap(true, false) || c.connector.every.Load())
 	if hook && c.connector.before != nil {
 		c.connector.before()
@@ -613,14 +621,18 @@ func TestSQLitePublicationLeaseCheckpointOutcomeAfterHandoffExpiry(t *testing.T)
 	}
 }
 
-func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
-	for _, mode := range []string{"callback-error", "cancellation", "after-durable-commit"} {
+func TestSQLitePublicationLeaseConfirmedAbortKeepsLease(t *testing.T) {
+	for _, mode := range []string{"callback-error", "cancellation", "native-commit-rejected", "after-durable-commit"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := testContext(t)
 			path := filepath.Join(t.TempDir(), "abort-heartbeat.db")
 			s := openStore(t, ctx, path)
 			observer := openStore(t, ctx, path)
-			lease := getLease(t, ctx, s, time.Second).(*activeLease)
+			if _, err := s.db.ExecContext(ctx, `CREATE TABLE proof_parent(id INTEGER PRIMARY KEY);
+CREATE TABLE proof_child(id INTEGER REFERENCES proof_parent(id) DEFERRABLE INITIALLY DEFERRED)`); err != nil {
+				t.Fatal(err)
+			}
+			lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
 			call, cancel := context.WithCancel(ctx)
 			defer cancel()
 			failure := errors.New("discard graph publication")
@@ -647,9 +659,19 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 					want = context.Canceled
 					return call.Err()
 				}
+				if mode == "native-commit-rejected" {
+					want = nil
+					_, err := c.ExecContext(call, `INSERT INTO proof_child VALUES(1)`)
+					return err
+				}
 				return failure
 			})
-			if heartbeatErr != nil || !errors.Is(err, want) {
+			if mode == "native-commit-rejected" {
+				var native commitError
+				if !errors.As(err, &native) {
+					t.Fatalf("native deferred constraint did not fail at COMMIT: %v", err)
+				}
+			} else if heartbeatErr != nil || !errors.Is(err, want) {
 				t.Fatalf("heartbeat=%v publication=%v want=%v", heartbeatErr, err, want)
 			}
 			cp, readErr := observer.LoadCheckpoint(ctx, "abort")
@@ -658,12 +680,15 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 				wantGeneration = 1
 				assertDurableHeartbeat(t, ctx, observer, lease)
 			} else {
-				select {
-				case <-lease.Lost():
-				default:
-					t.Fatal("aborted heartbeat did not fail closed")
+				assertDurableHeartbeat(t, ctx, observer, lease)
+				short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+				defer cancel()
+				if next, err := observer.Lease(short, "contender", driver.LeaseTTL); next != nil || !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("second handle took over a live journal heartbeat: %v %v", next, err)
 				}
-				requireFenced(t, lease.Renew(ctx))
+				if _, err := s.SaveCheckpoint(ctx, lease, "next-publication", 0, []byte("same epoch")); err != nil {
+					t.Fatalf("next publication with the original lease: %v", err)
+				}
 			}
 			if readErr != nil || cp.Generation != wantGeneration {
 				t.Fatalf("durable graph=%+v err=%v want generation=%d", cp, readErr, wantGeneration)
@@ -674,7 +699,7 @@ func TestSQLitePublicationLeaseAbortFailsClosed(t *testing.T) {
 			if publishing {
 				t.Fatal("completed publication left heartbeat admission registered")
 			}
-			t.Logf("%s: graph generation=%d; confirmed publication cannot become cancellation; pre-publication failure remains fail-closed", mode, cp.Generation)
+			t.Logf("%s: graph generation=%d; original lease epoch=%d", mode, cp.Generation, lease.Epoch())
 		})
 	}
 }
@@ -780,7 +805,7 @@ func TestSQLitePublicationLeaseConcurrentSamplesCannotRegressDeadline(t *testing
 	}
 }
 
-func TestSQLitePublicationLeaseRepeatedWallStampAbortFailsClosed(t *testing.T) {
+func TestSQLitePublicationLeaseRepeatedWallStampRollbackKeepsLease(t *testing.T) {
 	ctx := testContext(t)
 	clock := testclock.New(t, time.Date(2037, 1, 1, 0, 0, 0, 0, time.UTC))
 	s := clockStore(t, clock)
@@ -805,12 +830,56 @@ func TestSQLitePublicationLeaseRepeatedWallStampAbortFailsClosed(t *testing.T) {
 	if !errors.Is(err, failure) {
 		t.Fatal(err)
 	}
-	select {
-	case <-lease.Lost():
-	default:
-		t.Fatal("identical timestamp hid an aborted acknowledged heartbeat")
+	if err := lease.Renew(ctx); err != nil {
+		t.Fatalf("confirmed rollback with identical wall stamp lost lease: %v", err)
 	}
-	requireFenced(t, lease.Renew(ctx))
+}
+
+func TestSQLitePublicationLeaseUnconfirmedRollbackFencesAndDiscardsConnection(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "unconfirmed-rollback.db")
+	s := openStore(t, ctx, path)
+	observer := openStore(t, ctx, path)
+	lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
+	connector := hookPublicationCommit(t, s, path)
+	connector.rollbackFailure = errors.New("injected private rollback detail")
+
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	call, cancel := context.WithCancel(driver.WithPublicationMethod(ctx, "bead.update"))
+	defer cancel()
+	err := s.immediate(call, lease, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, "private-key", revKey(1), []byte("private-payload")); err != nil {
+			return err
+		}
+		if err := lease.Renew(ctx); err != nil {
+			return err
+		}
+		cancel()
+		return call.Err()
+	})
+	if !errors.Is(err, context.Canceled) || lease.LossReason() != "native publication rollback was unconfirmed" || connector.rollbacks.Load() != 1 {
+		t.Fatalf("abort=%v reason=%q rollback attempts=%d", err, lease.LossReason(), connector.rollbacks.Load())
+	}
+	requireUncertainLeaseLost(t, ctx, lease)
+	if cp, err := observer.LoadCheckpoint(ctx, "private-key"); err != nil || cp.Generation != 0 {
+		t.Fatalf("unconfirmed rollback published staged data: %+v %v", cp, err)
+	}
+	if err := observer.immediate(ctx, nil, func(*sql.Conn) error { return nil }); err != nil {
+		t.Fatalf("discarded connection retained the native writer: %v", err)
+	}
+	log := output.String()
+	for _, field := range []string{"sqlite publication aborted", "method=bead.update", "cause=context_canceled", "rollback_confirmed=false", "heartbeat_advanced=true"} {
+		if !strings.Contains(log, field) {
+			t.Fatalf("missing %q in diagnostic: %s", field, log)
+		}
+	}
+	if strings.Contains(log, "private") {
+		t.Fatalf("publication diagnostic exposed request or error content: %s", log)
+	}
+	t.Log(strings.TrimSpace(log))
 }
 
 func TestSQLitePublicationLeaseChecksMonotonicDeadlineWithoutExpiryCallback(t *testing.T) {

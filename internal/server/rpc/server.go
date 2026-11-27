@@ -257,7 +257,7 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 			return respond("busy", "graph write admission deadline or cancellation reached", nil)
 		}
 	}
-	result, callErr := invoke(ctx, bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: paging})
+	result, callErr := invoke(driver.WithPublicationMethod(ctx, method), bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: paging})
 	if !idPresent {
 		return nil
 	}

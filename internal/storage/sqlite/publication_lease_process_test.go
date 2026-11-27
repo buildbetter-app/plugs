@@ -168,7 +168,7 @@ func TestSQLitePublicationLeaseWaitingRenewalSeesRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unlockFile(gate)
+	defer func() { unlockFile(gate) }()
 	// Start Renew before registration while the publication gate is occupied.
 	renewal := make(chan error, 1)
 	observe.Store(true)
@@ -178,7 +178,9 @@ func TestSQLitePublicationLeaseWaitingRenewalSeesRegistration(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	err = s.immediateLocked(ctx, lease, false, func(c *sql.Conn) error {
+	publicationGate := gate
+	gate = nil // immediateLocked now owns the gate.
+	err = s.immediateLocked(ctx, publicationGate, lease, false, func(c *sql.Conn) error {
 		select {
 		case err := <-renewal:
 			if err != nil {

@@ -226,18 +226,22 @@ func (l *activeLease) finishPublication() {
 	l.publishing = false
 }
 
-func (l *activeLease) abortPublication(durable leaseHeartbeat) {
+func (l *activeLease) abortPublication(durable leaseHeartbeat, rolledBack bool, commitAttempted bool) (renewed bool) {
+	now := l.store.now().UnixNano()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.publishing {
-		// Retain the fail-closed abort policy even though the journal already
-		// persisted accepted heartbeats. A partially failed publication never
-		// relies on a possibly uncertain native outcome to keep its owner live.
-		if l.heartbeatLocked() != durable {
-			l.loseLocked("publication aborted after a durable heartbeat")
-		}
-		l.publishing = false
+	// A successful native rollback leaves the identity-bound journal as the
+	// durable heartbeat, independent of the SQL changes it just reverted.
+	// Never reopen Lost or extend the deadline here.
+	if rolledBack {
+		l.liveLocked(now, l.expires)
+	} else if commitAttempted {
+		l.loseLocked("native publication outcome was uncertain")
+	} else {
+		l.loseLocked("native publication rollback was unconfirmed")
 	}
+	l.publishing = false
+	return l.renewal != durable.renewal
 }
 func (s *Store) leaseFor(ctx context.Context, value driver.ActiveLease) (*activeLease, error) {
 	if err := s.check(ctx); err != nil {
@@ -326,10 +330,9 @@ func (l *activeLease) Renew(ctx context.Context) error {
 	if err != nil || gate == nil {
 		return err
 	}
-	defer unlockFile(gate)
 	// No publication belonged to this lease while we waited. Use the normal
 	// immediate boundary, which registers a bridge before advancing the timer.
-	if err := l.store.immediateLocked(ctx, l, false, func(*sql.Conn) error {
+	if err := l.store.immediateLocked(driver.WithPublicationMethod(ctx, "lease.renew"), gate, l, false, func(*sql.Conn) error {
 		_, err := l.renewPublication(ctx)
 		return err
 	}); err != nil {
