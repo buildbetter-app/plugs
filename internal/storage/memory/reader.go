@@ -499,13 +499,21 @@ func normalizedScope(principal, agent, method, key string) scope {
 }
 
 func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method, key string) (*driver.IdempotencyRecord, error) {
+	return r.readReceipt(ctx, principal, agent, method, key, false)
+}
+
+func (r *reader) ReadSourceRecoveryReceipt(ctx context.Context, principal, agent, method, key string) (*driver.IdempotencyRecord, error) {
+	return r.readReceipt(ctx, principal, agent, method, key, driver.RetainSourceImportReceipt(ctx, method))
+}
+
+func (r *reader) readReceipt(ctx context.Context, principal, agent, method, key string, retainExpired bool) (*driver.IdempotencyRecord, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if err := r.check(ctx); err != nil {
 		return nil, err
 	}
 	entry, ok := r.state.replays[normalizedScope(principal, agent, method, key)]
-	if !ok || !r.now().Before(entry.at.Add(driver.IdempotencyWindow)) {
+	if !ok || (!retainExpired && !r.now().Before(entry.at.Add(driver.IdempotencyWindow))) {
 		return nil, nil
 	}
 	revision, _ := entry.value.Commit.Revision.Uint64()

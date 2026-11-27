@@ -312,7 +312,7 @@ func (t *transaction) Commit(ctx context.Context, h driver.ChangesetHeader) (mod
 		return zero, err
 	}
 	if scope != nil {
-		previous, err := lookupReceipt(ctx, t.sql, scope, t.at)
+		previous, err := lookupReceipt(ctx, t.sql, scope, t.at, false)
 		if err != nil {
 			_ = t.finish()
 			return zero, err
@@ -634,7 +634,7 @@ func (t *transaction) CommitNoop(ctx context.Context, h driver.ChangesetHeader) 
 	}
 	replayed := false
 	if scope != nil {
-		previous, err := lookupReceipt(ctx, t.sql, scope, t.at)
+		previous, err := lookupReceipt(ctx, t.sql, scope, t.at, false)
 		if err != nil {
 			_ = t.finish()
 			return zero, err

@@ -481,9 +481,10 @@ func (r *reader) Changesets(ctx context.Context, c *driver.Cursor, limit int) ([
 	return result, rows.Err()
 }
 
-func lookupReceipt(ctx context.Context, q querier, scope []byte, at uint64) (*driver.IdempotencyRecord, error) {
+func lookupReceipt(ctx context.Context, q querier, scope []byte, at uint64, retainExpired bool) (*driver.IdempotencyRecord, error) {
 	var raw []byte
-	err := q.QueryRowContext(ctx, `SELECT value FROM plug_postgres.receipts WHERE scope=$1 AND revision<=$2 AND expires>clock_timestamp()`, scope, decimal(at)).Scan(&raw)
+	err := q.QueryRowContext(ctx, `SELECT value FROM plug_postgres.receipts
+		WHERE scope=$1 AND revision<=$2 AND ($3 OR expires>clock_timestamp())`, scope, decimal(at), retainExpired).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -494,6 +495,14 @@ func lookupReceipt(ctx context.Context, q querier, scope []byte, at uint64) (*dr
 	return &value, err
 }
 func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method, key string) (*driver.IdempotencyRecord, error) {
+	return r.readReceipt(ctx, principal, agent, method, key, false)
+}
+
+func (r *reader) ReadSourceRecoveryReceipt(ctx context.Context, principal, agent, method, key string) (*driver.IdempotencyRecord, error) {
+	return r.readReceipt(ctx, principal, agent, method, key, driver.RetainSourceImportReceipt(ctx, method))
+}
+
+func (r *reader) readReceipt(ctx context.Context, principal, agent, method, key string, retainExpired bool) (*driver.IdempotencyRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.check(ctx); err != nil {
@@ -503,7 +512,7 @@ func (r *reader) IdempotencyByKey(ctx context.Context, principal, agent, method,
 	if err != nil {
 		return nil, err
 	}
-	return lookupReceipt(ctx, r.sql, scope, r.at)
+	return lookupReceipt(ctx, r.sql, scope, r.at, retainExpired)
 }
 func (r *reader) ChangesetByKey(ctx context.Context, principal, agent, method, key string) (*model.Changeset, error) {
 	value, err := r.IdempotencyByKey(ctx, principal, agent, method, key)

@@ -51,7 +51,7 @@ func (r *reader) ReadNativeReverseReceipt(ctx context.Context, principal, agent,
 	// Its age only limits ordinary idempotency replay. Keep that TTL for
 	// ordinary readers and native reverse, and retain the startup checks on
 	// identity, revision, changeset, and the admitted archive.
-	retainedImport := driver.SourceRecoveryRead(ctx) && method == "offline.restore.import"
+	retainedImport := driver.RetainSourceImportReceipt(ctx, method)
 	if !retainedImport && !r.store.now().Before(time.Unix(0, created).Add(driver.IdempotencyWindow)) {
 		return nil, nil
 	}

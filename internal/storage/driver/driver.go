@@ -918,9 +918,22 @@ func SourceRecoveryRead(ctx context.Context) bool {
 	return bounded
 }
 
+// RetainSourceImportReceipt permits cold source verification to use a receipt
+// as provenance after the ordinary replay window closes.
+func RetainSourceImportReceipt(ctx context.Context, method string) bool {
+	return SourceRecoveryRead(ctx) && method == "offline.restore.import"
+}
+
+type sourceRecoveryReceiptReader interface {
+	ReadSourceRecoveryReceipt(context.Context, string, string, string, string) (*IdempotencyRecord, error)
+}
+
 func ReadNativeReverseReceipt(ctx context.Context, reader Reader, principal, agent, method, key string, keep func(Ref) bool) (*IdempotencyRecord, error) {
 	if bounded, ok := reader.(NativeReverseReceiptReader); ok && RetainedSourceRead(ctx) {
 		return bounded.ReadNativeReverseReceipt(ctx, principal, agent, method, key, keep)
+	}
+	if retained, ok := reader.(sourceRecoveryReceiptReader); ok && RetainSourceImportReceipt(ctx, method) {
+		return retained.ReadSourceRecoveryReceipt(ctx, principal, agent, method, key)
 	}
 	return reader.IdempotencyByKey(ctx, principal, agent, method, key)
 }
