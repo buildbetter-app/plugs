@@ -13,12 +13,16 @@ import (
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
 	"github.com/buildbetter-app/plugs/internal/core/restore"
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/integration/converterroundtrip"
 	"github.com/buildbetter-app/plugs/internal/server/composition"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	"github.com/buildbetter-app/plugs/internal/storage/memory"
+	"github.com/buildbetter-app/plugs/internal/storage/postgres"
 	"github.com/buildbetter-app/plugs/internal/storage/sqlite"
+	"github.com/buildbetter-app/plugs/internal/testclock"
 )
 
 func TestJointSourceReacquireReusesValidatedBinding(t *testing.T) {
@@ -336,6 +340,113 @@ func TestJointSourceCompositionImportInstallAndStartupRecovery(t *testing.T) {
 			}
 			// Memory retained this one process-local store; only persistent stores were
 			// closed and reopened. No restart persistence is claimed for memory.
+		})
+	}
+}
+
+func TestColdSourceRecoveryAfterImportReceiptExpires(t *testing.T) {
+	data := converterroundtrip.JointFixtureForTest(t)
+	for _, engine := range []string{"postgres", "memory"} {
+		t.Run(engine, func(t *testing.T) {
+			ctx := context.Background()
+			clock := testclock.New(t, time.Date(2037, 3, 29, 6, 0, 0, 0, time.UTC))
+			config := composition.Config{Driver: engine, Project: "demo"}
+			var store driver.Store
+			var err error
+			if engine == "postgres" {
+				config.DSN = clock.BindPostgres(t, converterroundtrip.JointPostgresDSNForTest(t))
+				store, err = (postgres.Driver{}).Open(ctx, driver.Config{DSN: config.DSN})
+			} else {
+				store, err = memory.NewWithOptions(memory.Options{Clock: clock.Now})
+				// Cold composition of a process-local store borrows the same
+				// open store. The imported state lives for that store's lifetime.
+				config.StoreFactory = func(context.Context, string, driver.Config) (driver.Store, error) {
+					return store, nil
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			lease, err := store.Lease(ctx, "source-import-fixture", driver.LeaseTTL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := model.PrincipalRef{Kind: "user", ID: "restore-admin"}
+			profile := converterroundtrip.JointProfileForTest(t, data, store, lease, owner)
+			report, err := converterroundtrip.RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer report.Close()
+			if report.Receipt == nil || report.Receipt.RequestHash == "" {
+				t.Fatal("source import did not publish its original receipt")
+			}
+			write := model.WriteMeta{Project: "demo", IdempotencyKey: strings.Repeat("d", 32)}
+			ontology := service.NewOntology(nil)
+			writer := pipeline.New(store, lease, pipeline.WithOntology(ontology))
+			domain := service.New(store, lease, writer, service.WithOntology(ontology))
+			if _, err := domain.Create(ctx, owner, service.CreateRequest{Type: "issue", Fields: map[string]any{"title": "commit after import"}}, write); err != nil {
+				t.Fatal(err)
+			}
+			meta, err := store.Meta(ctx)
+			if err != nil || meta.Head == report.Receipt.Commit.Revision {
+				t.Fatalf("fixture failed to advance past the import revision: %v", err)
+			}
+			principal, err := driver.PrincipalKey(owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ordinary, err := before.IdempotencyByKey(ctx, principal, "", "bead.create", write.IdempotencyKey)
+			if err := errors.Join(err, before.Close()); err != nil || ordinary == nil {
+				t.Fatalf("fixture ordinary write receipt is absent before expiry: %v", err)
+			}
+			if err := lease.Release(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if engine == "postgres" {
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			clock.Advance(t, driver.IdempotencyWindow+time.Second)
+			runtime, err := composition.Open(ctx, config)
+			if err != nil {
+				t.Fatalf("cold startup after import replay expiry: %v", err)
+			}
+			defer runtime.Close(ctx)
+			if !runtime.Service.SourceRuntimeInstalled() {
+				t.Fatal("startup omitted the recovered source provider")
+			}
+			source := model.RefByID("demo-7", model.Natural64(0))
+			target, found, err := runtime.Service.ResolveSourceAddress(ctx, owner, "demo", source)
+			if err != nil || !found || target.ID != "workflow:item/restored" {
+				t.Fatalf("recovered source alias = %v, found=%v, error=%v", target, found, err)
+			}
+			reader, err := runtime.Store.Read(ctx, driver.View{Incarnation: meta.Incarnation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			startup := driver.WithRetainedSourceRead(ctx)
+			retained, err := driver.ReadNativeReverseReceipt(startup, reader, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey, nil)
+			if err != nil || retained == nil || retained.RequestHash != report.Receipt.RequestHash || retained.Commit.Revision != report.Receipt.Commit.Revision {
+				t.Fatalf("startup did not read the original import receipt: %v", err)
+			}
+			if receipt, err := reader.IdempotencyByKey(startup, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey); err != nil || receipt != nil {
+				t.Fatalf("ordinary replay returned the expired import receipt: %v", err)
+			}
+			if receipt, err := driver.ReadNativeReverseReceipt(driver.WithNativeReverseRead(ctx), reader, principal, profile.AgentLabel(), profile.Method, profile.IdempotencyKey, nil); err != nil || receipt != nil {
+				t.Fatalf("offline reverse returned the expired import receipt: %v", err)
+			}
+			if receipt, err := driver.ReadNativeReverseReceipt(startup, reader, principal, "", "bead.create", write.IdempotencyKey, nil); err != nil || receipt != nil {
+				t.Fatalf("startup returned an expired ordinary write receipt: %v", err)
+			}
+			t.Logf("source provider recovered at head %s from original import revision %s after 24h replay expiry", meta.Head, retained.Commit.Revision)
 		})
 	}
 }

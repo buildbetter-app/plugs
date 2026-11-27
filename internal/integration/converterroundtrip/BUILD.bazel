@@ -87,6 +87,7 @@ go_test(
         "//internal/storage/historyverify",
         "//internal/storage/postgres",
         "//internal/storage/sqlite",
+        "//internal/testclock",
     ],
 )
 
