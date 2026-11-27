@@ -94,6 +94,40 @@ func TestSQLiteRequestCancellationAtPublicationBoundary(t *testing.T) {
 	}
 }
 
+func TestSQLitePublicationCommitWatchDoesNotWaitForLeaseMutex(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "commit-watch.db")
+	store := openStore(t, ctx, path)
+	lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+	reported := make(chan error, 1)
+	store.abortStalledCommit = func(err error) { reported <- err }
+	lease.mu.Lock()
+	lease.timer.Stop()
+	lease.deadline = time.Now().Add(500 * time.Millisecond)
+	lease.mu.Unlock()
+	connector := hookPublicationCommit(t, store, path)
+	connector.before = func() {
+		// A stalled heartbeat may hold this mutex in journal fsync. Without
+		// releasing it, the watchdog must honor the latest accepted deadline.
+		lease.mu.Lock()
+		defer lease.mu.Unlock()
+		select {
+		case err := <-reported:
+			if !strings.Contains(err.Error(), "lease deadline approaching; outcome uncertain") {
+				t.Errorf("watchdog cause = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("watchdog waited for missing lease expiry callback or lease mutex")
+		}
+	}
+	if err := store.immediate(ctx, lease, func(c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "commit-watch", revKey(1), []byte("staged"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLitePublicationDeadlineAutoRollbackKeepsLease(t *testing.T) {
 	ctx := testContext(t)
 	var call context.Context

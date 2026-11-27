@@ -133,6 +133,9 @@ type Config struct {
 	CursorKey    []byte
 	LeaseHolder  string
 	StoreFactory StoreFactory
+	// AbortSQLiteStalledCommit is a process-owned handler for an uncertain
+	// native COMMIT that cannot be joined. It must exit for supervisor restart.
+	AbortSQLiteStalledCommit func(error)
 	// RestorePresence is the trusted D32 verifier for existing admin.restore.*
 	// and the host-private converter import. Nil deliberately fails closed.
 	RestorePresence restore.PresenceVerifier
@@ -335,6 +338,11 @@ func (r *Runtime) Reacquire(ctx context.Context) (*Runtime, error) {
 			_ = listener.Close()
 		}
 	}()
+	if guard, ok := r.Lease.(interface{ WaitForCommit(context.Context) error }); ok {
+		if err := guard.WaitForCommit(ctx); err != nil {
+			return nil, err
+		}
+	}
 	err := r.shutdown(ctx, false)
 	if err != nil {
 		slog.WarnContext(ctx, "retired fenced runtime with cleanup errors", "error_type", fmt.Sprintf("%T", err))
@@ -573,7 +581,7 @@ func openStore(ctx context.Context, config Config) (driver.Store, error) {
 	case "memory":
 		return (memory.Driver{}).Open(ctx, driver.Config{})
 	case "sqlite":
-		return (sqlite.Driver{}).Open(ctx, driver.Config{DSN: config.DSN})
+		return (sqlite.Driver{AbortStalledCommit: config.AbortSQLiteStalledCommit}).Open(ctx, driver.Config{DSN: config.DSN})
 	case "postgres":
 		return (postgres.Driver{}).Open(ctx, driver.Config{DSN: config.DSN})
 	default:

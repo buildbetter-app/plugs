@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,18 +13,144 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/api/wire"
 	"github.com/buildbetter-app/plugs/internal/client"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	nativesqlite "modernc.org/sqlite"
 )
+
+func TestServerCommandSQLiteStalledCommitRestartsAndReplays(t *testing.T) {
+	if mode := os.Getenv("PLUG_TEST_STALLED_COMMIT"); mode != "" {
+		if mode == "stall" {
+			nativesqlite.RegisterConnectionHook(func(conn nativesqlite.ExecQuerierContext, _ string) error {
+				hooks := conn.(nativesqlite.HookRegisterer)
+				var publishingReceipt bool
+				hooks.RegisterPreUpdateHook(func(row nativesqlite.SQLitePreUpdateData) {
+					publishingReceipt = publishingReceipt || row.TableName == "replays"
+				})
+				hooks.RegisterCommitHook(func() int32 {
+					if publishingReceipt {
+						fmt.Fprintln(os.Stderr, "entered native COMMIT with a staged replay receipt")
+						select {} // Native COMMIT cannot return or acknowledge cancellation.
+					}
+					return 0
+				})
+				return nil
+			})
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+		defer stop()
+		os.Exit(Execute(ctx, []string{"server"}, os.Stdin, os.Stdout, os.Stderr))
+	}
+	writeSQLiteLeaseConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := func(mode string, startup time.Duration) (string, *exec.Cmd, *synchronizedBuffer, <-chan error) {
+		var out, stderr synchronizedBuffer
+		cmd := exec.CommandContext(ctx, executable, "-test.run=^TestServerCommandSQLiteStalledCommitRestartsAndReplays$")
+		cmd.Env = append(os.Environ(), "PLUG_TEST_STALLED_COMMIT="+mode)
+		cmd.Stdout, cmd.Stderr = &out, &stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { defer close(done); done <- cmd.Wait() }()
+		t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
+		return waitForEndpointWithin(t, &out, startup), cmd, &stderr, done
+	}
+	connect := func(endpoint string) *client.Client {
+		transport, err := client.NewHTTP(client.HTTPConfig{Server: endpoint})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(transport.Close)
+		remote, err := client.New(transport, "ops", "commit-watch-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return remote
+	}
+	const key = "e53f53fd768849b298b6d743b8b6f211"
+	params := map[string]any{"type": "issue", "fields": map[string]any{"title": "stalled publication"}}
+	endpoint, _, stderr, done := start("stall", 5*time.Second)
+	remote := connect(endpoint)
+	started := time.Now()
+	callDone := make(chan error, 1)
+	go func() { _, err := remote.Call(ctx, "bead.create", params, key); callDone <- err }()
+	var exit *exec.ExitError
+	select {
+	case err := <-done:
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("stalled process exit = %v, stderr = %q", err, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("stalled process exceeded COMMIT cap, stderr = %q", stderr.String())
+	}
+	if elapsed := time.Since(started); elapsed < 7500*time.Millisecond || elapsed > 9500*time.Millisecond {
+		t.Fatalf("process exit after %s, want near the 8s cap", elapsed)
+	} else {
+		t.Logf("process exited 1 after %s: %s", elapsed, stderr.String())
+	}
+	if log := stderr.String(); !strings.Contains(log, "entered native COMMIT with a staged replay receipt") ||
+		!strings.Contains(log, "sqlite COMMIT stalled: commit cap exceeded; outcome uncertain (method=bead.create epoch=1") ||
+		strings.Contains(log, "reacquiring") {
+		t.Fatalf("process did not exit directly from the COMMIT watchdog: %s", log)
+	}
+	if err := <-callDone; err == nil {
+		t.Fatal("crashed COMMIT returned success")
+	}
+
+	endpoint, replacement, replacementErr, replacementDone := start("restart", driver.LeaseTTL+8*time.Second)
+	remote = connect(endpoint)
+	if _, err := remote.Call(ctx, "admin.health", nil, ""); err != nil {
+		t.Fatalf("health on replacement: %v", err)
+	}
+	checkStore := func(wantHead uint64, wantReceipts int) {
+		t.Helper()
+		db, err := sql.Open("sqlite", "file:.plug/server.db?mode=ro")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		var epoch, head uint64
+		var receipts int
+		err = db.QueryRowContext(ctx, "SELECT epoch, head, (SELECT count(*) FROM replays) FROM active_lease, meta").Scan(&epoch, &head, &receipts)
+		if err != nil || epoch != 2 || head != wantHead || receipts != wantReceipts {
+			t.Fatalf("durable epoch/head/receipts = %d/%d/%d, want 2/%d/%d; error=%v", epoch, head, receipts, wantHead, wantReceipts, err)
+		}
+	}
+	checkStore(0, 0)
+	first, err := remote.Call(ctx, "bead.create", params, key)
+	if err != nil || first.Replayed {
+		t.Fatalf("retry after rollback should publish: replayed=%t error=%v", first.Replayed, err)
+	}
+	replay, err := remote.Call(ctx, "bead.create", params, key)
+	if err != nil || !replay.Replayed || !bytes.Equal(first.JSON, replay.JSON) {
+		t.Fatalf("key did not replay the exact result: replayed=%t error=%v", replay.Replayed, err)
+	}
+	checkStore(1, 1)
+	if err := replacement.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-replacementDone; err != nil {
+		t.Fatalf("replacement failed normal shutdown: %v, stderr=%q", err, replacementErr.String())
+	}
+	t.Log("fresh process served under epoch 2, published the absent keyed write once, and replayed the exact receipt")
+}
 
 func TestServerCommandSQLiteStartupAfterKilledPredecessor(t *testing.T) {
 	if os.Getenv("PLUG_TEST_LEASE_PREDECESSOR") == "1" {

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
@@ -33,6 +34,10 @@ import (
 // using wall/monotonic time; Clock is not a deadline or TTL override.
 type Driver struct {
 	Clock func() time.Time
+	// AbortStalledCommit is an optional process-owned fail-stop handler. It
+	// must terminate the process without closing the store or waiting on the
+	// publication. Embedded callers without a supervisor leave it nil.
+	AbortStalledCommit func(error)
 }
 
 func (Driver) Info() driver.Info {
@@ -40,14 +45,15 @@ func (Driver) Info() driver.Info {
 }
 
 type Store struct {
-	clock    func() time.Time
-	db       *sql.DB
-	lockDir  string
-	path     string
-	mu       sync.Mutex
-	closed   bool
-	children map[io.Closer]struct{}
-	leases   map[*activeLease]struct{}
+	abortStalledCommit func(error)
+	clock              func() time.Time
+	db                 *sql.DB
+	lockDir            string
+	path               string
+	mu                 sync.Mutex
+	closed             bool
+	children           map[io.Closer]struct{}
+	leases             map[*activeLease]struct{}
 }
 
 // Persistent reports that SQLite checkpoint bytes survive Store.Close and a
@@ -108,7 +114,7 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{clock: d.Clock, path: path, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{abortStalledCommit: d.AbortStalledCommit, clock: d.Clock, path: path, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
 	if err = os.MkdirAll(s.lockDir, 0700); err != nil {
 		return nil, err
 	}
@@ -671,10 +677,99 @@ func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease
 	if err := ctx.Err(); err != nil {
 		return durable, err
 	}
+	if s.abortStalledCommit != nil {
+		stop, err := s.watchCommit(ctx, l)
+		if err != nil {
+			return durable, err
+		}
+		defer stop()
+	}
 	if _, err := c.ExecContext(context.WithoutCancel(ctx), `COMMIT`); err != nil {
 		return durable, commitError{error: err}
 	}
 	return heartbeat, nil
+}
+
+const (
+	publicationCommitCap         = 8 * time.Second
+	publicationCommitLeaseMargin = 100 * time.Millisecond
+)
+
+type commitWatch struct {
+	done chan struct{}
+	// Accepted renewal publishes its new deadline here without requiring the
+	// watchdog to take a mutex that journal fsync may be holding.
+	leaseDeadline atomic.Pointer[time.Time]
+}
+
+func (s *Store) watchCommit(ctx context.Context, l *activeLease) (func(), error) {
+	watch := &commitWatch{done: make(chan struct{})}
+	var lost <-chan struct{}
+	var epoch uint64
+	if l != nil {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.lossReason != "" || !time.Now().Before(l.deadline) {
+			return nil, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+		}
+		deadline := l.deadline
+		watch.leaseDeadline.Store(&deadline)
+		lost, epoch = l.Lost(), l.epoch
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if l != nil {
+		l.commitWatch = watch
+	}
+	finished := make(chan struct{})
+	started := time.Now()
+	capDeadline := started.Add(publicationCommitCap)
+	method := driver.PublicationMethod(ctx)
+	if method == "" {
+		method = "store.internal"
+	}
+	go func() {
+		defer close(watch.done)
+		for {
+			deadline, reason := capDeadline, "commit cap exceeded"
+			leaseDeadline := watch.leaseDeadline.Load()
+			if leaseDeadline != nil {
+				// Leave a small margin where the lease at admission allows it.
+				// A commit admitted very near expiry keeps the remaining TTL.
+				leaseLimit := leaseDeadline.Add(-publicationCommitLeaseMargin)
+				if !started.Before(leaseLimit) {
+					leaseLimit = *leaseDeadline
+				}
+				if leaseLimit.Before(deadline) {
+					deadline, reason = leaseLimit, "lease deadline approaching"
+				}
+			}
+			timer := time.NewTimer(time.Until(deadline))
+			select {
+			case <-finished:
+				timer.Stop()
+				return
+			case <-lost:
+				timer.Stop()
+				reason = "active lease lost"
+			case <-timer.C:
+				if deadline.Before(capDeadline) && leaseDeadline != watch.leaseDeadline.Load() {
+					continue
+				}
+			}
+			select {
+			case <-finished:
+			default:
+				s.abortStalledCommit(fmt.Errorf("sqlite COMMIT stalled: %s; outcome uncertain (method=%s epoch=%d elapsed=%s)", reason, method, epoch, time.Since(started)))
+			}
+			return
+		}
+	}()
+	return func() {
+		close(finished)
+		<-watch.done
+	}, nil
 }
 
 func (s *Store) Close() error {
