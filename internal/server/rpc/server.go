@@ -240,22 +240,29 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 		copy.incarnation = incarnation
 		paging = &copy
 	}
-	if s.graphWrite != nil && bound.desc.Effect == "write" && method != "bead.heartbeat" && (strings.HasPrefix(method, "bead.") || method == "tx.apply") {
+	write := bound.desc.Effect == "write"
+	var queueWait time.Duration
+	if s.graphWrite != nil && write && method != "bead.heartbeat" && (strings.HasPrefix(method, "bead.") || method == "tx.apply") {
 		select {
 		case s.graphSlots <- struct{}{}:
 			defer func() { <-s.graphSlots }()
 		default:
 			return respond("busy", "graph write queue is full", nil)
 		}
+		queuedAt := time.Now()
 		select {
 		case s.graphWrite <- struct{}{}:
 			defer func() { <-s.graphWrite }()
+			queueWait = time.Since(queuedAt)
 		case <-ctx.Done():
 			return respond("busy", "graph write admission deadline or cancellation reached", nil)
 		}
 		if ctx.Err() != nil {
 			return respond("busy", "graph write admission deadline or cancellation reached", nil)
 		}
+	}
+	if write {
+		ctx = driver.WithPublicationTiming(ctx, queueWait)
 	}
 	result, callErr := invoke(driver.WithPublicationMethod(ctx, method), bound.handler, Call{Method: method, Params: params, Meta: meta, Principal: by, paging: paging})
 	if !idPresent {
@@ -267,7 +274,7 @@ func (s *Server) dispatchOne(ctx context.Context, data []byte) []byte {
 			return respond("busy", "request interrupted during publication; commit outcome is unknown",
 				map[string]any{"outcome": "unknown", "idempotencyKey": uncertain.IdempotencyKey})
 		}
-		if strings.HasPrefix(method, "admin.restore.") && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
+		if (write || strings.HasPrefix(method, "admin.restore.")) && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
 			return respond("busy", "request deadline or cancellation reached", nil)
 		}
 		mapped := s.registry.catalog.MapError(callErr)

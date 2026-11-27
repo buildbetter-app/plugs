@@ -12,21 +12,20 @@ import (
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
-// Both cases return cancellation from the COMMIT execution itself, not merely
-// cancel after a successful ExecContext has already returned to the store. The
-// published case performs the real native COMMIT first, then deterministically
-// reproduces modernc's deferred context check. The other case cancels just before
-// native execution: the same public error must not be converted blindly to success.
-func cancelMetadataCommit(t *testing.T, ctx context.Context, s *Store, path string, published bool) (context.Context, *publicationCommitConnector) {
+// Inject an error at the native boundary independently of request cancellation.
+// The published case commits in SQLite before the connector loses the response.
+// The unpublished case leaves a transaction for the driver's cleanup to roll back.
+func interruptMetadataCommit(t *testing.T, ctx context.Context, s *Store, path string, published bool) (context.Context, *publicationCommitConnector) {
 	t.Helper()
 	connector := hookPublicationCommit(t, s, path)
 	call, cancel := context.WithCancel(ctx)
 	t.Cleanup(cancel)
-	connector.checkContextAfter = true
 	if published {
 		connector.after = cancel
+		connector.commitErrorAfter = context.Canceled
 	} else {
 		connector.before = cancel
+		connector.commitErrorBefore = context.Canceled
 	}
 	return call, connector
 }
@@ -94,7 +93,7 @@ func TestSQLiteCheckpointCanceledCommitOutcomeUnknown(t *testing.T) {
 					}
 					return driver.CheckpointStore(store).SaveCheckpoint(ctx, value, key, initial.Generation, payload)
 				}
-				call, connector := cancelMetadataCommit(t, ctx, s, path, published)
+				call, connector := interruptMetadataCommit(t, ctx, s, path, published)
 				payload := []byte("possibly published")
 				saved, saveErr := save(call, s, lease, payload)
 				want := initial
@@ -164,7 +163,7 @@ func TestSQLiteFinalizerCanceledCommitOutcomeUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			post := []model.Warning{{Code: "post_subscriber_failed", Message: "known durable post outcome"}}
-			call, connector := cancelMetadataCommit(t, ctx, s, path, published)
+			call, connector := interruptMetadataCommit(t, ctx, s, path, published)
 			finalErr := driver.ResponseFinalizer(s).FinalizeResponse(call, lease, principal, h.AgentLabel, h.Method, h.IdempotencyKey, entry.Revision, post)
 			durable := readReceipt()
 			want := *before

@@ -255,8 +255,8 @@ func TestLeaseCommitContextErrorsPreserveChildEpoch(t *testing.T) {
 			defer cancel()
 			reachedCommit := false
 			// Lease's occupied-row poll uses this same real SQL transaction and
-			// COMMIT. End the actual context after the read, before COMMIT, to
-			// exercise that boundary without relying on the 25 ms poll race.
+			// COMMIT. End the actual context after the read, before the final
+			// check, to exercise refusal without relying on the poll race.
 			err := s.immediate(opCtx, nil, func(c *sql.Conn) error {
 				row, err := readLease(opCtx, c)
 				if err != nil {
@@ -274,13 +274,10 @@ func TestLeaseCommitContextErrorsPreserveChildEpoch(t *testing.T) {
 				return nil
 			})
 			var uncertain commitError
-			if !reachedCommit || !errors.As(err, &uncertain) {
-				t.Fatalf("expected actual COMMIT failure: reached=%v err=%T %v", reachedCommit, err, err)
+			if !reachedCommit || errors.As(err, &uncertain) || !errors.Is(err, want) {
+				t.Fatalf("expected pre-COMMIT refusal: reached=%v err=%T %v", reachedCommit, err, err)
 			}
-			t.Logf("actual SQL COMMIT error=%T underlying=%T context=%T underlyingIsContext=%v", err, uncertain.error, opCtx.Err(), errors.Is(uncertain.error, want))
-			if !errors.Is(err, want) {
-				t.Errorf("COMMIT lost context error identity: err=%T %v want=%v", err, err, want)
-			}
+			t.Logf("context ended before native COMMIT: %v", err)
 			assertCurrent(t)
 		})
 	}

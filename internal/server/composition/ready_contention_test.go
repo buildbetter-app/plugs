@@ -15,11 +15,29 @@ import (
 
 type readyContentionStore struct {
 	*memory.Store
-	afterRead chan func(context.Context) error
+	afterRead   chan func(context.Context) error
+	observeRead func(context.Context)
 }
 
 func TestFullGraphWriteQueueLeavesHTTPHealthAndReadyCapacity(t *testing.T) {
 	store := &readyContentionStore{Store: memory.New(), afterRead: make(chan func(context.Context) error, 1)}
+	const queueHold = 300 * time.Millisecond
+	type writeTiming struct {
+		driver.PublicationTiming
+		deadline time.Time
+		readAt   time.Time
+	}
+	observed := make(chan writeTiming, 1)
+	store.observeRead = func(ctx context.Context) {
+		timing, marked := driver.GetPublicationTiming(ctx)
+		deadline, bounded := ctx.Deadline()
+		if marked && bounded && timing.QueueWait >= queueHold {
+			select {
+			case observed <- writeTiming{timing, deadline, time.Now()}:
+			default:
+			}
+		}
+	}
 	f := startRuntime(t, Config{
 		Driver: "memory", Project: "ready-contention", HTTP: httpjson.Config{MaxConcurrentRequests: 3},
 		StoreFactory: func(context.Context, string, driver.Config) (driver.Store, error) { return store, nil },
@@ -66,6 +84,14 @@ func TestFullGraphWriteQueueLeavesHTTPHealthAndReadyCapacity(t *testing.T) {
 			t.Fatalf("%s while queue was full: %v", method, err)
 		}
 	}
+	// Overflow already proved a waiter is admitted. Hold the first writer
+	// long enough to distinguish the queue interval from the pipeline budget.
+	select {
+	case <-time.After(queueHold + 50*time.Millisecond):
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	releasedAt := time.Now()
 	close(release)
 	for range 2 {
 		select {
@@ -77,9 +103,21 @@ func TestFullGraphWriteQueueLeavesHTTPHealthAndReadyCapacity(t *testing.T) {
 			t.Fatal("admitted write did not complete")
 		}
 	}
+	select {
+	case timing := <-observed:
+		if timing.deadline.Before(releasedAt.Add(1900*time.Millisecond)) || timing.deadline.After(timing.RequestDeadline) {
+			t.Fatalf("queued writer did not start its two-second pipeline budget at admission: queue=%s deadline=%s", timing.QueueWait, timing.deadline)
+		}
+		t.Logf("writer queued for %s, pipeline budget at first store read %s", timing.QueueWait, timing.deadline.Sub(timing.readAt))
+	default:
+		t.Fatal("did not observe the queued writer's pipeline deadline")
+	}
 }
 
 func (s *readyContentionStore) Read(ctx context.Context, view driver.View) (driver.Reader, error) {
+	if s.observeRead != nil {
+		s.observeRead(ctx)
+	}
 	r, err := s.Store.Read(ctx, view)
 	if err != nil {
 		return nil, err

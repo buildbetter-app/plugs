@@ -142,6 +142,24 @@ func TestGraphWriteAdmissionQueuesWithinRequestDeadline(t *testing.T) {
 	}
 }
 
+func TestWriteDeadlineBeforePublicationReturnsRetryableBusy(t *testing.T) {
+	r := registry(t)
+	if err := r.Register("bead.create", func(ctx context.Context, _ rpc.Call) (any, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{GraphWriteCapacity: 1})
+	body := request("bead.create", `{"type":"task","fields":{},"_meta":{"deadlineMs":20,"idempotencyKey":"11111111111111111111111111111111"}}`)
+	raw := s.Dispatch(context.Background(), body)
+	var response struct{ Error *wire.Error }
+	if err := json.Unmarshal(raw, &response); err != nil || response.Error == nil ||
+		response.Error.Data.Code != "busy" || !response.Error.Data.Retryable {
+		t.Fatalf("expired write response = %s, error = %v", raw, err)
+	}
+}
+
 func TestCurrentIncarnationResolvesAfterAdmissionForEveryBatchCall(t *testing.T) {
 	current, lookups := "before-restore", 0
 	type requestKey struct{}

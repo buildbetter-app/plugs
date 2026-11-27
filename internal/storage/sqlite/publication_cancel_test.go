@@ -1,17 +1,159 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	sqldriver "database/sql/driver"
 	"errors"
+	"fmt"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	nativesqlite "modernc.org/sqlite"
 )
+
+func TestSQLiteRequestCancellationAtPublicationBoundary(t *testing.T) {
+	for _, mode := range []string{"during_rollback", "before_commit", "after_commit_admission"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "publication-boundary.db")
+			store := openStore(t, ctx, path)
+			observer := openStore(t, ctx, path)
+			lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+			call, cancel := context.WithCancel(ctx)
+			defer cancel()
+			connector := hookPublicationCommit(t, store, path)
+			failure := errors.New("request aborted publication")
+			var output bytes.Buffer
+			logger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+			t.Cleanup(func() { slog.SetDefault(logger) })
+			if mode == "during_rollback" {
+				connector.beforeRollback = func(cleanup context.Context) {
+					cancel()
+					deadline, hasDeadline := cleanup.Deadline()
+					if cleanup.Err() != nil || !hasDeadline || time.Until(deadline) > publicationRollbackTimeout {
+						t.Errorf("rollback did not get an independent cleanup budget: %v", cleanup.Err())
+					}
+				}
+			}
+			if mode == "after_commit_admission" {
+				connector.before = cancel
+			}
+			const key = "publication-boundary"
+			err := store.immediate(call, lease, func(c *sql.Conn) error {
+				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("staged")); err != nil {
+					return err
+				}
+				if err := lease.Renew(ctx); err != nil {
+					return err
+				}
+				switch mode {
+				case "during_rollback":
+					return failure
+				case "before_commit":
+					cancel()
+				}
+				return nil
+			})
+			wantGeneration := uint64(0)
+			if mode == "after_commit_admission" {
+				wantGeneration = 1
+				if err != nil || connector.commitCalls.Load() != 1 || connector.steps.Load() != 1 || connector.rollbacks.Load() != 0 {
+					t.Fatalf("admitted COMMIT = %v calls=%d completed=%d rollbacks=%d", err, connector.commitCalls.Load(), connector.steps.Load(), connector.rollbacks.Load())
+				}
+			} else {
+				want := error(context.Canceled)
+				if mode == "during_rollback" {
+					want = failure
+				}
+				var uncertain commitError
+				if !errors.Is(err, want) || errors.As(err, &uncertain) || connector.commitCalls.Load() != 0 || connector.rollbacks.Load() != 1 {
+					t.Fatalf("aborted write = %v native COMMIT calls=%d rollbacks=%d", err, connector.commitCalls.Load(), connector.rollbacks.Load())
+				}
+				if log := output.String(); !strings.Contains(log, "commit_attempted=false") || !strings.Contains(log, "rollback_confirmed=true") {
+					t.Fatalf("missing rollback proof in log: %s", log)
+				}
+			}
+			if call.Err() != context.Canceled {
+				t.Fatal("test missed request cancellation")
+			}
+			durable, err := observer.LoadCheckpoint(ctx, key)
+			if err != nil || durable.Generation != wantGeneration {
+				t.Fatalf("checkpoint generation = %d, want %d, error = %v", durable.Generation, wantGeneration, err)
+			}
+			assertDurableHeartbeat(t, ctx, observer, lease)
+			t.Logf("commit calls=%d confirmed rollback=%t durable generation=%d lease epoch=%d", connector.commitCalls.Load(), connector.rollbacks.Load() == 1, durable.Generation, lease.Epoch())
+		})
+	}
+}
+
+func TestSQLitePublicationDeadlineAutoRollbackKeepsLease(t *testing.T) {
+	ctx := testContext(t)
+	var call context.Context
+	var entered bool
+	function := "plug_test_wait_" + randomID()
+	if err := nativesqlite.RegisterScalarFunction(function, 0, func(*nativesqlite.FunctionContext, []sqldriver.Value) (sqldriver.Value, error) {
+		entered = true
+		<-call.Done()
+		return int64(1), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "publication-auto-rollback.db")
+	store := openStore(t, ctx, path)
+	observer := openStore(t, ctx, path)
+	lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+	var nativeRollbackErr error
+	connector := hookPublicationCommit(t, store, path)
+	connector.afterRollback = func(err error) { nativeRollbackErr = err }
+	var output bytes.Buffer
+	logger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(logger) })
+	request, stopRequest := context.WithTimeout(ctx, 4*time.Second)
+	defer stopRequest()
+	request = driver.WithPublicationTiming(request, 150*time.Millisecond)
+	var stopCall context.CancelFunc
+	call, stopCall = context.WithTimeout(request, time.Second)
+	defer stopCall()
+	err := store.immediate(call, lease, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, "pending", revKey(1), []byte("staged")); err != nil {
+			return err
+		}
+		if err := lease.Renew(ctx); err != nil {
+			return err
+		}
+		query := fmt.Sprintf(`WITH RECURSIVE generated(n) AS (
+			SELECT %s() UNION ALL SELECT n+1 FROM generated WHERE n<1000000
+		) INSERT INTO checkpoints SELECT 'generated-' || n, ?, x'01' FROM generated`, function)
+		_, err := c.ExecContext(call, query, revKey(1))
+		return err
+	})
+	if !entered || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("did not expire inside native write: entered=%t error=%v", entered, err)
+	}
+	if !noNativeTransaction(nativeRollbackErr) || connector.commitCalls.Load() != 0 {
+		t.Fatalf("missed SQLite's automatic rollback: cleanup=%v COMMIT calls=%d", nativeRollbackErr, connector.commitCalls.Load())
+	}
+	if cp, err := observer.LoadCheckpoint(ctx, "pending"); err != nil || cp.Generation != 0 {
+		t.Fatalf("interrupted native write retained staged data: %v %v", cp, err)
+	}
+	assertDurableHeartbeat(t, ctx, observer, lease)
+	fields := output.String()
+	for _, part := range []string{"commit_attempted=false", "rollback_confirmed=true", "cause=deadline_exceeded", "budget_at_begin=", "queue_wait=150ms", "deadline_source=operation"} {
+		if !strings.Contains(fields, part) {
+			t.Fatalf("publication log omitted %q: %s", part, fields)
+		}
+	}
+	t.Log(strings.TrimSpace(fields))
+}
 
 func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
 	for _, tc := range []struct {
@@ -27,7 +169,7 @@ func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
 			s := openStore(t, ctx, path)
 			observer := openStore(t, ctx, path)
 			lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
-			call, connector := cancelMetadataCommit(t, ctx, s, path, tc.published)
+			call, connector := interruptMetadataCommit(t, ctx, s, path, tc.published)
 			const key = "restore-interrupted-commit"
 			err := s.immediatePublication(call, lease, true, func(c *sql.Conn) error {
 				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("restore")); err != nil {
