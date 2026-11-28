@@ -79,6 +79,7 @@ go_test(
         "//internal/core/viewops",
         "//internal/server/viewrpc",
         "//internal/integration/b07positive",
+        "//internal/storage/conformance",
         "//internal/storage/depid",
         "//internal/storage/driver",
         "//internal/server/pluginhost",
