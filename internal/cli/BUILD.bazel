@@ -42,6 +42,7 @@ go_test(
         "//internal/storage/driver",
         "//internal/storage/memory",
         "//internal/storage/sqlite",
+        "@org_modernc_sqlite//:sqlite",
     ],
 )
 

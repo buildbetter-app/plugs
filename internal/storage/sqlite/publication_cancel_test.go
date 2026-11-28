@@ -1,17 +1,317 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	sqldriver "database/sql/driver"
 	"errors"
+	"fmt"
+	"log/slog"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/pipeline"
+	"github.com/buildbetter-app/plugs/internal/core/port"
+	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
+	nativesqlite "modernc.org/sqlite"
 )
+
+func TestSQLiteRequestCancellationAtPublicationBoundary(t *testing.T) {
+	for _, mode := range []string{"during_rollback", "before_commit", "after_commit_admission"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "publication-boundary.db")
+			store := openStore(t, ctx, path)
+			observer := openStore(t, ctx, path)
+			lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+			call, cancel := context.WithCancel(ctx)
+			defer cancel()
+			connector := hookPublicationCommit(t, store, path)
+			failure := errors.New("request aborted publication")
+			var output bytes.Buffer
+			logger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+			t.Cleanup(func() { slog.SetDefault(logger) })
+			if mode == "during_rollback" {
+				connector.beforeRollback = func(cleanup context.Context) {
+					cancel()
+					deadline, hasDeadline := cleanup.Deadline()
+					if cleanup.Err() != nil || !hasDeadline || time.Until(deadline) > publicationRollbackTimeout {
+						t.Errorf("rollback did not get an independent cleanup budget: %v", cleanup.Err())
+					}
+				}
+			}
+			if mode == "after_commit_admission" {
+				connector.before = cancel
+			}
+			const key = "publication-boundary"
+			err := store.immediate(call, lease, func(c *sql.Conn) error {
+				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("staged")); err != nil {
+					return err
+				}
+				if err := lease.Renew(ctx); err != nil {
+					return err
+				}
+				switch mode {
+				case "during_rollback":
+					return failure
+				case "before_commit":
+					cancel()
+				}
+				return nil
+			})
+			wantGeneration := uint64(0)
+			if mode == "after_commit_admission" {
+				wantGeneration = 1
+				if err != nil || connector.commitCalls.Load() != 1 || connector.steps.Load() != 1 || connector.rollbacks.Load() != 0 {
+					t.Fatalf("admitted COMMIT = %v calls=%d completed=%d rollbacks=%d", err, connector.commitCalls.Load(), connector.steps.Load(), connector.rollbacks.Load())
+				}
+			} else {
+				want := error(context.Canceled)
+				if mode == "during_rollback" {
+					want = failure
+				}
+				var uncertain commitError
+				if !errors.Is(err, want) || errors.As(err, &uncertain) || connector.commitCalls.Load() != 0 || connector.rollbacks.Load() != 1 {
+					t.Fatalf("aborted write = %v native COMMIT calls=%d rollbacks=%d", err, connector.commitCalls.Load(), connector.rollbacks.Load())
+				}
+				if log := output.String(); !strings.Contains(log, "commit_attempted=false") || !strings.Contains(log, "rollback_confirmed=true") {
+					t.Fatalf("missing rollback proof in log: %s", log)
+				}
+			}
+			if call.Err() != context.Canceled {
+				t.Fatal("test missed request cancellation")
+			}
+			durable, err := observer.LoadCheckpoint(ctx, key)
+			if err != nil || durable.Generation != wantGeneration {
+				t.Fatalf("checkpoint generation = %d, want %d, error = %v", durable.Generation, wantGeneration, err)
+			}
+			assertDurableHeartbeat(t, ctx, observer, lease)
+			t.Logf("commit calls=%d confirmed rollback=%t durable generation=%d lease epoch=%d", connector.commitCalls.Load(), connector.rollbacks.Load() == 1, durable.Generation, lease.Epoch())
+		})
+	}
+}
+
+func TestSQLitePublicationCommitWatchDoesNotWaitForLeaseMutex(t *testing.T) {
+	ctx := testContext(t)
+	path := filepath.Join(t.TempDir(), "commit-watch.db")
+	store := openStore(t, ctx, path)
+	lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+	reported := make(chan error, 1)
+	store.abortStalledCommit = func(err error) { reported <- err }
+	lease.mu.Lock()
+	lease.timer.Stop()
+	lease.deadline = time.Now().Add(500 * time.Millisecond)
+	lease.mu.Unlock()
+	connector := hookPublicationCommit(t, store, path)
+	connector.before = func() {
+		// A stalled heartbeat may hold this mutex in journal fsync. Without
+		// releasing it, the watchdog must honor the latest accepted deadline.
+		lease.mu.Lock()
+		defer lease.mu.Unlock()
+		select {
+		case err := <-reported:
+			if !strings.Contains(err.Error(), "lease deadline approaching; outcome uncertain") {
+				t.Errorf("watchdog cause = %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("watchdog waited for missing lease expiry callback or lease mutex")
+		}
+	}
+	if err := store.immediate(ctx, lease, func(c *sql.Conn) error {
+		_, err := c.ExecContext(ctx, `INSERT INTO checkpoints VALUES(?,?,?)`, "commit-watch", revKey(1), []byte("staged"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSQLitePublicationRollbackPreservesTypedRefusal(t *testing.T) {
+	for _, code := range []model.ErrorCode{"ontology_guard_failed", "write_conflict"} {
+		t.Run(string(code), func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "publication-refusal.db")
+			store := openStore(t, ctx, path)
+			lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+			connector := hookPublicationCommit(t, store, path)
+			call, cancel := context.WithCancel(ctx)
+			defer cancel()
+			connector.beforeRollback = func(context.Context) { cancel() }
+			refusal := &model.Error{Data: model.ErrorData{Code: code}}
+			err := store.immediate(call, lease, func(c *sql.Conn) error {
+				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, "refused", revKey(1), []byte("staged")); err != nil {
+					return err
+				}
+				if err := lease.Renew(call); err != nil {
+					return err
+				}
+				return refusal
+			})
+			if err != refusal || call.Err() != context.Canceled || connector.rollbacks.Load() != 1 || connector.commitCalls.Load() != 0 {
+				t.Fatalf("publication refusal = %v, request = %v, rollbacks = %d, commits = %d", err, call.Err(), connector.rollbacks.Load(), connector.commitCalls.Load())
+			}
+			if cp, err := store.LoadCheckpoint(ctx, "refused"); err != nil || cp.Generation != 0 {
+				t.Fatalf("refused checkpoint became durable: %v %v", cp, err)
+			}
+			select {
+			case <-lease.Lost():
+				t.Fatalf("confirmed rollback fenced epoch %d", lease.Epoch())
+			default:
+			}
+		})
+	}
+}
+
+type publicationAuthorizer func(port.AuthorizationStage) error
+
+func (f publicationAuthorizer) Authorize(_ context.Context, stage port.AuthorizationStage, _ port.ProposedChange, _ port.SnapshotReader) error {
+	return f(stage)
+}
+
+func TestSQLitePublicationUncertainCommitResolvesBeforeReplayGuards(t *testing.T) {
+	for _, landed := range []bool{true, false} {
+		name := "rolled_back"
+		if landed {
+			name = "landed"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := testContext(t)
+			path := filepath.Join(t.TempDir(), "graph-publication.db")
+			store := openStore(t, ctx, path)
+			lease := getLease(t, ctx, store, driver.LeaseTTL)
+			// Model losing the driver's result while the caller is still waiting.
+			_, connector := interruptMetadataCommit(t, ctx, store, path, landed)
+			// The real Writer keeps a pinned snapshot open while publishing.
+			store.db.SetMaxOpenConns(0)
+			var replayChecks atomic.Int32
+			stale := func(stage port.AuthorizationStage) error {
+				if stage == port.AuthorizeReplay {
+					replayChecks.Add(1)
+					return &model.Error{Data: model.ErrorData{Code: "ontology_guard_failed"}}
+				}
+				return nil
+			}
+			writer := func(store *Store, lease driver.ActiveLease, authorize publicationAuthorizer) *pipeline.Writer {
+				return pipeline.New(store, lease, pipeline.WithOntology(service.NewOntology(nil)), pipeline.WithAuthorizer(authorize))
+			}
+			by := model.PrincipalRef{Kind: "user", ID: "user:publication-test"}
+			meta := model.WriteMeta{Project: "ops", Method: "bead.create", IdempotencyKey: "11111111111111111111111111111111"}
+			request := model.ChangeSet{Ops: []model.Op{{Kind: model.OpCreate, Create: &model.CreateOp{Type: "issue", Fields: map[string]any{"title": "lost native acknowledgement"}}}}}
+			original, err := writer(store, lease, stale).ApplyWithOutcome(ctx, by, request, meta)
+			if connector.commitCalls.Load() != 1 || replayChecks.Load() != 0 {
+				t.Fatalf("COMMIT calls=%d replay authorization calls=%d error=%v", connector.commitCalls.Load(), replayChecks.Load(), err)
+			}
+			if landed {
+				if err != nil || original.Replayed || original.Commit.Revision.String() != "1" || connector.steps.Load() != 1 {
+					t.Fatalf("own durable COMMIT: %+v, error=%v, native commits=%d", original, err, connector.steps.Load())
+				}
+				requireUncertainLeaseLost(t, ctx, lease)
+			} else {
+				requireMetadataIndeterminate(t, err, meta.IdempotencyKey)
+				if connector.steps.Load() != 0 || connector.rollbacks.Load() != 1 || !getMeta(t, ctx, store).Head.IsZero() {
+					t.Fatal("unpublished attempt left a durable result")
+				}
+			}
+			if err := lease.Release(ctx); err != nil {
+				t.Fatal(err)
+			}
+			fresh := openStore(t, ctx, path)
+			next := getLease(t, ctx, fresh, driver.LeaseTTL)
+			if landed {
+				_, err := writer(fresh, next, stale).ApplyWithOutcome(ctx, by, request, meta)
+				var typed *model.Error
+				if !errors.As(err, &typed) || typed.Data.Code != "busy" || replayChecks.Load() != 1 {
+					t.Fatalf("stale guard over durable receipt = %v, replay checks=%d", err, replayChecks.Load())
+				}
+				_, err = writer(fresh, next, func(port.AuthorizationStage) error {
+					return errors.Join(&model.Error{Data: model.ErrorData{Code: "forbidden"}}, driver.ErrConflict)
+				}).ApplyWithOutcome(ctx, by, request, meta)
+				if !errors.As(err, &typed) || typed.Data.Code != "forbidden" {
+					t.Fatalf("revoked receipt access = %v", err)
+				}
+			}
+			retried, err := writer(fresh, next, func(port.AuthorizationStage) error { return nil }).ApplyWithOutcome(ctx, by, request, meta)
+			if err != nil || retried.Replayed != landed || retried.Commit.Revision.String() != "1" || (landed && !reflect.DeepEqual(retried.Commit, original.Commit)) {
+				t.Fatalf("same-key retry: %+v, original=%+v, error=%v", retried, original, err)
+			}
+			m := getMeta(t, ctx, fresh)
+			reader := getReader(t, ctx, fresh, m, nil)
+			principal, _ := driver.PrincipalKey(by)
+			entry, err := reader.IdempotencyByKey(ctx, principal, "", meta.Method, meta.IdempotencyKey)
+			if m.Head.String() != "1" || err != nil || entry == nil || !reflect.DeepEqual(entry.Commit, retried.Commit) {
+				t.Fatalf("durable receipt: head=%s entry=%+v error=%v", m.Head, entry, err)
+			}
+		})
+	}
+}
+
+func TestSQLitePublicationDeadlineAutoRollbackKeepsLease(t *testing.T) {
+	ctx := testContext(t)
+	var call context.Context
+	var entered bool
+	function := "plug_test_wait_" + randomID()
+	if err := nativesqlite.RegisterScalarFunction(function, 0, func(*nativesqlite.FunctionContext, []sqldriver.Value) (sqldriver.Value, error) {
+		entered = true
+		<-call.Done()
+		return int64(1), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "publication-auto-rollback.db")
+	store := openStore(t, ctx, path)
+	observer := openStore(t, ctx, path)
+	lease := getLease(t, ctx, store, driver.LeaseTTL).(*activeLease)
+	var nativeRollbackErr error
+	connector := hookPublicationCommit(t, store, path)
+	connector.afterRollback = func(err error) { nativeRollbackErr = err }
+	var output bytes.Buffer
+	logger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(logger) })
+	request, stopRequest := context.WithTimeout(ctx, 4*time.Second)
+	defer stopRequest()
+	request = driver.WithPublicationTiming(request, 150*time.Millisecond)
+	var stopCall context.CancelFunc
+	call, stopCall = context.WithTimeout(request, time.Second)
+	defer stopCall()
+	err := store.immediate(call, lease, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, "pending", revKey(1), []byte("staged")); err != nil {
+			return err
+		}
+		if err := lease.Renew(ctx); err != nil {
+			return err
+		}
+		query := fmt.Sprintf(`WITH RECURSIVE generated(n) AS (
+			SELECT %s() UNION ALL SELECT n+1 FROM generated WHERE n<1000000
+		) INSERT INTO checkpoints SELECT 'generated-' || n, ?, x'01' FROM generated`, function)
+		_, err := c.ExecContext(call, query, revKey(1))
+		return err
+	})
+	if !entered || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("did not expire inside native write: entered=%t error=%v", entered, err)
+	}
+	if !noNativeTransaction(nativeRollbackErr) || connector.commitCalls.Load() != 0 {
+		t.Fatalf("missed SQLite's automatic rollback: cleanup=%v COMMIT calls=%d", nativeRollbackErr, connector.commitCalls.Load())
+	}
+	if cp, err := observer.LoadCheckpoint(ctx, "pending"); err != nil || cp.Generation != 0 {
+		t.Fatalf("interrupted native write retained staged data: %v %v", cp, err)
+	}
+	assertDurableHeartbeat(t, ctx, observer, lease)
+	fields := output.String()
+	for _, part := range []string{"commit_attempted=false", "rollback_confirmed=true", "cause=deadline_exceeded", "budget_at_begin=", "queue_wait=150ms", "deadline_source=operation"} {
+		if !strings.Contains(fields, part) {
+			t.Fatalf("publication log omitted %q: %s", part, fields)
+		}
+	}
+	t.Log(strings.TrimSpace(fields))
+}
 
 func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
 	for _, tc := range []struct {
@@ -27,7 +327,7 @@ func TestSQLiteRestoreInterruptedCommitRequiresRollbackProof(t *testing.T) {
 			s := openStore(t, ctx, path)
 			observer := openStore(t, ctx, path)
 			lease := getLease(t, ctx, s, driver.LeaseTTL).(*activeLease)
-			call, connector := cancelMetadataCommit(t, ctx, s, path, tc.published)
+			call, connector := interruptMetadataCommit(t, ctx, s, path, tc.published)
 			const key = "restore-interrupted-commit"
 			err := s.immediatePublication(call, lease, true, func(c *sql.Conn) error {
 				if _, err := c.ExecContext(call, `INSERT INTO checkpoints VALUES(?,?,?)`, key, revKey(1), []byte("restore")); err != nil {

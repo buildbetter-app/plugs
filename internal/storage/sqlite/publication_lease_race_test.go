@@ -61,18 +61,22 @@ func publicationHeartbeat(ctx context.Context, lease driver.ActiveLease, start, 
 
 // These hooks surround REAL native transactions. They expose heartbeats during
 // the SQL/fsync interval and after the durable commit but before unregistration.
-// checkContextAfter additionally makes modernc's deferred cancellation check
-// deterministic: native COMMIT succeeds, but its execution returns ctx.Err().
+// The error hooks model a native COMMIT failure or an acknowledgement lost
+// after real native COMMIT, independently of the calling request context.
 type publicationCommitConnector struct {
 	driver            sqldriver.Driver
 	dsn               string
 	before            func()
 	after             func()
-	checkContextAfter bool
+	beforeRollback    func(context.Context)
+	afterRollback     func(error)
+	commitErrorBefore error
+	commitErrorAfter  error
 	rollbackFailure   error
 	armed             atomic.Bool
 	every             atomic.Bool
 	steps             atomic.Int32
+	commitCalls       atomic.Int32
 	rollbacks         atomic.Int32
 }
 
@@ -90,26 +94,47 @@ type publicationCommitConn struct {
 	connector *publicationCommitConnector
 }
 
+func (c *publicationCommitConn) BeginTx(ctx context.Context, options sqldriver.TxOptions) (sqldriver.Tx, error) {
+	return c.Conn.(sqldriver.ConnBeginTx).BeginTx(ctx, options)
+}
+
+func (c *publicationCommitConn) QueryContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Rows, error) {
+	return c.Conn.(sqldriver.QueryerContext).QueryContext(ctx, query, args)
+}
+
 func (c *publicationCommitConn) ExecContext(ctx context.Context, query string, args []sqldriver.NamedValue) (sqldriver.Result, error) {
-	if query == "ROLLBACK" && c.connector.rollbackFailure != nil {
-		c.connector.rollbacks.Add(1)
-		return nil, c.connector.rollbackFailure
-	}
-	hook := query == "COMMIT" && (c.connector.armed.CompareAndSwap(true, false) || c.connector.every.Load())
-	if hook && c.connector.before != nil {
-		c.connector.before()
-	}
-	result, err := c.Conn.(sqldriver.ExecerContext).ExecContext(ctx, query, args)
 	if query == "ROLLBACK" {
 		c.connector.rollbacks.Add(1)
+		if c.connector.beforeRollback != nil {
+			c.connector.beforeRollback(ctx)
+		}
+		if c.connector.rollbackFailure != nil {
+			return nil, c.connector.rollbackFailure
+		}
+	}
+	if query == "COMMIT" {
+		c.connector.commitCalls.Add(1)
+	}
+	hook := query == "COMMIT" && (c.connector.armed.CompareAndSwap(true, false) || c.connector.every.Load())
+	if hook {
+		if c.connector.before != nil {
+			c.connector.before()
+		}
+		if c.connector.commitErrorBefore != nil {
+			return nil, c.connector.commitErrorBefore
+		}
+	}
+	result, err := c.Conn.(sqldriver.ExecerContext).ExecContext(ctx, query, args)
+	if query == "ROLLBACK" && c.connector.afterRollback != nil {
+		c.connector.afterRollback(err)
 	}
 	if query == "COMMIT" && err == nil {
 		c.connector.steps.Add(1)
 		if hook && c.connector.after != nil {
 			c.connector.after()
 		}
-		if hook && c.connector.checkContextAfter && ctx.Err() != nil {
-			return nil, ctx.Err()
+		if hook && c.connector.commitErrorAfter != nil {
+			return nil, c.connector.commitErrorAfter
 		}
 	}
 	return result, err

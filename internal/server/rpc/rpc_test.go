@@ -17,6 +17,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
 	"github.com/buildbetter-app/plugs/internal/server/transport/inprocess"
+	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 func registry(t *testing.T) *rpc.Registry {
@@ -139,6 +140,74 @@ func TestGraphWriteAdmissionQueuesWithinRequestDeadline(t *testing.T) {
 	case <-entered:
 	default:
 		t.Fatal("queued write did not reach the handler")
+	}
+}
+
+func TestWriteDeadlineBeforePublicationReturnsRetryableBusy(t *testing.T) {
+	r := registry(t)
+	if err := r.Register("bead.create", func(ctx context.Context, _ rpc.Call) (any, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := server(t, r, rpc.Config{GraphWriteCapacity: 1})
+	body := request("bead.create", `{"type":"task","fields":{},"_meta":{"deadlineMs":20,"idempotencyKey":"11111111111111111111111111111111"}}`)
+	raw := s.Dispatch(context.Background(), body)
+	var response struct{ Error *wire.Error }
+	if err := json.Unmarshal(raw, &response); err != nil || response.Error == nil ||
+		response.Error.Data.Code != "busy" || !response.Error.Data.Retryable {
+		t.Fatalf("expired write response = %s, error = %v", raw, err)
+	}
+}
+
+func TestWriteCleanupDeadlinePreservesTypedRefusal(t *testing.T) {
+	for _, code := range []model.ErrorCode{"ontology_guard_failed", "write_conflict"} {
+		t.Run(string(code), func(t *testing.T) {
+			r := registry(t)
+			if err := r.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+				refusal := &model.Error{Data: model.ErrorData{Code: code, Hint: "original refusal"}}
+				return nil, errors.Join(refusal, fmt.Errorf("cleanup: %w", context.DeadlineExceeded))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s := server(t, r, rpc.Config{})
+			raw := s.Dispatch(context.Background(), request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"11111111111111111111111111111111"}}`))
+			var response struct{ Error *wire.Error }
+			if err := json.Unmarshal(raw, &response); err != nil || response.Error == nil ||
+				response.Error.Data.Code != string(code) || response.Error.Data.Hint != "original refusal" {
+				t.Fatalf("cleanup deadline obscured %s: response = %s, error = %v", code, raw, err)
+			}
+		})
+	}
+}
+
+func TestIndeterminateWriteOutranksJoinedRefusal(t *testing.T) {
+	const key = "11111111111111111111111111111111"
+	for _, tc := range []struct {
+		code model.ErrorCode
+		err  error
+	}{
+		{"ontology_guard_failed", driver.ErrIndeterminate{IdempotencyKey: key}},
+		{"write_conflict", &driver.ErrIndeterminate{IdempotencyKey: key}},
+	} {
+		t.Run(string(tc.code), func(t *testing.T) {
+			r := registry(t)
+			if err := r.Register("bead.create", func(context.Context, rpc.Call) (any, error) {
+				refusal := &model.Error{Data: model.ErrorData{Code: tc.code}}
+				return nil, errors.Join(refusal, tc.err, context.DeadlineExceeded)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s := server(t, r, rpc.Config{})
+			raw := s.Dispatch(context.Background(), request("bead.create", `{"type":"task","fields":{},"_meta":{"idempotencyKey":"`+key+`"}}`))
+			var response struct{ Error *wire.Error }
+			if err := json.Unmarshal(raw, &response); err != nil || response.Error == nil ||
+				response.Error.Data.Code != "busy" || !response.Error.Data.Retryable ||
+				response.Error.Data.Details["outcome"] != "unknown" || response.Error.Data.Details["idempotencyKey"] != key {
+				t.Fatalf("uncertainty was obscured by %s: response = %s, error = %v", tc.code, raw, err)
+			}
+		})
 	}
 }
 

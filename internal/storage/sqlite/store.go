@@ -19,11 +19,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
-	_ "modernc.org/sqlite"
+	nativesqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
 
@@ -33,6 +34,10 @@ import (
 // using wall/monotonic time; Clock is not a deadline or TTL override.
 type Driver struct {
 	Clock func() time.Time
+	// AbortStalledCommit is an optional process-owned fail-stop handler. It
+	// must terminate the process without closing the store or waiting on the
+	// publication. Embedded callers without a supervisor leave it nil.
+	AbortStalledCommit func(error)
 }
 
 func (Driver) Info() driver.Info {
@@ -40,14 +45,15 @@ func (Driver) Info() driver.Info {
 }
 
 type Store struct {
-	clock    func() time.Time
-	db       *sql.DB
-	lockDir  string
-	path     string
-	mu       sync.Mutex
-	closed   bool
-	children map[io.Closer]struct{}
-	leases   map[*activeLease]struct{}
+	abortStalledCommit func(error)
+	clock              func() time.Time
+	db                 *sql.DB
+	lockDir            string
+	path               string
+	mu                 sync.Mutex
+	closed             bool
+	children           map[io.Closer]struct{}
+	leases             map[*activeLease]struct{}
 }
 
 // Persistent reports that SQLite checkpoint bytes survive Store.Close and a
@@ -108,7 +114,7 @@ func (d Driver) Open(ctx context.Context, cfg driver.Config) (driver.Store, erro
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{clock: d.Clock, path: path, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
+	s := &Store{abortStalledCommit: d.AbortStalledCommit, clock: d.Clock, path: path, lockDir: path + ".plug-locks", children: make(map[io.Closer]struct{}), leases: make(map[*activeLease]struct{})}
 	if err = os.MkdirAll(s.lockDir, 0700); err != nil {
 		return nil, err
 	}
@@ -471,6 +477,8 @@ func (s *Store) Health(ctx context.Context) (driver.StoreHealth, error) {
 // key and expected generation. A confirmed COMMIT has no fallible follow-up.
 type commitError struct{ error }
 
+const publicationRollbackTimeout = 5 * time.Second
+
 func (e commitError) Unwrap() error { return e.error }
 
 func (e commitError) interrupted() bool {
@@ -519,15 +527,20 @@ func (s *Store) immediateLocked(ctx context.Context, gate *os.File, l *activeLea
 		if committed {
 			return
 		}
-		_, rollbackErr := c.ExecContext(context.Background(), `ROLLBACK`)
-		rolledBack := rollbackErr == nil
 		var uncertain commitError
 		attempted := errors.As(err, &uncertain)
+		cleanup, stopCleanup := context.WithTimeout(context.WithoutCancel(ctx), publicationRollbackTimeout)
+		_, rollbackErr := c.ExecContext(cleanup, `ROLLBACK`)
+		stopCleanup()
+		// SQLite may roll back the whole transaction when an earlier write
+		// is interrupted. Autocommit is proof of rollback only when this
+		// connection never attempted COMMIT.
+		rolledBack := rollbackErr == nil || (!attempted && noNativeTransaction(rollbackErr))
 		if registered {
 			renewed := l.abortPublication(durable, rolledBack, attempted)
 			duration, cause := time.Since(start), err
 			reportAbort = func() {
-				logPublicationAbort(ctx, l.epoch, duration, cause, rollbackErr, attempted, renewed)
+				logPublicationAbort(ctx, l.epoch, start, duration, cause, rollbackErr, attempted, renewed, rolledBack)
 			}
 		}
 		if !rolledBack && (began || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
@@ -537,7 +550,7 @@ func (s *Store) immediateLocked(ctx context.Context, gate *os.File, l *activeLea
 		}
 		// Preserve the existing restore-specific classification. Other
 		// publication callers retain their established COMMIT error contract.
-		if restore && rolledBack && attempted && uncertain.interrupted() {
+		if restore && rollbackErr == nil && attempted && uncertain.interrupted() {
 			err = uncertain.error
 		}
 	}()
@@ -566,14 +579,37 @@ func (s *Store) immediateLocked(ctx context.Context, gate *os.File, l *activeLea
 	return nil
 }
 
-func logPublicationAbort(ctx context.Context, epoch uint64, duration time.Duration, cause, rollbackErr error, commitAttempted, renewed bool) {
+// The reserved connection just executed the literal ROLLBACK. SQLite uses the
+// same primary code for other failures, so require its exact autocommit
+// diagnostic as well. An unrecognized error still fences the lease.
+func noNativeTransaction(err error) bool {
+	var native *nativesqlite.Error
+	return errors.As(err, &native) && native.Code() == sqlite3.SQLITE_ERROR &&
+		native.Error() == "SQL logic error: cannot rollback - no transaction is active (1)"
+}
+
+func logPublicationAbort(ctx context.Context, epoch uint64, start time.Time, duration time.Duration, cause, rollbackErr error, commitAttempted, renewed, rolledBack bool) {
 	method := driver.PublicationMethod(ctx)
 	if method == "" {
 		method = "store.internal"
 	}
 	attrs := []any{
 		"method", method, "epoch", epoch, "duration", duration, "commit_attempted", commitAttempted,
-		"rollback_confirmed", rollbackErr == nil, "heartbeat_advanced", renewed,
+		"rollback_confirmed", rolledBack, "heartbeat_advanced", renewed,
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	if hasDeadline {
+		attrs = append(attrs, "budget_at_begin", deadline.Sub(start))
+	}
+	if timing, ok := driver.GetPublicationTiming(ctx); ok {
+		attrs = append(attrs, "queue_wait", timing.QueueWait)
+		if hasDeadline {
+			deadlineSource := "operation"
+			if deadline.Equal(timing.RequestDeadline) {
+				deadlineSource = "request"
+			}
+			attrs = append(attrs, "deadline_source", deadlineSource)
+		}
 	}
 	// Driver error text can contain SQL, record values or connection details.
 	var native interface{ Code() int }
@@ -604,8 +640,11 @@ func logPublicationAbort(ctx context.Context, epoch uint64, duration time.Durati
 			attrs = append(attrs, "cause", "publication_error", "error_type", fmt.Sprintf("%T", cause))
 		}
 	}
-	if rollbackErr != nil {
+	if !rolledBack {
 		attrs = append(attrs, "rollback_error_type", fmt.Sprintf("%T", rollbackErr))
+		if errors.As(rollbackErr, &native) {
+			attrs = append(attrs, "rollback_sqlite_code", native.Code())
+		}
 		slog.WarnContext(ctx, "sqlite publication aborted", attrs...)
 		return
 	}
@@ -613,6 +652,9 @@ func logPublicationAbort(ctx context.Context, epoch uint64, duration time.Durati
 }
 
 func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease, durable leaseHeartbeat) (leaseHeartbeat, error) {
+	if err := ctx.Err(); err != nil {
+		return durable, err
+	}
 	heartbeat := durable
 	if l != nil {
 		l.mu.Lock()
@@ -629,10 +671,105 @@ func (s *Store) commitImmediate(ctx context.Context, c *sql.Conn, l *activeLease
 			return durable, err
 		}
 	}
-	if _, err := c.ExecContext(ctx, `COMMIT`); err != nil {
+	// The final fence and request check authorize exactly one native COMMIT.
+	// The publication gate excludes takeover until it returns. Once admitted,
+	// COMMIT must return its native outcome even if the caller stops waiting.
+	if err := ctx.Err(); err != nil {
+		return durable, err
+	}
+	if s.abortStalledCommit != nil {
+		stop, err := s.watchCommit(ctx, l)
+		if err != nil {
+			return durable, err
+		}
+		defer stop()
+	}
+	if _, err := c.ExecContext(context.WithoutCancel(ctx), `COMMIT`); err != nil {
 		return durable, commitError{error: err}
 	}
 	return heartbeat, nil
+}
+
+const (
+	publicationCommitCap         = 8 * time.Second
+	publicationCommitLeaseMargin = 100 * time.Millisecond
+)
+
+type commitWatch struct {
+	done chan struct{}
+	// Accepted renewal publishes its new deadline here without requiring the
+	// watchdog to take a mutex that journal fsync may be holding.
+	leaseDeadline atomic.Pointer[time.Time]
+}
+
+func (s *Store) watchCommit(ctx context.Context, l *activeLease) (func(), error) {
+	watch := &commitWatch{done: make(chan struct{})}
+	var lost <-chan struct{}
+	var epoch uint64
+	if l != nil {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.lossReason != "" || !time.Now().Before(l.deadline) {
+			return nil, driver.ErrFenced{ExpectedEpoch: l.epoch, ObservedEpoch: l.epoch}
+		}
+		deadline := l.deadline
+		watch.leaseDeadline.Store(&deadline)
+		lost, epoch = l.Lost(), l.epoch
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if l != nil {
+		l.commitWatch = watch
+	}
+	finished := make(chan struct{})
+	started := time.Now()
+	capDeadline := started.Add(publicationCommitCap)
+	method := driver.PublicationMethod(ctx)
+	if method == "" {
+		method = "store.internal"
+	}
+	go func() {
+		defer close(watch.done)
+		for {
+			deadline, reason := capDeadline, "commit cap exceeded"
+			leaseDeadline := watch.leaseDeadline.Load()
+			if leaseDeadline != nil {
+				// Leave a small margin where the lease at admission allows it.
+				// A commit admitted very near expiry keeps the remaining TTL.
+				leaseLimit := leaseDeadline.Add(-publicationCommitLeaseMargin)
+				if !started.Before(leaseLimit) {
+					leaseLimit = *leaseDeadline
+				}
+				if leaseLimit.Before(deadline) {
+					deadline, reason = leaseLimit, "lease deadline approaching"
+				}
+			}
+			timer := time.NewTimer(time.Until(deadline))
+			select {
+			case <-finished:
+				timer.Stop()
+				return
+			case <-lost:
+				timer.Stop()
+				reason = "active lease lost"
+			case <-timer.C:
+				if deadline.Before(capDeadline) && leaseDeadline != watch.leaseDeadline.Load() {
+					continue
+				}
+			}
+			select {
+			case <-finished:
+			default:
+				s.abortStalledCommit(fmt.Errorf("sqlite COMMIT stalled: %s; outcome uncertain (method=%s epoch=%d elapsed=%s)", reason, method, epoch, time.Since(started)))
+			}
+			return
+		}
+	}()
+	return func() {
+		close(finished)
+		<-watch.done
+	}, nil
 }
 
 func (s *Store) Close() error {

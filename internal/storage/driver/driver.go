@@ -450,6 +450,25 @@ func PublicationMethod(ctx context.Context) string {
 	return method
 }
 
+type publicationTimingKey struct{}
+
+// PublicationTiming describes the caller's deadline and queue time before
+// dispatch. Later phases can derive their own shorter deadlines.
+type PublicationTiming struct {
+	RequestDeadline time.Time
+	QueueWait       time.Duration
+}
+
+func WithPublicationTiming(ctx context.Context, queueWait time.Duration) context.Context {
+	deadline, _ := ctx.Deadline()
+	return context.WithValue(ctx, publicationTimingKey{}, PublicationTiming{RequestDeadline: deadline, QueueWait: queueWait})
+}
+
+func GetPublicationTiming(ctx context.Context) (PublicationTiming, bool) {
+	timing, ok := ctx.Value(publicationTimingKey{}).(PublicationTiming)
+	return timing, ok
+}
+
 type StoreHealth struct {
 	Driver               string
 	Role                 string // active, standby, unknown

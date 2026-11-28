@@ -38,18 +38,37 @@ type activeLease struct {
 	// expires is durable in SQLite or the identity-bound heartbeat journal.
 	// Registration owns BOTH BEGIN IMMEDIATE and the publication flock. Renew
 	// persists independently of SQLite until that single transaction returns.
-	expires    int64
-	renewal    uint64
-	publishing bool
-	deadline   time.Time
-	timer      *time.Timer
-	lost       chan struct{}
-	lossReason string
-	released   bool
+	expires     int64
+	renewal     uint64
+	publishing  bool
+	deadline    time.Time
+	timer       *time.Timer
+	commitWatch *commitWatch
+	lost        chan struct{}
+	lossReason  string
+	released    bool
 }
 
 func (l *activeLease) Epoch() uint64         { return l.epoch }
 func (l *activeLease) Lost() <-chan struct{} { return l.lost }
+
+// WaitForCommit lets recovery wait for an admitted COMMIT to return before
+// retiring its runtime. A watchdog that has decided to exit keeps it blocked.
+// Callers must observe Lost first, after which no new COMMIT can be admitted.
+func (l *activeLease) WaitForCommit(ctx context.Context) error {
+	l.mu.Lock()
+	watch := l.commitWatch
+	l.mu.Unlock()
+	if watch != nil {
+		select {
+		case <-watch.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 func (l *activeLease) LossReason() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -207,6 +226,9 @@ func (l *activeLease) renewPublication(ctx context.Context) (bool, error) {
 	l.expires = expires
 	l.renewal++
 	l.deadline = deadline
+	if l.commitWatch != nil {
+		l.commitWatch.leaseDeadline.Store(&deadline)
+	}
 	if l.timer != nil {
 		l.timer.Stop()
 	}
@@ -224,6 +246,7 @@ func (l *activeLease) finishPublication() {
 	defer l.mu.Unlock()
 	l.liveLocked(now, l.expires)
 	l.publishing = false
+	l.commitWatch = nil
 }
 
 func (l *activeLease) abortPublication(durable leaseHeartbeat, rolledBack bool, commitAttempted bool) (renewed bool) {
@@ -241,6 +264,7 @@ func (l *activeLease) abortPublication(durable leaseHeartbeat, rolledBack bool, 
 		l.loseLocked("native publication rollback was unconfirmed")
 	}
 	l.publishing = false
+	l.commitWatch = nil
 	return l.renewal != durable.renewal
 }
 func (s *Store) leaseFor(ctx context.Context, value driver.ActiveLease) (*activeLease, error) {

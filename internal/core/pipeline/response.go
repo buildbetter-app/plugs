@@ -2,13 +2,77 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/buildbetter-app/plugs/internal/core/model"
+	"github.com/buildbetter-app/plugs/internal/core/port"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 )
 
 const responsePollInterval = 10 * time.Millisecond
+
+// resolvePublication only reads a fresh durable receipt. An absent or
+// mismatched receipt cannot justify another attempt in this invocation.
+func (w *Writer) resolvePublication(ctx context.Context, principal string, by model.PrincipalRef, cs model.ChangeSet, meta model.WriteMeta, hash, attemptID string, unknown driver.ErrIndeterminate) (port.WriteOutcome, bool, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	started := time.Now()
+	reader, err := w.reader(ctx)
+	w.observePhaseSince(ctx, PhaseAdmission, started, err)
+	if err != nil {
+		return port.WriteOutcome{}, false, unknown
+	}
+	defer reader.Close()
+	started = time.Now()
+	entry, err := reader.IdempotencyByKey(ctx, principal, meta.AgentLabel, meta.Method, meta.IdempotencyKey)
+	if err != nil || entry == nil || entry.RequestHash != hash {
+		w.observePhaseSince(ctx, PhaseReplay, started, unknown)
+		return port.WriteOutcome{}, false, unknown
+	}
+	// Only this invocation's token proves it published. Its existing write
+	// authorization covers returning its own result, even after a lost ack.
+	if entry.AttemptID == attemptID {
+		if entry.ResponsePending {
+			err := responseUnavailable(meta, entry.Commit.Revision, true)
+			w.observePhaseSince(ctx, PhaseReplay, started, err)
+			return port.WriteOutcome{}, true, err
+		}
+		commit, err := clone(entry.Commit)
+		w.observePhaseSince(ctx, PhaseReplay, started, err)
+		if err != nil {
+			return port.WriteOutcome{}, true, responseUnavailable(meta, entry.Commit.Revision, false)
+		}
+		return port.WriteOutcome{Commit: commit}, true, nil
+	}
+
+	// A concurrent winner's receipt is a separate disclosure. If after the
+	// attempted COMMIT that result cannot be returned, keep the uncertainty.
+	commit, err := w.replayEntry(ctx, reader, entry, principal, by, cs, meta, hash)
+	w.observePhaseSince(ctx, PhaseReplay, started, err)
+	if err != nil {
+		return port.WriteOutcome{}, false, unknown
+	}
+	return port.WriteOutcome{Commit: commit, Replayed: true}, false, nil
+}
+
+func replayOutcomeError(err error) error {
+	// Preserve current access refusals. Write guards cannot deny an already
+	// committed change when the caller is requesting its durable response.
+	var typed *model.Error
+	if errors.As(err, &typed) {
+		switch typed.Data.Code {
+		case "ontology_guard_failed", "write_conflict", "precondition_failed", "ontology_plan_stale", "stale_snapshot":
+		default:
+			return err
+		}
+	} else if !errors.Is(err, errStale) && !errors.Is(err, driver.ErrConflict) && !errors.Is(err, driver.ErrCheckpointConflict) {
+		return err
+	}
+	return &model.Error{Data: model.ErrorData{
+		Code: "busy", Retryable: true, Hint: "Retry the same request and idempotency key to read its stored response.",
+	}}
+}
 
 type responsePauseHookKey struct{}
 

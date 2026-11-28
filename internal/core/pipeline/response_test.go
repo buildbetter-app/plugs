@@ -511,6 +511,36 @@ func TestIndeterminateReceiptOwnership(t *testing.T) {
 	}
 }
 
+func TestIndeterminateConcurrentReceiptKeepsUnknownWhenReplayIsRefused(t *testing.T) {
+	h := setup(t)
+	ctx := context.Background()
+	cs, m := model.ChangeSet{Ops: []model.Op{create("")}}, meta(901)
+	var winner model.Commit
+	fault := &indeterminateCommitStore{Store: h.store, abortThen: func() {
+		var err error
+		winner, err = h.writer().Apply(ctx, by, cs, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}}
+	w := h.writer(WithAuthorizer(authorizerFunc(func(_ context.Context, stage port.AuthorizationStage, _ port.ProposedChange, _ port.SnapshotReader) error {
+		if stage == port.AuthorizeReplay {
+			return failure("write_conflict", "replay guard became stale")
+		}
+		return nil
+	})))
+	w.store = fault
+	got, err := w.ApplyWithOutcome(ctx, by, cs, m)
+	if unknown, ok := driver.Indeterminate(err); !ok || unknown.IdempotencyKey != m.IdempotencyKey || !reflect.DeepEqual(got, port.WriteOutcome{}) || fault.calls != 1 {
+		t.Fatalf("concurrent refusal replaced uncertain outcome: %+v error=%v attempts=%d", got, err, fault.calls)
+	}
+	replay, err := h.writer().ApplyWithOutcome(ctx, by, cs, m)
+	if err != nil || !replay.Replayed || !reflect.DeepEqual(replay.Commit, winner) {
+		t.Fatalf("same-key retry lost the concurrent receipt: %+v error=%v", replay, err)
+	}
+	assertSingleGraphWrite(t, h, winner)
+}
+
 // Emulate a receipt persisted by a binary predating invocation metadata.
 type legacyReceiptStore struct{ driver.Store }
 

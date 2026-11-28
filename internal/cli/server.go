@@ -74,6 +74,20 @@ func executeServer(ctx context.Context, args []string, out, errOut io.Writer) in
 			return 2
 		}
 	}
+	config.AbortSQLiteStalledCommit = func(err error) {
+		// Neither graceful shutdown nor a blocked journal stream may hold up
+		// process exit while SQLite owns the publication flock.
+		logged := make(chan struct{})
+		go func() {
+			fmt.Fprintf(errOut, "server: %v, exiting for supervisor restart\n", err)
+			close(logged)
+		}()
+		select {
+		case <-logged:
+		case <-time.After(100 * time.Millisecond):
+		}
+		os.Exit(1)
+	}
 	runtime, err := composition.Open(ctx, config)
 	if err != nil {
 		fmt.Fprintf(errOut, "server: startup failed: %s\n", redactServerError(err, config.DSN))
