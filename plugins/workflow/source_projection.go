@@ -569,7 +569,7 @@ func (p *Provider) ResolveSourceRef(ctx context.Context, by model.PrincipalRef, 
 	if p.source == nil {
 		return model.Ref{}, false, driver.ErrUnsupported
 	}
-	value, _, err := p.readState(ctx)
+	value, _, err := p.observeState(ctx)
 	if err != nil {
 		return model.Ref{}, false, err
 	}

@@ -722,6 +722,31 @@ func (p *Provider) load(ctx context.Context) (persisted, pluginapi.Revision, err
 	return value, revision, nil
 }
 
+// observeState is for read-only guards and routing. They can share one decoded
+// image while the staged revision is current. Mutations must use readState or
+// load to obtain their own maps and only replace the staged image through Put.
+// Callers hold p.mu for the lifetime of the observation.
+func (p *Provider) observeState(ctx context.Context) (persisted, pluginapi.Revision, error) {
+	if err := ctx.Err(); err != nil {
+		return persisted{}, "", err
+	}
+	staged, ok := p.state.(*stagedState)
+	if !ok || !staged.loaded || staged.key != stateKey {
+		return p.readState(ctx)
+	}
+	if staged.observed == nil {
+		value, _, err := p.readState(ctx)
+		if err != nil {
+			return persisted{}, "", err
+		}
+		if err := ctx.Err(); err != nil {
+			return persisted{}, "", err
+		}
+		staged.observed = &value
+	}
+	return *staged.observed, staged.revision, nil
+}
+
 func (p *Provider) appendAudit(value *persisted, event string, receipt receiptState) {
 	value.Audit = append(value.Audit, auditState{
 		Event: event, At: p.now().UTC(), Principal: receipt.Principal,
@@ -1327,7 +1352,7 @@ func (p *Provider) OrdinaryCloseSnapshot(ctx context.Context, by model.Principal
 	}
 	// An ordinary pre-publication guard must never garbage collect or publish
 	// metadata on its own, including when the core write is later refused.
-	value, revision, err := p.readState(ctx)
+	value, revision, err := p.observeState(ctx)
 	if err != nil {
 		return nil, nil, driver.CheckpointExpectation{}, err
 	}

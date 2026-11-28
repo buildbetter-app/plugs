@@ -21,6 +21,54 @@ type testDurableState struct {
 	rev   uint64
 }
 
+func TestStagedCloseObservationsFollowOrderedCheckpointWrites(t *testing.T) {
+	ctx := context.Background()
+	p, err := New(&testDurableState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, state := p.staged()
+	revision := pluginapi.Natural64(1)
+	state.key, state.revision, state.loaded = stateKey, revision, true
+	state.namespace = &driver.CheckpointExpectation{Expected: 9}
+	parent := model.RefByID("pl-parent", model.Natural64(0))
+	item := itemState{ID: "workflow:item/child", Project: "test", Parent: &parent, Status: "open"}
+	initial := persisted{Items: map[string]itemState{item.ID: item}}
+	state.value, err = json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	observe := func(wantOpen bool) {
+		t.Helper()
+		_, children, expectation, err := staged.OrdinaryCloseSnapshot(ctx, model.PrincipalRef{}, []string{parent.ID}, model.WriteMeta{Project: "test"})
+		if err != nil || children[parent.ID] != wantOpen || expectation != *state.namespace {
+			t.Fatalf("open children=%v, expectation=%+v, err=%v", children, expectation, err)
+		}
+	}
+	observe(true)
+	first := state.observed
+	observe(true)
+	if first == nil || first != state.observed {
+		t.Fatal("read-only guards decoded the same staged revision more than once")
+	}
+
+	value, expected, err := staged.readState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item.Status = "closed"
+	value.Items[item.ID] = item
+	observe(true) // A draft must remain invisible until Put succeeds.
+	if _, err := state.Put(ctx, stateKey, value, expected); err != nil {
+		t.Fatal(err)
+	}
+	observe(false)
+	if state.observed == first {
+		t.Fatal("ordered guard reused an earlier staged revision")
+	}
+}
+
 func (*testDurableState) Persistent() bool { return true }
 
 func (s *testDurableState) Read(_ context.Context, key string, dst any) (bool, pluginapi.Revision, error) {

@@ -17,6 +17,7 @@ import (
 	"github.com/buildbetter-app/plugs/internal/core/service"
 	"github.com/buildbetter-app/plugs/internal/server/pluginhost"
 	"github.com/buildbetter-app/plugs/internal/server/rpc"
+	"github.com/buildbetter-app/plugs/internal/storage/conformance"
 	"github.com/buildbetter-app/plugs/internal/storage/driver"
 	workflowplugin "github.com/buildbetter-app/plugs/plugins/workflow"
 )
@@ -136,6 +137,78 @@ func sourcePublicCall(t *testing.T, server *rpc.Server, actor model.PrincipalRef
 		t.Fatalf("%s: %s", method, raw)
 	}
 	return reply
+}
+
+func TestSourceOrdinaryCloseLargeSubtree(t *testing.T) {
+	ctx := context.Background()
+	store, lease, _ := openIdentityTarget(t, "sqlite")
+	data := jointSourceFixture(t)
+	profile := jointProfile(t, data, store, lease)
+	report, err := RestoreImportWithLease(ctx, bytes.NewReader(data), store, lease, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer report.Close()
+
+	root := model.RefByID("demo-close-subtree", model.Natural64(0))
+	changes := make([]conformance.FixtureChange, 0, 1001)
+	add := func(id model.Ref, parent *model.Ref, status string) {
+		body := encode(t, pipeline.Document{ID: id.ID, Type: "issue", Project: "demo",
+			Parent: parent, Fields: map[string]any{"title": id.ID, "status": status}})
+		changes = append(changes, conformance.FixtureChange{Ref: id, Kind: "bead", Op: model.OpCreate,
+			Body: body, Graph: &conformance.FixtureGraphSource{Parent: parent}})
+	}
+	add(root, nil, "todo")
+	// Fill the subtree with closed children and grandchildren, with one open
+	// direct child at the end. Close must still observe that child's status.
+	for i := 0; i < 499; i++ {
+		child := model.RefByID(fmt.Sprintf("demo-close-child-%03d", i), model.Natural64(0))
+		add(child, &root, "done")
+		add(model.RefByID(child.ID+"-leaf", model.Natural64(0)), &child, "done")
+	}
+	last := model.RefByID("demo-close-child-last", model.Natural64(0))
+	add(last, &root, "todo")
+	for first := 0; first < len(changes); first += 100 {
+		if _, err := conformance.Seed(ctx, store, lease, driver.ChangesetHeader{}, changes[first:min(first+100, len(changes))]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, server := sourcePublicService(t, store, lease, profile, report, &sourcePublicPolicy{})
+	actor := profile.Admission.Actor
+	namespace := report.SourcePlanes.Providers[0].Provider.Namespace
+	capability, err := driver.RequireWorkflowCheckpointStore(store, lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := capability.LoadCheckpoint(ctx, namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePublicCall(t, server, actor, "bead.close", 901, map[string]any{"id": root}, "ontology_guard_failed")
+	sourcePublicCall(t, server, actor, "bead.close", 902, map[string]any{"id": last}, "")
+	start := time.Now()
+	closeRoot := func() sourcePublicReply {
+		return sourcePublicCall(t, server, actor, "bead.close", 903, map[string]any{"id": root}, "")
+	}
+	closed := closeRoot()
+	t.Logf("SQLite source-bound close across %d descendants took %s", len(changes)-1, time.Since(start))
+	var commit model.Commit
+	decode(t, closed.Result, &commit)
+	var doc pipeline.Document
+	if len(commit.Results) != 1 || commit.Results[0].Ref != root {
+		t.Fatalf("unexpected close commit: %+v", commit)
+	}
+	decode(t, commit.Results[0].Record, &doc)
+	if doc.Fields["status"] != "done" {
+		t.Fatalf("root status is %v after close", doc.Fields["status"])
+	}
+	if replay := closeRoot(); !replay.Meta.Replayed || !bytes.Equal(closed.Result, replay.Result) {
+		t.Fatal("close replay changed the committed result")
+	}
+	if current, err := capability.LoadCheckpoint(ctx, namespace); err != nil || !reflect.DeepEqual(initial, current) {
+		t.Fatalf("ordinary close changed the workflow checkpoint: %v", err)
+	}
 }
 
 func TestJointSourcePublicRoutingBatchReplayAndReopen(t *testing.T) {

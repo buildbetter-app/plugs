@@ -48,6 +48,7 @@ type stagedState struct {
 	loaded           bool
 	head             *driver.CoreSnapshotExpectation
 	namespace        *driver.CheckpointExpectation
+	observed         *persisted
 }
 
 // A staged decision uses the virtual image after prior ordered operations,
@@ -143,6 +144,7 @@ func (s *stagedState) Put(ctx context.Context, key string, value any, expect plu
 		s.expect = expect
 	}
 	s.key, s.value, s.revision, s.written = key, data, pluginapi.Natural64(number+1), true
+	s.observed = nil
 	return s.revision, nil
 }
 func (s *stagedState) Delete(context.Context, string, pluginapi.Revision) error {
